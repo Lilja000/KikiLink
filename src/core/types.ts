@@ -53,6 +53,7 @@ export interface KikiLinkSettings {
     accent: string;
     theme: ThemePreference;
     launcherSide: "left" | "right";
+    launcherPosition: { x: number; y: number } | null;
     reducedMotion: boolean;
   };
   linkChat: {

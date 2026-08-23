@@ -30,6 +30,7 @@ export class LinkChatModule implements KikiLinkModule {
       context.bus.on("bc:status", ({ state, message }) =>
         this.#view?.setConnectionState(state, message),
       ),
+      context.bus.on("bc:ready", () => void this.#importRecentBeeps()),
       context.bus.on("beep:received", (event) => void this.#capture(event)),
       context.bus.on("beep:sent", (event) => void this.#capture(event)),
     );
@@ -66,6 +67,20 @@ export class LinkChatModule implements KikiLinkModule {
       this.#context.bus.emit("link-chat:updated", { peerNumber: event.peerNumber });
     } catch (error) {
       this.#logger.error("Failed to capture a Beep", error);
+    }
+  }
+
+  async #importRecentBeeps(): Promise<void> {
+    if (!this.#service || !this.#view || !this.#context) return;
+    try {
+      for (const event of this.#context.adapter.getRecentBeeps()) {
+        await this.#service.captureRecent(event);
+        const nickname = this.#context.adapter.getMemberNickname(event.peerNumber);
+        if (nickname) await this.#service.setPeerName(event.peerNumber, nickname);
+      }
+      await this.#view.refresh();
+    } catch (error) {
+      this.#logger.error("Failed to import recent Beeps", error);
     }
   }
 }

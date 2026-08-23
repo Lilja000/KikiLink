@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     accent: "#d71932",
     theme: "dark",
     launcherSide: "right",
+    launcherPosition: null,
     reducedMotion: false,
   },
   linkChat: {
@@ -113,6 +114,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? ui.theme
           : DEFAULT_SETTINGS.ui.theme,
       launcherSide: ui.launcherSide === "left" ? "left" : "right",
+      launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
       reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
     },
     linkChat: {
@@ -158,6 +160,12 @@ function sanitizeQuickActions(value: unknown): QuickAction[] {
   return actions;
 }
 
+function sanitizeLauncherPosition(value: unknown): { x: number; y: number } | null {
+  if (!isRecord(value)) return null;
+  if (!finiteNumberInRange(value.x, 0, 1) || !finiteNumberInRange(value.y, 0, 1)) return null;
+  return { x: value.x, y: value.y };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -170,6 +178,10 @@ function integerInRange(value: unknown, min: number, max: number, fallback: numb
   return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
     ? value
     : fallback;
+}
+
+function finiteNumberInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
 function validColor(value: unknown): value is string {

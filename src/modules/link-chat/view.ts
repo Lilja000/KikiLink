@@ -80,6 +80,19 @@ export class LinkChatView {
   #mounted = false;
   #connectionState: BCConnectionState = "connecting";
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
+  #launcherDrag:
+    | {
+        pointerId: number;
+        startX: number;
+        startY: number;
+        startLeft: number;
+        startTop: number;
+        moved: boolean;
+      }
+    | undefined;
+  #suppressLauncherClickUntil = 0;
+
+  readonly #handleViewportResize = (): void => this.#positionLauncher();
 
   readonly #saveDraft = debounce((peerNumber: number, peerName: string, value: string) => {
     void this.service.setDraft(peerNumber, peerName, value);
@@ -112,6 +125,8 @@ export class LinkChatView {
       this.#newChatDialog,
     );
     document.body.append(this.#host);
+    this.#positionLauncher();
+    window.addEventListener("resize", this.#handleViewportResize);
 
     void this.refresh();
   }
@@ -120,6 +135,7 @@ export class LinkChatView {
     if (this.#toastTimer !== undefined) clearTimeout(this.#toastTimer);
     this.#settingsDialog.close();
     this.#newChatDialog.close();
+    window.removeEventListener("resize", this.#handleViewportResize);
     this.#host.remove();
     this.#mounted = false;
   }
@@ -134,8 +150,9 @@ export class LinkChatView {
     this.#connectionText.textContent =
       state === "ready" ? "Connected" : state === "error" ? "Connection error" : "Connecting";
     this.#connection.title = message ?? this.#connectionText.textContent ?? "";
-    this.#sendButton.disabled = state !== "ready";
-    this.#composer.placeholder = state === "ready" ? "Write a Beep…" : "Connecting to Bondage Club…";
+    const canSend = this.adapter.canSendBeep();
+    this.#sendButton.disabled = !canSend;
+    this.#composer.placeholder = canSend ? "Write a Beep…" : "Connecting to Bondage Club…";
     if (this.#newChatDialog.open) this.#renderKnownContacts();
   }
 
@@ -161,7 +178,10 @@ export class LinkChatView {
   }
 
   async openChat(memberNumber: number, memberName?: string): Promise<void> {
-    const name = memberName?.trim() || this.adapter.getMemberName(memberNumber);
+    const name =
+      this.adapter.getMemberNickname(memberNumber) ||
+      memberName?.trim() ||
+      this.adapter.getMemberName(memberNumber);
     await this.service.ensureConversation(memberNumber, name);
     await this.open();
     await this.#selectConversation(memberNumber, name);
@@ -176,9 +196,14 @@ export class LinkChatView {
     this.#launcher.append(this.#emblem("kl-launcher-emblem"), this.#badge);
     this.#launcher.setAttribute("aria-expanded", "false");
     this.#launcher.addEventListener("click", () => {
+      if (Date.now() < this.#suppressLauncherClickUntil) return;
       if (this.#panel.hidden) void this.open();
       else this.close();
     });
+    this.#launcher.addEventListener("pointerdown", (event) => this.#startLauncherDrag(event));
+    this.#launcher.addEventListener("pointermove", (event) => this.#moveLauncher(event));
+    this.#launcher.addEventListener("pointerup", (event) => this.#finishLauncherDrag(event));
+    this.#launcher.addEventListener("pointercancel", (event) => this.#cancelLauncherDrag(event));
   }
 
   #buildPanel(): void {
@@ -236,6 +261,7 @@ export class LinkChatView {
       "aside",
       { className: "kl-sidebar" },
       element("div", { className: "kl-search-wrap" }, this.#search),
+      element("div", { className: "kl-sidebar-heading", text: "Recent chats" }),
       this.#conversationList,
     );
 
@@ -351,7 +377,7 @@ export class LinkChatView {
     );
     const launcherSide = this.#settingRow(
       "Launcher side",
-      "Keep the emblem clear of your usual game controls.",
+      "Drag the emblem anywhere. Changing its side resets it to the default corner.",
       this.#launcherSideSelect,
     );
 
@@ -516,7 +542,19 @@ export class LinkChatView {
 
   async #renderConversations(): Promise<void> {
     const query = this.#search.value.trim().toLocaleLowerCase();
-    const conversations = (await this.service.listConversations()).filter((conversation) => {
+    const allConversations = await this.service.listConversations();
+    for (const conversation of allConversations) {
+      const nickname = this.adapter.getMemberNickname(conversation.peerNumber);
+      if (!nickname || nickname === conversation.peerName) continue;
+      conversation.peerName = nickname;
+      await this.service.setPeerName(conversation.peerNumber, nickname);
+      if (conversation.peerNumber === this.#activePeer) {
+        this.#activeName = nickname;
+        this.#chatName.textContent = nickname;
+        this.#chatAvatar.textContent = avatarText(nickname);
+      }
+    }
+    const conversations = allConversations.filter((conversation) => {
       if (!query) return true;
       return (
         conversation.peerName.toLocaleLowerCase().includes(query) ||
@@ -587,16 +625,21 @@ export class LinkChatView {
   }
 
   async #selectConversation(peerNumber: number, peerName: string): Promise<void> {
+    const displayName = this.adapter.getMemberNickname(peerNumber) ?? peerName;
     this.#activePeer = peerNumber;
-    this.#activeName = peerName;
+    this.#activeName = displayName;
     this.#panel.dataset.mobileView = "chat";
-    const conversation = await this.service.ensureConversation(peerNumber, peerName);
+    const conversation = await this.service.ensureConversation(peerNumber, displayName);
+    if (displayName !== conversation.peerName) {
+      await this.service.setPeerName(peerNumber, displayName);
+      conversation.peerName = displayName;
+    }
     await this.service.markRead(peerNumber);
 
     this.#empty.hidden = true;
     this.#chat.hidden = false;
-    this.#chatAvatar.textContent = avatarText(peerName);
-    this.#chatName.textContent = peerName;
+    this.#chatAvatar.textContent = avatarText(displayName);
+    this.#chatName.textContent = displayName;
     this.#chatNumber.textContent = `Member ${peerNumber}`;
     this.#pinButton.textContent = conversation.pinned ? "◆" : "◇";
     this.#pinButton.title = conversation.pinned ? "Unpin conversation" : "Pin conversation";
@@ -648,15 +691,30 @@ export class LinkChatView {
     const message = this.#composer.value.trim();
     if (!message) return;
 
+    let sent = false;
     try {
-      this.adapter.sendBeep(this.#activePeer, message, this.#includeRoom.checked);
+      const event = this.adapter.sendBeep(
+        this.#activePeer,
+        message,
+        this.#includeRoom.checked,
+      );
+      sent = true;
+      await this.service.capture(event, true);
       this.#composer.value = "";
       await this.service.setDraft(this.#activePeer, this.#activeName, "");
       this.#resizeComposer();
       this.#updateCounter();
+      await this.onMessage(this.#activePeer, false);
       this.#composer.focus();
     } catch (error) {
-      this.#toast(error instanceof Error ? error.message : "Unable to send Beep", "error");
+      this.#toast(
+        sent
+          ? "Beep was sent, but KikiLink could not save it to local history."
+          : error instanceof Error
+            ? error.message
+            : "Unable to send Beep",
+        "error",
+      );
     }
   }
 
@@ -837,12 +895,15 @@ export class LinkChatView {
 
   #saveSettings(): void {
     const retentionDays = Number(this.#retentionInput.value);
+    const currentSettings = this.settings.get();
+    const launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
     const settings = this.settings.update((draft) => {
       draft.ui.theme =
         this.#themeSelect.value === "light" || this.#themeSelect.value === "system"
           ? this.#themeSelect.value
           : "dark";
-      draft.ui.launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
+      draft.ui.launcherSide = launcherSide;
+      if (launcherSide !== currentSettings.ui.launcherSide) draft.ui.launcherPosition = null;
       draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
       draft.linkChat.saveHistory = this.#historyToggle.checked;
       draft.linkChat.quickActions = this.#readQuickActionEditor();
@@ -891,6 +952,111 @@ export class LinkChatView {
     this.#host.dataset.reducedMotion = String(settings.ui.reducedMotion);
     this.#launcher.dataset.side = settings.ui.launcherSide;
     this.#panel.dataset.side = settings.ui.launcherSide;
+    if (this.#host.isConnected) this.#positionLauncher();
+  }
+
+  #startLauncherDrag(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    const rect = this.#launcher.getBoundingClientRect();
+    this.#launcherDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: rect.left,
+      startTop: rect.top,
+      moved: false,
+    };
+    try {
+      this.#launcher.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is an enhancement; document-level pointer delivery still works without it.
+    }
+  }
+
+  #moveLauncher(event: PointerEvent): void {
+    const drag = this.#launcherDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - drag.startX;
+    const deltaY = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(deltaX, deltaY) < 5) return;
+
+    drag.moved = true;
+    event.preventDefault();
+    this.#launcher.dataset.dragging = "true";
+    this.#placeLauncher(drag.startLeft + deltaX, drag.startTop + deltaY);
+  }
+
+  #finishLauncherDrag(event: PointerEvent): void {
+    const drag = this.#launcherDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    this.#launcherDrag = undefined;
+    this.#launcher.dataset.dragging = "false";
+    try {
+      this.#launcher.releasePointerCapture(event.pointerId);
+    } catch {
+      // The pointer may already have been released by the browser.
+    }
+
+    if (!drag.moved) return;
+    this.#saveLauncherPosition();
+    this.#suppressLauncherClickUntil = Date.now() + 500;
+  }
+
+  #cancelLauncherDrag(event: PointerEvent): void {
+    if (!this.#launcherDrag || this.#launcherDrag.pointerId !== event.pointerId) return;
+    this.#launcherDrag = undefined;
+    this.#launcher.dataset.dragging = "false";
+    this.#positionLauncher();
+  }
+
+  #placeLauncher(left: number, top: number): void {
+    const width = this.#launcher.offsetWidth || 58;
+    const height = this.#launcher.offsetHeight || 58;
+    const maxLeft = Math.max(0, window.innerWidth - width);
+    const maxTop = Math.max(0, window.innerHeight - height);
+    const safeLeft = clamp(left, 0, maxLeft);
+    const safeTop = clamp(top, 0, maxTop);
+    const side = safeLeft + width / 2 < window.innerWidth / 2 ? "left" : "right";
+
+    this.#launcher.style.left = `${Math.round(safeLeft)}px`;
+    this.#launcher.style.top = `${Math.round(safeTop)}px`;
+    this.#launcher.style.right = "auto";
+    this.#launcher.style.bottom = "auto";
+    this.#launcher.dataset.side = side;
+    this.#panel.dataset.side = side;
+  }
+
+  #saveLauncherPosition(): void {
+    const rect = this.#launcher.getBoundingClientRect();
+    const maxLeft = Math.max(0, window.innerWidth - rect.width);
+    const maxTop = Math.max(0, window.innerHeight - rect.height);
+    const x = maxLeft === 0 ? 0.5 : clamp(rect.left / maxLeft, 0, 1);
+    const y = maxTop === 0 ? 0.5 : clamp(rect.top / maxTop, 0, 1);
+    const launcherSide = rect.left + rect.width / 2 < window.innerWidth / 2 ? "left" : "right";
+    this.settings.update((draft) => {
+      draft.ui.launcherPosition = { x, y };
+      draft.ui.launcherSide = launcherSide;
+    });
+  }
+
+  #positionLauncher(): void {
+    const ui = this.settings.get().ui;
+    if (!ui.launcherPosition) {
+      this.#launcher.style.removeProperty("left");
+      this.#launcher.style.removeProperty("top");
+      this.#launcher.style.removeProperty("right");
+      this.#launcher.style.removeProperty("bottom");
+      this.#launcher.dataset.side = ui.launcherSide;
+      this.#panel.dataset.side = ui.launcherSide;
+      return;
+    }
+
+    const width = this.#launcher.offsetWidth || 58;
+    const height = this.#launcher.offsetHeight || 58;
+    this.#placeLauncher(
+      ui.launcherPosition.x * Math.max(0, window.innerWidth - width),
+      ui.launcherPosition.y * Math.max(0, window.innerHeight - height),
+    );
   }
 
   #showConversationList(): void {
@@ -946,4 +1112,8 @@ function formatMessageTime(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(
     new Date(timestamp),
   );
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

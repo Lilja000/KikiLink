@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.3.0
+// @version      0.3.1
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -255,9 +255,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
     version;
     #logger = new Logger("bc");
     #unhooks = [];
+    #nicknameCache = /* @__PURE__ */ new Map();
     #modApi;
     #stopped = false;
     #ready = false;
+    #sendingViaKikiLink = false;
     async start() {
       this.#stopped = false;
       this.bus.emit("bc:status", { state: "connecting" });
@@ -284,6 +286,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#unhooks.push(
           this.#modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
             const result = next(args);
+            if (this.#sendingViaKikiLink) return result;
             const [target, message, options] = args;
             const event = this.#normalizeOutgoing(target, message, options);
             if (event) this.bus.emit("beep:sent", event);
@@ -310,6 +313,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     isReady() {
       return this.#ready;
     }
+    canSendBeep() {
+      return typeof ServerSendBeepMessage === "function";
+    }
     sendBeep(target, content, includeRoom) {
       if (!Number.isSafeInteger(target) || target < 0) {
         throw new Error("A valid non-negative member number is required");
@@ -317,14 +323,38 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const message = content.trim();
       if (!message) throw new Error("A Beep message cannot be empty");
       if (message.length > 1e3) throw new Error("A Beep message cannot exceed 1000 characters");
-      if (!this.#ready || typeof ServerSendBeepMessage !== "function") {
+      if (typeof ServerSendBeepMessage !== "function") {
         throw new Error("KikiLink is still connecting to Bondage Club");
       }
-      ServerSendBeepMessage(target, message, { includeRoom });
+      const event = this.#normalizeOutgoing(target, message, { includeRoom });
+      if (!event) throw new Error("Unable to prepare this Beep");
+      this.#sendingViaKikiLink = true;
+      try {
+        ServerSendBeepMessage(target, message, { includeRoom });
+      } finally {
+        this.#sendingViaKikiLink = false;
+      }
+      return event;
     }
     getMemberName(memberNumber) {
+      const nickname = this.getMemberNickname(memberNumber);
+      if (nickname) return nickname;
       if (typeof Player !== "object" || Player === null) return `Member ${memberNumber}`;
       return Player.FriendNames?.get(memberNumber) ?? `Member ${memberNumber}`;
+    }
+    getMemberNickname(memberNumber) {
+      if (typeof Player === "object" && Player !== null && Player.MemberNumber === memberNumber) {
+        const ownNickname = cleanName(Player.Nickname);
+        if (ownNickname) this.#nicknameCache.set(memberNumber, ownNickname);
+        else this.#nicknameCache.delete(memberNumber);
+      }
+      if (typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter)) {
+        const character = ChatRoomCharacter.find((candidate) => candidate.MemberNumber === memberNumber);
+        const nickname = cleanName(character?.Nickname);
+        if (nickname) this.#nicknameCache.set(memberNumber, nickname);
+        else if (character) this.#nicknameCache.delete(memberNumber);
+      }
+      return this.#nicknameCache.get(memberNumber);
     }
     getOwnMemberNumber() {
       if (typeof Player !== "object" || Player === null) return -1;
@@ -332,15 +362,47 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     getOwnName() {
       if (typeof Player !== "object" || Player === null) return "me";
-      return typeof Player.Name === "string" && Player.Name.trim() ? Player.Name : "me";
+      return cleanName(Player.Nickname) ?? cleanName(Player.Name) ?? "me";
     }
     getKnownContacts() {
-      if (typeof Player !== "object" || Player === null || !(Player.FriendNames instanceof Map)) {
-        return [];
+      const contacts = /* @__PURE__ */ new Map();
+      if (typeof Player === "object" && Player !== null && Player.FriendNames instanceof Map) {
+        for (const [memberNumber, memberName] of Player.FriendNames) {
+          if (Number.isSafeInteger(memberNumber) && cleanName(memberName)) {
+            contacts.set(memberNumber, this.getMemberNickname(memberNumber) ?? memberName.trim());
+          }
+        }
       }
-      return [...Player.FriendNames.entries()].filter(
-        ([memberNumber, memberName]) => Number.isSafeInteger(memberNumber) && typeof memberName === "string" && memberName.trim()
-      ).map(([memberNumber, memberName]) => ({ memberNumber, memberName })).sort((left, right) => left.memberName.localeCompare(right.memberName));
+      if (typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter)) {
+        for (const character of ChatRoomCharacter) {
+          if (!Number.isSafeInteger(character.MemberNumber) || character.MemberNumber === this.getOwnMemberNumber()) {
+            continue;
+          }
+          contacts.set(
+            character.MemberNumber,
+            this.getMemberNickname(character.MemberNumber) ?? cleanName(character.Name) ?? `Member ${character.MemberNumber}`
+          );
+        }
+      }
+      return [...contacts.entries()].map(([memberNumber, memberName]) => ({ memberNumber, memberName })).sort((left, right) => left.memberName.localeCompare(right.memberName));
+    }
+    getRecentBeeps(limit = 100) {
+      if (typeof FriendListBeepLog === "undefined" || !Array.isArray(FriendListBeepLog)) return [];
+      return FriendListBeepLog.slice(-Math.max(0, limit)).map((entry) => {
+        if (!Number.isSafeInteger(entry.MemberNumber)) return null;
+        const timestamp = new Date(entry.Time).getTime();
+        const sentAt = Number.isFinite(timestamp) ? timestamp : Date.now();
+        const roomName = cleanName(entry.ChatRoomName);
+        return {
+          direction: entry.Sent ? "outgoing" : "incoming",
+          peerNumber: entry.MemberNumber,
+          peerName: this.getMemberNickname(entry.MemberNumber) ?? cleanName(entry.MemberName) ?? `Member ${entry.MemberNumber}`,
+          content: typeof entry.Message === "string" ? entry.Message.slice(0, 1e3) : "",
+          sentAt,
+          includeRoom: roomName !== void 0,
+          ...roomName !== void 0 ? { roomName } : {}
+        };
+      }).filter((event) => event !== null).sort((left, right) => left.sentAt - right.sentAt);
     }
     #normalizeIncoming(data) {
       if (!data || data.BeepType !== void 0 && data.BeepType !== "") return null;
@@ -349,7 +411,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return {
         direction: "incoming",
         peerNumber: data.MemberNumber,
-        peerName: data.MemberName,
+        peerName: this.getMemberNickname(data.MemberNumber) ?? data.MemberName,
         content: typeof data.Message === "string" ? data.Message.slice(0, 1e3) : "",
         sentAt: Date.now(),
         includeRoom: roomName !== void 0,
@@ -376,6 +438,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
     }
   };
+  function cleanName(value) {
+    if (typeof value !== "string") return void 0;
+    const name = value.trim();
+    return name || void 0;
+  }
   function isBondageClubReady() {
     return typeof document !== "undefined" && document.body !== null && typeof Player === "object" && Player !== null && Number.isSafeInteger(Player.MemberNumber) && typeof ServerAccountBeep === "function" && typeof ServerSendBeepMessage === "function" && (typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn());
   }
@@ -460,7 +527,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const previous = await this.getConversation(event.peerNumber);
       const conversation = {
         peerNumber: event.peerNumber,
-        peerName: event.peerName || previous?.peerName || `Member ${event.peerNumber}`,
+        peerName: preferredPeerName(previous?.peerName, event.peerName, event.peerNumber),
         lastMessage: event.content,
         lastMessageAt: event.sentAt,
         lastDirection: event.direction,
@@ -483,6 +550,15 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#ephemeralConversations.set(event.peerNumber, conversation);
       }
       return message;
+    }
+    async captureRecent(event) {
+      const messages = await this.getMessages(event.peerNumber, 500);
+      const duplicate = messages.some(
+        (message) => message.direction === event.direction && message.content === event.content && message.roomName === event.roomName && Math.abs(message.sentAt - event.sentAt) <= 2e3
+      );
+      if (duplicate) return false;
+      await this.capture(event, true);
+      return true;
     }
     async ensureConversation(peerNumber, peerName) {
       const existing = await this.getConversation(peerNumber);
@@ -522,6 +598,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (!conversation || conversation.unread === 0) return;
       await this.#saveConversation({ ...conversation, unread: 0 });
     }
+    async setPeerName(peerNumber, peerName) {
+      const name = peerName.trim();
+      if (!name) return;
+      const conversation = await this.getConversation(peerNumber);
+      if (!conversation || conversation.peerName === name) return;
+      await this.#saveConversation({ ...conversation, peerName: name });
+    }
     async setDraft(peerNumber, peerName, draft) {
       const conversation = await this.getConversation(peerNumber) ?? await this.ensureConversation(peerNumber, peerName);
       await this.#saveConversation({ ...conversation, draft });
@@ -556,6 +639,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
     }
   };
+  function preferredPeerName(previousName, eventName, peerNumber) {
+    const fallback = `Member ${peerNumber}`;
+    const previous = previousName?.trim();
+    const incoming = eventName.trim();
+    if (previous && previous !== fallback) return previous;
+    return incoming || previous || fallback;
+  }
 
   // src/utils/dom.ts
   function element(tag, options = {}, ...children) {
@@ -719,6 +809,8 @@ button { color: inherit; }
     0 0 0 1px rgba(0, 0, 0, 0.75),
     inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   cursor: pointer;
+  touch-action: none;
+  user-select: none;
   transition: transform 160ms ease, filter 160ms ease, border-color 160ms ease;
 }
 
@@ -726,6 +818,7 @@ button { color: inherit; }
 .kl-launcher[data-side="left"] { left: max(20px, env(safe-area-inset-left)); }
 .kl-launcher:hover { border-color: var(--kl-gold); filter: brightness(1.08); transform: translateY(-2px); }
 .kl-launcher:active { transform: translateY(0) scale(0.97); }
+.kl-launcher[data-dragging="true"] { cursor: grabbing; filter: brightness(1.1); transform: scale(1.03); transition: none; }
 
 .kl-launcher-emblem {
   position: absolute;
@@ -901,12 +994,20 @@ button { color: inherit; }
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   border-right: 1px solid var(--kl-border);
   background: var(--kl-sidebar-bg);
 }
 
 .kl-search-wrap { padding: 14px; }
+.kl-sidebar-heading {
+  padding: 0 16px 8px;
+  color: var(--kl-gold);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
 .kl-search,
 .kl-composer-input,
 .kl-number-input,
@@ -1356,6 +1457,9 @@ select:focus-visible {
     #mounted = false;
     #connectionState = "connecting";
     #toastTimer;
+    #launcherDrag;
+    #suppressLauncherClickUntil = 0;
+    #handleViewportResize = () => this.#positionLauncher();
     #saveDraft = debounce((peerNumber, peerName, value) => {
       void this.service.setDraft(peerNumber, peerName, value);
     }, 250);
@@ -1378,12 +1482,15 @@ select:focus-visible {
         this.#newChatDialog
       );
       document.body.append(this.#host);
+      this.#positionLauncher();
+      window.addEventListener("resize", this.#handleViewportResize);
       void this.refresh();
     }
     destroy() {
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
       this.#settingsDialog.close();
       this.#newChatDialog.close();
+      window.removeEventListener("resize", this.#handleViewportResize);
       this.#host.remove();
       this.#mounted = false;
     }
@@ -1395,8 +1502,9 @@ select:focus-visible {
       this.#connection.dataset.state = state;
       this.#connectionText.textContent = state === "ready" ? "Connected" : state === "error" ? "Connection error" : "Connecting";
       this.#connection.title = message ?? this.#connectionText.textContent ?? "";
-      this.#sendButton.disabled = state !== "ready";
-      this.#composer.placeholder = state === "ready" ? "Write a Beep\u2026" : "Connecting to Bondage Club\u2026";
+      const canSend = this.adapter.canSendBeep();
+      this.#sendButton.disabled = !canSend;
+      this.#composer.placeholder = canSend ? "Write a Beep\u2026" : "Connecting to Bondage Club\u2026";
       if (this.#newChatDialog.open) this.#renderKnownContacts();
     }
     async onMessage(peerNumber, incoming) {
@@ -1417,7 +1525,7 @@ select:focus-visible {
       this.#launcher.setAttribute("aria-expanded", "false");
     }
     async openChat(memberNumber, memberName) {
-      const name = memberName?.trim() || this.adapter.getMemberName(memberNumber);
+      const name = this.adapter.getMemberNickname(memberNumber) || memberName?.trim() || this.adapter.getMemberName(memberNumber);
       await this.service.ensureConversation(memberNumber, name);
       await this.open();
       await this.#selectConversation(memberNumber, name);
@@ -1430,9 +1538,14 @@ select:focus-visible {
       this.#launcher.append(this.#emblem("kl-launcher-emblem"), this.#badge);
       this.#launcher.setAttribute("aria-expanded", "false");
       this.#launcher.addEventListener("click", () => {
+        if (Date.now() < this.#suppressLauncherClickUntil) return;
         if (this.#panel.hidden) void this.open();
         else this.close();
       });
+      this.#launcher.addEventListener("pointerdown", (event) => this.#startLauncherDrag(event));
+      this.#launcher.addEventListener("pointermove", (event) => this.#moveLauncher(event));
+      this.#launcher.addEventListener("pointerup", (event) => this.#finishLauncherDrag(event));
+      this.#launcher.addEventListener("pointercancel", (event) => this.#cancelLauncherDrag(event));
     }
     #buildPanel() {
       this.#panel.hidden = true;
@@ -1488,6 +1601,7 @@ select:focus-visible {
         "aside",
         { className: "kl-sidebar" },
         element("div", { className: "kl-search-wrap" }, this.#search),
+        element("div", { className: "kl-sidebar-heading", text: "Recent chats" }),
         this.#conversationList
       );
       this.#empty.append(
@@ -1596,7 +1710,7 @@ select:focus-visible {
       );
       const launcherSide = this.#settingRow(
         "Launcher side",
-        "Keep the emblem clear of your usual game controls.",
+        "Drag the emblem anywhere. Changing its side resets it to the default corner.",
         this.#launcherSideSelect
       );
       this.#reducedMotionToggle.type = "checkbox";
@@ -1751,7 +1865,19 @@ select:focus-visible {
     }
     async #renderConversations() {
       const query = this.#search.value.trim().toLocaleLowerCase();
-      const conversations = (await this.service.listConversations()).filter((conversation) => {
+      const allConversations = await this.service.listConversations();
+      for (const conversation of allConversations) {
+        const nickname = this.adapter.getMemberNickname(conversation.peerNumber);
+        if (!nickname || nickname === conversation.peerName) continue;
+        conversation.peerName = nickname;
+        await this.service.setPeerName(conversation.peerNumber, nickname);
+        if (conversation.peerNumber === this.#activePeer) {
+          this.#activeName = nickname;
+          this.#chatName.textContent = nickname;
+          this.#chatAvatar.textContent = avatarText(nickname);
+        }
+      }
+      const conversations = allConversations.filter((conversation) => {
         if (!query) return true;
         return conversation.peerName.toLocaleLowerCase().includes(query) || conversation.peerNumber.toString().includes(query) || conversation.lastMessage.toLocaleLowerCase().includes(query);
       });
@@ -1811,15 +1937,20 @@ select:focus-visible {
       return button;
     }
     async #selectConversation(peerNumber, peerName) {
+      const displayName = this.adapter.getMemberNickname(peerNumber) ?? peerName;
       this.#activePeer = peerNumber;
-      this.#activeName = peerName;
+      this.#activeName = displayName;
       this.#panel.dataset.mobileView = "chat";
-      const conversation = await this.service.ensureConversation(peerNumber, peerName);
+      const conversation = await this.service.ensureConversation(peerNumber, displayName);
+      if (displayName !== conversation.peerName) {
+        await this.service.setPeerName(peerNumber, displayName);
+        conversation.peerName = displayName;
+      }
       await this.service.markRead(peerNumber);
       this.#empty.hidden = true;
       this.#chat.hidden = false;
-      this.#chatAvatar.textContent = avatarText(peerName);
-      this.#chatName.textContent = peerName;
+      this.#chatAvatar.textContent = avatarText(displayName);
+      this.#chatName.textContent = displayName;
       this.#chatNumber.textContent = `Member ${peerNumber}`;
       this.#pinButton.textContent = conversation.pinned ? "\u25C6" : "\u25C7";
       this.#pinButton.title = conversation.pinned ? "Unpin conversation" : "Pin conversation";
@@ -1865,15 +1996,26 @@ select:focus-visible {
       if (this.#activePeer === void 0) return;
       const message = this.#composer.value.trim();
       if (!message) return;
+      let sent = false;
       try {
-        this.adapter.sendBeep(this.#activePeer, message, this.#includeRoom.checked);
+        const event = this.adapter.sendBeep(
+          this.#activePeer,
+          message,
+          this.#includeRoom.checked
+        );
+        sent = true;
+        await this.service.capture(event, true);
         this.#composer.value = "";
         await this.service.setDraft(this.#activePeer, this.#activeName, "");
         this.#resizeComposer();
         this.#updateCounter();
+        await this.onMessage(this.#activePeer, false);
         this.#composer.focus();
       } catch (error) {
-        this.#toast(error instanceof Error ? error.message : "Unable to send Beep", "error");
+        this.#toast(
+          sent ? "Beep was sent, but KikiLink could not save it to local history." : error instanceof Error ? error.message : "Unable to send Beep",
+          "error"
+        );
       }
     }
     async #togglePin() {
@@ -2022,9 +2164,12 @@ ${expanded}` : expanded;
     }
     #saveSettings() {
       const retentionDays = Number(this.#retentionInput.value);
+      const currentSettings = this.settings.get();
+      const launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
       const settings = this.settings.update((draft) => {
         draft.ui.theme = this.#themeSelect.value === "light" || this.#themeSelect.value === "system" ? this.#themeSelect.value : "dark";
-        draft.ui.launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
+        draft.ui.launcherSide = launcherSide;
+        if (launcherSide !== currentSettings.ui.launcherSide) draft.ui.launcherPosition = null;
         draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
         draft.linkChat.saveHistory = this.#historyToggle.checked;
         draft.linkChat.quickActions = this.#readQuickActionEditor();
@@ -2068,6 +2213,98 @@ ${expanded}` : expanded;
       this.#host.dataset.reducedMotion = String(settings.ui.reducedMotion);
       this.#launcher.dataset.side = settings.ui.launcherSide;
       this.#panel.dataset.side = settings.ui.launcherSide;
+      if (this.#host.isConnected) this.#positionLauncher();
+    }
+    #startLauncherDrag(event) {
+      if (event.button !== 0) return;
+      const rect = this.#launcher.getBoundingClientRect();
+      this.#launcherDrag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startLeft: rect.left,
+        startTop: rect.top,
+        moved: false
+      };
+      try {
+        this.#launcher.setPointerCapture(event.pointerId);
+      } catch {
+      }
+    }
+    #moveLauncher(event) {
+      const drag = this.#launcherDrag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const deltaX = event.clientX - drag.startX;
+      const deltaY = event.clientY - drag.startY;
+      if (!drag.moved && Math.hypot(deltaX, deltaY) < 5) return;
+      drag.moved = true;
+      event.preventDefault();
+      this.#launcher.dataset.dragging = "true";
+      this.#placeLauncher(drag.startLeft + deltaX, drag.startTop + deltaY);
+    }
+    #finishLauncherDrag(event) {
+      const drag = this.#launcherDrag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      this.#launcherDrag = void 0;
+      this.#launcher.dataset.dragging = "false";
+      try {
+        this.#launcher.releasePointerCapture(event.pointerId);
+      } catch {
+      }
+      if (!drag.moved) return;
+      this.#saveLauncherPosition();
+      this.#suppressLauncherClickUntil = Date.now() + 500;
+    }
+    #cancelLauncherDrag(event) {
+      if (!this.#launcherDrag || this.#launcherDrag.pointerId !== event.pointerId) return;
+      this.#launcherDrag = void 0;
+      this.#launcher.dataset.dragging = "false";
+      this.#positionLauncher();
+    }
+    #placeLauncher(left, top) {
+      const width = this.#launcher.offsetWidth || 58;
+      const height = this.#launcher.offsetHeight || 58;
+      const maxLeft = Math.max(0, window.innerWidth - width);
+      const maxTop = Math.max(0, window.innerHeight - height);
+      const safeLeft = clamp(left, 0, maxLeft);
+      const safeTop = clamp(top, 0, maxTop);
+      const side = safeLeft + width / 2 < window.innerWidth / 2 ? "left" : "right";
+      this.#launcher.style.left = `${Math.round(safeLeft)}px`;
+      this.#launcher.style.top = `${Math.round(safeTop)}px`;
+      this.#launcher.style.right = "auto";
+      this.#launcher.style.bottom = "auto";
+      this.#launcher.dataset.side = side;
+      this.#panel.dataset.side = side;
+    }
+    #saveLauncherPosition() {
+      const rect = this.#launcher.getBoundingClientRect();
+      const maxLeft = Math.max(0, window.innerWidth - rect.width);
+      const maxTop = Math.max(0, window.innerHeight - rect.height);
+      const x = maxLeft === 0 ? 0.5 : clamp(rect.left / maxLeft, 0, 1);
+      const y = maxTop === 0 ? 0.5 : clamp(rect.top / maxTop, 0, 1);
+      const launcherSide = rect.left + rect.width / 2 < window.innerWidth / 2 ? "left" : "right";
+      this.settings.update((draft) => {
+        draft.ui.launcherPosition = { x, y };
+        draft.ui.launcherSide = launcherSide;
+      });
+    }
+    #positionLauncher() {
+      const ui = this.settings.get().ui;
+      if (!ui.launcherPosition) {
+        this.#launcher.style.removeProperty("left");
+        this.#launcher.style.removeProperty("top");
+        this.#launcher.style.removeProperty("right");
+        this.#launcher.style.removeProperty("bottom");
+        this.#launcher.dataset.side = ui.launcherSide;
+        this.#panel.dataset.side = ui.launcherSide;
+        return;
+      }
+      const width = this.#launcher.offsetWidth || 58;
+      const height = this.#launcher.offsetHeight || 58;
+      this.#placeLauncher(
+        ui.launcherPosition.x * Math.max(0, window.innerWidth - width),
+        ui.launcherPosition.y * Math.max(0, window.innerHeight - height)
+      );
     }
     #showConversationList() {
       this.#panel.dataset.mobileView = "list";
@@ -2113,6 +2350,9 @@ ${expanded}` : expanded;
       new Date(timestamp)
     );
   }
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
 
   // src/modules/link-chat/link-chat-module.ts
   var LinkChatModule = class {
@@ -2140,6 +2380,7 @@ ${expanded}` : expanded;
           "bc:status",
           ({ state, message }) => this.#view?.setConnectionState(state, message)
         ),
+        context.bus.on("bc:ready", () => void this.#importRecentBeeps()),
         context.bus.on("beep:received", (event) => void this.#capture(event)),
         context.bus.on("beep:sent", (event) => void this.#capture(event))
       );
@@ -2171,6 +2412,19 @@ ${expanded}` : expanded;
         this.#context.bus.emit("link-chat:updated", { peerNumber: event.peerNumber });
       } catch (error) {
         this.#logger.error("Failed to capture a Beep", error);
+      }
+    }
+    async #importRecentBeeps() {
+      if (!this.#service || !this.#view || !this.#context) return;
+      try {
+        for (const event of this.#context.adapter.getRecentBeeps()) {
+          await this.#service.captureRecent(event);
+          const nickname = this.#context.adapter.getMemberNickname(event.peerNumber);
+          if (nickname) await this.#service.setPeerName(event.peerNumber, nickname);
+        }
+        await this.#view.refresh();
+      } catch (error) {
+        this.#logger.error("Failed to import recent Beeps", error);
       }
     }
   };
@@ -2465,6 +2719,7 @@ ${expanded}` : expanded;
       accent: "#d71932",
       theme: "dark",
       launcherSide: "right",
+      launcherPosition: null,
       reducedMotion: false
     },
     linkChat: {
@@ -2547,6 +2802,7 @@ ${expanded}` : expanded;
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
         launcherSide: ui.launcherSide === "left" ? "left" : "right",
+        launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
         reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion)
       },
       linkChat: {
@@ -2588,6 +2844,11 @@ ${expanded}` : expanded;
     }
     return actions;
   }
+  function sanitizeLauncherPosition(value) {
+    if (!isRecord(value)) return null;
+    if (!finiteNumberInRange(value.x, 0, 1) || !finiteNumberInRange(value.y, 0, 1)) return null;
+    return { x: value.x, y: value.y };
+  }
   function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
@@ -2596,6 +2857,9 @@ ${expanded}` : expanded;
   }
   function integerInRange(value, min, max, fallback) {
     return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+  }
+  function finiteNumberInRange(value, min, max) {
+    return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
   }
   function validColor(value) {
     return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value);
@@ -2677,7 +2941,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.3.0");
+    const app = new KikiLinkApp("0.3.1");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

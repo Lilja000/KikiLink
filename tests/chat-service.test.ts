@@ -117,4 +117,28 @@ describe("ChatService", () => {
 
     expect((await service.listConversations()).map((item) => item.peerNumber)).toEqual([1, 2]);
   });
+
+  it("imports native recent Beeps without duplicating messages already captured", async () => {
+    const { service } = setup();
+    const event = {
+      direction: "outgoing" as const,
+      peerNumber: 88,
+      peerName: "Pup",
+      content: "Already sent",
+      sentAt: 1000,
+      includeRoom: false,
+    };
+
+    expect(await service.captureRecent(event)).toBe(true);
+    expect(await service.captureRecent({ ...event, sentAt: 1750 })).toBe(false);
+    expect(await service.getMessages(88)).toHaveLength(1);
+  });
+
+  it("replaces an account name with an explicitly resolved nickname", async () => {
+    const { service } = setup();
+    await service.ensureConversation(77, "AccountName");
+    await service.setPeerName(77, "Nickname");
+
+    expect(await service.getConversation(77)).toMatchObject({ peerName: "Nickname" });
+  });
 });

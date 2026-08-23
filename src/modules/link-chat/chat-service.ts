@@ -24,7 +24,7 @@ export class ChatService {
     const previous = await this.getConversation(event.peerNumber);
     const conversation: ConversationMeta = {
       peerNumber: event.peerNumber,
-      peerName: event.peerName || previous?.peerName || `Member ${event.peerNumber}`,
+      peerName: preferredPeerName(previous?.peerName, event.peerName, event.peerNumber),
       lastMessage: event.content,
       lastMessageAt: event.sentAt,
       lastDirection: event.direction,
@@ -50,6 +50,20 @@ export class ChatService {
     }
 
     return message;
+  }
+
+  async captureRecent(event: BeepEvent): Promise<boolean> {
+    const messages = await this.getMessages(event.peerNumber, 500);
+    const duplicate = messages.some(
+      (message) =>
+        message.direction === event.direction &&
+        message.content === event.content &&
+        message.roomName === event.roomName &&
+        Math.abs(message.sentAt - event.sentAt) <= 2000,
+    );
+    if (duplicate) return false;
+    await this.capture(event, true);
+    return true;
   }
 
   async ensureConversation(peerNumber: number, peerName: string): Promise<ConversationMeta> {
@@ -98,6 +112,14 @@ export class ChatService {
     await this.#saveConversation({ ...conversation, unread: 0 });
   }
 
+  async setPeerName(peerNumber: number, peerName: string): Promise<void> {
+    const name = peerName.trim();
+    if (!name) return;
+    const conversation = await this.getConversation(peerNumber);
+    if (!conversation || conversation.peerName === name) return;
+    await this.#saveConversation({ ...conversation, peerName: name });
+  }
+
   async setDraft(peerNumber: number, peerName: string, draft: string): Promise<void> {
     const conversation =
       (await this.getConversation(peerNumber)) ?? (await this.ensureConversation(peerNumber, peerName));
@@ -137,4 +159,16 @@ export class ChatService {
       this.#ephemeralConversations.set(conversation.peerNumber, structuredClone(conversation));
     }
   }
+}
+
+function preferredPeerName(
+  previousName: string | undefined,
+  eventName: string,
+  peerNumber: number,
+): string {
+  const fallback = `Member ${peerNumber}`;
+  const previous = previousName?.trim();
+  const incoming = eventName.trim();
+  if (previous && previous !== fallback) return previous;
+  return incoming || previous || fallback;
 }

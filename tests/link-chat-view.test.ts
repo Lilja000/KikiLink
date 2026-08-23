@@ -13,18 +13,27 @@ afterEach(() => {
 
 describe("LinkChatView", () => {
   it("mounts, displays a conversation, and sends through the BC adapter", async () => {
-    const sendBeep = vi.fn();
+    const sendBeep = vi.fn((peerNumber: number, content: string, includeRoom: boolean) => ({
+      direction: "outgoing" as const,
+      peerNumber,
+      peerName: "Reina",
+      content,
+      sentAt: 500,
+      includeRoom,
+    }));
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
       getOwnMemberNumber: () => 999,
       getOwnName: () => "Kiki",
       getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      canSendBeep: () => true,
       isReady: () => true,
       sendBeep,
     } as unknown as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());
     const service = new ChatService(new MemoryChatRepository(), settings);
-    const view = new LinkChatView(adapter, service, settings, "0.3.0");
+    const view = new LinkChatView(adapter, service, settings, "0.3.1");
 
     view.mount();
     await view.openChat(123, "Reina");
@@ -54,9 +63,14 @@ describe("LinkChatView", () => {
     composer.value = "Hello from KikiLink";
     composer.dispatchEvent(new Event("input", { bubbles: true }));
     shadow?.querySelector<HTMLButtonElement>(".kl-send")?.click();
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-message-bubble")?.textContent).toContain(
+        "Hello from KikiLink",
+      );
+    });
 
     expect(sendBeep).toHaveBeenCalledWith(123, "Hello from KikiLink", false);
+    expect(shadow?.querySelector(".kl-sidebar-heading")?.textContent).toBe("Recent chats");
 
     shadow
       ?.querySelector<HTMLButtonElement>('button[title="LinkChat settings"]')
@@ -90,9 +104,11 @@ describe("LinkChatView", () => {
   it("opens a known contact without using a browser prompt", async () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
       getOwnMemberNumber: () => 999,
       getOwnName: () => "Kiki",
       getKnownContacts: () => [{ memberNumber: 321, memberName: "Mina" }],
+      canSendBeep: () => true,
       isReady: () => true,
       sendBeep: vi.fn(),
     } as unknown as BCAdapter;
@@ -101,7 +117,7 @@ describe("LinkChatView", () => {
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
       settings,
-      "0.3.0",
+      "0.3.1",
     );
 
     view.mount();
@@ -113,6 +129,45 @@ describe("LinkChatView", () => {
     await vi.waitFor(() => {
       expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Mina");
     });
+    view.destroy();
+  });
+
+  it("lets the launcher be dragged and persists its position", () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.3.1",
+    );
+    view.mount();
+
+    const launcher = document
+      .querySelector("#kikilink-root")
+      ?.shadowRoot?.querySelector<HTMLButtonElement>(".kl-launcher");
+    if (!launcher) throw new Error("Missing launcher");
+    launcher.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }),
+    );
+    launcher.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, pointerId: 1, clientX: 120, clientY: 180 }),
+    );
+    launcher.dispatchEvent(
+      new PointerEvent("pointerup", { bubbles: true, pointerId: 1, clientX: 120, clientY: 180 }),
+    );
+
+    expect(launcher.style.left).not.toBe("");
+    expect(settings.get().ui.launcherPosition).not.toBeNull();
     view.destroy();
   });
 });

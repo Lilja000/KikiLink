@@ -25,12 +25,26 @@
     <script>
       window.Player = {
         MemberNumber: 999001,
-        Name: "Kiki",
+        Name: "KikiAccount",
+        Nickname: "Kiki",
         FriendNames: new Map([
-          [123456, "Reina"],
-          [456789, "Sidney"],
+          [123456, "ReinaAccount"],
+          [456789, "SidneyAccount"],
         ]),
       };
+      window.ChatRoomCharacter = [
+        window.Player,
+        { MemberNumber: 123456, Name: "ReinaAccount", Nickname: "Reina" },
+      ];
+      window.FriendListBeepLog = [
+        {
+          MemberNumber: 123456,
+          MemberName: "ReinaAccount",
+          Sent: false,
+          Time: new Date(Date.now() - 120000),
+          Message: "Hello from the native recent Beep list",
+        },
+      ];
       window.CurrentScreen = "ChatRoom";
       window.ChatRoomData = {
         Name: "KikiLink Test Room",

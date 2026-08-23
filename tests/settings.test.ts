@@ -21,24 +21,32 @@ describe("SettingsStore", () => {
     first.update((draft) => {
       draft.ui.theme = "light";
       draft.ui.launcherSide = "left";
+      draft.ui.launcherPosition = { x: 0.25, y: 0.6 };
       draft.linkChat.retentionDays = 30;
     });
 
     const second = new SettingsStore(storage);
     expect(second.get().ui.theme).toBe("light");
     expect(second.get().ui.launcherSide).toBe("left");
+    expect(second.get().ui.launcherPosition).toEqual({ x: 0.25, y: 0.6 });
     expect(second.get().linkChat.retentionDays).toBe(30);
   });
 
   it("rejects invalid persisted values", () => {
     const settings = sanitizeSettings({
-      ui: { accent: "red", theme: "neon", launcherSide: "middle" },
+      ui: {
+        accent: "red",
+        theme: "neon",
+        launcherSide: "middle",
+        launcherPosition: { x: -1, y: 4 },
+      },
       linkChat: { retentionDays: -5, maxMessagesPerConversation: 10 },
     });
 
     expect(settings.ui.accent).toBe(DEFAULT_SETTINGS.ui.accent);
     expect(settings.ui.theme).toBe(DEFAULT_SETTINGS.ui.theme);
     expect(settings.ui.launcherSide).toBe("right");
+    expect(settings.ui.launcherPosition).toBeNull();
     expect(settings.linkChat.retentionDays).toBe(DEFAULT_SETTINGS.linkChat.retentionDays);
     expect(settings.linkChat.maxMessagesPerConversation).toBe(
       DEFAULT_SETTINGS.linkChat.maxMessagesPerConversation,

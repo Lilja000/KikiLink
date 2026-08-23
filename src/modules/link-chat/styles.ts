@@ -134,6 +134,8 @@ button { color: inherit; }
     0 0 0 1px rgba(0, 0, 0, 0.75),
     inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   cursor: pointer;
+  touch-action: none;
+  user-select: none;
   transition: transform 160ms ease, filter 160ms ease, border-color 160ms ease;
 }
 
@@ -141,6 +143,7 @@ button { color: inherit; }
 .kl-launcher[data-side="left"] { left: max(20px, env(safe-area-inset-left)); }
 .kl-launcher:hover { border-color: var(--kl-gold); filter: brightness(1.08); transform: translateY(-2px); }
 .kl-launcher:active { transform: translateY(0) scale(0.97); }
+.kl-launcher[data-dragging="true"] { cursor: grabbing; filter: brightness(1.1); transform: scale(1.03); transition: none; }
 
 .kl-launcher-emblem {
   position: absolute;
@@ -316,12 +319,20 @@ button { color: inherit; }
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   border-right: 1px solid var(--kl-border);
   background: var(--kl-sidebar-bg);
 }
 
 .kl-search-wrap { padding: 14px; }
+.kl-sidebar-heading {
+  padding: 0 16px 8px;
+  color: var(--kl-gold);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
 .kl-search,
 .kl-composer-input,
 .kl-number-input,

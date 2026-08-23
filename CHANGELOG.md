@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 - 2026-08-23
+
+- Fixed Beep sending being blocked while the compatibility hooks were still connecting.
+- Store and render outgoing Beeps immediately instead of depending on the outgoing hook.
+- Import Bondage Club's recent session Beeps into the left conversation list without duplicates.
+- Prefer character nicknames from the current room and retain resolved nicknames in local chats.
+- Added mouse and touch dragging for the launcher with a persistent viewport-relative position.
+- Added a visible Recent chats heading and expanded regression coverage to 21 tests.
+
 ## 0.3.0 - 2026-08-23
 
 - Added editable Quick Actions that insert reusable roleplay text into Beep drafts.

@@ -11,13 +11,14 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.3.0` expands the original LinkChat foundation with custom Quick
-Actions, a built-in known-contact picker, and a visible connection state while
-preserving the wolf-and-sakura visual system and mobile navigation.
+Version `0.3.1` makes LinkChat reliable in the live R131 client: outgoing Beeps
+appear immediately, native recent chats are imported, room nicknames are used
+when available, and the launcher can be dragged with a mouse or finger.
 
 ## LinkChat
 
 - Conversation list instead of one isolated Beep at a time
+- Native recent Beeps imported from the current game session without duplicates
 - Persistent local message history
 - Search by player name, member number, or message text
 - Unread counters and pinned conversations
@@ -25,6 +26,7 @@ preserving the wolf-and-sakura visual system and mobile navigation.
 - New-chat dialog with known-contact search and direct member-number entry
 - Editable Quick Actions with `{name}`, `{member}`, and `{me}` variables
 - Optional room information on outgoing Beeps
+- Immediate outgoing-message display independent of the compatibility hook
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
 
@@ -33,9 +35,9 @@ preserving the wolf-and-sakura visual system and mobile navigation.
 - Embedded KikiLink wolf, red moon, gold ring, and sakura emblem
 - Dark lacquer, light paper, and follow-system appearance modes
 - Red and gold design tokens shared by every LinkChat surface
-- Configurable launcher side and reduced-motion mode
+- Draggable launcher with a saved position, configurable side, and reduced-motion mode
 - Full-width mobile conversation list with a clear back-to-list flow
-- Live Bondage Club connection status and safe disabled sending while connecting
+- Live Bondage Club connection status without blocking an available native Beep function
 
 The emblem is bundled into the userscript, so KikiLink does not fetch visual
 assets from a remote server while the game is running.
