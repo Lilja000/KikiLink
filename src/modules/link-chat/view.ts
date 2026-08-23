@@ -1,5 +1,10 @@
 import type { BCAdapter } from "../../bc/adapter";
-import type { ConversationMeta, KikiLinkSettings } from "../../core/types";
+import type {
+  BCConnectionState,
+  ConversationMeta,
+  KikiLinkSettings,
+  QuickAction,
+} from "../../core/types";
 import type { SettingsStore } from "../../core/settings";
 import { debounce, element } from "../../utils/dom";
 import type { ChatService } from "./chat-service";
@@ -16,6 +21,9 @@ export class LinkChatView {
     ariaLabel: "Open KikiLink",
   });
   readonly #badge = element("span", { className: "kl-badge" });
+  readonly #connection = element("span", { className: "kl-connection" });
+  readonly #connectionDot = element("span", { className: "kl-connection-dot" });
+  readonly #connectionText = element("span", { className: "kl-connection-text" });
   readonly #panel = element("section", {
     className: "kl-panel",
     ariaLabel: "KikiLink Beep chat",
@@ -35,6 +43,12 @@ export class LinkChatView {
   });
   readonly #messages = element("div", { className: "kl-messages" });
   readonly #composer = element("textarea", { className: "kl-composer-input" });
+  readonly #sendButton = element("button", {
+    className: "kl-text-button kl-text-button--primary kl-send",
+    type: "button",
+    text: "Send",
+  });
+  readonly #quickActions = element("div", { className: "kl-quick-actions" });
   readonly #includeRoom = element("input") as HTMLInputElement;
   readonly #counter = element("span", { className: "kl-counter" });
   readonly #settingsDialog = element("dialog", { className: "kl-dialog" });
@@ -50,6 +64,10 @@ export class LinkChatView {
     className: "kl-select",
   }) as HTMLSelectElement;
   readonly #reducedMotionToggle = element("input") as HTMLInputElement;
+  readonly #quickActionsEditor = element("div", { className: "kl-action-editor" });
+  readonly #newChatDialog = element("dialog", { className: "kl-dialog kl-new-chat-dialog" });
+  readonly #newChatQuery = element("input", { className: "kl-search kl-new-chat-query" }) as HTMLInputElement;
+  readonly #newChatResults = element("div", { className: "kl-contact-results" });
   readonly #backButton = element("button", {
     className: "kl-icon-button kl-back",
     type: "button",
@@ -60,6 +78,7 @@ export class LinkChatView {
   #activePeer: number | undefined;
   #activeName = "";
   #mounted = false;
+  #connectionState: BCConnectionState = "connecting";
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
 
   readonly #saveDraft = debounce((peerNumber: number, peerName: string, value: string) => {
@@ -84,7 +103,14 @@ export class LinkChatView {
     this.#buildLauncher();
     this.#buildPanel();
     this.#buildSettingsDialog();
-    this.#shadow.append(style, this.#launcher, this.#panel, this.#settingsDialog);
+    this.#buildNewChatDialog();
+    this.#shadow.append(
+      style,
+      this.#launcher,
+      this.#panel,
+      this.#settingsDialog,
+      this.#newChatDialog,
+    );
     document.body.append(this.#host);
 
     void this.refresh();
@@ -93,12 +119,24 @@ export class LinkChatView {
   destroy(): void {
     if (this.#toastTimer !== undefined) clearTimeout(this.#toastTimer);
     this.#settingsDialog.close();
+    this.#newChatDialog.close();
     this.#host.remove();
     this.#mounted = false;
   }
 
   isActiveConversation(peerNumber: number): boolean {
     return !this.#panel.hidden && this.#activePeer === peerNumber;
+  }
+
+  setConnectionState(state: BCConnectionState, message?: string): void {
+    this.#connectionState = state;
+    this.#connection.dataset.state = state;
+    this.#connectionText.textContent =
+      state === "ready" ? "Connected" : state === "error" ? "Connection error" : "Connecting";
+    this.#connection.title = message ?? this.#connectionText.textContent ?? "";
+    this.#sendButton.disabled = state !== "ready";
+    this.#composer.placeholder = state === "ready" ? "Write a Beep…" : "Connecting to Bondage Club…";
+    if (this.#newChatDialog.open) this.#renderKnownContacts();
   }
 
   async onMessage(peerNumber: number, incoming: boolean): Promise<void> {
@@ -146,6 +184,8 @@ export class LinkChatView {
   #buildPanel(): void {
     this.#panel.hidden = true;
     this.#panel.dataset.mobileView = "list";
+    this.#connection.append(this.#connectionDot, this.#connectionText);
+    this.setConnectionState(this.adapter.isReady() ? "ready" : "connecting");
     const brand = element(
       "div",
       { className: "kl-brand" },
@@ -154,7 +194,12 @@ export class LinkChatView {
         "div",
         { className: "kl-brand-copy" },
         element("div", { className: "kl-brand-title", text: "KikiLink" }),
-        element("div", { className: "kl-brand-subtitle", text: `LinkChat · v${this.version}` }),
+        element(
+          "div",
+          { className: "kl-brand-subtitle" },
+          `LinkChat · v${this.version}`,
+          this.#connection,
+        ),
       ),
     );
     const newChat = element("button", {
@@ -163,7 +208,7 @@ export class LinkChatView {
       text: "+",
       title: "New Beep chat",
       ariaLabel: "New Beep chat",
-      onClick: () => void this.#promptNewChat(),
+      onClick: () => this.#openNewChat(),
     });
     const settings = element("button", {
       className: "kl-icon-button",
@@ -205,7 +250,7 @@ export class LinkChatView {
         className: "kl-text-button kl-text-button--primary",
         type: "button",
         text: "New chat",
-        onClick: () => void this.#promptNewChat(),
+        onClick: () => this.#openNewChat(),
       }),
     );
 
@@ -233,7 +278,6 @@ export class LinkChatView {
       this.#pinButton,
     );
 
-    this.#composer.placeholder = "Write a Beep…";
     this.#composer.maxLength = 1000;
     this.#composer.rows = 1;
     this.#composer.addEventListener("input", () => {
@@ -249,12 +293,7 @@ export class LinkChatView {
         void this.#send();
       }
     });
-    const send = element("button", {
-      className: "kl-text-button kl-text-button--primary kl-send",
-      type: "button",
-      text: "Send",
-      onClick: () => void this.#send(),
-    });
+    this.#sendButton.addEventListener("click", () => void this.#send());
     this.#includeRoom.type = "checkbox";
     this.#includeRoom.addEventListener("change", () => {
       this.settings.update((draft) => {
@@ -270,10 +309,12 @@ export class LinkChatView {
     const composer = element(
       "footer",
       { className: "kl-composer" },
-      element("div", { className: "kl-composer-row" }, this.#composer, send),
+      this.#quickActions,
+      element("div", { className: "kl-composer-row" }, this.#composer, this.#sendButton),
       options,
     );
     this.#chat.append(header, this.#messages, composer);
+    this.#renderQuickActions();
     this.#updateCounter();
   }
 
@@ -371,7 +412,30 @@ export class LinkChatView {
       retention,
       clearHistory,
     );
-    const body = element("div", { className: "kl-dialog-body" }, appearanceSection, privacySection);
+    const addQuickAction = element("button", {
+      className: "kl-text-button kl-add-action",
+      type: "button",
+      text: "+ Add quick action",
+      onClick: () => this.#addQuickActionEditorRow(),
+    });
+    const quickActionsSection = element(
+      "section",
+      { className: "kl-setting-section" },
+      element("div", { className: "kl-setting-section-title", text: "Quick actions" }),
+      element("div", {
+        className: "kl-setting-help",
+        text: "Insert reusable actions into a Beep. Variables: {name}, {member}, {me}.",
+      }),
+      this.#quickActionsEditor,
+      addQuickAction,
+    );
+    const body = element(
+      "div",
+      { className: "kl-dialog-body" },
+      appearanceSection,
+      quickActionsSection,
+      privacySection,
+    );
 
     this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
     const cancel = element("button", {
@@ -382,6 +446,58 @@ export class LinkChatView {
     });
     const actions = element("footer", { className: "kl-dialog-actions" }, cancel, this.#saveSettingsButton);
     this.#settingsDialog.append(header, body, actions);
+  }
+
+  #buildNewChatDialog(): void {
+    const close = element("button", {
+      className: "kl-icon-button",
+      type: "button",
+      text: "×",
+      title: "Close",
+      ariaLabel: "Close new chat",
+      onClick: () => this.#newChatDialog.close(),
+    });
+    const header = element(
+      "header",
+      { className: "kl-dialog-header" },
+      element("div", { className: "kl-dialog-title", text: "New Beep chat" }),
+      close,
+    );
+
+    this.#newChatQuery.type = "search";
+    this.#newChatQuery.placeholder = "Search name or enter member number";
+    this.#newChatQuery.autocomplete = "off";
+    this.#newChatQuery.addEventListener("input", () => this.#renderKnownContacts());
+    this.#newChatQuery.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      void this.#submitNewChat();
+    });
+
+    const body = element(
+      "div",
+      { className: "kl-dialog-body kl-new-chat-body" },
+      this.#newChatQuery,
+      element("div", { className: "kl-contact-heading", text: "Known contacts" }),
+      this.#newChatResults,
+    );
+    const open = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Open chat",
+      onClick: () => void this.#submitNewChat(),
+    });
+    const cancel = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Cancel",
+      onClick: () => this.#newChatDialog.close(),
+    });
+    this.#newChatDialog.append(
+      header,
+      body,
+      element("footer", { className: "kl-dialog-actions" }, cancel, open),
+    );
   }
 
   #settingRow(name: string, help: string, control: Node): HTMLDivElement {
@@ -552,19 +668,160 @@ export class LinkChatView {
     await this.#renderConversations();
   }
 
-  async #promptNewChat(): Promise<void> {
-    const raw = window.prompt("Enter a Bondage Club member number:");
-    if (raw === null) return;
-    const memberNumber = Number(raw.trim());
+  #openNewChat(): void {
+    this.#newChatQuery.value = "";
+    this.#renderKnownContacts();
+    if (!this.#newChatDialog.open) this.#newChatDialog.showModal();
+    this.#newChatQuery.focus();
+  }
+
+  async #submitNewChat(): Promise<void> {
+    const query = this.#newChatQuery.value.trim();
+    const memberNumber = Number(query.replace(/^#/u, ""));
     if (!Number.isSafeInteger(memberNumber) || memberNumber < 0) {
-      this.#toast("Enter a valid member number.", "error");
+      const exactContact = this.adapter
+        .getKnownContacts()
+        .find((contact) => contact.memberName.toLocaleLowerCase() === query.toLocaleLowerCase());
+      if (exactContact) {
+        this.#newChatDialog.close();
+        await this.openChat(exactContact.memberNumber, exactContact.memberName);
+        return;
+      }
+      this.#toast("Choose a contact or enter a valid member number.", "error");
       return;
     }
     if (memberNumber === this.adapter.getOwnMemberNumber()) {
       this.#toast("You cannot Beep yourself.", "error");
       return;
     }
+    this.#newChatDialog.close();
     await this.openChat(memberNumber, this.adapter.getMemberName(memberNumber));
+  }
+
+  #renderKnownContacts(): void {
+    const query = this.#newChatQuery.value.trim().toLocaleLowerCase();
+    const contacts = this.adapter
+      .getKnownContacts()
+      .filter(
+        (contact) =>
+          !query ||
+          contact.memberName.toLocaleLowerCase().includes(query) ||
+          contact.memberNumber.toString().includes(query),
+      )
+      .slice(0, 40);
+
+    this.#newChatResults.replaceChildren();
+    if (contacts.length === 0) {
+      this.#newChatResults.append(
+        element("div", {
+          className: "kl-contact-empty",
+          text:
+            this.#connectionState === "ready"
+              ? "No matching known contacts. You can still enter a member number."
+              : "Contacts will appear after KikiLink connects to the game.",
+        }),
+      );
+      return;
+    }
+
+    for (const contact of contacts) {
+      const button = element(
+        "button",
+        { className: "kl-contact", type: "button" },
+        element("div", { className: "kl-avatar", text: avatarText(contact.memberName) }),
+        element(
+          "div",
+          { className: "kl-contact-copy" },
+          element("div", { className: "kl-contact-name", text: contact.memberName }),
+          element("div", { className: "kl-contact-number", text: `Member ${contact.memberNumber}` }),
+        ),
+      );
+      button.addEventListener("click", () => {
+        this.#newChatDialog.close();
+        void this.openChat(contact.memberNumber, contact.memberName);
+      });
+      this.#newChatResults.append(button);
+    }
+  }
+
+  #renderQuickActions(): void {
+    const actions = this.settings.get().linkChat.quickActions;
+    this.#quickActions.replaceChildren();
+    this.#quickActions.hidden = actions.length === 0;
+
+    for (const action of actions) {
+      this.#quickActions.append(
+        element("button", {
+          className: "kl-action-chip",
+          type: "button",
+          text: action.label,
+          title: action.template,
+          onClick: () => this.#insertQuickAction(action),
+        }),
+      );
+    }
+  }
+
+  #insertQuickAction(action: QuickAction): void {
+    if (this.#activePeer === undefined) return;
+    const expanded = action.template
+      .replaceAll("{name}", this.#activeName)
+      .replaceAll("{member}", this.#activePeer.toString())
+      .replaceAll("{me}", this.adapter.getOwnName());
+    const current = this.#composer.value.trimEnd();
+    const next = current ? `${current}\n${expanded}` : expanded;
+    if (next.length > 1000) {
+      this.#toast("This action would exceed the 1000 character Beep limit.", "error");
+      return;
+    }
+
+    this.#composer.value = next;
+    this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+    this.#composer.focus();
+  }
+
+  #renderQuickActionEditor(actions: QuickAction[]): void {
+    this.#quickActionsEditor.replaceChildren();
+    for (const action of actions) this.#addQuickActionEditorRow(action);
+  }
+
+  #addQuickActionEditorRow(action: QuickAction = { label: "", template: "" }): void {
+    if (this.#quickActionsEditor.childElementCount >= 12) {
+      this.#toast("You can keep up to 12 quick actions.", "error");
+      return;
+    }
+
+    const label = element("input", { className: "kl-action-label" }) as HTMLInputElement;
+    label.placeholder = "Label";
+    label.maxLength = 24;
+    label.value = action.label;
+    label.dataset.field = "label";
+    const template = element("input", { className: "kl-action-template" }) as HTMLInputElement;
+    template.placeholder = "Action text";
+    template.maxLength = 500;
+    template.value = action.template;
+    template.dataset.field = "template";
+    const remove = element("button", {
+      className: "kl-icon-button kl-remove-action",
+      type: "button",
+      text: "×",
+      title: "Remove action",
+      ariaLabel: "Remove quick action",
+    });
+    const row = element("div", { className: "kl-action-editor-row" }, label, template, remove);
+    remove.addEventListener("click", () => row.remove());
+    this.#quickActionsEditor.append(row);
+    if (!action.label && !action.template) label.focus();
+  }
+
+  #readQuickActionEditor(): QuickAction[] {
+    return [...this.#quickActionsEditor.querySelectorAll<HTMLElement>(".kl-action-editor-row")]
+      .map((row) => ({
+        label: row.querySelector<HTMLInputElement>('[data-field="label"]')?.value.trim() ?? "",
+        template:
+          row.querySelector<HTMLInputElement>('[data-field="template"]')?.value.trim() ?? "",
+      }))
+      .filter((action) => action.label && action.template);
   }
 
   #openSettings(): void {
@@ -574,6 +831,7 @@ export class LinkChatView {
     this.#reducedMotionToggle.checked = settings.ui.reducedMotion;
     this.#historyToggle.checked = settings.linkChat.saveHistory;
     this.#retentionInput.value = settings.linkChat.retentionDays.toString();
+    this.#renderQuickActionEditor(settings.linkChat.quickActions);
     if (!this.#settingsDialog.open) this.#settingsDialog.showModal();
   }
 
@@ -587,9 +845,11 @@ export class LinkChatView {
       draft.ui.launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
       draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
       draft.linkChat.saveHistory = this.#historyToggle.checked;
+      draft.linkChat.quickActions = this.#readQuickActionEditor();
       if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
     });
     this.#applyTheme(settings);
+    this.#renderQuickActions();
     this.#settingsDialog.close();
     void this.service.prune();
     this.#toast("Settings saved.");
@@ -652,7 +912,12 @@ export class LinkChatView {
     this.#shadow.querySelector(".kl-toast")?.remove();
     const toast = element("div", { className: "kl-toast", text: message });
     toast.dataset.kind = kind;
-    this.#panel.append(toast);
+    const surface = this.#newChatDialog.open
+      ? this.#newChatDialog
+      : this.#settingsDialog.open
+        ? this.#settingsDialog
+        : this.#panel;
+    surface.append(toast);
     this.#toastTimer = setTimeout(() => toast.remove(), 3200);
   }
 }

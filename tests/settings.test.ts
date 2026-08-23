@@ -43,6 +43,7 @@ describe("SettingsStore", () => {
     expect(settings.linkChat.maxMessagesPerConversation).toBe(
       DEFAULT_SETTINGS.linkChat.maxMessagesPerConversation,
     );
+    expect(settings.linkChat.quickActions).toEqual(DEFAULT_SETTINGS.linkChat.quickActions);
   });
 
   it("adds the default theme to 0.1 settings without losing LinkChat choices", () => {
@@ -63,5 +64,22 @@ describe("SettingsStore", () => {
     expect(settings.ui.launcherSide).toBe("left");
     expect(settings.linkChat.saveHistory).toBe(false);
     expect(settings.linkChat.retentionDays).toBe(45);
+    expect(settings.linkChat.quickActions).toEqual(DEFAULT_SETTINGS.linkChat.quickActions);
+  });
+
+  it("sanitizes custom quick actions", () => {
+    const settings = sanitizeSettings({
+      linkChat: {
+        quickActions: [
+          { label: "  Curtsey  ", template: "  *curtsies to {name}*  " },
+          { label: "", template: "ignored" },
+          { label: "Broken" },
+        ],
+      },
+    });
+
+    expect(settings.linkChat.quickActions).toEqual([
+      { label: "Curtsey", template: "*curtsies to {name}*" },
+    ]);
   });
 });

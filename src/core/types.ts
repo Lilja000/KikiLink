@@ -5,6 +5,12 @@ import type { SettingsStore } from "./settings";
 
 export type MessageDirection = "incoming" | "outgoing";
 export type ThemePreference = "dark" | "light" | "system";
+export type BCConnectionState = "connecting" | "ready" | "error";
+
+export interface QuickAction {
+  label: string;
+  template: string;
+}
 
 export interface BeepEvent {
   direction: MessageDirection;
@@ -33,6 +39,7 @@ export interface ConversationMeta {
 }
 
 export interface KikiLinkEvents {
+  "bc:status": { state: BCConnectionState; message?: string };
   "bc:ready": { memberNumber: number };
   "beep:received": BeepEvent;
   "beep:sent": BeepEvent;
@@ -55,6 +62,7 @@ export interface KikiLinkSettings {
     retentionDays: number;
     maxMessagesPerConversation: number;
     openOnIncoming: boolean;
+    quickActions: QuickAction[];
   };
 }
 

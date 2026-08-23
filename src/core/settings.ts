@@ -1,4 +1,4 @@
-import type { KikiLinkSettings } from "./types";
+import type { KikiLinkSettings, QuickAction } from "./types";
 
 export interface KeyValueStorage {
   getItem(key: string): string | null;
@@ -21,6 +21,11 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     retentionDays: 90,
     maxMessagesPerConversation: 500,
     openOnIncoming: false,
+    quickActions: [
+      { label: "Wave", template: "*waves to {name}*" },
+      { label: "Hug", template: "*hugs {name} warmly*" },
+      { label: "Boop", template: "*gently boops {name}*" },
+    ],
   },
 };
 
@@ -133,8 +138,24 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         linkChat.openOnIncoming,
         DEFAULT_SETTINGS.linkChat.openOnIncoming,
       ),
+      quickActions: sanitizeQuickActions(linkChat.quickActions),
     },
   };
+}
+
+function sanitizeQuickActions(value: unknown): QuickAction[] {
+  if (value === undefined) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
+  if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
+
+  const actions: QuickAction[] = [];
+  for (const entry of value.slice(0, 12)) {
+    if (!isRecord(entry)) continue;
+    const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 24) : "";
+    const template =
+      typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
+    if (label && template) actions.push({ label, template });
+  }
+  return actions;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

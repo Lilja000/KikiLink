@@ -17,11 +17,14 @@ describe("LinkChatView", () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      isReady: () => true,
       sendBeep,
     } as unknown as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());
     const service = new ChatService(new MemoryChatRepository(), settings);
-    const view = new LinkChatView(adapter, service, settings, "0.2.0");
+    const view = new LinkChatView(adapter, service, settings, "0.3.0");
 
     view.mount();
     await view.openChat(123, "Reina");
@@ -34,6 +37,11 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Reina");
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.mobileView).toBe(
       "chat",
+    );
+
+    shadow?.querySelector<HTMLButtonElement>(".kl-action-chip")?.click();
+    expect(shadow?.querySelector<HTMLTextAreaElement>(".kl-composer-input")?.value).toBe(
+      "*waves to Reina*",
     );
 
     shadow?.querySelector<HTMLButtonElement>(".kl-back")?.click();
@@ -77,5 +85,34 @@ describe("LinkChatView", () => {
 
     view.destroy();
     expect(document.querySelector("#kikilink-root")).toBeNull();
+  });
+
+  it("opens a known contact without using a browser prompt", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 321, memberName: "Mina" }],
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.3.0",
+    );
+
+    view.mount();
+    const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('button[title="New Beep chat"]')?.click();
+    const contact = shadow?.querySelector<HTMLButtonElement>(".kl-contact");
+    expect(contact?.textContent).toContain("Mina");
+    contact?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Mina");
+    });
+    view.destroy();
   });
 });

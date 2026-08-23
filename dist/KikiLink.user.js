@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.2.1
+// @version      0.3.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -257,43 +257,58 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #unhooks = [];
     #modApi;
     #stopped = false;
+    #ready = false;
     async start() {
+      this.#stopped = false;
+      this.bus.emit("bc:status", { state: "connecting" });
       await this.#waitUntilReady();
       if (this.#stopped) return;
-      this.#modApi = import_bondage_club_mod_sdk.default.registerMod(
-        {
-          name: "KikiLink",
-          fullName: "KikiLink",
-          version: this.version
-        },
-        { allowReplace: true }
-      );
-      this.#unhooks.push(
-        this.#modApi.hookFunction("ServerAccountBeep", 0, (args, next) => {
-          const result = next(args);
-          const data = args[0];
-          const event = this.#normalizeIncoming(data);
-          if (event) this.bus.emit("beep:received", event);
-          return result;
-        })
-      );
-      this.#unhooks.push(
-        this.#modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
-          const result = next(args);
-          const [target, message, options] = args;
-          const event = this.#normalizeOutgoing(target, message, options);
-          if (event) this.bus.emit("beep:sent", event);
-          return result;
-        })
-      );
-      this.bus.emit("bc:ready", { memberNumber: Player.MemberNumber });
-      this.#logger.info(`Connected as ${Player.Name} [${Player.MemberNumber}]`);
+      try {
+        this.#modApi = import_bondage_club_mod_sdk.default.registerMod(
+          {
+            name: "KikiLink",
+            fullName: "KikiLink",
+            version: this.version
+          },
+          { allowReplace: true }
+        );
+        this.#unhooks.push(
+          this.#modApi.hookFunction("ServerAccountBeep", 0, (args, next) => {
+            const result = next(args);
+            const data = args[0];
+            const event = this.#normalizeIncoming(data);
+            if (event) this.bus.emit("beep:received", event);
+            return result;
+          })
+        );
+        this.#unhooks.push(
+          this.#modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
+            const result = next(args);
+            const [target, message, options] = args;
+            const event = this.#normalizeOutgoing(target, message, options);
+            if (event) this.bus.emit("beep:sent", event);
+            return result;
+          })
+        );
+        this.#ready = true;
+        this.bus.emit("bc:status", { state: "ready" });
+        this.bus.emit("bc:ready", { memberNumber: Player.MemberNumber });
+        this.#logger.info(`Connected as ${Player.Name} [${Player.MemberNumber}]`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to connect";
+        this.bus.emit("bc:status", { state: "error", message });
+        throw error;
+      }
     }
     stop() {
       this.#stopped = true;
+      this.#ready = false;
       for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
       this.#modApi?.unload();
       this.#modApi = void 0;
+    }
+    isReady() {
+      return this.#ready;
     }
     sendBeep(target, content, includeRoom) {
       if (!Number.isSafeInteger(target) || target < 0) {
@@ -302,7 +317,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const message = content.trim();
       if (!message) throw new Error("A Beep message cannot be empty");
       if (message.length > 1e3) throw new Error("A Beep message cannot exceed 1000 characters");
-      if (typeof ServerSendBeepMessage !== "function") {
+      if (!this.#ready || typeof ServerSendBeepMessage !== "function") {
         throw new Error("KikiLink is still connecting to Bondage Club");
       }
       ServerSendBeepMessage(target, message, { includeRoom });
@@ -314,6 +329,18 @@ One of mods you are using is using an old version of SDK. It will work for now b
     getOwnMemberNumber() {
       if (typeof Player !== "object" || Player === null) return -1;
       return Number.isSafeInteger(Player.MemberNumber) ? Player.MemberNumber : -1;
+    }
+    getOwnName() {
+      if (typeof Player !== "object" || Player === null) return "me";
+      return typeof Player.Name === "string" && Player.Name.trim() ? Player.Name : "me";
+    }
+    getKnownContacts() {
+      if (typeof Player !== "object" || Player === null || !(Player.FriendNames instanceof Map)) {
+        return [];
+      }
+      return [...Player.FriendNames.entries()].filter(
+        ([memberNumber, memberName]) => Number.isSafeInteger(memberNumber) && typeof memberName === "string" && memberName.trim()
+      ).map(([memberNumber, memberName]) => ({ memberNumber, memberName })).sort((left, right) => left.memberName.localeCompare(right.memberName));
     }
     #normalizeIncoming(data) {
       if (!data || data.BeepType !== void 0 && data.BeepType !== "") return null;
@@ -813,7 +840,11 @@ button { color: inherit; }
   text-transform: uppercase;
   white-space: nowrap;
 }
-.kl-brand-subtitle { color: var(--kl-muted); font-size: 11px; letter-spacing: 0.02em; }
+.kl-brand-subtitle { display: flex; align-items: center; gap: 8px; color: var(--kl-muted); font-size: 11px; letter-spacing: 0.02em; }
+.kl-connection { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.kl-connection-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--kl-gold); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-gold), transparent 84%); }
+.kl-connection[data-state="ready"] .kl-connection-dot { background: #68d391; box-shadow: 0 0 0 3px rgba(104, 211, 145, 0.16); }
+.kl-connection[data-state="error"] .kl-connection-dot { background: var(--kl-danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-danger), transparent 84%); }
 
 .kl-icon-button,
 .kl-text-button {
@@ -847,6 +878,8 @@ button { color: inherit; }
 }
 .kl-icon-button:active,
 .kl-text-button:active { transform: scale(0.96); }
+.kl-icon-button:disabled,
+.kl-text-button:disabled { opacity: 0.48; cursor: wait; transform: none; }
 .kl-text-button--danger { color: var(--kl-danger); }
 .kl-text-button--primary {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 24%);
@@ -877,7 +910,9 @@ button { color: inherit; }
 .kl-search,
 .kl-composer-input,
 .kl-number-input,
-.kl-select {
+.kl-select,
+.kl-action-label,
+.kl-action-template {
   border: 1px solid var(--kl-border);
   outline: none;
   background: var(--kl-input-bg);
@@ -897,7 +932,9 @@ button { color: inherit; }
 .kl-search:focus,
 .kl-composer-input:focus,
 .kl-number-input:focus,
-.kl-select:focus {
+.kl-select:focus,
+.kl-action-label:focus,
+.kl-action-template:focus {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 30%);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-accent), transparent 78%);
 }
@@ -1051,6 +1088,29 @@ button { color: inherit; }
   background: var(--kl-composer-bg);
 }
 
+.kl-quick-actions {
+  display: flex;
+  gap: 7px;
+  margin: 0 0 9px;
+  overflow-x: auto;
+  padding: 1px 1px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--kl-border-strong) transparent;
+}
+.kl-action-chip {
+  min-height: 29px;
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid var(--kl-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 8%);
+  color: var(--kl-text);
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.kl-action-chip:hover { border-color: var(--kl-border-strong); background: var(--kl-surface-hover); }
+
 .kl-composer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
 .kl-composer-input {
   min-height: 44px;
@@ -1096,6 +1156,40 @@ button { color: inherit; }
 .kl-switch input:checked + .kl-switch-track { background: var(--kl-accent); }
 .kl-switch input:checked + .kl-switch-track::after { transform: translateX(18px); }
 .kl-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 0 18px 18px; }
+
+.kl-action-editor { display: grid; gap: 8px; }
+.kl-action-editor-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 34px; gap: 7px; align-items: center; }
+.kl-action-label,
+.kl-action-template { width: 100%; height: 36px; min-width: 0; padding: 0 9px; border-radius: 10px; }
+.kl-remove-action { width: 34px; height: 34px; color: var(--kl-danger); }
+.kl-add-action { justify-self: start; }
+
+.kl-new-chat-dialog { width: min(480px, calc(100vw - 32px)); }
+.kl-new-chat-body { gap: 12px; }
+.kl-new-chat-query { flex: 0 0 auto; }
+.kl-contact-heading { color: var(--kl-gold); font-size: 10px; font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
+.kl-contact-results { min-height: 120px; max-height: min(430px, calc(100vh - 300px)); overflow-y: auto; }
+.kl-contact {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.kl-contact:hover { border-color: var(--kl-border); background: var(--kl-surface-hover); }
+.kl-contact .kl-avatar { width: 42px; height: 42px; border-radius: 13px; }
+.kl-contact-copy { min-width: 0; }
+.kl-contact-name { overflow: hidden; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.kl-contact-number,
+.kl-contact-empty { color: var(--kl-muted); font-size: 11px; }
+.kl-contact-empty { padding: 18px 8px; text-align: center; }
 
 .kl-toast {
   position: absolute;
@@ -1154,6 +1248,7 @@ select:focus-visible {
   .kl-send::after { content: "\u27A4"; font-size: 17px; }
   .kl-setting-row { gap: 14px; }
   .kl-setting-help { max-width: 230px; }
+  .kl-action-editor-row { grid-template-columns: 76px minmax(0, 1fr) 34px; }
 }
 
 @media (max-width: 420px) {
@@ -1202,6 +1297,9 @@ select:focus-visible {
       ariaLabel: "Open KikiLink"
     });
     #badge = element("span", { className: "kl-badge" });
+    #connection = element("span", { className: "kl-connection" });
+    #connectionDot = element("span", { className: "kl-connection-dot" });
+    #connectionText = element("span", { className: "kl-connection-text" });
     #panel = element("section", {
       className: "kl-panel",
       ariaLabel: "KikiLink Beep chat"
@@ -1221,6 +1319,12 @@ select:focus-visible {
     });
     #messages = element("div", { className: "kl-messages" });
     #composer = element("textarea", { className: "kl-composer-input" });
+    #sendButton = element("button", {
+      className: "kl-text-button kl-text-button--primary kl-send",
+      type: "button",
+      text: "Send"
+    });
+    #quickActions = element("div", { className: "kl-quick-actions" });
     #includeRoom = element("input");
     #counter = element("span", { className: "kl-counter" });
     #settingsDialog = element("dialog", { className: "kl-dialog" });
@@ -1236,6 +1340,10 @@ select:focus-visible {
       className: "kl-select"
     });
     #reducedMotionToggle = element("input");
+    #quickActionsEditor = element("div", { className: "kl-action-editor" });
+    #newChatDialog = element("dialog", { className: "kl-dialog kl-new-chat-dialog" });
+    #newChatQuery = element("input", { className: "kl-search kl-new-chat-query" });
+    #newChatResults = element("div", { className: "kl-contact-results" });
     #backButton = element("button", {
       className: "kl-icon-button kl-back",
       type: "button",
@@ -1246,6 +1354,7 @@ select:focus-visible {
     #activePeer;
     #activeName = "";
     #mounted = false;
+    #connectionState = "connecting";
     #toastTimer;
     #saveDraft = debounce((peerNumber, peerName, value) => {
       void this.service.setDraft(peerNumber, peerName, value);
@@ -1260,18 +1369,35 @@ select:focus-visible {
       this.#buildLauncher();
       this.#buildPanel();
       this.#buildSettingsDialog();
-      this.#shadow.append(style, this.#launcher, this.#panel, this.#settingsDialog);
+      this.#buildNewChatDialog();
+      this.#shadow.append(
+        style,
+        this.#launcher,
+        this.#panel,
+        this.#settingsDialog,
+        this.#newChatDialog
+      );
       document.body.append(this.#host);
       void this.refresh();
     }
     destroy() {
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
       this.#settingsDialog.close();
+      this.#newChatDialog.close();
       this.#host.remove();
       this.#mounted = false;
     }
     isActiveConversation(peerNumber) {
       return !this.#panel.hidden && this.#activePeer === peerNumber;
+    }
+    setConnectionState(state, message) {
+      this.#connectionState = state;
+      this.#connection.dataset.state = state;
+      this.#connectionText.textContent = state === "ready" ? "Connected" : state === "error" ? "Connection error" : "Connecting";
+      this.#connection.title = message ?? this.#connectionText.textContent ?? "";
+      this.#sendButton.disabled = state !== "ready";
+      this.#composer.placeholder = state === "ready" ? "Write a Beep\u2026" : "Connecting to Bondage Club\u2026";
+      if (this.#newChatDialog.open) this.#renderKnownContacts();
     }
     async onMessage(peerNumber, incoming) {
       if (incoming && this.settings.get().linkChat.openOnIncoming) {
@@ -1311,6 +1437,8 @@ select:focus-visible {
     #buildPanel() {
       this.#panel.hidden = true;
       this.#panel.dataset.mobileView = "list";
+      this.#connection.append(this.#connectionDot, this.#connectionText);
+      this.setConnectionState(this.adapter.isReady() ? "ready" : "connecting");
       const brand = element(
         "div",
         { className: "kl-brand" },
@@ -1319,7 +1447,12 @@ select:focus-visible {
           "div",
           { className: "kl-brand-copy" },
           element("div", { className: "kl-brand-title", text: "KikiLink" }),
-          element("div", { className: "kl-brand-subtitle", text: `LinkChat \xB7 v${this.version}` })
+          element(
+            "div",
+            { className: "kl-brand-subtitle" },
+            `LinkChat \xB7 v${this.version}`,
+            this.#connection
+          )
         )
       );
       const newChat = element("button", {
@@ -1328,7 +1461,7 @@ select:focus-visible {
         text: "+",
         title: "New Beep chat",
         ariaLabel: "New Beep chat",
-        onClick: () => void this.#promptNewChat()
+        onClick: () => this.#openNewChat()
       });
       const settings = element("button", {
         className: "kl-icon-button",
@@ -1368,7 +1501,7 @@ select:focus-visible {
           className: "kl-text-button kl-text-button--primary",
           type: "button",
           text: "New chat",
-          onClick: () => void this.#promptNewChat()
+          onClick: () => this.#openNewChat()
         })
       );
       this.#buildChat();
@@ -1393,7 +1526,6 @@ select:focus-visible {
         person,
         this.#pinButton
       );
-      this.#composer.placeholder = "Write a Beep\u2026";
       this.#composer.maxLength = 1e3;
       this.#composer.rows = 1;
       this.#composer.addEventListener("input", () => {
@@ -1409,12 +1541,7 @@ select:focus-visible {
           void this.#send();
         }
       });
-      const send = element("button", {
-        className: "kl-text-button kl-text-button--primary kl-send",
-        type: "button",
-        text: "Send",
-        onClick: () => void this.#send()
-      });
+      this.#sendButton.addEventListener("click", () => void this.#send());
       this.#includeRoom.type = "checkbox";
       this.#includeRoom.addEventListener("change", () => {
         this.settings.update((draft) => {
@@ -1430,10 +1557,12 @@ select:focus-visible {
       const composer = element(
         "footer",
         { className: "kl-composer" },
-        element("div", { className: "kl-composer-row" }, this.#composer, send),
+        this.#quickActions,
+        element("div", { className: "kl-composer-row" }, this.#composer, this.#sendButton),
         options
       );
       this.#chat.append(header, this.#messages, composer);
+      this.#renderQuickActions();
       this.#updateCounter();
     }
     #buildSettingsDialog() {
@@ -1524,7 +1653,30 @@ select:focus-visible {
         retention,
         clearHistory
       );
-      const body = element("div", { className: "kl-dialog-body" }, appearanceSection, privacySection);
+      const addQuickAction = element("button", {
+        className: "kl-text-button kl-add-action",
+        type: "button",
+        text: "+ Add quick action",
+        onClick: () => this.#addQuickActionEditorRow()
+      });
+      const quickActionsSection = element(
+        "section",
+        { className: "kl-setting-section" },
+        element("div", { className: "kl-setting-section-title", text: "Quick actions" }),
+        element("div", {
+          className: "kl-setting-help",
+          text: "Insert reusable actions into a Beep. Variables: {name}, {member}, {me}."
+        }),
+        this.#quickActionsEditor,
+        addQuickAction
+      );
+      const body = element(
+        "div",
+        { className: "kl-dialog-body" },
+        appearanceSection,
+        quickActionsSection,
+        privacySection
+      );
       this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
       const cancel = element("button", {
         className: "kl-text-button",
@@ -1534,6 +1686,55 @@ select:focus-visible {
       });
       const actions = element("footer", { className: "kl-dialog-actions" }, cancel, this.#saveSettingsButton);
       this.#settingsDialog.append(header, body, actions);
+    }
+    #buildNewChatDialog() {
+      const close = element("button", {
+        className: "kl-icon-button",
+        type: "button",
+        text: "\xD7",
+        title: "Close",
+        ariaLabel: "Close new chat",
+        onClick: () => this.#newChatDialog.close()
+      });
+      const header = element(
+        "header",
+        { className: "kl-dialog-header" },
+        element("div", { className: "kl-dialog-title", text: "New Beep chat" }),
+        close
+      );
+      this.#newChatQuery.type = "search";
+      this.#newChatQuery.placeholder = "Search name or enter member number";
+      this.#newChatQuery.autocomplete = "off";
+      this.#newChatQuery.addEventListener("input", () => this.#renderKnownContacts());
+      this.#newChatQuery.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        void this.#submitNewChat();
+      });
+      const body = element(
+        "div",
+        { className: "kl-dialog-body kl-new-chat-body" },
+        this.#newChatQuery,
+        element("div", { className: "kl-contact-heading", text: "Known contacts" }),
+        this.#newChatResults
+      );
+      const open = element("button", {
+        className: "kl-text-button kl-text-button--primary",
+        type: "button",
+        text: "Open chat",
+        onClick: () => void this.#submitNewChat()
+      });
+      const cancel = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Cancel",
+        onClick: () => this.#newChatDialog.close()
+      });
+      this.#newChatDialog.append(
+        header,
+        body,
+        element("footer", { className: "kl-dialog-actions" }, cancel, open)
+      );
     }
     #settingRow(name, help, control) {
       return element(
@@ -1682,19 +1883,132 @@ select:focus-visible {
       this.#pinButton.title = pinned ? "Unpin conversation" : "Pin conversation";
       await this.#renderConversations();
     }
-    async #promptNewChat() {
-      const raw = window.prompt("Enter a Bondage Club member number:");
-      if (raw === null) return;
-      const memberNumber = Number(raw.trim());
+    #openNewChat() {
+      this.#newChatQuery.value = "";
+      this.#renderKnownContacts();
+      if (!this.#newChatDialog.open) this.#newChatDialog.showModal();
+      this.#newChatQuery.focus();
+    }
+    async #submitNewChat() {
+      const query = this.#newChatQuery.value.trim();
+      const memberNumber = Number(query.replace(/^#/u, ""));
       if (!Number.isSafeInteger(memberNumber) || memberNumber < 0) {
-        this.#toast("Enter a valid member number.", "error");
+        const exactContact = this.adapter.getKnownContacts().find((contact) => contact.memberName.toLocaleLowerCase() === query.toLocaleLowerCase());
+        if (exactContact) {
+          this.#newChatDialog.close();
+          await this.openChat(exactContact.memberNumber, exactContact.memberName);
+          return;
+        }
+        this.#toast("Choose a contact or enter a valid member number.", "error");
         return;
       }
       if (memberNumber === this.adapter.getOwnMemberNumber()) {
         this.#toast("You cannot Beep yourself.", "error");
         return;
       }
+      this.#newChatDialog.close();
       await this.openChat(memberNumber, this.adapter.getMemberName(memberNumber));
+    }
+    #renderKnownContacts() {
+      const query = this.#newChatQuery.value.trim().toLocaleLowerCase();
+      const contacts = this.adapter.getKnownContacts().filter(
+        (contact) => !query || contact.memberName.toLocaleLowerCase().includes(query) || contact.memberNumber.toString().includes(query)
+      ).slice(0, 40);
+      this.#newChatResults.replaceChildren();
+      if (contacts.length === 0) {
+        this.#newChatResults.append(
+          element("div", {
+            className: "kl-contact-empty",
+            text: this.#connectionState === "ready" ? "No matching known contacts. You can still enter a member number." : "Contacts will appear after KikiLink connects to the game."
+          })
+        );
+        return;
+      }
+      for (const contact of contacts) {
+        const button = element(
+          "button",
+          { className: "kl-contact", type: "button" },
+          element("div", { className: "kl-avatar", text: avatarText(contact.memberName) }),
+          element(
+            "div",
+            { className: "kl-contact-copy" },
+            element("div", { className: "kl-contact-name", text: contact.memberName }),
+            element("div", { className: "kl-contact-number", text: `Member ${contact.memberNumber}` })
+          )
+        );
+        button.addEventListener("click", () => {
+          this.#newChatDialog.close();
+          void this.openChat(contact.memberNumber, contact.memberName);
+        });
+        this.#newChatResults.append(button);
+      }
+    }
+    #renderQuickActions() {
+      const actions = this.settings.get().linkChat.quickActions;
+      this.#quickActions.replaceChildren();
+      this.#quickActions.hidden = actions.length === 0;
+      for (const action of actions) {
+        this.#quickActions.append(
+          element("button", {
+            className: "kl-action-chip",
+            type: "button",
+            text: action.label,
+            title: action.template,
+            onClick: () => this.#insertQuickAction(action)
+          })
+        );
+      }
+    }
+    #insertQuickAction(action) {
+      if (this.#activePeer === void 0) return;
+      const expanded = action.template.replaceAll("{name}", this.#activeName).replaceAll("{member}", this.#activePeer.toString()).replaceAll("{me}", this.adapter.getOwnName());
+      const current = this.#composer.value.trimEnd();
+      const next = current ? `${current}
+${expanded}` : expanded;
+      if (next.length > 1e3) {
+        this.#toast("This action would exceed the 1000 character Beep limit.", "error");
+        return;
+      }
+      this.#composer.value = next;
+      this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+      this.#composer.focus();
+    }
+    #renderQuickActionEditor(actions) {
+      this.#quickActionsEditor.replaceChildren();
+      for (const action of actions) this.#addQuickActionEditorRow(action);
+    }
+    #addQuickActionEditorRow(action = { label: "", template: "" }) {
+      if (this.#quickActionsEditor.childElementCount >= 12) {
+        this.#toast("You can keep up to 12 quick actions.", "error");
+        return;
+      }
+      const label = element("input", { className: "kl-action-label" });
+      label.placeholder = "Label";
+      label.maxLength = 24;
+      label.value = action.label;
+      label.dataset.field = "label";
+      const template = element("input", { className: "kl-action-template" });
+      template.placeholder = "Action text";
+      template.maxLength = 500;
+      template.value = action.template;
+      template.dataset.field = "template";
+      const remove = element("button", {
+        className: "kl-icon-button kl-remove-action",
+        type: "button",
+        text: "\xD7",
+        title: "Remove action",
+        ariaLabel: "Remove quick action"
+      });
+      const row = element("div", { className: "kl-action-editor-row" }, label, template, remove);
+      remove.addEventListener("click", () => row.remove());
+      this.#quickActionsEditor.append(row);
+      if (!action.label && !action.template) label.focus();
+    }
+    #readQuickActionEditor() {
+      return [...this.#quickActionsEditor.querySelectorAll(".kl-action-editor-row")].map((row) => ({
+        label: row.querySelector('[data-field="label"]')?.value.trim() ?? "",
+        template: row.querySelector('[data-field="template"]')?.value.trim() ?? ""
+      })).filter((action) => action.label && action.template);
     }
     #openSettings() {
       const settings = this.settings.get();
@@ -1703,6 +2017,7 @@ select:focus-visible {
       this.#reducedMotionToggle.checked = settings.ui.reducedMotion;
       this.#historyToggle.checked = settings.linkChat.saveHistory;
       this.#retentionInput.value = settings.linkChat.retentionDays.toString();
+      this.#renderQuickActionEditor(settings.linkChat.quickActions);
       if (!this.#settingsDialog.open) this.#settingsDialog.showModal();
     }
     #saveSettings() {
@@ -1712,9 +2027,11 @@ select:focus-visible {
         draft.ui.launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
         draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
         draft.linkChat.saveHistory = this.#historyToggle.checked;
+        draft.linkChat.quickActions = this.#readQuickActionEditor();
         if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
       });
       this.#applyTheme(settings);
+      this.#renderQuickActions();
       this.#settingsDialog.close();
       void this.service.prune();
       this.#toast("Settings saved.");
@@ -1769,7 +2086,8 @@ select:focus-visible {
       this.#shadow.querySelector(".kl-toast")?.remove();
       const toast = element("div", { className: "kl-toast", text: message });
       toast.dataset.kind = kind;
-      this.#panel.append(toast);
+      const surface = this.#newChatDialog.open ? this.#newChatDialog : this.#settingsDialog.open ? this.#settingsDialog : this.#panel;
+      surface.append(toast);
       this.#toastTimer = setTimeout(() => toast.remove(), 3200);
     }
   };
@@ -1818,9 +2136,14 @@ select:focus-visible {
       );
       this.#view.mount();
       this.#unsubscribers.push(
+        context.bus.on(
+          "bc:status",
+          ({ state, message }) => this.#view?.setConnectionState(state, message)
+        ),
         context.bus.on("beep:received", (event) => void this.#capture(event)),
         context.bus.on("beep:sent", (event) => void this.#capture(event))
       );
+      this.#view.setConnectionState(context.adapter.isReady() ? "ready" : "connecting");
       void this.#service.prune();
     }
     stop() {
@@ -2150,7 +2473,12 @@ select:focus-visible {
       includeRoomByDefault: false,
       retentionDays: 90,
       maxMessagesPerConversation: 500,
-      openOnIncoming: false
+      openOnIncoming: false,
+      quickActions: [
+        { label: "Wave", template: "*waves to {name}*" },
+        { label: "Hug", template: "*hugs {name} warmly*" },
+        { label: "Boop", template: "*gently boops {name}*" }
+      ]
     }
   };
   var SETTINGS_KEY = "kikilink:settings:v1";
@@ -2243,9 +2571,22 @@ select:focus-visible {
         openOnIncoming: booleanOr(
           linkChat.openOnIncoming,
           DEFAULT_SETTINGS.linkChat.openOnIncoming
-        )
+        ),
+        quickActions: sanitizeQuickActions(linkChat.quickActions)
       }
     };
+  }
+  function sanitizeQuickActions(value) {
+    if (value === void 0) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
+    if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
+    const actions = [];
+    for (const entry of value.slice(0, 12)) {
+      if (!isRecord(entry)) continue;
+      const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 24) : "";
+      const template = typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
+      if (label && template) actions.push({ label, template });
+    }
+    return actions;
   }
   function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -2336,7 +2677,7 @@ select:focus-visible {
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.2.1");
+    const app = new KikiLinkApp("0.3.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

@@ -27,9 +27,13 @@ export class LinkChatModule implements KikiLinkModule {
     this.#view.mount();
 
     this.#unsubscribers.push(
+      context.bus.on("bc:status", ({ state, message }) =>
+        this.#view?.setConnectionState(state, message),
+      ),
       context.bus.on("beep:received", (event) => void this.#capture(event)),
       context.bus.on("beep:sent", (event) => void this.#capture(event)),
     );
+    this.#view.setConnectionState(context.adapter.isReady() ? "ready" : "connecting");
     void this.#service.prune();
   }
 

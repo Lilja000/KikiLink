@@ -11,9 +11,9 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.2.1` keeps the original core and LinkChat foundation, then adds the
-first complete KikiLink visual system: the wolf-and-sakura emblem, lacquer-dark
-and warm-paper themes, and a dedicated phone navigation flow.
+Version `0.3.0` expands the original LinkChat foundation with custom Quick
+Actions, a built-in known-contact picker, and a visible connection state while
+preserving the wolf-and-sakura visual system and mobile navigation.
 
 ## LinkChat
 
@@ -22,18 +22,20 @@ and warm-paper themes, and a dedicated phone navigation flow.
 - Search by player name, member number, or message text
 - Unread counters and pinned conversations
 - Drafts saved per conversation
-- Quick new chat by member number
+- New-chat dialog with known-contact search and direct member-number entry
+- Editable Quick Actions with `{name}`, `{member}`, and `{me}` variables
 - Optional room information on outgoing Beeps
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
 
-## Interface in 0.2.1
+## Interface
 
 - Embedded KikiLink wolf, red moon, gold ring, and sakura emblem
 - Dark lacquer, light paper, and follow-system appearance modes
 - Red and gold design tokens shared by every LinkChat surface
 - Configurable launcher side and reduced-motion mode
 - Full-width mobile conversation list with a clear back-to-list flow
+- Live Bondage Club connection status and safe disabled sending while connecting
 
 The emblem is bundled into the userscript, so KikiLink does not fetch visual
 assets from a remote server while the game is running.

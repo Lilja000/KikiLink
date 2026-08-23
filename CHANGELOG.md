@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 - 2026-08-23
+
+- Added editable Quick Actions that insert reusable roleplay text into Beep drafts.
+- Added `{name}`, `{member}`, and `{me}` variables for Quick Action templates.
+- Replaced the browser prompt with a native new-chat dialog and known-contact search.
+- Added a live Bondage Club connection indicator and safe send-button state.
+- Added validation and tests for Quick Action settings and the contact picker.
+
 ## 0.2.1 - 2026-08-23
 
 - Mount the KikiLink launcher before the Bondage Club connection hooks finish.

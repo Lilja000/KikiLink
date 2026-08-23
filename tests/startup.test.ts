@@ -9,7 +9,7 @@ afterEach(() => {
 
 describe("KikiLink startup", () => {
   it("mounts the launcher before Bondage Club globals are ready", async () => {
-    const app = new KikiLinkApp("0.2.1");
+    const app = new KikiLinkApp("0.3.0");
 
     await app.start();
 
