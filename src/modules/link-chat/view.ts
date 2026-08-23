@@ -21,6 +21,9 @@ import type { ChatService } from "./chat-service";
 import { LINK_CHAT_STYLES } from "./styles";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/references/3929.png";
 
+type WorkspaceView = "home" | "chat";
+type FeatureTarget = WorkspaceView | "roster" | "activities" | "settings";
+
 export class LinkChatView {
   readonly #host = document.createElement("div");
   readonly #shadow = this.#host.attachShadow({ mode: "open" });
@@ -36,7 +39,49 @@ export class LinkChatView {
   readonly #connectionText = element("span", { className: "kl-connection-text" });
   readonly #panel = element("section", {
     className: "kl-panel",
-    ariaLabel: "KikiLink Beep chat",
+    ariaLabel: "KikiLink Link Deck",
+  });
+  readonly #featureNav = element("nav", {
+    className: "kl-feature-nav",
+    ariaLabel: "KikiLink features",
+  });
+  readonly #workspace = element("div", { className: "kl-workspace" });
+  readonly #home = element("section", { className: "kl-home" });
+  readonly #chatLayout = element("div", { className: "kl-layout" });
+  readonly #homeNavButton = element("button", {
+    className: "kl-nav-item",
+    type: "button",
+    title: "Home",
+    ariaLabel: "Open KikiLink home",
+  });
+  readonly #chatNavButton = element("button", {
+    className: "kl-nav-item",
+    type: "button",
+    title: "LinkChat",
+    ariaLabel: "Open LinkChat",
+  });
+  readonly #settingsNavButton = element("button", {
+    className: "kl-nav-item",
+    type: "button",
+    title: "Customize KikiLink",
+    ariaLabel: "Open KikiLink settings",
+  });
+  readonly #homeGreeting = element("h1", { className: "kl-home-title" });
+  readonly #homeConnection = element("span", { className: "kl-home-status-value" });
+  readonly #homeRoom = element("span", { className: "kl-home-status-value" });
+  readonly #homeChatMetric = element("span", { className: "kl-feature-card-metric" });
+  readonly #homeRosterMetric = element("span", { className: "kl-feature-card-metric" });
+  readonly #homeActivitiesMetric = element("span", { className: "kl-feature-card-metric" });
+  readonly #homeSettingsMetric = element("span", { className: "kl-feature-card-metric" });
+  readonly #homeRosterCard = element("button", {
+    className: "kl-feature-card",
+    type: "button",
+    title: "Open LinkRoster",
+  });
+  readonly #homeActivitiesCard = element("button", {
+    className: "kl-feature-card",
+    type: "button",
+    title: "Open LinkActivities",
   });
   readonly #conversationList = element("div", { className: "kl-conversations" });
   readonly #search = element("input", { className: "kl-search" });
@@ -70,7 +115,11 @@ export class LinkChatView {
     text: "Save",
   });
   readonly #themeSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #accentInput = element("input", { className: "kl-color-input" }) as HTMLInputElement;
   readonly #launcherSideSelect = element("select", {
+    className: "kl-select",
+  }) as HTMLSelectElement;
+  readonly #launcherOpenSelect = element("select", {
     className: "kl-select",
   }) as HTMLSelectElement;
   readonly #reducedMotionToggle = element("input") as HTMLInputElement;
@@ -78,9 +127,8 @@ export class LinkChatView {
   readonly #rosterEnabledToggle = element("input") as HTMLInputElement;
   readonly #rosterTrackingToggle = element("input") as HTMLInputElement;
   readonly #rosterButton = element("button", {
-    className: "kl-icon-button kl-roster-button",
+    className: "kl-nav-item kl-roster-button",
     type: "button",
-    text: "☷",
     title: "LinkRoster",
     ariaLabel: "Open LinkRoster",
   });
@@ -111,9 +159,8 @@ export class LinkChatView {
     className: "kl-action-editor kl-activities-editor",
   });
   readonly #activitiesButton = element("button", {
-    className: "kl-icon-button kl-activities-button",
+    className: "kl-nav-item kl-activities-button",
     type: "button",
-    text: "✦",
     title: "LinkActivities",
     ariaLabel: "Open LinkActivities",
   });
@@ -148,6 +195,10 @@ export class LinkChatView {
   #selectedActivityTarget: RoomCharacter | undefined;
   #selectedRosterMember: number | undefined;
   #rosterScope: RosterScope = "current";
+  #workspaceView: WorkspaceView = "home";
+  #lastWorkspaceView: WorkspaceView = "home";
+  #presentCount = 0;
+  #unreadCount = 0;
   #notebookDirty = false;
   #mounted = false;
   #connectionState: BCConnectionState = "connecting";
@@ -225,7 +276,11 @@ export class LinkChatView {
   }
 
   isActiveConversation(peerNumber: number): boolean {
-    return !this.#panel.hidden && this.#activePeer === peerNumber;
+    return (
+      !this.#panel.hidden &&
+      this.#workspaceView === "chat" &&
+      this.#activePeer === peerNumber
+    );
   }
 
   setConnectionState(state: BCConnectionState, message?: string): void {
@@ -234,6 +289,8 @@ export class LinkChatView {
     this.#connectionText.textContent =
       state === "ready" ? "Connected" : state === "error" ? "Connection error" : "Connecting";
     this.#connection.title = message ?? this.#connectionText.textContent ?? "";
+    this.#homeConnection.textContent = this.#connectionText.textContent;
+    this.#homeConnection.dataset.state = state;
     const canSend = this.adapter.canSendBeep();
     this.#sendButton.disabled = !canSend;
     this.#composer.placeholder = canSend ? "Write a Beep…" : "Connecting to Bondage Club…";
@@ -253,8 +310,16 @@ export class LinkChatView {
   }
 
   async open(): Promise<void> {
+    const preference = this.settings.get().ui.launcherOpen;
+    const view =
+      preference === "chat" ? "chat" : preference === "last" ? this.#lastWorkspaceView : "home";
+    await this.#openPanel(view);
+  }
+
+  async #openPanel(view: WorkspaceView): Promise<void> {
     this.#panel.hidden = false;
     this.#launcher.setAttribute("aria-expanded", "true");
+    this.#showWorkspace(view);
     await this.refresh();
   }
 
@@ -269,29 +334,32 @@ export class LinkChatView {
       memberName?.trim() ||
       this.adapter.getMemberName(memberNumber);
     await this.service.ensureConversation(memberNumber, name);
-    await this.open();
+    await this.#openPanel("chat");
     await this.#selectConversation(memberNumber, name);
   }
 
   openActivities(): void {
-    this.#openActivities();
+    void this.#openPanel(this.#workspaceView).then(() => this.#openActivities());
   }
 
   openRoster(): void {
-    this.#openRoster();
+    void this.#openPanel(this.#workspaceView).then(() => this.#openRoster());
   }
 
   onRosterSync(result: RosterSyncResult): void {
+    this.#presentCount = result.presentCount;
     this.#rosterCount.hidden = result.presentCount === 0;
     this.#rosterCount.textContent = result.presentCount > 99 ? "99+" : result.presentCount.toString();
     this.#rosterButton.title = result.presentCount
       ? `LinkRoster · ${result.presentCount} in room`
       : "LinkRoster";
+    this.#renderHomeStatus();
     if (this.#rosterDialog.open && result.changed) this.#renderRoster();
   }
 
   async refresh(): Promise<void> {
-    await Promise.all([this.#renderConversations(), this.#updateUnreadBadge()]);
+    await this.#updateUnreadBadge();
+    await Promise.all([this.#renderConversations(), this.#renderHome()]);
   }
 
   #buildLauncher(): void {
@@ -312,6 +380,7 @@ export class LinkChatView {
   #buildPanel(): void {
     this.#panel.hidden = true;
     this.#panel.dataset.mobileView = "list";
+    this.#panel.dataset.workspace = "home";
     this.#connection.append(this.#connectionDot, this.#connectionText);
     this.setConnectionState(this.adapter.isReady() ? "ready" : "connecting");
     const brand = element(
@@ -325,27 +394,11 @@ export class LinkChatView {
         element(
           "div",
           { className: "kl-brand-subtitle" },
-          `LinkChat + LinkRoster · v${this.version}`,
+          `Personal Link Deck · v${this.version}`,
           this.#connection,
         ),
       ),
     );
-    const newChat = element("button", {
-      className: "kl-icon-button",
-      type: "button",
-      text: "+",
-      title: "New Beep chat",
-      ariaLabel: "New Beep chat",
-      onClick: () => this.#openNewChat(),
-    });
-    const settings = element("button", {
-      className: "kl-icon-button",
-      type: "button",
-      text: "⚙",
-      title: "KikiLink settings",
-      ariaLabel: "KikiLink settings",
-      onClick: () => this.#openSettings(),
-    });
     const close = element("button", {
       className: "kl-icon-button",
       type: "button",
@@ -354,22 +407,16 @@ export class LinkChatView {
       ariaLabel: "Close KikiLink",
       onClick: () => this.close(),
     });
-    this.#activitiesButton.addEventListener("click", () => this.#openActivities());
-    this.#activitiesButton.hidden = !this.settings.get().linkActivities.enabled;
-    this.#rosterCount.hidden = true;
-    this.#rosterButton.append(this.#rosterCount);
-    this.#rosterButton.addEventListener("click", () => this.#openRoster());
-    this.#rosterButton.hidden = !this.settings.get().linkRoster.enabled;
     const topbar = element(
       "header",
       { className: "kl-topbar" },
       brand,
-      this.#rosterButton,
-      this.#activitiesButton,
-      newChat,
-      settings,
+      element("div", { className: "kl-topbar-mode", text: "LINK DECK" }),
       close,
     );
+
+    this.#buildFeatureNavigation();
+    this.#buildHome();
 
     this.#search.type = "search";
     this.#search.placeholder = "Search chats";
@@ -379,7 +426,19 @@ export class LinkChatView {
       "aside",
       { className: "kl-sidebar" },
       element("div", { className: "kl-search-wrap" }, this.#search),
-      element("div", { className: "kl-sidebar-heading", text: "Recent chats" }),
+      element(
+        "div",
+        { className: "kl-sidebar-heading" },
+        element("span", { text: "Recent chats" }),
+        element("button", {
+          className: "kl-sidebar-new-chat",
+          type: "button",
+          text: "+",
+          title: "New Beep chat",
+          ariaLabel: "New Beep chat",
+          onClick: () => this.#openNewChat(),
+        }),
+      ),
       this.#conversationList,
     );
 
@@ -400,8 +459,11 @@ export class LinkChatView {
 
     this.#buildChat();
     const main = element("main", { className: "kl-main" }, this.#empty, this.#chat);
-    const layout = element("div", { className: "kl-layout" }, sidebar, main);
-    this.#panel.append(topbar, layout);
+    this.#chatLayout.append(sidebar, main);
+    this.#workspace.append(this.#home, this.#chatLayout);
+    const shell = element("div", { className: "kl-shell" }, this.#featureNav, this.#workspace);
+    this.#panel.append(topbar, shell);
+    this.#showWorkspace("home", false);
     this.#panel.addEventListener("keydown", (event) => {
       if (
         event.key === "Escape" &&
@@ -413,6 +475,209 @@ export class LinkChatView {
         this.close();
       }
     });
+  }
+
+  #buildFeatureNavigation(): void {
+    this.#configureNavButton(this.#homeNavButton, "⌂", "Home", "home");
+    this.#configureNavButton(this.#chatNavButton, "↔", "Chat", "chat");
+    this.#configureNavButton(this.#rosterButton, "☷", "Players", "roster");
+    this.#configureNavButton(this.#activitiesButton, "✦", "Studio", "activities");
+    this.#configureNavButton(this.#settingsNavButton, "⚙", "Customize", "settings");
+    this.#rosterCount.hidden = true;
+    this.#rosterButton.append(this.#rosterCount);
+    this.#featureNav.append(
+      this.#homeNavButton,
+      this.#chatNavButton,
+      this.#rosterButton,
+      this.#activitiesButton,
+      this.#settingsNavButton,
+    );
+  }
+
+  #configureNavButton(
+    button: HTMLButtonElement,
+    icon: string,
+    label: string,
+    target: FeatureTarget,
+  ): void {
+    button.dataset.target = target;
+    button.replaceChildren(
+      element("span", { className: "kl-nav-icon", text: icon }),
+      element("span", { className: "kl-nav-label", text: label }),
+    );
+    button.addEventListener("click", () => this.#activateFeature(target));
+  }
+
+  #activateFeature(target: FeatureTarget): void {
+    if (target === "home" || target === "chat") {
+      this.#showWorkspace(target);
+      void this.refresh();
+      return;
+    }
+    if (target === "roster") {
+      this.#openRoster();
+      return;
+    }
+    if (target === "activities") {
+      this.#openActivities();
+      return;
+    }
+    this.#openSettings();
+  }
+
+  #buildHome(): void {
+    const hero = element(
+      "header",
+      { className: "kl-home-hero" },
+      element(
+        "div",
+        { className: "kl-home-hero-copy" },
+        element("div", { className: "kl-home-eyebrow", text: "YOUR PERSONAL LINK DECK" }),
+        this.#homeGreeting,
+        element("p", {
+          className: "kl-home-lead",
+          text: "Chats, people, room tools, and your preferences — connected in one place.",
+        }),
+        element(
+          "div",
+          { className: "kl-home-statuses" },
+          this.#homeStatus("Connection", this.#homeConnection),
+          this.#homeStatus("Current room", this.#homeRoom),
+        ),
+      ),
+      element(
+        "div",
+        { className: "kl-home-mark", ariaLabel: "KikiLink emblem" },
+        this.#emblem("kl-home-emblem"),
+        element("span", { className: "kl-home-orbit" }),
+      ),
+    );
+
+    const chatCard = element("button", {
+      className: "kl-feature-card kl-feature-card--primary",
+      type: "button",
+      title: "Open LinkChat",
+      onClick: () => this.#activateFeature("chat"),
+    });
+    this.#fillFeatureCard(
+      chatCard,
+      "↔",
+      "MESSAGES",
+      "LinkChat",
+      "Recent Beeps, pinned conversations, drafts, and quick actions.",
+      this.#homeChatMetric,
+    );
+    this.#fillFeatureCard(
+      this.#homeRosterCard,
+      "☷",
+      "PEOPLE",
+      "LinkRoster",
+      "See who is here, Whisper instantly, and keep private notes.",
+      this.#homeRosterMetric,
+    );
+    this.#homeRosterCard.addEventListener("click", () => this.#activateFeature("roster"));
+    this.#fillFeatureCard(
+      this.#homeActivitiesCard,
+      "✦",
+      "ROOM TOOLS",
+      "Activity Studio",
+      "Your optional library of reusable room emotes.",
+      this.#homeActivitiesMetric,
+    );
+    this.#homeActivitiesCard.addEventListener("click", () => this.#activateFeature("activities"));
+    const settingsCard = element("button", {
+      className: "kl-feature-card",
+      type: "button",
+      title: "Customize KikiLink",
+      onClick: () => this.#activateFeature("settings"),
+    });
+    this.#fillFeatureCard(
+      settingsCard,
+      "⚙",
+      "YOUR SPACE",
+      "Customize",
+      "Theme, accent, launcher behavior, privacy, and feature controls.",
+      this.#homeSettingsMetric,
+    );
+    const cards = element(
+      "div",
+      { className: "kl-feature-grid" },
+      chatCard,
+      this.#homeRosterCard,
+      this.#homeActivitiesCard,
+      settingsCard,
+    );
+    const privacy = element(
+      "div",
+      { className: "kl-home-privacy" },
+      element("span", { className: "kl-home-privacy-icon", text: "◇" }),
+      element(
+        "span",
+        {},
+        "Private by design · chats, notes, favorites, and preferences stay in this browser.",
+      ),
+    );
+    this.#home.append(hero, cards, privacy);
+  }
+
+  #homeStatus(label: string, value: HTMLElement): HTMLDivElement {
+    return element(
+      "div",
+      { className: "kl-home-status" },
+      element("span", { className: "kl-home-status-label", text: label }),
+      value,
+    );
+  }
+
+  #fillFeatureCard(
+    card: HTMLButtonElement,
+    icon: string,
+    kicker: string,
+    title: string,
+    description: string,
+    metric: HTMLElement,
+  ): void {
+    card.replaceChildren(
+      element("span", { className: "kl-feature-card-icon", text: icon }),
+      element(
+        "span",
+        { className: "kl-feature-card-copy" },
+        element("span", { className: "kl-feature-card-kicker", text: kicker }),
+        element("span", { className: "kl-feature-card-title", text: title }),
+        element("span", { className: "kl-feature-card-description", text: description }),
+      ),
+      element(
+        "span",
+        { className: "kl-feature-card-footer" },
+        metric,
+        element("span", { className: "kl-feature-card-arrow", text: "↗" }),
+      ),
+    );
+  }
+
+  #showWorkspace(view: WorkspaceView, remember = true): void {
+    this.#workspaceView = view;
+    if (remember) this.#lastWorkspaceView = view;
+    this.#panel.dataset.workspace = view;
+    this.#home.hidden = view !== "home";
+    this.#chatLayout.hidden = view !== "chat";
+    if (view === "chat" && this.#activePeer === undefined) {
+      this.#panel.dataset.mobileView = "list";
+    }
+    this.#updateNavigation();
+  }
+
+  #updateNavigation(): void {
+    const active: FeatureTarget = this.#settingsDialog.open
+      ? "settings"
+      : this.#rosterDialog.open
+        ? "roster"
+        : this.#activitiesDialog.open
+          ? "activities"
+          : this.#workspaceView;
+    for (const button of this.#featureNav.querySelectorAll<HTMLButtonElement>(".kl-nav-item")) {
+      button.dataset.active = String(button.dataset.target === active);
+    }
   }
 
   #buildChat(): void {
@@ -497,6 +762,33 @@ export class LinkChatView {
       this.#themeSelect,
     );
 
+    this.#accentInput.type = "color";
+    const accentPresets = element("div", { className: "kl-color-presets" });
+    for (const [color, label] of [
+      ["#d71932", "Crimson"],
+      ["#b63a67", "Sakura"],
+      ["#ad7624", "Gold"],
+      ["#7557c8", "Violet"],
+      ["#247f7a", "Jade"],
+    ] as const) {
+      const swatch = element("button", {
+        className: "kl-color-swatch",
+        type: "button",
+        title: label,
+        ariaLabel: `Use ${label} accent`,
+        onClick: () => {
+          this.#accentInput.value = color;
+        },
+      });
+      swatch.style.setProperty("--kl-swatch", color);
+      accentPresets.append(swatch);
+    }
+    const accent = this.#settingRow(
+      "Accent color",
+      "Choose a preset or any color that feels like yours.",
+      element("div", { className: "kl-color-control" }, accentPresets, this.#accentInput),
+    );
+
     this.#launcherSideSelect.replaceChildren(
       selectOption("right", "Right"),
       selectOption("left", "Left"),
@@ -505,6 +797,17 @@ export class LinkChatView {
       "Launcher side",
       "Drag the emblem anywhere. Changing its side resets it to the default corner.",
       this.#launcherSideSelect,
+    );
+
+    this.#launcherOpenSelect.replaceChildren(
+      selectOption("home", "Link Deck home"),
+      selectOption("last", "Last section"),
+      selectOption("chat", "LinkChat directly"),
+    );
+    const launcherOpen = this.#settingRow(
+      "Launcher opens",
+      "Choose what happens when you tap the floating emblem.",
+      this.#launcherOpenSelect,
     );
 
     this.#reducedMotionToggle.type = "checkbox";
@@ -553,7 +856,9 @@ export class LinkChatView {
       { className: "kl-setting-section" },
       element("div", { className: "kl-setting-section-title", text: "Interface" }),
       theme,
+      accent,
       launcherSide,
+      launcherOpen,
       reducedMotion,
     );
 
@@ -670,6 +975,7 @@ export class LinkChatView {
     });
     const actions = element("footer", { className: "kl-dialog-actions" }, cancel, this.#saveSettingsButton);
     this.#settingsDialog.append(header, body, actions);
+    this.#settingsDialog.addEventListener("close", () => this.#updateNavigation());
   }
 
   #buildNewChatDialog(): void {
@@ -814,13 +1120,18 @@ export class LinkChatView {
       this.#notebookDirty = true;
       this.#saveNotebookButton.disabled = false;
     });
-    this.#rosterDialog.addEventListener("close", () => this.#saveNotebook(false));
+    this.#rosterDialog.addEventListener("close", () => {
+      this.#saveNotebook(false);
+      this.#updateNavigation();
+    });
     this.#rosterDialog.append(header, body, footer);
   }
 
   #openRoster(): void {
     if (!this.settings.get().linkRoster.enabled) {
-      this.#toast("LinkRoster is disabled in KikiLink settings.", "error");
+      this.#openSettings();
+      this.#rosterEnabledToggle.focus();
+      this.#toast("Enable LinkRoster here to add it back to your deck.");
       return;
     }
     this.roster.sync();
@@ -830,6 +1141,7 @@ export class LinkChatView {
     this.#notebookDirty = false;
     this.#renderRoster();
     if (!this.#rosterDialog.open) this.#rosterDialog.showModal();
+    this.#updateNavigation();
     this.#rosterSearch.focus();
   }
 
@@ -1171,11 +1483,14 @@ export class LinkChatView {
       this.#performActivityButton,
     );
     this.#activitiesDialog.append(header, body, actions);
+    this.#activitiesDialog.addEventListener("close", () => this.#updateNavigation());
   }
 
   #openActivities(): void {
     if (!this.settings.get().linkActivities.enabled) {
-      this.#toast("LinkActivities is disabled in KikiLink settings.", "error");
+      this.#openSettings();
+      this.#activitiesToggle.focus();
+      this.#toast("Activity Studio is optional. Enable its shortcut here when you want it.");
       return;
     }
 
@@ -1189,6 +1504,7 @@ export class LinkChatView {
     if (this.#selectedActivityIndex >= activityCount) this.#selectedActivityIndex = 0;
     this.#renderActivitiesDialog();
     if (!this.#activitiesDialog.open) this.#activitiesDialog.showModal();
+    this.#updateNavigation();
     this.#activityTargetQuery.focus();
   }
 
@@ -1318,6 +1634,67 @@ export class LinkChatView {
       ),
       control,
     );
+  }
+
+  async #renderHome(): Promise<void> {
+    const ownName = this.adapter.getOwnName().trim();
+    const greeting = greetingForCurrentTime();
+    this.#homeGreeting.textContent =
+      ownName && ownName.toLocaleLowerCase() !== "me"
+        ? `${greeting}, ${ownName}.`
+        : `${greeting}.`;
+
+    const conversations = await this.service.listConversations();
+    const recent = [...conversations].sort(
+      (left, right) => right.lastMessageAt - left.lastMessageAt,
+    )[0];
+    if (this.#unreadCount > 0) {
+      this.#homeChatMetric.textContent = `${this.#unreadCount} unread · ${conversations.length} chats`;
+    } else if (recent && recent.lastMessageAt > 0) {
+      this.#homeChatMetric.textContent = `Last with ${recent.peerName} · ${formatRelativeTime(recent.lastMessageAt)}`;
+    } else if (conversations.length > 0) {
+      this.#homeChatMetric.textContent = `${conversations.length} saved ${conversations.length === 1 ? "chat" : "chats"}`;
+    } else {
+      this.#homeChatMetric.textContent = "Start your first Beep chat";
+    }
+    this.#renderHomeStatus();
+  }
+
+  #renderHomeStatus(): void {
+    const settings = this.settings.get();
+    const inRoom =
+      typeof this.adapter.isInChatRoom === "function" && this.adapter.isInChatRoom();
+    const roomName =
+      typeof this.adapter.getCurrentRoomName === "function"
+        ? this.adapter.getCurrentRoomName()
+        : undefined;
+    this.#homeConnection.textContent = this.#connectionText.textContent || "Connecting";
+    this.#homeConnection.dataset.state = this.#connectionState;
+    this.#homeRoom.textContent = roomName || (inRoom ? "Unnamed room" : "Not in a chat room");
+
+    this.#rosterButton.dataset.available = String(settings.linkRoster.enabled);
+    this.#homeRosterCard.dataset.available = String(settings.linkRoster.enabled);
+    this.#homeRosterMetric.textContent = settings.linkRoster.enabled
+      ? this.#presentCount > 0
+        ? `${this.#presentCount} ${this.#presentCount === 1 ? "person" : "people"} here now`
+        : inRoom
+          ? "No other players in this room"
+          : "Open while you are in a room"
+      : "Disabled · tap to enable";
+
+    this.#activitiesButton.dataset.available = String(settings.linkActivities.enabled);
+    this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
+    this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled
+      ? `${settings.linkActivities.activities.length} saved ${settings.linkActivities.activities.length === 1 ? "activity" : "activities"}`
+      : "Optional · tap to enable";
+
+    const themeLabel =
+      settings.ui.theme === "light"
+        ? "Light paper"
+        : settings.ui.theme === "system"
+          ? "System theme"
+          : "Dark lacquer";
+    this.#homeSettingsMetric.textContent = `${themeLabel} · ${settings.ui.accent.toUpperCase()}`;
   }
 
   async #renderConversations(): Promise<void> {
@@ -1715,7 +2092,9 @@ export class LinkChatView {
   #openSettings(): void {
     const settings = this.settings.get();
     this.#themeSelect.value = settings.ui.theme;
+    this.#accentInput.value = settings.ui.accent;
     this.#launcherSideSelect.value = settings.ui.launcherSide;
+    this.#launcherOpenSelect.value = settings.ui.launcherOpen;
     this.#reducedMotionToggle.checked = settings.ui.reducedMotion;
     this.#historyToggle.checked = settings.linkChat.saveHistory;
     this.#retentionInput.value = settings.linkChat.retentionDays.toString();
@@ -1725,6 +2104,7 @@ export class LinkChatView {
     this.#activitiesToggle.checked = settings.linkActivities.enabled;
     this.#renderActivityEditor(settings.linkActivities.activities);
     if (!this.#settingsDialog.open) this.#settingsDialog.showModal();
+    this.#updateNavigation();
   }
 
   #saveSettings(): void {
@@ -1736,7 +2116,12 @@ export class LinkChatView {
         this.#themeSelect.value === "light" || this.#themeSelect.value === "system"
           ? this.#themeSelect.value
           : "dark";
+      draft.ui.accent = this.#accentInput.value;
       draft.ui.launcherSide = launcherSide;
+      draft.ui.launcherOpen =
+        this.#launcherOpenSelect.value === "last" || this.#launcherOpenSelect.value === "chat"
+          ? this.#launcherOpenSelect.value
+          : "home";
       if (launcherSide !== currentSettings.ui.launcherSide) draft.ui.launcherPosition = null;
       draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
       draft.linkChat.saveHistory = this.#historyToggle.checked;
@@ -1749,8 +2134,7 @@ export class LinkChatView {
     });
     this.#applyTheme(settings);
     this.#renderQuickActions();
-    this.#rosterButton.hidden = !settings.linkRoster.enabled;
-    this.#activitiesButton.hidden = !settings.linkActivities.enabled;
+    this.#renderHomeStatus();
     this.#settingsDialog.close();
     void this.service.prune();
     this.#toast("Settings saved.");
@@ -1781,6 +2165,7 @@ export class LinkChatView {
 
   async #updateUnreadBadge(): Promise<void> {
     const unread = await this.service.totalUnread();
+    this.#unreadCount = unread;
     this.#badge.hidden = unread === 0;
     this.#badge.textContent = unread > 99 ? "99+" : unread.toString();
   }
@@ -1798,6 +2183,7 @@ export class LinkChatView {
 
   #applyTheme(settings: KikiLinkSettings): void {
     this.#host.style.setProperty("--kl-accent", settings.ui.accent);
+    this.#host.style.setProperty("--kl-accent-strong", settings.ui.accent);
     this.#host.dataset.theme = settings.ui.theme;
     this.#host.dataset.reducedMotion = String(settings.ui.reducedMotion);
     this.#launcher.dataset.side = settings.ui.launcherSide;
@@ -1981,6 +2367,14 @@ function formatRelativeTime(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
     new Date(timestamp),
   );
+}
+
+function greetingForCurrentTime(): string {
+  const hour = new Date().getHours();
+  if (hour < 5) return "Still awake";
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
 }
 
 function formatFullSeenTime(timestamp: number): string {

@@ -73,10 +73,10 @@ describe("LinkChatView", () => {
     });
 
     expect(sendBeep).toHaveBeenCalledWith(123, "Hello from KikiLink", false);
-    expect(shadow?.querySelector(".kl-sidebar-heading")?.textContent).toBe("Recent chats");
+    expect(shadow?.querySelector(".kl-sidebar-heading span")?.textContent).toBe("Recent chats");
 
     shadow
-      ?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')
+      ?.querySelector<HTMLButtonElement>('button[title="Customize KikiLink"]')
       ?.click();
     const selects = shadow?.querySelectorAll<HTMLSelectElement>(".kl-select");
     const themeSelect = selects?.item(0);
@@ -102,6 +102,73 @@ describe("LinkChatView", () => {
 
     view.destroy();
     expect(document.querySelector("#kikilink-root")).toBeNull();
+  });
+
+  it("opens a feature deck by default and lets the launcher behavior and accent be customized", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getCurrentRoomName: () => "Moon Garden",
+      getRoomCharacters: () => [],
+      isInChatRoom: () => true,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.6.0",
+    );
+    view.mount();
+
+    const host = document.querySelector<HTMLElement>("#kikilink-root");
+    const shadow = host?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".kl-launcher")?.click();
+    await vi.waitFor(() => {
+      expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+        "home",
+      );
+      expect(shadow?.querySelector(".kl-home-title")?.textContent).toContain("Kiki");
+    });
+    expect(shadow?.querySelector(".kl-home-statuses")?.textContent).toContain("Moon Garden");
+    expect(shadow?.querySelectorAll(".kl-feature-card")).toHaveLength(4);
+    expect(shadow?.querySelector('.kl-nav-item[data-target="home"]')?.getAttribute("data-active")).toBe(
+      "true",
+    );
+
+    shadow?.querySelector<HTMLButtonElement>('button[title="LinkChat"]')?.click();
+    expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+      "chat",
+    );
+
+    shadow?.querySelector<HTMLButtonElement>('button[title="Customize KikiLink"]')?.click();
+    const dialog = shadow?.querySelector<HTMLDialogElement>(".kl-dialog");
+    const selects = dialog?.querySelectorAll<HTMLSelectElement>(".kl-select");
+    const launcherOpen = selects?.item(2);
+    const accent = dialog?.querySelector<HTMLInputElement>(".kl-color-input");
+    if (!launcherOpen || !accent) throw new Error("Missing Link Deck customization controls");
+    launcherOpen.value = "chat";
+    accent.value = "#247f7a";
+    dialog?.querySelector<HTMLButtonElement>(".kl-dialog-actions .kl-text-button--primary")?.click();
+
+    expect(settings.get().ui.launcherOpen).toBe("chat");
+    expect(settings.get().ui.accent).toBe("#247f7a");
+    expect(host?.style.getPropertyValue("--kl-accent")).toBe("#247f7a");
+
+    view.close();
+    shadow?.querySelector<HTMLButtonElement>(".kl-launcher")?.click();
+    await vi.waitFor(() => {
+      expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+        "chat",
+      );
+    });
+    view.destroy();
   });
 
   it("opens a known contact without using a browser prompt", async () => {

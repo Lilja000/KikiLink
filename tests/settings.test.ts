@@ -21,6 +21,7 @@ describe("SettingsStore", () => {
     first.update((draft) => {
       draft.ui.theme = "light";
       draft.ui.launcherSide = "left";
+      draft.ui.launcherOpen = "last";
       draft.ui.launcherPosition = { x: 0.25, y: 0.6 };
       draft.linkChat.retentionDays = 30;
     });
@@ -28,6 +29,7 @@ describe("SettingsStore", () => {
     const second = new SettingsStore(storage);
     expect(second.get().ui.theme).toBe("light");
     expect(second.get().ui.launcherSide).toBe("left");
+    expect(second.get().ui.launcherOpen).toBe("last");
     expect(second.get().ui.launcherPosition).toEqual({ x: 0.25, y: 0.6 });
     expect(second.get().linkChat.retentionDays).toBe(30);
   });
@@ -38,6 +40,7 @@ describe("SettingsStore", () => {
         accent: "red",
         theme: "neon",
         launcherSide: "middle",
+        launcherOpen: "messages",
         launcherPosition: { x: -1, y: 4 },
       },
       linkChat: { retentionDays: -5, maxMessagesPerConversation: 10 },
@@ -46,6 +49,7 @@ describe("SettingsStore", () => {
     expect(settings.ui.accent).toBe(DEFAULT_SETTINGS.ui.accent);
     expect(settings.ui.theme).toBe(DEFAULT_SETTINGS.ui.theme);
     expect(settings.ui.launcherSide).toBe("right");
+    expect(settings.ui.launcherOpen).toBe("home");
     expect(settings.ui.launcherPosition).toBeNull();
     expect(settings.linkChat.retentionDays).toBe(DEFAULT_SETTINGS.linkChat.retentionDays);
     expect(settings.linkChat.maxMessagesPerConversation).toBe(
@@ -104,7 +108,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(3);
+    expect(settings.schemaVersion).toBe(4);
     expect(settings.linkActivities).toEqual({
       enabled: false,
       activities: [{ label: "Sakura greeting", template: "bows to {target}." }],
@@ -118,8 +122,9 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(3);
+    expect(settings.schemaVersion).toBe(4);
     expect(settings.linkActivities.enabled).toBe(false);
     expect(settings.linkRoster).toEqual({ enabled: true, trackEncounters: true });
+    expect(settings.ui.launcherOpen).toBe("home");
   });
 });

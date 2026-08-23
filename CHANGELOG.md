@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0 - 2026-08-23
+
+- Replaced the chat-first launcher flow with a polished KikiLink Link Deck home screen.
+- Added live feature cards for LinkChat, LinkRoster, Activity Studio, and customization.
+- Added a persistent desktop navigation rail that becomes bottom tabs on phones.
+- Added connection, current-room, unread-chat, recent-conversation, and room-player context to Home.
+- Added a `Launcher opens` preference for Home, the last section, or LinkChat directly.
+- Added five accent presets plus a native custom color picker.
+- Made disabled optional features discoverable with a direct path to their setting.
+- Migrated settings to schema version 4 and expanded regression coverage to 35 tests.
+
 ## 0.5.0 - 2026-08-23
 
 - Added LinkRoster with live, nickname-first room membership and a current-player counter.

@@ -5,6 +5,7 @@ import type { SettingsStore } from "./settings";
 
 export type MessageDirection = "incoming" | "outgoing";
 export type ThemePreference = "dark" | "light" | "system";
+export type LauncherOpenPreference = "home" | "last" | "chat";
 export type BCConnectionState = "connecting" | "ready" | "error";
 
 export interface QuickAction {
@@ -77,11 +78,12 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 3;
+  schemaVersion: 4;
   ui: {
     accent: string;
     theme: ThemePreference;
     launcherSide: "left" | "right";
+    launcherOpen: LauncherOpenPreference;
     launcherPosition: { x: number; y: number } | null;
     reducedMotion: boolean;
   };

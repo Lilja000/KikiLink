@@ -7,11 +7,12 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   ui: {
     accent: "#d71932",
     theme: "dark",
     launcherSide: "right",
+    launcherOpen: "home",
     launcherPosition: null,
     reducedMotion: false,
   },
@@ -138,7 +139,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
 
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -146,6 +147,10 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? ui.theme
           : DEFAULT_SETTINGS.ui.theme,
       launcherSide: ui.launcherSide === "left" ? "left" : "right",
+      launcherOpen:
+        ui.launcherOpen === "last" || ui.launcherOpen === "chat"
+          ? ui.launcherOpen
+          : DEFAULT_SETTINGS.ui.launcherOpen,
       launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
       reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
     },

@@ -11,8 +11,18 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.5.0` introduces LinkRoster: a live, nickname-first room roster with
-native player actions and a private local notebook for the people you meet.
+Version `0.6.0` introduces the Link Deck: a friendly home screen and feature
+navigation that turns KikiLink into one connected, customizable workspace.
+
+## Link Deck
+
+- The floating emblem opens a polished feature home instead of dropping straight into chat
+- Live cards for LinkChat, LinkRoster, Activity Studio, and customization
+- Current connection, room, unread-chat, and room-player context at a glance
+- Persistent feature rail on desktop and familiar bottom tabs on phones
+- Configurable launcher behavior: open Home, the last section, or LinkChat directly
+- Dark lacquer, light paper, and system themes with five accent presets or any custom color
+- Disabled optional features remain discoverable and lead directly to the correct setting
 
 ## LinkRoster
 
@@ -61,6 +71,9 @@ character's items, pose, permissions, or game state.
 - Embedded KikiLink wolf, red moon, gold ring, and sakura emblem
 - Dark lacquer, light paper, and follow-system appearance modes
 - Red and gold design tokens shared by every LinkChat surface
+- Link Deck home with live feature status and quick access to every module
+- Desktop side navigation that becomes mobile bottom tabs
+- Custom accent color and configurable launcher destination
 - Draggable launcher with a saved position, configurable side, and reduced-motion mode
 - Full-width mobile conversation list with a clear back-to-list flow
 - Live Bondage Club connection status without blocking an available native Beep function

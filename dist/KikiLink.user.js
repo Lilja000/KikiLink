@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.5.0
+// @version      0.6.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -714,11 +714,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     ui: {
       accent: "#d71932",
       theme: "dark",
       launcherSide: "right",
+      launcherOpen: "home",
       launcherPosition: null,
       reducedMotion: false
     },
@@ -829,11 +830,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
     const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
         launcherSide: ui.launcherSide === "left" ? "left" : "right",
+        launcherOpen: ui.launcherOpen === "last" || ui.launcherOpen === "chat" ? ui.launcherOpen : DEFAULT_SETTINGS.ui.launcherOpen,
         launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
         reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion)
       },
@@ -1451,8 +1453,8 @@ button { color: inherit; }
   z-index: 2147482999;
   right: max(20px, env(safe-area-inset-right));
   bottom: max(90px, calc(env(safe-area-inset-bottom) + 78px));
-  width: min(920px, calc(100vw - 40px));
-  height: min(640px, calc(100vh - 130px));
+  width: min(1040px, calc(100vw - 40px));
+  height: min(680px, calc(100vh - 130px));
   min-height: 420px;
   display: grid;
   grid-template-rows: 64px minmax(0, 1fr);
@@ -1536,6 +1538,13 @@ button { color: inherit; }
   white-space: nowrap;
 }
 .kl-brand-subtitle { display: flex; align-items: center; gap: 8px; color: var(--kl-muted); font-size: 11px; letter-spacing: 0.02em; }
+.kl-topbar-mode {
+  margin-right: 2px;
+  color: var(--kl-gold);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+}
 .kl-connection { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .kl-connection-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--kl-gold); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-gold), transparent 84%); }
 .kl-connection[data-state="ready"] .kl-connection-dot { background: #68d391; box-shadow: 0 0 0 3px rgba(104, 211, 145, 0.16); }
@@ -1562,8 +1571,8 @@ button { color: inherit; }
 .kl-roster-button { position: relative; }
 .kl-roster-count {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  top: 4px;
+  right: 7px;
   min-width: 19px;
   height: 19px;
   display: grid;
@@ -1602,6 +1611,283 @@ button { color: inherit; }
 }
 .kl-text-button--primary:hover { background: var(--kl-accent-strong); }
 
+.kl-shell {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+}
+
+.kl-feature-nav {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px 9px;
+  border-right: 1px solid var(--kl-border);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--kl-accent), transparent 94%), transparent 45%),
+    var(--kl-sidebar-bg);
+}
+
+.kl-nav-item {
+  position: relative;
+  width: 100%;
+  min-height: 62px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 7px 4px;
+  border: 1px solid transparent;
+  border-radius: 15px;
+  background: transparent;
+  color: var(--kl-muted);
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.kl-nav-item:hover {
+  border-color: var(--kl-border);
+  background: var(--kl-surface-2);
+  color: var(--kl-text);
+}
+.kl-nav-item:active { transform: scale(0.97); }
+.kl-nav-item[data-active="true"] {
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 22%);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--kl-accent), transparent 82%), transparent),
+    var(--kl-surface-2);
+  color: var(--kl-text);
+  box-shadow: inset 3px 0 var(--kl-accent);
+}
+.kl-nav-item[data-available="false"] .kl-nav-icon { opacity: 0.48; }
+.kl-nav-icon { font-size: 20px; line-height: 1; }
+.kl-nav-label {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 820;
+  letter-spacing: 0.035em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kl-nav-item[data-target="settings"] { margin-top: auto; }
+
+.kl-workspace {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.kl-workspace > .kl-layout,
+.kl-workspace > .kl-home { height: 100%; }
+
+.kl-home {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: clamp(20px, 3vw, 34px);
+  background:
+    radial-gradient(circle at 88% 3%, color-mix(in srgb, var(--kl-accent), transparent 82%), transparent 30%),
+    radial-gradient(circle at 12% 105%, color-mix(in srgb, var(--kl-gold), transparent 91%), transparent 34%);
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.kl-home-hero {
+  position: relative;
+  min-height: 190px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 176px;
+  align-items: center;
+  gap: 28px;
+  margin-bottom: 22px;
+  padding: 25px 28px;
+  overflow: hidden;
+  border: 1px solid var(--kl-border);
+  border-radius: 24px;
+  background:
+    linear-gradient(125deg, color-mix(in srgb, var(--kl-accent), transparent 88%), transparent 46%),
+    color-mix(in srgb, var(--kl-surface), transparent 8%);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.035);
+}
+.kl-home-hero::before {
+  content: "";
+  position: absolute;
+  left: 28px;
+  bottom: 0;
+  width: 180px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--kl-accent), var(--kl-gold), transparent);
+}
+.kl-home-hero-copy { position: relative; z-index: 1; min-width: 0; }
+.kl-home-eyebrow,
+.kl-feature-card-kicker {
+  color: var(--kl-gold);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+}
+.kl-home-title {
+  margin: 6px 0 4px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(25px, 3.2vw, 38px);
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+.kl-home-lead { max-width: 590px; margin: 0; color: var(--kl-muted); font-size: 13px; }
+.kl-home-statuses { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.kl-home-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--kl-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 18%);
+  font-size: 10px;
+}
+.kl-home-status-label { color: var(--kl-muted); }
+.kl-home-status-value { font-weight: 780; }
+.kl-home-status-value[data-state="ready"] { color: #68d391; }
+.kl-home-status-value[data-state="error"] { color: var(--kl-danger); }
+.kl-home-mark { position: relative; width: 150px; height: 150px; place-self: center; }
+.kl-home-emblem {
+  position: absolute;
+  inset: 14px;
+  z-index: 1;
+  border: 1px solid var(--kl-border-strong);
+  border-radius: 38px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+  transform: rotate(3deg);
+}
+.kl-home-orbit {
+  position: absolute;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, var(--kl-gold), transparent 52%);
+  border-radius: 50%;
+  transform: rotate(-18deg) scaleY(0.62);
+}
+.kl-home-orbit::after {
+  content: "";
+  position: absolute;
+  top: 44%;
+  right: -4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--kl-accent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--kl-accent), transparent 28%);
+}
+
+.kl-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.kl-feature-card {
+  position: relative;
+  min-width: 0;
+  min-height: 150px;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 11px 14px;
+  padding: 18px;
+  overflow: hidden;
+  border: 1px solid var(--kl-border);
+  border-radius: 19px;
+  background: var(--kl-surface);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+}
+.kl-feature-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--kl-accent), transparent 91%), transparent 38%);
+  pointer-events: none;
+}
+.kl-feature-card:hover {
+  border-color: var(--kl-border-strong);
+  background: var(--kl-surface-hover);
+  transform: translateY(-2px);
+}
+.kl-feature-card:active { transform: translateY(0) scale(0.99); }
+.kl-feature-card--primary {
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 24%);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--kl-accent), transparent 82%), transparent 64%),
+    var(--kl-surface);
+}
+.kl-feature-card[data-available="false"] { border-style: dashed; }
+.kl-feature-card-icon {
+  position: relative;
+  z-index: 1;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--kl-border-strong);
+  border-radius: 15px;
+  background: var(--kl-surface-2);
+  color: var(--kl-gold);
+  font-size: 22px;
+}
+.kl-feature-card-copy {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.kl-feature-card-title {
+  margin-top: 3px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 19px;
+  font-weight: 700;
+}
+.kl-feature-card-description { margin-top: 5px; color: var(--kl-muted); font-size: 11px; }
+.kl-feature-card-footer {
+  position: relative;
+  z-index: 1;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--kl-border);
+}
+.kl-feature-card-metric {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--kl-meta);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kl-feature-card-arrow { margin-left: auto; color: var(--kl-gold); font-size: 14px; }
+.kl-home-privacy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 8px 2px;
+  color: var(--kl-muted);
+  font-size: 10px;
+  text-align: center;
+}
+.kl-home-privacy-icon { color: var(--kl-gold); }
+
 .kl-layout {
   position: relative;
   z-index: 0;
@@ -1621,12 +1907,34 @@ button { color: inherit; }
 
 .kl-search-wrap { padding: 14px; }
 .kl-sidebar-heading {
-  padding: 0 16px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 13px 8px 16px;
   color: var(--kl-gold);
   font-size: 10px;
   font-weight: 850;
   letter-spacing: 0.13em;
   text-transform: uppercase;
+}
+.kl-sidebar-new-chat {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--kl-border);
+  border-radius: 8px;
+  background: var(--kl-surface-2);
+  color: var(--kl-text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.kl-sidebar-new-chat:hover {
+  border-color: var(--kl-border-strong);
+  background: var(--kl-surface-hover);
 }
 .kl-search,
 .kl-composer-input,
@@ -1876,6 +2184,28 @@ button { color: inherit; }
 .kl-setting-help { margin-top: 2px; color: var(--kl-muted); font-size: 11px; }
 .kl-number-input { width: 90px; height: 38px; padding: 0 10px; border-radius: 11px; }
 .kl-select { width: 142px; height: 38px; padding: 0 10px; border-radius: 11px; }
+.kl-color-control { display: flex; align-items: center; gap: 8px; }
+.kl-color-presets { display: flex; align-items: center; gap: 5px; }
+.kl-color-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid var(--kl-surface);
+  border-radius: 50%;
+  outline: 1px solid var(--kl-border);
+  background: var(--kl-swatch);
+  cursor: pointer;
+}
+.kl-color-swatch:hover { outline-color: var(--kl-border-strong); transform: scale(1.08); }
+.kl-color-input {
+  width: 38px;
+  height: 32px;
+  padding: 3px;
+  border: 1px solid var(--kl-border);
+  border-radius: 10px;
+  background: var(--kl-input-bg);
+  cursor: pointer;
+}
 .kl-switch { width: 42px; height: 24px; position: relative; flex: 0 0 auto; }
 .kl-switch input { position: absolute; opacity: 0; pointer-events: none; }
 .kl-switch-track { position: absolute; inset: 0; border: 1px solid var(--kl-border); border-radius: 999px; background: var(--kl-surface-hover); cursor: pointer; transition: background 140ms ease; }
@@ -2189,6 +2519,45 @@ select:focus-visible {
     border-radius: 20px;
   }
 
+  .kl-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 64px;
+  }
+  .kl-workspace { grid-row: 1; }
+  .kl-feature-nav {
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    padding: 5px 7px calc(5px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--kl-border);
+    border-right: 0;
+    background: var(--kl-composer-bg);
+  }
+  .kl-nav-item {
+    min-width: 0;
+    min-height: 51px;
+    gap: 2px;
+    padding: 4px 2px;
+    border-radius: 12px;
+  }
+  .kl-nav-item[data-target="settings"] { margin-top: 0; }
+  .kl-nav-item[data-active="true"] { box-shadow: inset 0 -3px var(--kl-accent); }
+  .kl-nav-icon { font-size: 18px; }
+  .kl-nav-label { font-size: 8px; }
+  .kl-roster-count { top: 1px; right: calc(50% - 25px); }
+  .kl-home { padding: 18px; }
+  .kl-home-hero {
+    min-height: 174px;
+    grid-template-columns: minmax(0, 1fr) 122px;
+    gap: 16px;
+    padding: 21px;
+    border-radius: 19px;
+  }
+  .kl-home-mark { width: 110px; height: 110px; }
+  .kl-home-emblem { inset: 11px; border-radius: 28px; }
+  .kl-home-title { font-size: clamp(23px, 7vw, 31px); }
+  .kl-feature-card { min-height: 142px; padding: 15px; }
   .kl-layout { grid-template-columns: minmax(0, 1fr); }
   .kl-sidebar { width: auto; border-right: 0; }
   .kl-panel[data-mobile-view="list"] .kl-main { display: none; }
@@ -2237,7 +2606,21 @@ select:focus-visible {
   .kl-brand-title { font-size: 14px; }
   .kl-brand-emblem { width: 34px; height: 34px; }
   .kl-topbar { gap: 7px; padding-right: 10px; }
+  .kl-topbar-mode { display: none; }
   .kl-icon-button { width: 34px; height: 34px; }
+  .kl-home { padding: 12px; }
+  .kl-home-hero { min-height: 0; grid-template-columns: minmax(0, 1fr); margin-bottom: 10px; padding: 18px; }
+  .kl-home-mark { display: none; }
+  .kl-home-lead { font-size: 11px; }
+  .kl-home-statuses { margin-top: 13px; }
+  .kl-home-status { max-width: 100%; }
+  .kl-home-status-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kl-feature-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .kl-feature-card { min-height: 126px; grid-template-columns: 42px minmax(0, 1fr); padding: 13px; }
+  .kl-feature-card-icon { width: 42px; height: 42px; border-radius: 13px; font-size: 19px; }
+  .kl-feature-card-title { font-size: 17px; }
+  .kl-home-privacy { padding-bottom: 8px; }
+  .kl-color-control { align-items: flex-end; flex-direction: column; }
   .kl-conversation-side { max-width: 44px; }
   .kl-setting-row { align-items: flex-start; }
   .kl-select { width: 126px; }
@@ -2297,7 +2680,49 @@ select:focus-visible {
     #connectionText = element("span", { className: "kl-connection-text" });
     #panel = element("section", {
       className: "kl-panel",
-      ariaLabel: "KikiLink Beep chat"
+      ariaLabel: "KikiLink Link Deck"
+    });
+    #featureNav = element("nav", {
+      className: "kl-feature-nav",
+      ariaLabel: "KikiLink features"
+    });
+    #workspace = element("div", { className: "kl-workspace" });
+    #home = element("section", { className: "kl-home" });
+    #chatLayout = element("div", { className: "kl-layout" });
+    #homeNavButton = element("button", {
+      className: "kl-nav-item",
+      type: "button",
+      title: "Home",
+      ariaLabel: "Open KikiLink home"
+    });
+    #chatNavButton = element("button", {
+      className: "kl-nav-item",
+      type: "button",
+      title: "LinkChat",
+      ariaLabel: "Open LinkChat"
+    });
+    #settingsNavButton = element("button", {
+      className: "kl-nav-item",
+      type: "button",
+      title: "Customize KikiLink",
+      ariaLabel: "Open KikiLink settings"
+    });
+    #homeGreeting = element("h1", { className: "kl-home-title" });
+    #homeConnection = element("span", { className: "kl-home-status-value" });
+    #homeRoom = element("span", { className: "kl-home-status-value" });
+    #homeChatMetric = element("span", { className: "kl-feature-card-metric" });
+    #homeRosterMetric = element("span", { className: "kl-feature-card-metric" });
+    #homeActivitiesMetric = element("span", { className: "kl-feature-card-metric" });
+    #homeSettingsMetric = element("span", { className: "kl-feature-card-metric" });
+    #homeRosterCard = element("button", {
+      className: "kl-feature-card",
+      type: "button",
+      title: "Open LinkRoster"
+    });
+    #homeActivitiesCard = element("button", {
+      className: "kl-feature-card",
+      type: "button",
+      title: "Open LinkActivities"
     });
     #conversationList = element("div", { className: "kl-conversations" });
     #search = element("input", { className: "kl-search" });
@@ -2331,7 +2756,11 @@ select:focus-visible {
       text: "Save"
     });
     #themeSelect = element("select", { className: "kl-select" });
+    #accentInput = element("input", { className: "kl-color-input" });
     #launcherSideSelect = element("select", {
+      className: "kl-select"
+    });
+    #launcherOpenSelect = element("select", {
       className: "kl-select"
     });
     #reducedMotionToggle = element("input");
@@ -2339,9 +2768,8 @@ select:focus-visible {
     #rosterEnabledToggle = element("input");
     #rosterTrackingToggle = element("input");
     #rosterButton = element("button", {
-      className: "kl-icon-button kl-roster-button",
+      className: "kl-nav-item kl-roster-button",
       type: "button",
-      text: "\u2637",
       title: "LinkRoster",
       ariaLabel: "Open LinkRoster"
     });
@@ -2372,9 +2800,8 @@ select:focus-visible {
       className: "kl-action-editor kl-activities-editor"
     });
     #activitiesButton = element("button", {
-      className: "kl-icon-button kl-activities-button",
+      className: "kl-nav-item kl-activities-button",
       type: "button",
-      text: "\u2726",
       title: "LinkActivities",
       ariaLabel: "Open LinkActivities"
     });
@@ -2409,6 +2836,10 @@ select:focus-visible {
     #selectedActivityTarget;
     #selectedRosterMember;
     #rosterScope = "current";
+    #workspaceView = "home";
+    #lastWorkspaceView = "home";
+    #presentCount = 0;
+    #unreadCount = 0;
     #notebookDirty = false;
     #mounted = false;
     #connectionState = "connecting";
@@ -2457,13 +2888,15 @@ select:focus-visible {
       this.#mounted = false;
     }
     isActiveConversation(peerNumber) {
-      return !this.#panel.hidden && this.#activePeer === peerNumber;
+      return !this.#panel.hidden && this.#workspaceView === "chat" && this.#activePeer === peerNumber;
     }
     setConnectionState(state, message) {
       this.#connectionState = state;
       this.#connection.dataset.state = state;
       this.#connectionText.textContent = state === "ready" ? "Connected" : state === "error" ? "Connection error" : "Connecting";
       this.#connection.title = message ?? this.#connectionText.textContent ?? "";
+      this.#homeConnection.textContent = this.#connectionText.textContent;
+      this.#homeConnection.dataset.state = state;
       const canSend = this.adapter.canSendBeep();
       this.#sendButton.disabled = !canSend;
       this.#composer.placeholder = canSend ? "Write a Beep\u2026" : "Connecting to Bondage Club\u2026";
@@ -2480,8 +2913,14 @@ select:focus-visible {
       if (this.#activePeer === peerNumber) await this.#renderMessages(peerNumber);
     }
     async open() {
+      const preference = this.settings.get().ui.launcherOpen;
+      const view = preference === "chat" ? "chat" : preference === "last" ? this.#lastWorkspaceView : "home";
+      await this.#openPanel(view);
+    }
+    async #openPanel(view) {
       this.#panel.hidden = false;
       this.#launcher.setAttribute("aria-expanded", "true");
+      this.#showWorkspace(view);
       await this.refresh();
     }
     close() {
@@ -2491,23 +2930,26 @@ select:focus-visible {
     async openChat(memberNumber, memberName) {
       const name = this.adapter.getMemberNickname(memberNumber) || memberName?.trim() || this.adapter.getMemberName(memberNumber);
       await this.service.ensureConversation(memberNumber, name);
-      await this.open();
+      await this.#openPanel("chat");
       await this.#selectConversation(memberNumber, name);
     }
     openActivities() {
-      this.#openActivities();
+      void this.#openPanel(this.#workspaceView).then(() => this.#openActivities());
     }
     openRoster() {
-      this.#openRoster();
+      void this.#openPanel(this.#workspaceView).then(() => this.#openRoster());
     }
     onRosterSync(result) {
+      this.#presentCount = result.presentCount;
       this.#rosterCount.hidden = result.presentCount === 0;
       this.#rosterCount.textContent = result.presentCount > 99 ? "99+" : result.presentCount.toString();
       this.#rosterButton.title = result.presentCount ? `LinkRoster \xB7 ${result.presentCount} in room` : "LinkRoster";
+      this.#renderHomeStatus();
       if (this.#rosterDialog.open && result.changed) this.#renderRoster();
     }
     async refresh() {
-      await Promise.all([this.#renderConversations(), this.#updateUnreadBadge()]);
+      await this.#updateUnreadBadge();
+      await Promise.all([this.#renderConversations(), this.#renderHome()]);
     }
     #buildLauncher() {
       this.#badge.hidden = true;
@@ -2526,6 +2968,7 @@ select:focus-visible {
     #buildPanel() {
       this.#panel.hidden = true;
       this.#panel.dataset.mobileView = "list";
+      this.#panel.dataset.workspace = "home";
       this.#connection.append(this.#connectionDot, this.#connectionText);
       this.setConnectionState(this.adapter.isReady() ? "ready" : "connecting");
       const brand = element(
@@ -2539,27 +2982,11 @@ select:focus-visible {
           element(
             "div",
             { className: "kl-brand-subtitle" },
-            `LinkChat + LinkRoster \xB7 v${this.version}`,
+            `Personal Link Deck \xB7 v${this.version}`,
             this.#connection
           )
         )
       );
-      const newChat = element("button", {
-        className: "kl-icon-button",
-        type: "button",
-        text: "+",
-        title: "New Beep chat",
-        ariaLabel: "New Beep chat",
-        onClick: () => this.#openNewChat()
-      });
-      const settings = element("button", {
-        className: "kl-icon-button",
-        type: "button",
-        text: "\u2699",
-        title: "KikiLink settings",
-        ariaLabel: "KikiLink settings",
-        onClick: () => this.#openSettings()
-      });
       const close = element("button", {
         className: "kl-icon-button",
         type: "button",
@@ -2568,22 +2995,15 @@ select:focus-visible {
         ariaLabel: "Close KikiLink",
         onClick: () => this.close()
       });
-      this.#activitiesButton.addEventListener("click", () => this.#openActivities());
-      this.#activitiesButton.hidden = !this.settings.get().linkActivities.enabled;
-      this.#rosterCount.hidden = true;
-      this.#rosterButton.append(this.#rosterCount);
-      this.#rosterButton.addEventListener("click", () => this.#openRoster());
-      this.#rosterButton.hidden = !this.settings.get().linkRoster.enabled;
       const topbar = element(
         "header",
         { className: "kl-topbar" },
         brand,
-        this.#rosterButton,
-        this.#activitiesButton,
-        newChat,
-        settings,
+        element("div", { className: "kl-topbar-mode", text: "LINK DECK" }),
         close
       );
+      this.#buildFeatureNavigation();
+      this.#buildHome();
       this.#search.type = "search";
       this.#search.placeholder = "Search chats";
       this.#search.autocomplete = "off";
@@ -2592,7 +3012,19 @@ select:focus-visible {
         "aside",
         { className: "kl-sidebar" },
         element("div", { className: "kl-search-wrap" }, this.#search),
-        element("div", { className: "kl-sidebar-heading", text: "Recent chats" }),
+        element(
+          "div",
+          { className: "kl-sidebar-heading" },
+          element("span", { text: "Recent chats" }),
+          element("button", {
+            className: "kl-sidebar-new-chat",
+            type: "button",
+            text: "+",
+            title: "New Beep chat",
+            ariaLabel: "New Beep chat",
+            onClick: () => this.#openNewChat()
+          })
+        ),
         this.#conversationList
       );
       this.#empty.append(
@@ -2611,13 +3043,192 @@ select:focus-visible {
       );
       this.#buildChat();
       const main = element("main", { className: "kl-main" }, this.#empty, this.#chat);
-      const layout = element("div", { className: "kl-layout" }, sidebar, main);
-      this.#panel.append(topbar, layout);
+      this.#chatLayout.append(sidebar, main);
+      this.#workspace.append(this.#home, this.#chatLayout);
+      const shell = element("div", { className: "kl-shell" }, this.#featureNav, this.#workspace);
+      this.#panel.append(topbar, shell);
+      this.#showWorkspace("home", false);
       this.#panel.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && !this.#settingsDialog.open && !this.#activitiesDialog.open && !this.#newChatDialog.open && !this.#rosterDialog.open) {
           this.close();
         }
       });
+    }
+    #buildFeatureNavigation() {
+      this.#configureNavButton(this.#homeNavButton, "\u2302", "Home", "home");
+      this.#configureNavButton(this.#chatNavButton, "\u2194", "Chat", "chat");
+      this.#configureNavButton(this.#rosterButton, "\u2637", "Players", "roster");
+      this.#configureNavButton(this.#activitiesButton, "\u2726", "Studio", "activities");
+      this.#configureNavButton(this.#settingsNavButton, "\u2699", "Customize", "settings");
+      this.#rosterCount.hidden = true;
+      this.#rosterButton.append(this.#rosterCount);
+      this.#featureNav.append(
+        this.#homeNavButton,
+        this.#chatNavButton,
+        this.#rosterButton,
+        this.#activitiesButton,
+        this.#settingsNavButton
+      );
+    }
+    #configureNavButton(button, icon, label, target) {
+      button.dataset.target = target;
+      button.replaceChildren(
+        element("span", { className: "kl-nav-icon", text: icon }),
+        element("span", { className: "kl-nav-label", text: label })
+      );
+      button.addEventListener("click", () => this.#activateFeature(target));
+    }
+    #activateFeature(target) {
+      if (target === "home" || target === "chat") {
+        this.#showWorkspace(target);
+        void this.refresh();
+        return;
+      }
+      if (target === "roster") {
+        this.#openRoster();
+        return;
+      }
+      if (target === "activities") {
+        this.#openActivities();
+        return;
+      }
+      this.#openSettings();
+    }
+    #buildHome() {
+      const hero = element(
+        "header",
+        { className: "kl-home-hero" },
+        element(
+          "div",
+          { className: "kl-home-hero-copy" },
+          element("div", { className: "kl-home-eyebrow", text: "YOUR PERSONAL LINK DECK" }),
+          this.#homeGreeting,
+          element("p", {
+            className: "kl-home-lead",
+            text: "Chats, people, room tools, and your preferences \u2014 connected in one place."
+          }),
+          element(
+            "div",
+            { className: "kl-home-statuses" },
+            this.#homeStatus("Connection", this.#homeConnection),
+            this.#homeStatus("Current room", this.#homeRoom)
+          )
+        ),
+        element(
+          "div",
+          { className: "kl-home-mark", ariaLabel: "KikiLink emblem" },
+          this.#emblem("kl-home-emblem"),
+          element("span", { className: "kl-home-orbit" })
+        )
+      );
+      const chatCard = element("button", {
+        className: "kl-feature-card kl-feature-card--primary",
+        type: "button",
+        title: "Open LinkChat",
+        onClick: () => this.#activateFeature("chat")
+      });
+      this.#fillFeatureCard(
+        chatCard,
+        "\u2194",
+        "MESSAGES",
+        "LinkChat",
+        "Recent Beeps, pinned conversations, drafts, and quick actions.",
+        this.#homeChatMetric
+      );
+      this.#fillFeatureCard(
+        this.#homeRosterCard,
+        "\u2637",
+        "PEOPLE",
+        "LinkRoster",
+        "See who is here, Whisper instantly, and keep private notes.",
+        this.#homeRosterMetric
+      );
+      this.#homeRosterCard.addEventListener("click", () => this.#activateFeature("roster"));
+      this.#fillFeatureCard(
+        this.#homeActivitiesCard,
+        "\u2726",
+        "ROOM TOOLS",
+        "Activity Studio",
+        "Your optional library of reusable room emotes.",
+        this.#homeActivitiesMetric
+      );
+      this.#homeActivitiesCard.addEventListener("click", () => this.#activateFeature("activities"));
+      const settingsCard = element("button", {
+        className: "kl-feature-card",
+        type: "button",
+        title: "Customize KikiLink",
+        onClick: () => this.#activateFeature("settings")
+      });
+      this.#fillFeatureCard(
+        settingsCard,
+        "\u2699",
+        "YOUR SPACE",
+        "Customize",
+        "Theme, accent, launcher behavior, privacy, and feature controls.",
+        this.#homeSettingsMetric
+      );
+      const cards = element(
+        "div",
+        { className: "kl-feature-grid" },
+        chatCard,
+        this.#homeRosterCard,
+        this.#homeActivitiesCard,
+        settingsCard
+      );
+      const privacy = element(
+        "div",
+        { className: "kl-home-privacy" },
+        element("span", { className: "kl-home-privacy-icon", text: "\u25C7" }),
+        element(
+          "span",
+          {},
+          "Private by design \xB7 chats, notes, favorites, and preferences stay in this browser."
+        )
+      );
+      this.#home.append(hero, cards, privacy);
+    }
+    #homeStatus(label, value) {
+      return element(
+        "div",
+        { className: "kl-home-status" },
+        element("span", { className: "kl-home-status-label", text: label }),
+        value
+      );
+    }
+    #fillFeatureCard(card, icon, kicker, title, description, metric) {
+      card.replaceChildren(
+        element("span", { className: "kl-feature-card-icon", text: icon }),
+        element(
+          "span",
+          { className: "kl-feature-card-copy" },
+          element("span", { className: "kl-feature-card-kicker", text: kicker }),
+          element("span", { className: "kl-feature-card-title", text: title }),
+          element("span", { className: "kl-feature-card-description", text: description })
+        ),
+        element(
+          "span",
+          { className: "kl-feature-card-footer" },
+          metric,
+          element("span", { className: "kl-feature-card-arrow", text: "\u2197" })
+        )
+      );
+    }
+    #showWorkspace(view, remember = true) {
+      this.#workspaceView = view;
+      if (remember) this.#lastWorkspaceView = view;
+      this.#panel.dataset.workspace = view;
+      this.#home.hidden = view !== "home";
+      this.#chatLayout.hidden = view !== "chat";
+      if (view === "chat" && this.#activePeer === void 0) {
+        this.#panel.dataset.mobileView = "list";
+      }
+      this.#updateNavigation();
+    }
+    #updateNavigation() {
+      const active = this.#settingsDialog.open ? "settings" : this.#rosterDialog.open ? "roster" : this.#activitiesDialog.open ? "activities" : this.#workspaceView;
+      for (const button of this.#featureNav.querySelectorAll(".kl-nav-item")) {
+        button.dataset.active = String(button.dataset.target === active);
+      }
     }
     #buildChat() {
       this.#chat.hidden = true;
@@ -2697,6 +3308,32 @@ select:focus-visible {
         "Lacquer black, warm paper, or your system theme.",
         this.#themeSelect
       );
+      this.#accentInput.type = "color";
+      const accentPresets = element("div", { className: "kl-color-presets" });
+      for (const [color, label] of [
+        ["#d71932", "Crimson"],
+        ["#b63a67", "Sakura"],
+        ["#ad7624", "Gold"],
+        ["#7557c8", "Violet"],
+        ["#247f7a", "Jade"]
+      ]) {
+        const swatch = element("button", {
+          className: "kl-color-swatch",
+          type: "button",
+          title: label,
+          ariaLabel: `Use ${label} accent`,
+          onClick: () => {
+            this.#accentInput.value = color;
+          }
+        });
+        swatch.style.setProperty("--kl-swatch", color);
+        accentPresets.append(swatch);
+      }
+      const accent = this.#settingRow(
+        "Accent color",
+        "Choose a preset or any color that feels like yours.",
+        element("div", { className: "kl-color-control" }, accentPresets, this.#accentInput)
+      );
       this.#launcherSideSelect.replaceChildren(
         selectOption("right", "Right"),
         selectOption("left", "Left")
@@ -2705,6 +3342,16 @@ select:focus-visible {
         "Launcher side",
         "Drag the emblem anywhere. Changing its side resets it to the default corner.",
         this.#launcherSideSelect
+      );
+      this.#launcherOpenSelect.replaceChildren(
+        selectOption("home", "Link Deck home"),
+        selectOption("last", "Last section"),
+        selectOption("chat", "LinkChat directly")
+      );
+      const launcherOpen = this.#settingRow(
+        "Launcher opens",
+        "Choose what happens when you tap the floating emblem.",
+        this.#launcherOpenSelect
       );
       this.#reducedMotionToggle.type = "checkbox";
       const reducedMotionSwitch = element(
@@ -2749,7 +3396,9 @@ select:focus-visible {
         { className: "kl-setting-section" },
         element("div", { className: "kl-setting-section-title", text: "Interface" }),
         theme,
+        accent,
         launcherSide,
+        launcherOpen,
         reducedMotion
       );
       this.#rosterEnabledToggle.type = "checkbox";
@@ -2863,6 +3512,7 @@ select:focus-visible {
       });
       const actions = element("footer", { className: "kl-dialog-actions" }, cancel, this.#saveSettingsButton);
       this.#settingsDialog.append(header, body, actions);
+      this.#settingsDialog.addEventListener("close", () => this.#updateNavigation());
     }
     #buildNewChatDialog() {
       const close = element("button", {
@@ -3000,12 +3650,17 @@ select:focus-visible {
         this.#notebookDirty = true;
         this.#saveNotebookButton.disabled = false;
       });
-      this.#rosterDialog.addEventListener("close", () => this.#saveNotebook(false));
+      this.#rosterDialog.addEventListener("close", () => {
+        this.#saveNotebook(false);
+        this.#updateNavigation();
+      });
       this.#rosterDialog.append(header, body, footer);
     }
     #openRoster() {
       if (!this.settings.get().linkRoster.enabled) {
-        this.#toast("LinkRoster is disabled in KikiLink settings.", "error");
+        this.#openSettings();
+        this.#rosterEnabledToggle.focus();
+        this.#toast("Enable LinkRoster here to add it back to your deck.");
         return;
       }
       this.roster.sync();
@@ -3015,6 +3670,7 @@ select:focus-visible {
       this.#notebookDirty = false;
       this.#renderRoster();
       if (!this.#rosterDialog.open) this.#rosterDialog.showModal();
+      this.#updateNavigation();
       this.#rosterSearch.focus();
     }
     #renderRoster() {
@@ -3318,10 +3974,13 @@ select:focus-visible {
         this.#performActivityButton
       );
       this.#activitiesDialog.append(header, body, actions);
+      this.#activitiesDialog.addEventListener("close", () => this.#updateNavigation());
     }
     #openActivities() {
       if (!this.settings.get().linkActivities.enabled) {
-        this.#toast("LinkActivities is disabled in KikiLink settings.", "error");
+        this.#openSettings();
+        this.#activitiesToggle.focus();
+        this.#toast("Activity Studio is optional. Enable its shortcut here when you want it.");
         return;
       }
       this.#activityTargetQuery.value = "";
@@ -3334,6 +3993,7 @@ select:focus-visible {
       if (this.#selectedActivityIndex >= activityCount) this.#selectedActivityIndex = 0;
       this.#renderActivitiesDialog();
       if (!this.#activitiesDialog.open) this.#activitiesDialog.showModal();
+      this.#updateNavigation();
       this.#activityTargetQuery.focus();
     }
     #renderActivitiesDialog() {
@@ -3450,6 +4110,41 @@ select:focus-visible {
         ),
         control
       );
+    }
+    async #renderHome() {
+      const ownName = this.adapter.getOwnName().trim();
+      const greeting = greetingForCurrentTime();
+      this.#homeGreeting.textContent = ownName && ownName.toLocaleLowerCase() !== "me" ? `${greeting}, ${ownName}.` : `${greeting}.`;
+      const conversations = await this.service.listConversations();
+      const recent = [...conversations].sort(
+        (left, right) => right.lastMessageAt - left.lastMessageAt
+      )[0];
+      if (this.#unreadCount > 0) {
+        this.#homeChatMetric.textContent = `${this.#unreadCount} unread \xB7 ${conversations.length} chats`;
+      } else if (recent && recent.lastMessageAt > 0) {
+        this.#homeChatMetric.textContent = `Last with ${recent.peerName} \xB7 ${formatRelativeTime(recent.lastMessageAt)}`;
+      } else if (conversations.length > 0) {
+        this.#homeChatMetric.textContent = `${conversations.length} saved ${conversations.length === 1 ? "chat" : "chats"}`;
+      } else {
+        this.#homeChatMetric.textContent = "Start your first Beep chat";
+      }
+      this.#renderHomeStatus();
+    }
+    #renderHomeStatus() {
+      const settings = this.settings.get();
+      const inRoom = typeof this.adapter.isInChatRoom === "function" && this.adapter.isInChatRoom();
+      const roomName = typeof this.adapter.getCurrentRoomName === "function" ? this.adapter.getCurrentRoomName() : void 0;
+      this.#homeConnection.textContent = this.#connectionText.textContent || "Connecting";
+      this.#homeConnection.dataset.state = this.#connectionState;
+      this.#homeRoom.textContent = roomName || (inRoom ? "Unnamed room" : "Not in a chat room");
+      this.#rosterButton.dataset.available = String(settings.linkRoster.enabled);
+      this.#homeRosterCard.dataset.available = String(settings.linkRoster.enabled);
+      this.#homeRosterMetric.textContent = settings.linkRoster.enabled ? this.#presentCount > 0 ? `${this.#presentCount} ${this.#presentCount === 1 ? "person" : "people"} here now` : inRoom ? "No other players in this room" : "Open while you are in a room" : "Disabled \xB7 tap to enable";
+      this.#activitiesButton.dataset.available = String(settings.linkActivities.enabled);
+      this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
+      this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled ? `${settings.linkActivities.activities.length} saved ${settings.linkActivities.activities.length === 1 ? "activity" : "activities"}` : "Optional \xB7 tap to enable";
+      const themeLabel = settings.ui.theme === "light" ? "Light paper" : settings.ui.theme === "system" ? "System theme" : "Dark lacquer";
+      this.#homeSettingsMetric.textContent = `${themeLabel} \xB7 ${settings.ui.accent.toUpperCase()}`;
     }
     async #renderConversations() {
       const query = this.#search.value.trim().toLocaleLowerCase();
@@ -3786,7 +4481,9 @@ ${expanded}` : expanded;
     #openSettings() {
       const settings = this.settings.get();
       this.#themeSelect.value = settings.ui.theme;
+      this.#accentInput.value = settings.ui.accent;
       this.#launcherSideSelect.value = settings.ui.launcherSide;
+      this.#launcherOpenSelect.value = settings.ui.launcherOpen;
       this.#reducedMotionToggle.checked = settings.ui.reducedMotion;
       this.#historyToggle.checked = settings.linkChat.saveHistory;
       this.#retentionInput.value = settings.linkChat.retentionDays.toString();
@@ -3796,6 +4493,7 @@ ${expanded}` : expanded;
       this.#activitiesToggle.checked = settings.linkActivities.enabled;
       this.#renderActivityEditor(settings.linkActivities.activities);
       if (!this.#settingsDialog.open) this.#settingsDialog.showModal();
+      this.#updateNavigation();
     }
     #saveSettings() {
       const retentionDays = Number(this.#retentionInput.value);
@@ -3803,7 +4501,9 @@ ${expanded}` : expanded;
       const launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
       const settings = this.settings.update((draft) => {
         draft.ui.theme = this.#themeSelect.value === "light" || this.#themeSelect.value === "system" ? this.#themeSelect.value : "dark";
+        draft.ui.accent = this.#accentInput.value;
         draft.ui.launcherSide = launcherSide;
+        draft.ui.launcherOpen = this.#launcherOpenSelect.value === "last" || this.#launcherOpenSelect.value === "chat" ? this.#launcherOpenSelect.value : "home";
         if (launcherSide !== currentSettings.ui.launcherSide) draft.ui.launcherPosition = null;
         draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
         draft.linkChat.saveHistory = this.#historyToggle.checked;
@@ -3816,8 +4516,7 @@ ${expanded}` : expanded;
       });
       this.#applyTheme(settings);
       this.#renderQuickActions();
-      this.#rosterButton.hidden = !settings.linkRoster.enabled;
-      this.#activitiesButton.hidden = !settings.linkActivities.enabled;
+      this.#renderHomeStatus();
       this.#settingsDialog.close();
       void this.service.prune();
       this.#toast("Settings saved.");
@@ -3845,6 +4544,7 @@ ${expanded}` : expanded;
     }
     async #updateUnreadBadge() {
       const unread = await this.service.totalUnread();
+      this.#unreadCount = unread;
       this.#badge.hidden = unread === 0;
       this.#badge.textContent = unread > 99 ? "99+" : unread.toString();
     }
@@ -3859,6 +4559,7 @@ ${expanded}` : expanded;
     }
     #applyTheme(settings) {
       this.#host.style.setProperty("--kl-accent", settings.ui.accent);
+      this.#host.style.setProperty("--kl-accent-strong", settings.ui.accent);
       this.#host.dataset.theme = settings.ui.theme;
       this.#host.dataset.reducedMotion = String(settings.ui.reducedMotion);
       this.#launcher.dataset.side = settings.ui.launcherSide;
@@ -4013,6 +4714,13 @@ ${expanded}` : expanded;
     return new Intl.DateTimeFormat(void 0, { month: "short", day: "numeric" }).format(
       new Date(timestamp)
     );
+  }
+  function greetingForCurrentTime() {
+    const hour = (/* @__PURE__ */ new Date()).getHours();
+    if (hour < 5) return "Still awake";
+    if (hour < 12) return "Good morning";
+    if (hour < 18) return "Good afternoon";
+    return "Good evening";
   }
   function formatFullSeenTime(timestamp) {
     if (!timestamp) return "Not recorded";
@@ -4510,7 +5218,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.5.0");
+    const app = new KikiLinkApp("0.6.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();
