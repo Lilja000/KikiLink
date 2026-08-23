@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.3.1
+// @version      0.4.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -364,6 +364,34 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (typeof Player !== "object" || Player === null) return "me";
       return cleanName(Player.Nickname) ?? cleanName(Player.Name) ?? "me";
     }
+    isInChatRoom() {
+      return typeof CurrentScreen === "string" && CurrentScreen === "ChatRoom" && typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter);
+    }
+    canSendRoomEmote() {
+      return this.isInChatRoom() && typeof ChatRoomSendEmote === "function";
+    }
+    getRoomCharacters() {
+      if (!this.isInChatRoom()) return [];
+      const ownMemberNumber = this.getOwnMemberNumber();
+      return ChatRoomCharacter.filter(
+        (character) => Number.isSafeInteger(character.MemberNumber) && character.MemberNumber !== ownMemberNumber
+      ).map((character) => ({
+        memberNumber: character.MemberNumber,
+        memberName: this.getMemberNickname(character.MemberNumber) ?? cleanName(character.Name) ?? `Member ${character.MemberNumber}`
+      })).sort((left, right) => left.memberName.localeCompare(right.memberName));
+    }
+    sendRoomEmote(content) {
+      const message = content.trim();
+      if (!message) throw new Error("An activity cannot be empty");
+      if (message.length > 1e3) {
+        throw new Error("An activity cannot exceed 1000 characters after variables are expanded");
+      }
+      if (!this.isInChatRoom()) throw new Error("Open a Bondage Club chat room first");
+      if (typeof ChatRoomSendEmote !== "function") {
+        throw new Error("The Bondage Club room chat is still loading");
+      }
+      ChatRoomSendEmote(message);
+    }
     getKnownContacts() {
       const contacts = /* @__PURE__ */ new Map();
       if (typeof Player === "object" && Player !== null && Player.FriendNames instanceof Map) {
@@ -670,6 +698,38 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (timer !== void 0) clearTimeout(timer);
       timer = setTimeout(() => callback(...args), delayMs);
     };
+  }
+
+  // src/modules/link-activities/link-activities-service.ts
+  var LinkActivitiesService = class {
+    constructor(adapter) {
+      this.adapter = adapter;
+    }
+    adapter;
+    isAvailable() {
+      return this.adapter.canSendRoomEmote();
+    }
+    getTargets() {
+      return this.adapter.getRoomCharacters();
+    }
+    preview(activity, target) {
+      return expandActivityTemplate(activity.template, {
+        sourceName: this.adapter.getOwnName(),
+        target
+      });
+    }
+    perform(activity, target) {
+      const liveTarget = this.getTargets().find(
+        (candidate) => candidate.memberNumber === target.memberNumber
+      );
+      if (!liveTarget) throw new Error(`${target.memberName} is no longer in this room`);
+      const content = this.preview(activity, liveTarget);
+      this.adapter.sendRoomEmote(content);
+      return content;
+    }
+  };
+  function expandActivityTemplate(template, context) {
+    return template.trim().replaceAll("{source}", context.sourceName).replaceAll("{target}", context.target.memberName).replaceAll("{member}", context.target.memberNumber.toString());
   }
 
   // src/modules/link-chat/styles.ts
@@ -1239,7 +1299,9 @@ button { color: inherit; }
 }
 .kl-dialog::backdrop { background: rgba(0, 0, 0, 0.68); backdrop-filter: blur(4px); }
 .kl-dialog-header { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--kl-border); background: var(--kl-topbar-bg); }
+.kl-dialog-heading { min-width: 0; margin-right: auto; }
 .kl-dialog-title { margin-right: auto; font-family: Georgia, "Times New Roman", serif; font-size: 17px; font-weight: 700; }
+.kl-dialog-subtitle { margin-top: 2px; color: var(--kl-muted); font-size: 10px; letter-spacing: 0.035em; }
 .kl-dialog-body { display: grid; gap: 18px; max-height: calc(100vh - 170px); padding: 18px; overflow: auto; }
 .kl-setting-section { display: grid; gap: 14px; }
 .kl-setting-section + .kl-setting-section { padding-top: 17px; border-top: 1px solid var(--kl-border); }
@@ -1291,6 +1353,102 @@ button { color: inherit; }
 .kl-contact-number,
 .kl-contact-empty { color: var(--kl-muted); font-size: 11px; }
 .kl-contact-empty { padding: 18px 8px; text-align: center; }
+
+.kl-activities-dialog { width: min(760px, calc(100vw - 32px)); }
+.kl-activities-body { gap: 13px; }
+.kl-activity-status {
+  padding: 9px 11px;
+  border: 1px solid var(--kl-border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 20%);
+  color: var(--kl-muted);
+  font-size: 11px;
+}
+.kl-activity-status[data-kind="ready"] { color: #68d391; }
+.kl-activity-status[data-kind="error"] { color: var(--kl-danger); }
+.kl-activity-studio {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 0.82fr) minmax(260px, 1.18fr);
+  gap: 14px;
+}
+.kl-activity-pane { min-width: 0; display: grid; align-content: start; gap: 9px; }
+.kl-activity-pane-title {
+  color: var(--kl-gold);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+.kl-activity-targets,
+.kl-activity-library {
+  min-height: 180px;
+  max-height: min(330px, calc(100vh - 390px));
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--kl-border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--kl-input-bg), transparent 20%);
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
+}
+.kl-activity-target {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.kl-activity-target:hover { background: var(--kl-surface-hover); }
+.kl-activity-target[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 28%);
+  background: color-mix(in srgb, var(--kl-accent), transparent 87%);
+}
+.kl-activity-target .kl-avatar { width: 40px; height: 40px; border-radius: 12px; }
+.kl-activity-library { display: grid; align-content: start; gap: 7px; }
+.kl-activity-card {
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid var(--kl-border);
+  border-radius: 12px;
+  background: var(--kl-surface-2);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.kl-activity-card:hover { border-color: var(--kl-border-strong); background: var(--kl-surface-hover); }
+.kl-activity-card[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 32%);
+  background: color-mix(in srgb, var(--kl-accent), transparent 84%);
+  box-shadow: inset 3px 0 var(--kl-accent);
+}
+.kl-activity-card-label { font-weight: 800; }
+.kl-activity-card-template {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--kl-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kl-activity-preview-wrap { display: grid; gap: 7px; }
+.kl-activity-preview {
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid var(--kl-border-strong);
+  border-radius: 13px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--kl-accent), transparent 91%), var(--kl-surface));
+  overflow-wrap: anywhere;
+  font-style: italic;
+}
+.kl-activity-dialog-actions .kl-edit-activities { margin-right: auto; }
 
 .kl-toast {
   position: absolute;
@@ -1350,6 +1508,14 @@ select:focus-visible {
   .kl-setting-row { gap: 14px; }
   .kl-setting-help { max-width: 230px; }
   .kl-action-editor-row { grid-template-columns: 76px minmax(0, 1fr) 34px; }
+  .kl-activities-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+  }
+  .kl-activities-body { max-height: calc(100vh - 145px); }
+  .kl-activity-studio { grid-template-columns: minmax(0, 1fr); }
+  .kl-activity-targets,
+  .kl-activity-library { min-height: 130px; max-height: 190px; }
 }
 
 @media (max-width: 420px) {
@@ -1360,6 +1526,8 @@ select:focus-visible {
   .kl-conversation-side { max-width: 44px; }
   .kl-setting-row { align-items: flex-start; }
   .kl-select { width: 126px; }
+  .kl-activity-dialog-actions { flex-wrap: wrap; }
+  .kl-activity-dialog-actions .kl-edit-activities { width: 100%; margin-right: 0; }
 }
 
 :host([data-reduced-motion="true"]) *,
@@ -1379,16 +1547,18 @@ select:focus-visible {
 
   // src/modules/link-chat/view.ts
   var LinkChatView = class {
-    constructor(adapter, service, settings, version) {
+    constructor(adapter, service, settings, version, activities = new LinkActivitiesService(adapter)) {
       this.adapter = adapter;
       this.service = service;
       this.settings = settings;
       this.version = version;
+      this.activities = activities;
     }
     adapter;
     service;
     settings;
     version;
+    activities;
     #host = document.createElement("div");
     #shadow = this.#host.attachShadow({ mode: "open" });
     #launcher = element("button", {
@@ -1442,6 +1612,32 @@ select:focus-visible {
     });
     #reducedMotionToggle = element("input");
     #quickActionsEditor = element("div", { className: "kl-action-editor" });
+    #activitiesToggle = element("input");
+    #activitiesEditor = element("div", {
+      className: "kl-action-editor kl-activities-editor"
+    });
+    #activitiesButton = element("button", {
+      className: "kl-icon-button kl-activities-button",
+      type: "button",
+      text: "\u2726",
+      title: "LinkActivities",
+      ariaLabel: "Open LinkActivities"
+    });
+    #activitiesDialog = element("dialog", {
+      className: "kl-dialog kl-activities-dialog"
+    });
+    #activityTargetQuery = element("input", {
+      className: "kl-search kl-activity-target-query"
+    });
+    #activityTargetResults = element("div", { className: "kl-activity-targets" });
+    #activityLibrary = element("div", { className: "kl-activity-library" });
+    #activityStatus = element("div", { className: "kl-activity-status" });
+    #activityPreview = element("div", { className: "kl-activity-preview" });
+    #performActivityButton = element("button", {
+      className: "kl-text-button kl-text-button--primary kl-perform-activity",
+      type: "button",
+      text: "Perform"
+    });
     #newChatDialog = element("dialog", { className: "kl-dialog kl-new-chat-dialog" });
     #newChatQuery = element("input", { className: "kl-search kl-new-chat-query" });
     #newChatResults = element("div", { className: "kl-contact-results" });
@@ -1454,6 +1650,8 @@ select:focus-visible {
     });
     #activePeer;
     #activeName = "";
+    #selectedActivityIndex = 0;
+    #selectedActivityTarget;
     #mounted = false;
     #connectionState = "connecting";
     #toastTimer;
@@ -1474,12 +1672,14 @@ select:focus-visible {
       this.#buildPanel();
       this.#buildSettingsDialog();
       this.#buildNewChatDialog();
+      this.#buildActivitiesDialog();
       this.#shadow.append(
         style,
         this.#launcher,
         this.#panel,
         this.#settingsDialog,
-        this.#newChatDialog
+        this.#newChatDialog,
+        this.#activitiesDialog
       );
       document.body.append(this.#host);
       this.#positionLauncher();
@@ -1490,6 +1690,7 @@ select:focus-visible {
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
       this.#settingsDialog.close();
       this.#newChatDialog.close();
+      this.#activitiesDialog.close();
       window.removeEventListener("resize", this.#handleViewportResize);
       this.#host.remove();
       this.#mounted = false;
@@ -1506,6 +1707,7 @@ select:focus-visible {
       this.#sendButton.disabled = !canSend;
       this.#composer.placeholder = canSend ? "Write a Beep\u2026" : "Connecting to Bondage Club\u2026";
       if (this.#newChatDialog.open) this.#renderKnownContacts();
+      if (this.#activitiesDialog.open) this.#renderActivitiesDialog();
     }
     async onMessage(peerNumber, incoming) {
       if (incoming && this.settings.get().linkChat.openOnIncoming) {
@@ -1529,6 +1731,9 @@ select:focus-visible {
       await this.service.ensureConversation(memberNumber, name);
       await this.open();
       await this.#selectConversation(memberNumber, name);
+    }
+    openActivities() {
+      this.#openActivities();
     }
     async refresh() {
       await Promise.all([this.#renderConversations(), this.#updateUnreadBadge()]);
@@ -1563,7 +1768,7 @@ select:focus-visible {
           element(
             "div",
             { className: "kl-brand-subtitle" },
-            `LinkChat \xB7 v${this.version}`,
+            `LinkChat + LinkActivities \xB7 v${this.version}`,
             this.#connection
           )
         )
@@ -1580,8 +1785,8 @@ select:focus-visible {
         className: "kl-icon-button",
         type: "button",
         text: "\u2699",
-        title: "LinkChat settings",
-        ariaLabel: "LinkChat settings",
+        title: "KikiLink settings",
+        ariaLabel: "KikiLink settings",
         onClick: () => this.#openSettings()
       });
       const close = element("button", {
@@ -1592,7 +1797,17 @@ select:focus-visible {
         ariaLabel: "Close KikiLink",
         onClick: () => this.close()
       });
-      const topbar = element("header", { className: "kl-topbar" }, brand, newChat, settings, close);
+      this.#activitiesButton.addEventListener("click", () => this.#openActivities());
+      this.#activitiesButton.hidden = !this.settings.get().linkActivities.enabled;
+      const topbar = element(
+        "header",
+        { className: "kl-topbar" },
+        brand,
+        this.#activitiesButton,
+        newChat,
+        settings,
+        close
+      );
       this.#search.type = "search";
       this.#search.placeholder = "Search chats";
       this.#search.autocomplete = "off";
@@ -1623,7 +1838,9 @@ select:focus-visible {
       const layout = element("div", { className: "kl-layout" }, sidebar, main);
       this.#panel.append(topbar, layout);
       this.#panel.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && !this.#settingsDialog.open) this.close();
+        if (event.key === "Escape" && !this.#settingsDialog.open && !this.#activitiesDialog.open && !this.#newChatDialog.open) {
+          this.close();
+        }
       });
     }
     #buildChat() {
@@ -1691,7 +1908,7 @@ select:focus-visible {
       const header = element(
         "header",
         { className: "kl-dialog-header" },
-        element("div", { className: "kl-dialog-title", text: "LinkChat settings" }),
+        element("div", { className: "kl-dialog-title", text: "KikiLink settings" }),
         close
       );
       this.#themeSelect.replaceChildren(
@@ -1784,11 +2001,42 @@ select:focus-visible {
         this.#quickActionsEditor,
         addQuickAction
       );
+      this.#activitiesToggle.type = "checkbox";
+      const activitiesSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#activitiesToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      const activitiesEnabled = this.#settingRow(
+        "Enable LinkActivities",
+        "Show Activity Studio in the KikiLink toolbar.",
+        activitiesSwitch
+      );
+      const addActivity = element("button", {
+        className: "kl-text-button kl-add-action",
+        type: "button",
+        text: "+ Add room activity",
+        onClick: () => this.#addActivityEditorRow()
+      });
+      const activitiesSection = element(
+        "section",
+        { className: "kl-setting-section" },
+        element("div", { className: "kl-setting-section-title", text: "LinkActivities" }),
+        activitiesEnabled,
+        element("div", {
+          className: "kl-setting-help",
+          text: "Create room emotes visible to everyone. Variables: {target}, {member}, {source}."
+        }),
+        this.#activitiesEditor,
+        addActivity
+      );
       const body = element(
         "div",
         { className: "kl-dialog-body" },
         appearanceSection,
         quickActionsSection,
+        activitiesSection,
         privacySection
       );
       this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
@@ -1849,6 +2097,204 @@ select:focus-visible {
         body,
         element("footer", { className: "kl-dialog-actions" }, cancel, open)
       );
+    }
+    #buildActivitiesDialog() {
+      const close = element("button", {
+        className: "kl-icon-button",
+        type: "button",
+        text: "\xD7",
+        title: "Close LinkActivities",
+        ariaLabel: "Close LinkActivities",
+        onClick: () => this.#activitiesDialog.close()
+      });
+      const header = element(
+        "header",
+        { className: "kl-dialog-header" },
+        element(
+          "div",
+          { className: "kl-dialog-heading" },
+          element("div", { className: "kl-dialog-title", text: "LinkActivities" }),
+          element("div", {
+            className: "kl-dialog-subtitle",
+            text: "Activity Studio \xB7 native room emotes"
+          })
+        ),
+        close
+      );
+      this.#activityTargetQuery.type = "search";
+      this.#activityTargetQuery.placeholder = "Search room characters";
+      this.#activityTargetQuery.autocomplete = "off";
+      this.#activityTargetQuery.addEventListener("input", () => this.#renderActivitiesDialog());
+      const targetPane = element(
+        "section",
+        { className: "kl-activity-pane" },
+        element("div", { className: "kl-activity-pane-title", text: "Choose target" }),
+        this.#activityTargetQuery,
+        this.#activityTargetResults
+      );
+      const libraryPane = element(
+        "section",
+        { className: "kl-activity-pane" },
+        element("div", { className: "kl-activity-pane-title", text: "Choose activity" }),
+        this.#activityLibrary
+      );
+      const studio = element("div", { className: "kl-activity-studio" }, targetPane, libraryPane);
+      const preview = element(
+        "section",
+        { className: "kl-activity-preview-wrap" },
+        element("div", { className: "kl-activity-pane-title", text: "Room preview" }),
+        this.#activityPreview
+      );
+      const body = element(
+        "div",
+        { className: "kl-dialog-body kl-activities-body" },
+        this.#activityStatus,
+        studio,
+        preview
+      );
+      const edit = element("button", {
+        className: "kl-text-button kl-edit-activities",
+        type: "button",
+        text: "Edit activities",
+        onClick: () => {
+          this.#activitiesDialog.close();
+          this.#openSettings();
+        }
+      });
+      const cancel = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Cancel",
+        onClick: () => this.#activitiesDialog.close()
+      });
+      this.#performActivityButton.addEventListener("click", () => this.#performActivity());
+      const actions = element(
+        "footer",
+        { className: "kl-dialog-actions kl-activity-dialog-actions" },
+        edit,
+        cancel,
+        this.#performActivityButton
+      );
+      this.#activitiesDialog.append(header, body, actions);
+    }
+    #openActivities() {
+      if (!this.settings.get().linkActivities.enabled) {
+        this.#toast("LinkActivities is disabled in KikiLink settings.", "error");
+        return;
+      }
+      this.#activityTargetQuery.value = "";
+      const targets = this.activities.getTargets();
+      const preferredTarget = targets.find(
+        (target) => target.memberNumber === this.#selectedActivityTarget?.memberNumber
+      ) ?? targets.find((target) => target.memberNumber === this.#activePeer);
+      this.#selectedActivityTarget = preferredTarget ?? targets[0];
+      const activityCount = this.settings.get().linkActivities.activities.length;
+      if (this.#selectedActivityIndex >= activityCount) this.#selectedActivityIndex = 0;
+      this.#renderActivitiesDialog();
+      if (!this.#activitiesDialog.open) this.#activitiesDialog.showModal();
+      this.#activityTargetQuery.focus();
+    }
+    #renderActivitiesDialog() {
+      const targets = this.activities.getTargets();
+      const currentTarget = targets.find(
+        (target2) => target2.memberNumber === this.#selectedActivityTarget?.memberNumber
+      );
+      this.#selectedActivityTarget = currentTarget;
+      const query = this.#activityTargetQuery.value.trim().toLocaleLowerCase();
+      const visibleTargets = targets.filter(
+        (target2) => !query || target2.memberName.toLocaleLowerCase().includes(query) || target2.memberNumber.toString().includes(query)
+      );
+      this.#activityTargetResults.replaceChildren();
+      if (visibleTargets.length === 0) {
+        this.#activityTargetResults.append(
+          element("div", {
+            className: "kl-contact-empty",
+            text: targets.length === 0 ? "No other characters are available." : "No matching characters."
+          })
+        );
+      } else {
+        for (const target2 of visibleTargets) {
+          const button = element(
+            "button",
+            { className: "kl-activity-target", type: "button" },
+            element("div", { className: "kl-avatar", text: avatarText(target2.memberName) }),
+            element(
+              "div",
+              { className: "kl-contact-copy" },
+              element("div", { className: "kl-contact-name", text: target2.memberName }),
+              element("div", {
+                className: "kl-contact-number",
+                text: `Member ${target2.memberNumber}`
+              })
+            )
+          );
+          button.dataset.selected = String(
+            target2.memberNumber === this.#selectedActivityTarget?.memberNumber
+          );
+          button.addEventListener("click", () => {
+            this.#selectedActivityTarget = target2;
+            this.#renderActivitiesDialog();
+          });
+          this.#activityTargetResults.append(button);
+        }
+      }
+      const roomActivities = this.settings.get().linkActivities.activities;
+      if (this.#selectedActivityIndex >= roomActivities.length) this.#selectedActivityIndex = 0;
+      this.#activityLibrary.replaceChildren();
+      if (roomActivities.length === 0) {
+        this.#activityLibrary.append(
+          element("div", {
+            className: "kl-contact-empty",
+            text: "Your activity library is empty. Choose Edit activities to create one."
+          })
+        );
+      } else {
+        roomActivities.forEach((activity2, index) => {
+          const button = element(
+            "button",
+            { className: "kl-activity-card", type: "button" },
+            element("div", { className: "kl-activity-card-label", text: activity2.label }),
+            element("div", { className: "kl-activity-card-template", text: activity2.template })
+          );
+          button.dataset.selected = String(index === this.#selectedActivityIndex);
+          button.addEventListener("click", () => {
+            this.#selectedActivityIndex = index;
+            this.#renderActivitiesDialog();
+          });
+          this.#activityLibrary.append(button);
+        });
+      }
+      const activity = roomActivities[this.#selectedActivityIndex];
+      const target = this.#selectedActivityTarget;
+      if (!this.adapter.isInChatRoom()) {
+        this.#activityStatus.textContent = "Open Activity Studio while you are inside a chat room.";
+        this.#activityStatus.dataset.kind = "error";
+      } else if (!this.activities.isAvailable()) {
+        this.#activityStatus.textContent = "The native room chat is still loading.";
+        this.#activityStatus.dataset.kind = "error";
+      } else {
+        this.#activityStatus.textContent = `${targets.length} ${targets.length === 1 ? "target" : "targets"} available in this room.`;
+        this.#activityStatus.dataset.kind = "ready";
+      }
+      if (activity && target) {
+        this.#activityPreview.textContent = `${this.adapter.getOwnName()} ${this.activities.preview(activity, target)}`;
+      } else {
+        this.#activityPreview.textContent = activity ? "Choose a character to preview this activity." : "Create an activity in KikiLink settings first.";
+      }
+      this.#performActivityButton.disabled = !activity || !target || !this.activities.isAvailable();
+    }
+    #performActivity() {
+      const activity = this.settings.get().linkActivities.activities[this.#selectedActivityIndex];
+      const target = this.#selectedActivityTarget;
+      if (!activity || !target) return;
+      try {
+        this.activities.perform(activity, target);
+        this.#activitiesDialog.close();
+        this.#toast(`${activity.label} sent to the room.`);
+      } catch (error) {
+        this.#renderActivitiesDialog();
+        this.#toast(error instanceof Error ? error.message : "Unable to perform this activity", "error");
+      }
     }
     #settingRow(name, help, control) {
       return element(
@@ -2152,6 +2598,49 @@ ${expanded}` : expanded;
         template: row.querySelector('[data-field="template"]')?.value.trim() ?? ""
       })).filter((action) => action.label && action.template);
     }
+    #renderActivityEditor(activities) {
+      this.#activitiesEditor.replaceChildren();
+      for (const activity of activities) this.#addActivityEditorRow(activity);
+    }
+    #addActivityEditorRow(activity = { label: "", template: "" }) {
+      if (this.#activitiesEditor.childElementCount >= 20) {
+        this.#toast("You can keep up to 20 room activities.", "error");
+        return;
+      }
+      const label = element("input", { className: "kl-action-label" });
+      label.placeholder = "Label";
+      label.maxLength = 32;
+      label.value = activity.label;
+      label.dataset.field = "label";
+      const template = element("input", { className: "kl-action-template" });
+      template.placeholder = "Room emote text";
+      template.maxLength = 500;
+      template.value = activity.template;
+      template.dataset.field = "template";
+      const remove = element("button", {
+        className: "kl-icon-button kl-remove-action",
+        type: "button",
+        text: "\xD7",
+        title: "Remove activity",
+        ariaLabel: "Remove room activity"
+      });
+      const row = element(
+        "div",
+        { className: "kl-action-editor-row kl-activity-editor-row" },
+        label,
+        template,
+        remove
+      );
+      remove.addEventListener("click", () => row.remove());
+      this.#activitiesEditor.append(row);
+      if (!activity.label && !activity.template) label.focus();
+    }
+    #readActivityEditor() {
+      return [...this.#activitiesEditor.querySelectorAll(".kl-activity-editor-row")].map((row) => ({
+        label: row.querySelector('[data-field="label"]')?.value.trim() ?? "",
+        template: row.querySelector('[data-field="template"]')?.value.trim() ?? ""
+      })).filter((activity) => activity.label && activity.template);
+    }
     #openSettings() {
       const settings = this.settings.get();
       this.#themeSelect.value = settings.ui.theme;
@@ -2160,6 +2649,8 @@ ${expanded}` : expanded;
       this.#historyToggle.checked = settings.linkChat.saveHistory;
       this.#retentionInput.value = settings.linkChat.retentionDays.toString();
       this.#renderQuickActionEditor(settings.linkChat.quickActions);
+      this.#activitiesToggle.checked = settings.linkActivities.enabled;
+      this.#renderActivityEditor(settings.linkActivities.activities);
       if (!this.#settingsDialog.open) this.#settingsDialog.showModal();
     }
     #saveSettings() {
@@ -2173,10 +2664,13 @@ ${expanded}` : expanded;
         draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
         draft.linkChat.saveHistory = this.#historyToggle.checked;
         draft.linkChat.quickActions = this.#readQuickActionEditor();
+        draft.linkActivities.enabled = this.#activitiesToggle.checked;
+        draft.linkActivities.activities = this.#readActivityEditor();
         if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
       });
       this.#applyTheme(settings);
       this.#renderQuickActions();
+      this.#activitiesButton.hidden = !settings.linkActivities.enabled;
       this.#settingsDialog.close();
       void this.service.prune();
       this.#toast("Settings saved.");
@@ -2368,11 +2862,13 @@ ${expanded}` : expanded;
     start(context) {
       this.#context = context;
       this.#service = new ChatService(context.repository, context.settings);
+      const activities = new LinkActivitiesService(context.adapter);
       this.#view = new LinkChatView(
         context.adapter,
         this.#service,
         context.settings,
-        context.version
+        context.version,
+        activities
       );
       this.#view.mount();
       this.#unsubscribers.push(
@@ -2402,6 +2898,9 @@ ${expanded}` : expanded;
     }
     openChat(memberNumber, memberName) {
       void this.#view?.openChat(memberNumber, memberName);
+    }
+    openActivities() {
+      this.#view?.openActivities();
     }
     async #capture(event) {
       if (!this.#service || !this.#view || !this.#context) return;
@@ -2714,7 +3213,7 @@ ${expanded}` : expanded;
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -2733,6 +3232,31 @@ ${expanded}` : expanded;
         { label: "Wave", template: "*waves to {name}*" },
         { label: "Hug", template: "*hugs {name} warmly*" },
         { label: "Boop", template: "*gently boops {name}*" }
+      ]
+    },
+    linkActivities: {
+      enabled: true,
+      activities: [
+        {
+          label: "Sakura bow",
+          template: "bows gracefully to {target}, as if sakura petals drifted between them."
+        },
+        {
+          label: "Wolf greeting",
+          template: "greets {target} with a warm, playful wolfish grin."
+        },
+        {
+          label: "Inspect knots",
+          template: "circles {target}, carefully inspecting every knot."
+        },
+        {
+          label: "Offer hand",
+          template: "offers {target} a hand with an inviting smile."
+        },
+        {
+          label: "Moonlit promise",
+          template: "touches two fingers to their heart, then gestures solemnly toward {target}."
+        }
       ]
     }
   };
@@ -2796,8 +3320,9 @@ ${expanded}` : expanded;
     const source = isRecord(input) ? input : {};
     const ui = isRecord(source.ui) ? source.ui : {};
     const linkChat = isRecord(source.linkChat) ? source.linkChat : {};
+    const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -2829,6 +3354,10 @@ ${expanded}` : expanded;
           DEFAULT_SETTINGS.linkChat.openOnIncoming
         ),
         quickActions: sanitizeQuickActions(linkChat.quickActions)
+      },
+      linkActivities: {
+        enabled: booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
+        activities: sanitizeRoomActivities(linkActivities.activities)
       }
     };
   }
@@ -2843,6 +3372,18 @@ ${expanded}` : expanded;
       if (label && template) actions.push({ label, template });
     }
     return actions;
+  }
+  function sanitizeRoomActivities(value) {
+    if (value === void 0) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
+    if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
+    const activities = [];
+    for (const entry of value.slice(0, 20)) {
+      if (!isRecord(entry)) continue;
+      const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 32) : "";
+      const template = typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
+      if (label && template) activities.push({ label, template });
+    }
+    return activities;
   }
   function sanitizeLauncherPosition(value) {
     if (!isRecord(value)) return null;
@@ -2897,6 +3438,7 @@ ${expanded}` : expanded;
         name: "KikiLink",
         open: () => this.#linkChat.open(),
         openChat: (memberNumber, memberName) => this.#linkChat.openChat(memberNumber, memberName),
+        openActivities: () => this.#linkChat.openActivities(),
         close: () => this.#linkChat.close(),
         getVersion: () => this.version,
         destroy: () => this.destroy()
@@ -2941,7 +3483,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.3.1");
+    const app = new KikiLinkApp("0.4.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

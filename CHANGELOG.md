@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 - 2026-08-23
+
+- Added the first complete LinkActivities Activity Studio.
+- Added a searchable target picker populated from the current chat room with nickname support.
+- Added five original starter activities, live previews, and safe target revalidation.
+- Added an editable library of up to 20 room actions with `{target}`, `{member}`, and `{source}` variables.
+- Send actions through Bondage Club's standard native Emote path so everyone in the room can see them.
+- Added a dedicated toolbar entry and `KikiLink.openActivities()` public API.
+- Migrated settings to schema version 2 while retaining all existing LinkChat preferences.
+- Expanded regression coverage to 26 tests.
+
 ## 0.3.1 - 2026-08-23
 
 - Fixed Beep sending being blocked while the compatibility hooks were still connecting.

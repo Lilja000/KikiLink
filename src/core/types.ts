@@ -12,6 +12,16 @@ export interface QuickAction {
   template: string;
 }
 
+export interface RoomActivity {
+  label: string;
+  template: string;
+}
+
+export interface RoomCharacter {
+  memberNumber: number;
+  memberName: string;
+}
+
 export interface BeepEvent {
   direction: MessageDirection;
   peerNumber: number;
@@ -48,7 +58,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 1;
+  schemaVersion: 2;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -64,6 +74,10 @@ export interface KikiLinkSettings {
     maxMessagesPerConversation: number;
     openOnIncoming: boolean;
     quickActions: QuickAction[];
+  };
+  linkActivities: {
+    enabled: boolean;
+    activities: RoomActivity[];
   };
 }
 
@@ -86,6 +100,7 @@ export interface KikiLinkPublicApi {
   readonly name: "KikiLink";
   open(): void;
   openChat(memberNumber: number, memberName?: string): void;
+  openActivities(): void;
   close(): void;
   getVersion(): string;
   destroy(): Promise<void>;

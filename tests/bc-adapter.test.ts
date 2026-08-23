@@ -12,6 +12,8 @@ afterEach(() => {
     "ChatRoomCharacter",
     "FriendListBeepLog",
     "ServerSendBeepMessage",
+    "ChatRoomSendEmote",
+    "CurrentScreen",
   ]) {
     Reflect.deleteProperty(globalThis, key);
   }
@@ -70,5 +72,30 @@ describe("BCAdapter", () => {
     expect(adapter.getRecentBeeps()).toMatchObject([
       { peerNumber: 123, peerName: "Reina", content: "Recent hello", sentAt: 1000 },
     ]);
+  });
+
+  it("lists room targets by nickname and sends through the native Emote path", () => {
+    const nativeEmote = vi.fn();
+    globalThis.CurrentScreen = "ChatRoom";
+    globalThis.ChatRoomSendEmote = nativeEmote;
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      Nickname: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomCharacter = [
+      { MemberNumber: 999, Name: "AccountKiki", Nickname: "Kiki" },
+      { MemberNumber: 123, Name: "AccountReina", Nickname: "Reina" },
+    ];
+
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.4.0");
+
+    expect(adapter.canSendRoomEmote()).toBe(true);
+    expect(adapter.getRoomCharacters()).toEqual([
+      { memberNumber: 123, memberName: "Reina" },
+    ]);
+    adapter.sendRoomEmote("  bows to Reina.  ");
+    expect(nativeEmote).toHaveBeenCalledWith("bows to Reina.");
   });
 });

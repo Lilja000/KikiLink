@@ -90,4 +90,24 @@ describe("SettingsStore", () => {
       { label: "Curtsey", template: "*curtsies to {name}*" },
     ]);
   });
+
+  it("migrates and sanitizes LinkActivities settings", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 1,
+      linkActivities: {
+        enabled: false,
+        activities: [
+          { label: "  Sakura greeting  ", template: "  bows to {target}.  " },
+          { label: "", template: "ignored" },
+          { label: "Broken" },
+        ],
+      },
+    });
+
+    expect(settings.schemaVersion).toBe(2);
+    expect(settings.linkActivities).toEqual({
+      enabled: false,
+      activities: [{ label: "Sakura greeting", template: "bows to {target}." }],
+    });
+  });
 });

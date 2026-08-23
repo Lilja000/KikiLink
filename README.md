@@ -11,9 +11,9 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.3.1` makes LinkChat reliable in the live R131 client: outgoing Beeps
-appear immediately, native recent chats are imported, room nicknames are used
-when available, and the launcher can be dragged with a mouse or finger.
+Version `0.4.0` introduces LinkActivities: an original Activity Studio for
+choosing someone in the current room, previewing a custom action, and sending it
+through Bondage Club's standard room-emote path.
 
 ## LinkChat
 
@@ -30,6 +30,19 @@ when available, and the launcher can be dragged with a mouse or finger.
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
 
+## LinkActivities
+
+- Dedicated `✦` Activity Studio button in the KikiLink toolbar
+- Current-room target picker with nickname and member-number search
+- Five original starter activities with live room preview
+- Editable activity library with up to 20 custom actions
+- `{target}`, `{member}`, and `{source}` template variables
+- Standard Bondage Club room emotes that remain visible to players without KikiLink
+- Safe target revalidation immediately before an action is sent
+
+LinkActivities sends descriptive roleplay emotes only. It does not alter another
+character's items, pose, permissions, or game state.
+
 ## Interface
 
 - Embedded KikiLink wolf, red moon, gold ring, and sakura emblem
@@ -42,9 +55,10 @@ when available, and the launcher can be dragged with a mouse or finger.
 The emblem is bundled into the userscript, so KikiLink does not fetch visual
 assets from a remote server while the game is running.
 
-Standard Beeps still use Bondage Club's own `ServerSendBeepMessage` path, so the
-recipient does not need KikiLink. No remote KikiLink server is used. Message
-history and settings remain in the current browser profile.
+Standard Beeps use Bondage Club's own `ServerSendBeepMessage` path, and
+LinkActivities uses the native room-emote path, so recipients do not need
+KikiLink. No remote KikiLink server is used. Message history, settings, and
+custom activity templates remain in the current browser profile.
 
 ## Architecture
 
@@ -52,6 +66,7 @@ history and settings remain in the current browser profile.
 src/
   bc/                 Bondage Club compatibility adapter
   core/               Event bus, settings, lifecycle, module registry
+  modules/link-activities/  Activity templates and native room action service
   modules/link-chat/  LinkChat service and Shadow DOM interface
   storage/            IndexedDB and in-memory repositories
   utils/              Small dependency-free helpers
@@ -86,13 +101,14 @@ After startup, KikiLink exposes a deliberately small API:
 ```js
 KikiLink.open();
 KikiLink.openChat(123456);
+KikiLink.openActivities();
 KikiLink.close();
 KikiLink.getVersion();
 ```
 
 ## Planned modules
 
-- LinkActivities and declarative Activity Studio
+- Activity packs, categories, favorites, and import/export
 - LinkSocial contacts, notes, and encounter history
 - LinkReactions with configurable event rules
 - Command palette, hotkeys, and improved room roster

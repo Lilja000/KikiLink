@@ -73,7 +73,7 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-sidebar-heading")?.textContent).toBe("Recent chats");
 
     shadow
-      ?.querySelector<HTMLButtonElement>('button[title="LinkChat settings"]')
+      ?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')
       ?.click();
     const selects = shadow?.querySelectorAll<HTMLSelectElement>(".kl-select");
     const themeSelect = selects?.item(0);
@@ -168,6 +168,50 @@ describe("LinkChatView", () => {
 
     expect(launcher.style.left).not.toBe("");
     expect(settings.get().ui.launcherPosition).not.toBeNull();
+    view.destroy();
+  });
+
+  it("opens Activity Studio and performs a custom action toward a room nickname", () => {
+    const sendRoomEmote = vi.fn();
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: (memberNumber: number) =>
+        memberNumber === 123 ? "Reina" : undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getRoomCharacters: () => [{ memberNumber: 123, memberName: "Reina" }],
+      isInChatRoom: () => true,
+      canSendRoomEmote: () => true,
+      sendRoomEmote,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.4.0",
+    );
+    view.mount();
+
+    const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('button[title="LinkActivities"]')?.click();
+
+    expect(shadow?.querySelector<HTMLDialogElement>(".kl-activities-dialog")?.open).toBe(true);
+    expect(shadow?.querySelector('.kl-activity-target[data-selected="true"]')?.textContent).toContain(
+      "Reina",
+    );
+    expect(shadow?.querySelector(".kl-activity-preview")?.textContent).toContain(
+      "Kiki bows gracefully to Reina",
+    );
+
+    shadow?.querySelector<HTMLButtonElement>(".kl-perform-activity")?.click();
+    expect(sendRoomEmote).toHaveBeenCalledWith(
+      "bows gracefully to Reina, as if sakura petals drifted between them.",
+    );
     view.destroy();
   });
 });

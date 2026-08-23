@@ -2,6 +2,7 @@ import type { BeepEvent, KikiLinkContext, KikiLinkModule, KikiLinkSettings } fro
 import { Logger } from "../../core/logger";
 import { ChatService } from "./chat-service";
 import { LinkChatView } from "./view";
+import { LinkActivitiesService } from "../link-activities/link-activities-service";
 
 export class LinkChatModule implements KikiLinkModule {
   readonly id = "link-chat";
@@ -18,11 +19,13 @@ export class LinkChatModule implements KikiLinkModule {
   start(context: KikiLinkContext): void {
     this.#context = context;
     this.#service = new ChatService(context.repository, context.settings);
+    const activities = new LinkActivitiesService(context.adapter);
     this.#view = new LinkChatView(
       context.adapter,
       this.#service,
       context.settings,
       context.version,
+      activities,
     );
     this.#view.mount();
 
@@ -56,6 +59,10 @@ export class LinkChatModule implements KikiLinkModule {
 
   openChat(memberNumber: number, memberName?: string): void {
     void this.#view?.openChat(memberNumber, memberName);
+  }
+
+  openActivities(): void {
+    this.#view?.openActivities();
   }
 
   async #capture(event: BeepEvent): Promise<void> {

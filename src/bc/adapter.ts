@@ -1,6 +1,6 @@
 import bcModSDK, { type ModSDKModAPI } from "bondage-club-mod-sdk";
 import { Logger } from "../core/logger";
-import type { BeepEvent, KikiLinkEvents } from "../core/types";
+import type { BeepEvent, KikiLinkEvents, RoomCharacter } from "../core/types";
 import type { EventBus } from "../core/event-bus";
 
 const READY_POLL_MS = 400;
@@ -138,6 +138,50 @@ export class BCAdapter {
   getOwnName(): string {
     if (typeof Player !== "object" || Player === null) return "me";
     return cleanName(Player.Nickname) ?? cleanName(Player.Name) ?? "me";
+  }
+
+  isInChatRoom(): boolean {
+    return (
+      typeof CurrentScreen === "string" &&
+      CurrentScreen === "ChatRoom" &&
+      typeof ChatRoomCharacter !== "undefined" &&
+      Array.isArray(ChatRoomCharacter)
+    );
+  }
+
+  canSendRoomEmote(): boolean {
+    return this.isInChatRoom() && typeof ChatRoomSendEmote === "function";
+  }
+
+  getRoomCharacters(): RoomCharacter[] {
+    if (!this.isInChatRoom()) return [];
+    const ownMemberNumber = this.getOwnMemberNumber();
+
+    return ChatRoomCharacter.filter(
+      (character) =>
+        Number.isSafeInteger(character.MemberNumber) && character.MemberNumber !== ownMemberNumber,
+    )
+      .map((character) => ({
+        memberNumber: character.MemberNumber,
+        memberName:
+          this.getMemberNickname(character.MemberNumber) ??
+          cleanName(character.Name) ??
+          `Member ${character.MemberNumber}`,
+      }))
+      .sort((left, right) => left.memberName.localeCompare(right.memberName));
+  }
+
+  sendRoomEmote(content: string): void {
+    const message = content.trim();
+    if (!message) throw new Error("An activity cannot be empty");
+    if (message.length > 1000) {
+      throw new Error("An activity cannot exceed 1000 characters after variables are expanded");
+    }
+    if (!this.isInChatRoom()) throw new Error("Open a Bondage Club chat room first");
+    if (typeof ChatRoomSendEmote !== "function") {
+      throw new Error("The Bondage Club room chat is still loading");
+    }
+    ChatRoomSendEmote(message);
   }
 
   getKnownContacts(): Array<{ memberNumber: number; memberName: string }> {

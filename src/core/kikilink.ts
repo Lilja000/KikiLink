@@ -34,6 +34,7 @@ export class KikiLinkApp {
       name: "KikiLink",
       open: () => this.#linkChat.open(),
       openChat: (memberNumber, memberName) => this.#linkChat.openChat(memberNumber, memberName),
+      openActivities: () => this.#linkChat.openActivities(),
       close: () => this.#linkChat.close(),
       getVersion: () => this.version,
       destroy: () => this.destroy(),
