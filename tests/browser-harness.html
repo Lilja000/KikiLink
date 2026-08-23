@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KikiLink browser harness</title>
+    <style>
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 30% 20%, #31202a, #111116 46%, #08080b);
+        color: #eee;
+        font-family: system-ui, sans-serif;
+      }
+      .fake-game { text-align: center; opacity: 0.38; }
+      .fake-game strong { display: block; font-size: 34px; }
+    </style>
+  </head>
+  <body>
+    <div class="fake-game">
+      <strong>Bondage Club</strong>
+      Local KikiLink compatibility harness
+    </div>
+    <script>
+      window.Player = {
+        MemberNumber: 999001,
+        Name: "Kiki",
+        FriendNames: new Map([
+          [123456, "Reina"],
+          [456789, "Sidney"],
+        ]),
+      };
+      window.CurrentScreen = "ChatRoom";
+      window.ChatRoomData = {
+        Name: "KikiLink Test Room",
+        Space: "MainHall",
+        Visibility: ["All"],
+      };
+      window.ServerIsLoggedIn = () => true;
+      window.ServerAccountBeep = () => {};
+      window.ServerSendBeepMessage = () => {};
+    </script>
+    <script src="../dist/KikiLink.user.js"></script>
+  </body>
+</html>

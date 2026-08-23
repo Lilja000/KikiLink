@@ -1,0 +1,9 @@
+node_modules/
+dist/*
+!dist/KikiLink.user.js
+coverage/
+design/library/
+design/references/Screenshot_*.jpg
+*.openai-download-*
+*.log
+.DS_Store

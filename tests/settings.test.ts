@@ -1,0 +1,67 @@
+import { describe, expect, it } from "vitest";
+import {
+  DEFAULT_SETTINGS,
+  MemoryKeyValueStorage,
+  SettingsStore,
+  sanitizeSettings,
+} from "../src/core/settings";
+
+describe("SettingsStore", () => {
+  it("starts with independent defaults", () => {
+    const store = new SettingsStore(new MemoryKeyValueStorage());
+    const settings = store.get();
+    settings.ui.accent = "#000000";
+
+    expect(store.get()).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it("persists validated updates", () => {
+    const storage = new MemoryKeyValueStorage();
+    const first = new SettingsStore(storage);
+    first.update((draft) => {
+      draft.ui.theme = "light";
+      draft.ui.launcherSide = "left";
+      draft.linkChat.retentionDays = 30;
+    });
+
+    const second = new SettingsStore(storage);
+    expect(second.get().ui.theme).toBe("light");
+    expect(second.get().ui.launcherSide).toBe("left");
+    expect(second.get().linkChat.retentionDays).toBe(30);
+  });
+
+  it("rejects invalid persisted values", () => {
+    const settings = sanitizeSettings({
+      ui: { accent: "red", theme: "neon", launcherSide: "middle" },
+      linkChat: { retentionDays: -5, maxMessagesPerConversation: 10 },
+    });
+
+    expect(settings.ui.accent).toBe(DEFAULT_SETTINGS.ui.accent);
+    expect(settings.ui.theme).toBe(DEFAULT_SETTINGS.ui.theme);
+    expect(settings.ui.launcherSide).toBe("right");
+    expect(settings.linkChat.retentionDays).toBe(DEFAULT_SETTINGS.linkChat.retentionDays);
+    expect(settings.linkChat.maxMessagesPerConversation).toBe(
+      DEFAULT_SETTINGS.linkChat.maxMessagesPerConversation,
+    );
+  });
+
+  it("adds the default theme to 0.1 settings without losing LinkChat choices", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 1,
+      ui: { accent: "#aabbcc", launcherSide: "left", reducedMotion: true },
+      linkChat: {
+        enabled: true,
+        saveHistory: false,
+        includeRoomByDefault: true,
+        retentionDays: 45,
+        maxMessagesPerConversation: 750,
+        openOnIncoming: true,
+      },
+    });
+
+    expect(settings.ui.theme).toBe("dark");
+    expect(settings.ui.launcherSide).toBe("left");
+    expect(settings.linkChat.saveHistory).toBe(false);
+    expect(settings.linkChat.retentionDays).toBe(45);
+  });
+});

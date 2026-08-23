@@ -1,0 +1,83 @@
+import type { BCAdapter } from "../bc/adapter";
+import type { ChatRepository } from "../storage/chat-repository";
+import type { EventBus } from "./event-bus";
+import type { SettingsStore } from "./settings";
+
+export type MessageDirection = "incoming" | "outgoing";
+export type ThemePreference = "dark" | "light" | "system";
+
+export interface BeepEvent {
+  direction: MessageDirection;
+  peerNumber: number;
+  peerName: string;
+  content: string;
+  sentAt: number;
+  includeRoom: boolean;
+  roomName?: string;
+}
+
+export interface LinkMessage extends BeepEvent {
+  id: string;
+  read: boolean;
+}
+
+export interface ConversationMeta {
+  peerNumber: number;
+  peerName: string;
+  lastMessage: string;
+  lastMessageAt: number;
+  lastDirection: MessageDirection;
+  unread: number;
+  pinned: boolean;
+  draft: string;
+}
+
+export interface KikiLinkEvents {
+  "bc:ready": { memberNumber: number };
+  "beep:received": BeepEvent;
+  "beep:sent": BeepEvent;
+  "link-chat:updated": { peerNumber: number };
+  "settings:changed": KikiLinkSettings;
+}
+
+export interface KikiLinkSettings {
+  schemaVersion: 1;
+  ui: {
+    accent: string;
+    theme: ThemePreference;
+    launcherSide: "left" | "right";
+    reducedMotion: boolean;
+  };
+  linkChat: {
+    enabled: boolean;
+    saveHistory: boolean;
+    includeRoomByDefault: boolean;
+    retentionDays: number;
+    maxMessagesPerConversation: number;
+    openOnIncoming: boolean;
+  };
+}
+
+export interface KikiLinkContext {
+  adapter: BCAdapter;
+  bus: EventBus<KikiLinkEvents>;
+  repository: ChatRepository;
+  settings: SettingsStore;
+  version: string;
+}
+
+export interface KikiLinkModule {
+  readonly id: string;
+  isEnabled(settings: KikiLinkSettings): boolean;
+  start(context: KikiLinkContext): Promise<void> | void;
+  stop(): Promise<void> | void;
+}
+
+export interface KikiLinkPublicApi {
+  readonly name: "KikiLink";
+  open(): void;
+  openChat(memberNumber: number, memberName?: string): void;
+  close(): void;
+  getVersion(): string;
+  destroy(): Promise<void>;
+}
