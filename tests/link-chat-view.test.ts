@@ -75,14 +75,11 @@ describe("LinkChatView", () => {
     expect(sendBeep).toHaveBeenCalledWith(123, "Hello from KikiLink", false);
     expect(shadow?.querySelector(".kl-sidebar-heading span")?.textContent).toBe("Recent chats");
 
-    shadow
-      ?.querySelector<HTMLButtonElement>('button[title="Customize KikiLink"]')
-      ?.click();
-    const selects = shadow?.querySelectorAll<HTMLSelectElement>(".kl-select");
-    const themeSelect = selects?.item(0);
-    const sideSelect = selects?.item(1);
+    shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
+    const themeSelect = shadow?.querySelector<HTMLSelectElement>('[data-setting="theme"]');
+    const sideSelect = shadow?.querySelector<HTMLSelectElement>('[data-setting="launcher-side"]');
     const reducedMotion = shadow?.querySelector<HTMLInputElement>(
-      ".kl-setting-section .kl-switch input",
+      'input[aria-label="Reduced motion"]',
     );
     if (!themeSelect || !sideSelect || !reducedMotion) {
       throw new Error("Missing appearance controls");
@@ -91,7 +88,7 @@ describe("LinkChatView", () => {
     sideSelect.value = "left";
     reducedMotion.checked = true;
     shadow
-      ?.querySelector<HTMLButtonElement>(".kl-dialog-actions .kl-text-button--primary")
+      ?.querySelector<HTMLButtonElement>(".kl-settings-actions .kl-text-button--primary")
       ?.click();
 
     expect((host as HTMLElement | null)?.dataset.theme).toBe("light");
@@ -141,25 +138,56 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector('.kl-nav-item[data-target="home"]')?.getAttribute("data-active")).toBe(
       "true",
     );
+    expect(shadow?.querySelector('.kl-nav-item[data-target="home"]')?.getAttribute("aria-current")).toBe(
+      "page",
+    );
+    expect(
+      shadow?.querySelectorAll('.kl-feature-nav .kl-nav-item:not([data-target="settings"])'),
+    ).toHaveLength(4);
 
     shadow?.querySelector<HTMLButtonElement>('button[title="LinkChat"]')?.click();
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
       "chat",
     );
+    expect(shadow?.querySelector('.kl-nav-item[data-target="chat"]')?.getAttribute("aria-current")).toBe(
+      "page",
+    );
 
-    shadow?.querySelector<HTMLButtonElement>('button[title="Customize KikiLink"]')?.click();
-    const dialog = shadow?.querySelector<HTMLDialogElement>(".kl-dialog");
-    const selects = dialog?.querySelectorAll<HTMLSelectElement>(".kl-select");
-    const launcherOpen = selects?.item(2);
-    const accent = dialog?.querySelector<HTMLInputElement>(".kl-color-input");
-    if (!launcherOpen || !accent) throw new Error("Missing Link Deck customization controls");
+    shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
+    const settingsPage = shadow?.querySelector<HTMLElement>(".kl-settings-page");
+    expect(settingsPage?.hidden).toBe(false);
+    expect(settingsPage?.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    const navigationTab = settingsPage?.querySelector<HTMLButtonElement>(
+      '[role="tab"][data-section="navigation"]',
+    );
+    navigationTab?.click();
+    expect(navigationTab?.getAttribute("aria-selected")).toBe("true");
+    expect(settings.get().ui.settingsSection).toBe("navigation");
+    const launcherOpen = settingsPage?.querySelector<HTMLSelectElement>(
+      '[data-setting="launcher-open"]',
+    );
+    const accent = settingsPage?.querySelector<HTMLInputElement>('[data-setting="accent"]');
+    const density = settingsPage?.querySelector<HTMLSelectElement>('[data-setting="density"]');
+    const textScale = settingsPage?.querySelector<HTMLSelectElement>('[data-setting="text-scale"]');
+    if (!launcherOpen || !accent || !density || !textScale) {
+      throw new Error("Missing Link Deck customization controls");
+    }
     launcherOpen.value = "chat";
     accent.value = "#247f7a";
-    dialog?.querySelector<HTMLButtonElement>(".kl-dialog-actions .kl-text-button--primary")?.click();
+    density.value = "compact";
+    textScale.value = "large";
+    settingsPage
+      ?.querySelector<HTMLButtonElement>(".kl-settings-actions .kl-text-button--primary")
+      ?.click();
 
     expect(settings.get().ui.launcherOpen).toBe("chat");
     expect(settings.get().ui.accent).toBe("#247f7a");
+    expect(settings.get().ui.density).toBe("compact");
+    expect(settings.get().ui.textScale).toBe("large");
     expect(host?.style.getPropertyValue("--kl-accent")).toBe("#247f7a");
+    expect(host?.style.getPropertyValue("--kl-accent-foreground")).not.toBe("");
+    expect(host?.dataset.density).toBe("compact");
+    expect(host?.dataset.textScale).toBe("large");
 
     view.close();
     shadow?.querySelector<HTMLButtonElement>(".kl-launcher")?.click();
@@ -202,7 +230,7 @@ describe("LinkChatView", () => {
     view.destroy();
   });
 
-  it("lets the launcher be dragged and persists its position", () => {
+  it("lets the launcher be dragged and provides a button alternative to reset it", async () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
@@ -238,6 +266,18 @@ describe("LinkChatView", () => {
 
     expect(launcher.style.left).not.toBe("");
     expect(settings.get().ui.launcherPosition).not.toBeNull();
+
+    await view.open();
+    const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
+    shadow
+      ?.querySelector<HTMLButtonElement>('[role="tab"][data-section="navigation"]')
+      ?.click();
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-settings-panel .kl-text-button") ?? [])]
+      .find((button) => button.textContent === "Reset launcher position")
+      ?.click();
+    expect(settings.get().ui.launcherPosition).toBeNull();
+    expect(shadow?.querySelector(".kl-toast")?.getAttribute("role")).toBe("status");
     view.destroy();
   });
 
@@ -273,7 +313,10 @@ describe("LinkChatView", () => {
     const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
     shadow?.querySelector<HTMLButtonElement>('button[title="LinkActivities"]')?.click();
 
-    expect(shadow?.querySelector<HTMLDialogElement>(".kl-activities-dialog")?.open).toBe(true);
+    expect(shadow?.querySelector<HTMLElement>(".kl-activities-page")?.hidden).toBe(false);
+    expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+      "activities",
+    );
     expect(shadow?.querySelector('.kl-activity-target[data-selected="true"]')?.textContent).toContain(
       "Reina",
     );
@@ -327,7 +370,10 @@ describe("LinkChatView", () => {
 
     const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
     shadow?.querySelector<HTMLButtonElement>('button[title="LinkRoster"]')?.click();
-    expect(shadow?.querySelector<HTMLDialogElement>(".kl-roster-dialog")?.open).toBe(true);
+    expect(shadow?.querySelector<HTMLElement>(".kl-roster-page")?.hidden).toBe(false);
+    expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+      "roster",
+    );
     expect(shadow?.querySelector(".kl-roster-entry-name")?.textContent).toBe("Reina");
     expect(shadow?.querySelector(".kl-roster-friend")?.textContent).toBe("FRIEND");
     expect(shadow?.querySelector(".kl-roster-number")?.textContent).toContain("Member 123");
@@ -354,7 +400,7 @@ describe("LinkChatView", () => {
     ];
     actionButtons.find((button) => button.textContent === "Whisper")?.click();
     expect(startWhisper).toHaveBeenCalledWith(123);
-    expect(shadow?.querySelector<HTMLDialogElement>(".kl-roster-dialog")?.open).toBe(false);
+    expect(shadow?.querySelector<HTMLElement>(".kl-panel")?.hidden).toBe(true);
 
     view.destroy();
   });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.6.0
+// @version      0.7.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -714,14 +714,18 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     ui: {
       accent: "#d71932",
       theme: "dark",
+      density: "comfortable",
+      textScale: "normal",
+      homeLayout: "showcase",
       launcherSide: "right",
       launcherOpen: "home",
       launcherPosition: null,
-      reducedMotion: false
+      reducedMotion: false,
+      settingsSection: "appearance"
     },
     linkChat: {
       enabled: true,
@@ -830,14 +834,18 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
     const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
+        density: ui.density === "compact" ? "compact" : DEFAULT_SETTINGS.ui.density,
+        textScale: ui.textScale === "large" || ui.textScale === "extra-large" ? ui.textScale : DEFAULT_SETTINGS.ui.textScale,
+        homeLayout: ui.homeLayout === "compact" ? "compact" : DEFAULT_SETTINGS.ui.homeLayout,
         launcherSide: ui.launcherSide === "left" ? "left" : "right",
         launcherOpen: ui.launcherOpen === "last" || ui.launcherOpen === "chat" ? ui.launcherOpen : DEFAULT_SETTINGS.ui.launcherOpen,
         launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
-        reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion)
+        reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
+        settingsSection: isSettingsSection(ui.settingsSection) ? ui.settingsSection : DEFAULT_SETTINGS.ui.settingsSection
       },
       linkChat: {
         enabled: booleanOr(linkChat.enabled, DEFAULT_SETTINGS.linkChat.enabled),
@@ -920,6 +928,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
   }
   function validColor(value) {
     return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value);
+  }
+  function isSettingsSection(value) {
+    return value === "appearance" || value === "navigation" || value === "chat" || value === "players" || value === "activities";
   }
   function getDefaultStorage() {
     try {
@@ -1281,6 +1292,14 @@ One of mods you are using is using an old version of SDK. It will work for now b
 :host {
   --kl-accent: #d71932;
   --kl-accent-strong: #f13749;
+  --kl-accent-foreground: #fff8ee;
+  --kl-type-xxs: 9px;
+  --kl-type-xs: 10px;
+  --kl-type-sm: 11px;
+  --kl-type-body: 12px;
+  --kl-type-md: 14px;
+  --kl-type-lg: 17px;
+  --kl-type-xl: 20px;
   --kl-gold: #d6a24b;
   --kl-bg: #070708;
   --kl-panel-bg: rgba(8, 8, 9, 0.985);
@@ -1307,6 +1326,28 @@ One of mods you are using is using an old version of SDK. It will work for now b
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   line-height: 1.4;
+}
+
+:host([data-text-scale="large"]) {
+  --kl-type-xxs: 10px;
+  --kl-type-xs: 11px;
+  --kl-type-sm: 12px;
+  --kl-type-body: 13px;
+  --kl-type-md: 15px;
+  --kl-type-lg: 19px;
+  --kl-type-xl: 22px;
+  font-size: 15px;
+}
+
+:host([data-text-scale="extra-large"]) {
+  --kl-type-xxs: 11px;
+  --kl-type-xs: 12px;
+  --kl-type-sm: 13px;
+  --kl-type-body: 14px;
+  --kl-type-md: 16px;
+  --kl-type-lg: 20px;
+  --kl-type-xl: 24px;
+  font-size: 16px;
 }
 
 :host([data-theme="light"]) {
@@ -1537,13 +1578,19 @@ button { color: inherit; }
   text-transform: uppercase;
   white-space: nowrap;
 }
-.kl-brand-subtitle { display: flex; align-items: center; gap: 8px; color: var(--kl-muted); font-size: 11px; letter-spacing: 0.02em; }
-.kl-topbar-mode {
+.kl-brand-subtitle { display: flex; align-items: center; gap: 8px; color: var(--kl-muted); font-size: var(--kl-type-sm); letter-spacing: 0.02em; }
+.kl-topbar-context {
   margin-right: 2px;
   color: var(--kl-gold);
-  font-size: 9px;
+  font-size: var(--kl-type-xs);
   font-weight: 900;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.kl-topbar-settings { display: none; }
+.kl-topbar-settings[aria-current="page"] {
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 24%);
+  background: color-mix(in srgb, var(--kl-accent), transparent 84%);
 }
 .kl-connection { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .kl-connection-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--kl-gold); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-gold), transparent 84%); }
@@ -1559,8 +1606,8 @@ button { color: inherit; }
 }
 
 .kl-icon-button {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -1587,7 +1634,7 @@ button { color: inherit; }
 }
 
 .kl-text-button {
-  min-height: 36px;
+  min-height: 40px;
   padding: 7px 12px;
   border-radius: 11px;
   font-weight: 750;
@@ -1605,11 +1652,11 @@ button { color: inherit; }
 .kl-text-button--danger { color: var(--kl-danger); }
 .kl-text-button--primary {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 24%);
-  background: linear-gradient(145deg, var(--kl-accent-strong), color-mix(in srgb, var(--kl-accent), #4b000d 42%));
-  color: #fff8ee;
+  background: var(--kl-accent);
+  color: var(--kl-accent-foreground);
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.13);
 }
-.kl-text-button--primary:hover { background: var(--kl-accent-strong); }
+.kl-text-button--primary:hover { background: color-mix(in srgb, var(--kl-accent), var(--kl-accent-foreground) 10%); }
 
 .kl-shell {
   min-width: 0;
@@ -1670,7 +1717,7 @@ button { color: inherit; }
 .kl-nav-label {
   max-width: 100%;
   overflow: hidden;
-  font-size: 9px;
+  font-size: var(--kl-type-xs);
   font-weight: 820;
   letter-spacing: 0.035em;
   text-overflow: ellipsis;
@@ -1685,7 +1732,148 @@ button { color: inherit; }
   overflow: hidden;
 }
 .kl-workspace > .kl-layout,
-.kl-workspace > .kl-home { height: 100%; }
+.kl-workspace > .kl-home,
+.kl-workspace > .kl-feature-page,
+.kl-workspace > .kl-settings-page { height: 100%; }
+
+.kl-feature-page,
+.kl-settings-page {
+  min-width: 0;
+  min-height: 0;
+  background:
+    radial-gradient(circle at 92% 0%, color-mix(in srgb, var(--kl-accent), transparent 91%), transparent 32%),
+    transparent;
+}
+
+.kl-feature-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.kl-feature-page-header {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 19px 24px 17px;
+  border-bottom: 1px solid var(--kl-border);
+  background: color-mix(in srgb, var(--kl-surface), transparent 42%);
+}
+.kl-feature-page-heading { min-width: 0; margin-right: auto; }
+.kl-feature-page-eyebrow {
+  color: var(--kl-gold);
+  font-size: var(--kl-type-xxs);
+  font-weight: 900;
+  letter-spacing: 0.16em;
+}
+.kl-feature-page-title {
+  margin: 2px 0 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: var(--kl-type-xl);
+  line-height: 1.15;
+}
+.kl-feature-page-subtitle {
+  margin: 3px 0 0;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-sm);
+}
+.kl-feature-page-footer {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 11px 20px;
+  border-top: 1px solid var(--kl-border);
+  background: var(--kl-composer-bg);
+}
+.kl-feature-page-footnote { margin-right: auto; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+
+.kl-settings-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.kl-settings-layout {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+}
+.kl-settings-tabs {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 15px 11px;
+  overflow-y: auto;
+  border-right: 1px solid var(--kl-border);
+  background: var(--kl-sidebar-bg);
+}
+.kl-settings-tab {
+  width: 100%;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--kl-muted);
+  text-align: left;
+  cursor: pointer;
+}
+.kl-settings-tab:hover { border-color: var(--kl-border); background: var(--kl-surface-2); color: var(--kl-text); }
+.kl-settings-tab[data-active="true"] {
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 22%);
+  background: color-mix(in srgb, var(--kl-accent), transparent 87%);
+  color: var(--kl-text);
+  box-shadow: inset 3px 0 var(--kl-accent);
+}
+.kl-settings-tab-icon {
+  width: 25px;
+  display: grid;
+  place-items: center;
+  color: var(--kl-gold);
+  font-size: 16px;
+}
+.kl-settings-panels { min-width: 0; min-height: 0; overflow: hidden; }
+.kl-settings-panel {
+  height: 100%;
+  overflow-y: auto;
+  padding: 24px clamp(22px, 4vw, 42px) 34px;
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
+}
+.kl-settings-panel-title {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: var(--kl-type-xl);
+}
+.kl-settings-panel-description {
+  max-width: 680px;
+  margin: 5px 0 22px;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-body);
+}
+.kl-settings-panel-body { display: grid; gap: 18px; }
+.kl-settings-actions {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 11px 20px;
+  border-top: 1px solid var(--kl-border);
+  background: var(--kl-composer-bg);
+}
+.kl-settings-local-note { margin-right: auto; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-setting-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
 
 .kl-home {
   position: relative;
@@ -1730,7 +1918,7 @@ button { color: inherit; }
 .kl-home-eyebrow,
 .kl-feature-card-kicker {
   color: var(--kl-gold);
-  font-size: 9px;
+  font-size: var(--kl-type-xxs);
   font-weight: 900;
   letter-spacing: 0.16em;
 }
@@ -1741,7 +1929,7 @@ button { color: inherit; }
   font-weight: 650;
   letter-spacing: -0.025em;
 }
-.kl-home-lead { max-width: 590px; margin: 0; color: var(--kl-muted); font-size: 13px; }
+.kl-home-lead { max-width: 590px; margin: 0; color: var(--kl-muted); font-size: var(--kl-type-body); }
 .kl-home-statuses { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .kl-home-status {
   display: inline-flex;
@@ -1752,7 +1940,7 @@ button { color: inherit; }
   border: 1px solid var(--kl-border);
   border-radius: 999px;
   background: color-mix(in srgb, var(--kl-surface-2), transparent 18%);
-  font-size: 10px;
+  font-size: var(--kl-type-xs);
 }
 .kl-home-status-label { color: var(--kl-muted); }
 .kl-home-status-value { font-weight: 780; }
@@ -1856,7 +2044,7 @@ button { color: inherit; }
   font-size: 19px;
   font-weight: 700;
 }
-.kl-feature-card-description { margin-top: 5px; color: var(--kl-muted); font-size: 11px; }
+.kl-feature-card-description { margin-top: 5px; color: var(--kl-muted); font-size: var(--kl-type-sm); }
 .kl-feature-card-footer {
   position: relative;
   z-index: 1;
@@ -1871,7 +2059,7 @@ button { color: inherit; }
   min-width: 0;
   overflow: hidden;
   color: var(--kl-meta);
-  font-size: 10px;
+  font-size: var(--kl-type-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1883,10 +2071,34 @@ button { color: inherit; }
   gap: 8px;
   padding: 16px 8px 2px;
   color: var(--kl-muted);
-  font-size: 10px;
+  font-size: var(--kl-type-xs);
   text-align: center;
 }
 .kl-home-privacy-icon { color: var(--kl-gold); }
+
+:host([data-home-layout="compact"]) .kl-home-hero {
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 12px;
+  padding-block: 18px;
+}
+:host([data-home-layout="compact"]) .kl-home-mark,
+:host([data-home-layout="compact"]) .kl-home-eyebrow,
+:host([data-home-layout="compact"]) .kl-home-lead,
+:host([data-home-layout="compact"]) .kl-feature-card-description { display: none; }
+:host([data-home-layout="compact"]) .kl-feature-card {
+  min-height: 112px;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+:host([data-density="compact"]) .kl-feature-nav { gap: 4px; padding-block: 9px; }
+:host([data-density="compact"]) .kl-nav-item { min-height: 52px; }
+:host([data-density="compact"]) .kl-home { padding: 18px; }
+:host([data-density="compact"]) .kl-home-hero { min-height: 160px; margin-bottom: 14px; padding: 19px 22px; }
+:host([data-density="compact"]) .kl-feature-card { min-height: 126px; padding: 14px; }
+:host([data-density="compact"]) .kl-conversation { padding-block: 7px; }
+:host([data-density="compact"]) .kl-settings-panel { padding-top: 18px; }
+:host([data-density="compact"]) .kl-settings-panel-body { gap: 13px; }
 
 .kl-layout {
   position: relative;
@@ -1913,14 +2125,14 @@ button { color: inherit; }
   gap: 8px;
   padding: 0 13px 8px 16px;
   color: var(--kl-gold);
-  font-size: 10px;
+  font-size: var(--kl-type-xs);
   font-weight: 850;
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
 .kl-sidebar-new-chat {
-  width: 25px;
-  height: 25px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -1955,7 +2167,7 @@ button { color: inherit; }
 .kl-composer-input { width: 100%; }
 
 .kl-search {
-  height: 40px;
+  height: 44px;
   padding: 0 13px;
   border-radius: 12px;
 }
@@ -2017,9 +2229,9 @@ button { color: inherit; }
 .kl-conversation-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .kl-conversation-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 750; }
 .kl-pin { color: var(--kl-gold); font-size: 11px; }
-.kl-conversation-preview { overflow: hidden; color: var(--kl-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.kl-conversation-preview { overflow: hidden; color: var(--kl-muted); font-size: var(--kl-type-body); text-overflow: ellipsis; white-space: nowrap; }
 .kl-conversation-side { align-self: stretch; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 5px; }
-.kl-time { color: var(--kl-muted); font-size: 10px; white-space: nowrap; }
+.kl-time { color: var(--kl-muted); font-size: var(--kl-type-xs); white-space: nowrap; }
 .kl-unread {
   min-width: 19px;
   height: 19px;
@@ -2028,8 +2240,8 @@ button { color: inherit; }
   padding: 0 5px;
   border-radius: 999px;
   background: var(--kl-accent);
-  color: #fff7eb;
-  font-size: 10px;
+  color: var(--kl-accent-foreground);
+  font-size: var(--kl-type-xs);
   font-weight: 850;
 }
 
@@ -2062,7 +2274,7 @@ button { color: inherit; }
   font-weight: 900;
 }
 
-.kl-empty-title { margin: 0 0 7px; font-family: Georgia, "Times New Roman", serif; font-size: 20px; font-weight: 700; }
+.kl-empty-title { margin: 0 0 7px; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-xl); font-weight: 700; }
 .kl-empty-copy { margin: 0 0 18px; color: var(--kl-muted); }
 
 .kl-chat {
@@ -2082,8 +2294,8 @@ button { color: inherit; }
 
 .kl-back { display: none; }
 .kl-chat-person { min-width: 0; margin-right: auto; }
-.kl-chat-name { overflow: hidden; font-size: 15px; font-weight: 850; text-overflow: ellipsis; white-space: nowrap; }
-.kl-chat-number { color: var(--kl-muted); font-size: 11px; }
+.kl-chat-name { overflow: hidden; font-size: var(--kl-type-md); font-weight: 850; text-overflow: ellipsis; white-space: nowrap; }
+.kl-chat-number { color: var(--kl-muted); font-size: var(--kl-type-sm); }
 
 .kl-messages {
   min-height: 0;
@@ -2108,11 +2320,11 @@ button { color: inherit; }
 .kl-message-row[data-direction="outgoing"] .kl-message-bubble {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 22%);
   border-radius: 16px 16px 5px 16px;
-  background: linear-gradient(145deg, color-mix(in srgb, var(--kl-accent), #2b0710 24%), #8f1028);
-  color: #fff8ee;
+  background: var(--kl-accent);
+  color: var(--kl-accent-foreground);
 }
-.kl-message-meta { display: flex; justify-content: flex-end; gap: 7px; margin-top: 5px; color: var(--kl-meta); font-size: 9px; }
-.kl-message-row[data-direction="outgoing"] .kl-message-meta { color: rgba(255, 245, 229, 0.64); }
+.kl-message-meta { display: flex; justify-content: flex-end; gap: 7px; margin-top: 5px; color: var(--kl-meta); font-size: var(--kl-type-xxs); }
+.kl-message-row[data-direction="outgoing"] .kl-message-meta { color: color-mix(in srgb, var(--kl-accent-foreground), transparent 32%); }
 .kl-message-room { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .kl-composer {
@@ -2131,14 +2343,14 @@ button { color: inherit; }
   scrollbar-color: var(--kl-border-strong) transparent;
 }
 .kl-action-chip {
-  min-height: 29px;
+  min-height: 36px;
   flex: 0 0 auto;
   padding: 4px 10px;
   border: 1px solid var(--kl-border);
   border-radius: 999px;
   background: color-mix(in srgb, var(--kl-surface-2), transparent 8%);
   color: var(--kl-text);
-  font-size: 11px;
+  font-size: var(--kl-type-sm);
   font-weight: 750;
   cursor: pointer;
 }
@@ -2153,8 +2365,8 @@ button { color: inherit; }
   border-radius: 14px;
 }
 .kl-send { min-width: 76px; height: 44px; }
-.kl-composer-options { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; color: var(--kl-muted); font-size: 11px; }
-.kl-check { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.kl-composer-options { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; color: var(--kl-muted); font-size: var(--kl-type-sm); }
+.kl-check { min-height: 32px; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .kl-check input { accent-color: var(--kl-accent); }
 .kl-counter[data-over="true"] { color: var(--kl-danger); font-weight: 750; }
 
@@ -2172,23 +2384,23 @@ button { color: inherit; }
 .kl-dialog::backdrop { background: rgba(0, 0, 0, 0.68); backdrop-filter: blur(4px); }
 .kl-dialog-header { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--kl-border); background: var(--kl-topbar-bg); }
 .kl-dialog-heading { min-width: 0; margin-right: auto; }
-.kl-dialog-title { margin-right: auto; font-family: Georgia, "Times New Roman", serif; font-size: 17px; font-weight: 700; }
-.kl-dialog-subtitle { margin-top: 2px; color: var(--kl-muted); font-size: 10px; letter-spacing: 0.035em; }
+.kl-dialog-title { margin-right: auto; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); font-weight: 700; }
+.kl-dialog-subtitle { margin-top: 2px; color: var(--kl-muted); font-size: var(--kl-type-xs); letter-spacing: 0.035em; }
 .kl-dialog-body { display: grid; gap: 18px; max-height: calc(100vh - 170px); padding: 18px; overflow: auto; }
 .kl-setting-section { display: grid; gap: 14px; }
 .kl-setting-section + .kl-setting-section { padding-top: 17px; border-top: 1px solid var(--kl-border); }
-.kl-setting-section-title { color: var(--kl-gold); font-size: 10px; font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
+.kl-setting-section-title { color: var(--kl-gold); font-size: var(--kl-type-xs); font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
 .kl-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .kl-setting-copy { min-width: 0; }
 .kl-setting-name { font-weight: 750; }
-.kl-setting-help { margin-top: 2px; color: var(--kl-muted); font-size: 11px; }
-.kl-number-input { width: 90px; height: 38px; padding: 0 10px; border-radius: 11px; }
-.kl-select { width: 142px; height: 38px; padding: 0 10px; border-radius: 11px; }
+.kl-setting-help { margin-top: 2px; color: var(--kl-muted); font-size: var(--kl-type-sm); }
+.kl-number-input { width: 90px; height: 44px; padding: 0 10px; border-radius: 11px; }
+.kl-select { width: 156px; height: 44px; padding: 0 10px; border-radius: 11px; }
 .kl-color-control { display: flex; align-items: center; gap: 8px; }
 .kl-color-presets { display: flex; align-items: center; gap: 5px; }
 .kl-color-swatch {
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 2px solid var(--kl-surface);
   border-radius: 50%;
@@ -2197,34 +2409,38 @@ button { color: inherit; }
   cursor: pointer;
 }
 .kl-color-swatch:hover { outline-color: var(--kl-border-strong); transform: scale(1.08); }
+.kl-color-swatch[data-selected="true"] {
+  outline: 2px solid var(--kl-text);
+  outline-offset: 2px;
+}
 .kl-color-input {
-  width: 38px;
-  height: 32px;
+  width: 46px;
+  height: 44px;
   padding: 3px;
   border: 1px solid var(--kl-border);
   border-radius: 10px;
   background: var(--kl-input-bg);
   cursor: pointer;
 }
-.kl-switch { width: 42px; height: 24px; position: relative; flex: 0 0 auto; }
+.kl-switch { width: 48px; height: 44px; position: relative; flex: 0 0 auto; }
 .kl-switch input { position: absolute; opacity: 0; pointer-events: none; }
-.kl-switch-track { position: absolute; inset: 0; border: 1px solid var(--kl-border); border-radius: 999px; background: var(--kl-surface-hover); cursor: pointer; transition: background 140ms ease; }
-.kl-switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff8eb; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24); transition: transform 140ms ease; }
+.kl-switch-track { position: absolute; inset: 9px 0; border: 1px solid var(--kl-border); border-radius: 999px; background: var(--kl-surface-hover); cursor: pointer; transition: background 140ms ease; }
+.kl-switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff8eb; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24); transition: transform 140ms ease; }
 .kl-switch input:checked + .kl-switch-track { background: var(--kl-accent); }
-.kl-switch input:checked + .kl-switch-track::after { transform: translateX(18px); }
+.kl-switch input:checked + .kl-switch-track::after { background: var(--kl-accent-foreground); transform: translateX(22px); }
 .kl-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 0 18px 18px; }
 
 .kl-action-editor { display: grid; gap: 8px; }
-.kl-action-editor-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 34px; gap: 7px; align-items: center; }
+.kl-action-editor-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) 40px; gap: 7px; align-items: center; }
 .kl-action-label,
-.kl-action-template { width: 100%; height: 36px; min-width: 0; padding: 0 9px; border-radius: 10px; }
-.kl-remove-action { width: 34px; height: 34px; color: var(--kl-danger); }
+.kl-action-template { width: 100%; height: 40px; min-width: 0; padding: 0 9px; border-radius: 10px; }
+.kl-remove-action { width: 40px; height: 40px; color: var(--kl-danger); }
 .kl-add-action { justify-self: start; }
 
 .kl-new-chat-dialog { width: min(480px, calc(100vw - 32px)); }
 .kl-new-chat-body { gap: 12px; }
 .kl-new-chat-query { flex: 0 0 auto; }
-.kl-contact-heading { color: var(--kl-gold); font-size: 10px; font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
+.kl-contact-heading { color: var(--kl-gold); font-size: var(--kl-type-xs); font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
 .kl-contact-results { min-height: 120px; max-height: min(430px, calc(100vh - 300px)); overflow-y: auto; }
 .kl-contact {
   width: 100%;
@@ -2245,15 +2461,16 @@ button { color: inherit; }
 .kl-contact-copy { min-width: 0; }
 .kl-contact-name { overflow: hidden; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .kl-contact-number,
-.kl-contact-empty { color: var(--kl-muted); font-size: 11px; }
+.kl-contact-empty { color: var(--kl-muted); font-size: var(--kl-type-sm); }
 .kl-contact-empty { padding: 18px 8px; text-align: center; }
 
-.kl-roster-dialog { width: min(880px, calc(100vw - 32px)); }
 .kl-roster-body {
-  min-height: min(540px, calc(100vh - 190px));
+  min-width: 0;
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(280px, 0.78fr) minmax(360px, 1.22fr);
   gap: 14px;
+  padding: 18px;
   overflow: hidden;
 }
 .kl-roster-list-pane {
@@ -2273,13 +2490,13 @@ button { color: inherit; }
   background: var(--kl-input-bg);
 }
 .kl-roster-scope {
-  min-height: 31px;
+  min-height: 40px;
   padding: 4px 7px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   color: var(--kl-muted);
-  font-size: 10px;
+  font-size: var(--kl-type-xs);
   font-weight: 800;
   cursor: pointer;
 }
@@ -2306,7 +2523,7 @@ button { color: inherit; }
   place-items: center;
   padding: 18px;
   color: var(--kl-muted);
-  font-size: 12px;
+  font-size: var(--kl-type-body);
   text-align: center;
 }
 .kl-roster-entry {
@@ -2337,21 +2554,21 @@ button { color: inherit; }
 .kl-roster-friend {
   padding: 1px 4px;
   border-radius: 999px;
-  font-size: 7px;
+  font-size: var(--kl-type-xxs);
   font-weight: 900;
   letter-spacing: 0.08em;
 }
 .kl-roster-live { background: rgba(104, 211, 145, 0.14); color: #68d391; }
 .kl-roster-friend { background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
-.kl-roster-favorite { color: var(--kl-gold); font-size: 11px; }
+.kl-roster-favorite { color: var(--kl-gold); font-size: var(--kl-type-sm); }
 .kl-roster-entry-preview {
   overflow: hidden;
   color: var(--kl-muted);
-  font-size: 10px;
+  font-size: var(--kl-type-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.kl-roster-entry-time { color: var(--kl-muted); font-size: 9px; }
+.kl-roster-entry-time { color: var(--kl-muted); font-size: var(--kl-type-xxs); }
 .kl-roster-detail {
   min-width: 0;
   min-height: 0;
@@ -2367,33 +2584,42 @@ button { color: inherit; }
 .kl-roster-avatar { width: 54px; height: 54px; border-radius: 17px; font-size: 17px; }
 .kl-roster-identity-copy { min-width: 0; }
 .kl-roster-name { overflow: hidden; font-family: Georgia, "Times New Roman", serif; font-size: 19px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
-.kl-roster-number { color: var(--kl-muted); font-size: 11px; }
+.kl-roster-number { color: var(--kl-muted); font-size: var(--kl-type-sm); }
 .kl-roster-star { color: var(--kl-gold); font-size: 20px; }
 .kl-roster-quick-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-top: 15px; }
-.kl-roster-quick-actions .kl-text-button { min-width: 0; padding-inline: 7px; font-size: 11px; }
+.kl-roster-quick-actions .kl-text-button { min-width: 0; padding-inline: 7px; font-size: var(--kl-type-sm); }
 .kl-roster-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 15px; }
 .kl-roster-stat { min-width: 0; padding: 9px 10px; border: 1px solid var(--kl-border); border-radius: 11px; background: var(--kl-surface-2); }
-.kl-roster-stat-label { color: var(--kl-muted); font-size: 8px; font-weight: 850; letter-spacing: 0.08em; text-transform: uppercase; }
-.kl-roster-stat-value { margin-top: 3px; overflow: hidden; font-size: 11px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.kl-roster-stat-label { color: var(--kl-muted); font-size: var(--kl-type-xxs); font-weight: 850; letter-spacing: 0.08em; text-transform: uppercase; }
+.kl-roster-stat-value { margin-top: 3px; overflow: hidden; font-size: var(--kl-type-sm); font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .kl-roster-notebook { display: grid; gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--kl-border); }
-.kl-roster-field-label { display: grid; gap: 5px; color: var(--kl-gold); font-size: 9px; font-weight: 850; letter-spacing: 0.09em; text-transform: uppercase; }
+.kl-roster-field-label { display: grid; gap: 5px; color: var(--kl-gold); font-size: var(--kl-type-xxs); font-weight: 850; letter-spacing: 0.09em; text-transform: uppercase; }
 .kl-roster-note,
 .kl-roster-tags { width: 100%; min-width: 0; padding: 9px 11px; border-radius: 11px; text-transform: none; }
 .kl-roster-tags { height: 38px; }
 .kl-roster-note { min-height: 120px; max-height: 230px; resize: vertical; line-height: 1.45; }
 .kl-roster-note-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .kl-roster-note-actions .kl-setting-help { margin-right: auto; }
-.kl-roster-privacy { align-self: center; margin-right: auto; color: var(--kl-muted); font-size: 9px; }
+.kl-roster-privacy { align-self: center; margin-right: auto; color: var(--kl-muted); font-size: var(--kl-type-xs); }
 
-.kl-activities-dialog { width: min(760px, calc(100vw - 32px)); }
-.kl-activities-body { gap: 13px; }
+.kl-activities-body {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 13px;
+  padding: 18px 22px;
+  overflow-y: auto;
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
+}
 .kl-activity-status {
   padding: 9px 11px;
   border: 1px solid var(--kl-border);
   border-radius: 11px;
   background: color-mix(in srgb, var(--kl-surface-2), transparent 20%);
   color: var(--kl-muted);
-  font-size: 11px;
+  font-size: var(--kl-type-sm);
 }
 .kl-activity-status[data-kind="ready"] { color: #68d391; }
 .kl-activity-status[data-kind="error"] { color: var(--kl-danger); }
@@ -2406,7 +2632,7 @@ button { color: inherit; }
 .kl-activity-pane { min-width: 0; display: grid; align-content: start; gap: 9px; }
 .kl-activity-pane-title {
   color: var(--kl-gold);
-  font-size: 10px;
+  font-size: var(--kl-type-xs);
   font-weight: 850;
   letter-spacing: 0.13em;
   text-transform: uppercase;
@@ -2465,7 +2691,7 @@ button { color: inherit; }
   margin-top: 3px;
   overflow: hidden;
   color: var(--kl-muted);
-  font-size: 11px;
+  font-size: var(--kl-type-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2479,7 +2705,7 @@ button { color: inherit; }
   overflow-wrap: anywhere;
   font-style: italic;
 }
-.kl-activity-dialog-actions .kl-edit-activities { margin-right: auto; }
+.kl-activity-actions .kl-feature-page-footnote { margin-right: auto; }
 
 .kl-toast {
   position: absolute;
@@ -2487,20 +2713,43 @@ button { color: inherit; }
   right: 16px;
   bottom: 16px;
   max-width: 320px;
-  padding: 10px 13px;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 13px;
   border: 1px solid var(--kl-border-strong);
   border-radius: 12px;
   background: var(--kl-surface-hover);
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
-  font-size: 12px;
+  font-size: var(--kl-type-body);
   animation: kl-enter 140ms ease-out;
 }
 .kl-toast[data-kind="error"] { border-color: color-mix(in srgb, var(--kl-danger), transparent 44%); color: var(--kl-danger); }
+.kl-toast-message { min-width: 0; overflow-wrap: anywhere; }
+.kl-toast-dismiss {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.kl-toast-dismiss:hover { background: color-mix(in srgb, var(--kl-surface-2), transparent 8%); }
 
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--kl-accent), var(--kl-gold) 28%);
+  outline-offset: 2px;
+}
+.kl-switch input:focus-visible + .kl-switch-track {
   outline: 2px solid color-mix(in srgb, var(--kl-accent), var(--kl-gold) 28%);
   outline-offset: 2px;
 }
@@ -2527,7 +2776,7 @@ select:focus-visible {
   .kl-feature-nav {
     grid-row: 2;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 4px;
     padding: 5px 7px calc(5px + env(safe-area-inset-bottom));
     border-top: 1px solid var(--kl-border);
@@ -2541,10 +2790,10 @@ select:focus-visible {
     padding: 4px 2px;
     border-radius: 12px;
   }
-  .kl-nav-item[data-target="settings"] { margin-top: 0; }
+  .kl-nav-item[data-target="settings"] { display: none; }
   .kl-nav-item[data-active="true"] { box-shadow: inset 0 -3px var(--kl-accent); }
   .kl-nav-icon { font-size: 18px; }
-  .kl-nav-label { font-size: 8px; }
+  .kl-nav-label { font-size: var(--kl-type-xs); }
   .kl-roster-count { top: 1px; right: calc(50% - 25px); }
   .kl-home { padding: 18px; }
   .kl-home-hero {
@@ -2564,10 +2813,16 @@ select:focus-visible {
   .kl-panel[data-mobile-view="chat"] .kl-sidebar { display: none; }
   .kl-panel[data-mobile-view="chat"] .kl-main { display: grid; }
   .kl-back { display: grid; }
+  .kl-icon-button { width: 44px; height: 44px; }
+  .kl-text-button { min-height: 44px; }
+  .kl-sidebar-new-chat { width: 44px; height: 44px; }
+  .kl-action-chip { min-height: 40px; }
   .kl-search-wrap { padding: 12px; }
   .kl-conversation { grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; padding: 10px; }
   .kl-brand-subtitle { display: none; }
   .kl-topbar { padding-left: 12px; }
+  .kl-topbar-settings { display: grid; }
+  .kl-topbar .kl-icon-button { width: 44px; height: 44px; }
   .kl-chat-header { padding: 0 12px; }
   .kl-messages { padding: 14px 12px; }
   .kl-message-bubble { max-width: 88%; }
@@ -2577,55 +2832,80 @@ select:focus-visible {
   .kl-send::after { content: "\u27A4"; font-size: 17px; }
   .kl-setting-row { gap: 14px; }
   .kl-setting-help { max-width: 230px; }
-  .kl-action-editor-row { grid-template-columns: 76px minmax(0, 1fr) 34px; }
-  .kl-activities-dialog {
-    width: calc(100vw - 16px);
-    max-height: calc(100vh - 16px);
-  }
-  .kl-activities-body { max-height: calc(100vh - 145px); }
+  .kl-action-editor-row { grid-template-columns: 82px minmax(0, 1fr) 40px; }
+  .kl-feature-page-header { padding: 14px 16px 13px; }
+  .kl-feature-page-footer { min-height: 60px; padding: 8px 12px; }
+  .kl-activities-body { padding: 14px; }
   .kl-activity-studio { grid-template-columns: minmax(0, 1fr); }
   .kl-activity-targets,
   .kl-activity-library { min-height: 130px; max-height: 190px; }
-  .kl-roster-dialog {
-    width: calc(100vw - 16px);
-    max-height: calc(100vh - 16px);
-  }
   .kl-roster-body {
     min-height: 0;
-    max-height: calc(100vh - 145px);
     grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
     overflow-y: auto;
   }
   .kl-roster-list-pane { min-height: 270px; }
   .kl-roster-list { max-height: 235px; }
   .kl-roster-detail { overflow: visible; }
   .kl-roster-privacy { display: none; }
+  .kl-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .kl-settings-tabs {
+    flex-direction: row;
+    gap: 5px;
+    padding: 7px 9px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--kl-border);
+    scrollbar-width: thin;
+  }
+  .kl-settings-tab {
+    width: auto;
+    min-height: 44px;
+    flex: 0 0 auto;
+    padding-inline: 11px;
+  }
+  .kl-settings-tab[data-active="true"] { box-shadow: inset 0 -3px var(--kl-accent); }
+  .kl-settings-panel { padding: 18px 18px 28px; }
+  .kl-settings-actions { min-height: 60px; padding: 8px 12px; }
+  .kl-toast { right: 12px; bottom: 76px; max-width: calc(100% - 24px); }
 }
 
 @media (max-width: 420px) {
   .kl-brand-title { font-size: 14px; }
   .kl-brand-emblem { width: 34px; height: 34px; }
   .kl-topbar { gap: 7px; padding-right: 10px; }
-  .kl-topbar-mode { display: none; }
-  .kl-icon-button { width: 34px; height: 34px; }
+  .kl-topbar-context { display: none; }
+  .kl-icon-button { width: 44px; height: 44px; }
   .kl-home { padding: 12px; }
   .kl-home-hero { min-height: 0; grid-template-columns: minmax(0, 1fr); margin-bottom: 10px; padding: 18px; }
   .kl-home-mark { display: none; }
-  .kl-home-lead { font-size: 11px; }
+  .kl-home-lead { font-size: var(--kl-type-sm); }
   .kl-home-statuses { margin-top: 13px; }
   .kl-home-status { max-width: 100%; }
   .kl-home-status-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .kl-feature-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .kl-feature-card { min-height: 126px; grid-template-columns: 42px minmax(0, 1fr); padding: 13px; }
   .kl-feature-card-icon { width: 42px; height: 42px; border-radius: 13px; font-size: 19px; }
-  .kl-feature-card-title { font-size: 17px; }
+  .kl-feature-card-title { font-size: var(--kl-type-lg); }
   .kl-home-privacy { padding-bottom: 8px; }
   .kl-color-control { align-items: flex-end; flex-direction: column; }
   .kl-conversation-side { max-width: 44px; }
   .kl-setting-row { align-items: flex-start; }
-  .kl-select { width: 126px; }
-  .kl-activity-dialog-actions { flex-wrap: wrap; }
-  .kl-activity-dialog-actions .kl-edit-activities { width: 100%; margin-right: 0; }
+  .kl-setting-action-row { align-items: flex-start; }
+  .kl-select { width: 136px; }
+  .kl-action-editor-row { grid-template-columns: 72px minmax(0, 1fr) 40px; }
+  .kl-activity-actions { flex-wrap: wrap; }
+  .kl-activity-actions .kl-feature-page-footnote { width: 100%; margin-right: 0; }
+  .kl-settings-local-note { display: none; }
+  .kl-settings-panel { padding-inline: 12px; }
+  .kl-settings-panel-description { margin-bottom: 16px; }
+  .kl-settings-panel-body { gap: 14px; }
+  .kl-feature-page-subtitle { max-width: 260px; }
   .kl-roster-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kl-roster-stats { grid-template-columns: minmax(0, 1fr); }
   .kl-roster-stat-value { white-space: normal; }
@@ -2689,6 +2969,14 @@ select:focus-visible {
     #workspace = element("div", { className: "kl-workspace" });
     #home = element("section", { className: "kl-home" });
     #chatLayout = element("div", { className: "kl-layout" });
+    #contextTitle = element("div", { className: "kl-topbar-context", text: "Home" });
+    #topbarSettingsButton = element("button", {
+      className: "kl-icon-button kl-topbar-settings",
+      type: "button",
+      text: "\u2699",
+      title: "KikiLink settings",
+      ariaLabel: "Open KikiLink settings"
+    });
     #homeNavButton = element("button", {
       className: "kl-nav-item",
       type: "button",
@@ -2704,7 +2992,7 @@ select:focus-visible {
     #settingsNavButton = element("button", {
       className: "kl-nav-item",
       type: "button",
-      title: "Customize KikiLink",
+      title: "KikiLink settings",
       ariaLabel: "Open KikiLink settings"
     });
     #homeGreeting = element("h1", { className: "kl-home-title" });
@@ -2747,16 +3035,24 @@ select:focus-visible {
     #quickActions = element("div", { className: "kl-quick-actions" });
     #includeRoom = element("input");
     #counter = element("span", { className: "kl-counter" });
-    #settingsDialog = element("dialog", { className: "kl-dialog" });
+    #settingsPage = element("section", {
+      className: "kl-settings-page",
+      ariaLabel: "KikiLink settings"
+    });
+    #settingsTabs = element("div", { className: "kl-settings-tabs" });
+    #settingsPanels = /* @__PURE__ */ new Map();
     #historyToggle = element("input");
     #retentionInput = element("input", { className: "kl-number-input" });
     #saveSettingsButton = element("button", {
       className: "kl-text-button kl-text-button--primary",
       type: "button",
-      text: "Save"
+      text: "Save changes"
     });
     #themeSelect = element("select", { className: "kl-select" });
     #accentInput = element("input", { className: "kl-color-input" });
+    #densitySelect = element("select", { className: "kl-select" });
+    #textScaleSelect = element("select", { className: "kl-select" });
+    #homeLayoutSelect = element("select", { className: "kl-select" });
     #launcherSideSelect = element("select", {
       className: "kl-select"
     });
@@ -2774,10 +3070,11 @@ select:focus-visible {
       ariaLabel: "Open LinkRoster"
     });
     #rosterCount = element("span", { className: "kl-roster-count" });
-    #rosterDialog = element("dialog", {
-      className: "kl-dialog kl-roster-dialog"
+    #rosterPage = element("section", {
+      className: "kl-feature-page kl-roster-page",
+      ariaLabel: "LinkRoster players"
     });
-    #rosterSubtitle = element("div", { className: "kl-dialog-subtitle" });
+    #rosterSubtitle = element("p", { className: "kl-feature-page-subtitle" });
     #rosterScopes = element("div", { className: "kl-roster-scopes" });
     #rosterSearch = element("input", {
       className: "kl-search kl-roster-search"
@@ -2805,8 +3102,9 @@ select:focus-visible {
       title: "LinkActivities",
       ariaLabel: "Open LinkActivities"
     });
-    #activitiesDialog = element("dialog", {
-      className: "kl-dialog kl-activities-dialog"
+    #activitiesPage = element("section", {
+      className: "kl-feature-page kl-activities-page",
+      ariaLabel: "LinkActivities"
     });
     #activityTargetQuery = element("input", {
       className: "kl-search kl-activity-target-query"
@@ -2838,6 +3136,8 @@ select:focus-visible {
     #rosterScope = "current";
     #workspaceView = "home";
     #lastWorkspaceView = "home";
+    #settingsReturnView = "home";
+    #settingsSection = "appearance";
     #presentCount = 0;
     #unreadCount = 0;
     #notebookDirty = false;
@@ -2846,7 +3146,10 @@ select:focus-visible {
     #toastTimer;
     #launcherDrag;
     #suppressLauncherClickUntil = 0;
-    #handleViewportResize = () => this.#positionLauncher();
+    #handleViewportResize = () => {
+      this.#positionLauncher();
+      this.#updateSettingsTabOrientation();
+    };
     #saveDraft = debounce((peerNumber, peerName, value) => {
       void this.service.setDraft(peerNumber, peerName, value);
     }, 250);
@@ -2859,18 +3162,12 @@ select:focus-visible {
       this.#applyTheme(this.settings.get());
       this.#buildLauncher();
       this.#buildPanel();
-      this.#buildSettingsDialog();
       this.#buildNewChatDialog();
-      this.#buildActivitiesDialog();
-      this.#buildRosterDialog();
       this.#shadow.append(
         style,
         this.#launcher,
         this.#panel,
-        this.#settingsDialog,
-        this.#newChatDialog,
-        this.#activitiesDialog,
-        this.#rosterDialog
+        this.#newChatDialog
       );
       document.body.append(this.#host);
       this.#positionLauncher();
@@ -2879,10 +3176,7 @@ select:focus-visible {
     }
     destroy() {
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
-      this.#settingsDialog.close();
       this.#newChatDialog.close();
-      this.#activitiesDialog.close();
-      this.#rosterDialog.close();
       window.removeEventListener("resize", this.#handleViewportResize);
       this.#host.remove();
       this.#mounted = false;
@@ -2901,8 +3195,8 @@ select:focus-visible {
       this.#sendButton.disabled = !canSend;
       this.#composer.placeholder = canSend ? "Write a Beep\u2026" : "Connecting to Bondage Club\u2026";
       if (this.#newChatDialog.open) this.#renderKnownContacts();
-      if (this.#activitiesDialog.open) this.#renderActivitiesDialog();
-      if (this.#rosterDialog.open) this.#renderRoster();
+      if (this.#workspaceView === "activities") this.#renderActivitiesPage();
+      if (this.#workspaceView === "roster") this.#renderRoster();
     }
     async onMessage(peerNumber, incoming) {
       if (incoming && this.settings.get().linkChat.openOnIncoming) {
@@ -2913,9 +3207,10 @@ select:focus-visible {
       if (this.#activePeer === peerNumber) await this.#renderMessages(peerNumber);
     }
     async open() {
-      const preference = this.settings.get().ui.launcherOpen;
-      const view = preference === "chat" ? "chat" : preference === "last" ? this.#lastWorkspaceView : "home";
-      await this.#openPanel(view);
+      const settings = this.settings.get();
+      const preference = settings.ui.launcherOpen;
+      const requested = preference === "chat" ? "chat" : preference === "last" ? this.#lastWorkspaceView : "home";
+      await this.#openPanel(this.#availableWorkspace(requested, settings));
     }
     async #openPanel(view) {
       this.#panel.hidden = false;
@@ -2926,6 +3221,11 @@ select:focus-visible {
     close() {
       this.#panel.hidden = true;
       this.#launcher.setAttribute("aria-expanded", "false");
+    }
+    #availableWorkspace(view, settings = this.settings.get()) {
+      if (view === "roster" && !settings.linkRoster.enabled) return "home";
+      if (view === "activities" && !settings.linkActivities.enabled) return "home";
+      return view;
     }
     async openChat(memberNumber, memberName) {
       const name = this.adapter.getMemberNickname(memberNumber) || memberName?.trim() || this.adapter.getMemberName(memberNumber);
@@ -2945,7 +3245,7 @@ select:focus-visible {
       this.#rosterCount.textContent = result.presentCount > 99 ? "99+" : result.presentCount.toString();
       this.#rosterButton.title = result.presentCount ? `LinkRoster \xB7 ${result.presentCount} in room` : "LinkRoster";
       this.#renderHomeStatus();
-      if (this.#rosterDialog.open && result.changed) this.#renderRoster();
+      if (this.#workspaceView === "roster" && result.changed) this.#renderRoster();
     }
     async refresh() {
       await this.#updateUnreadBadge();
@@ -2967,6 +3267,9 @@ select:focus-visible {
     }
     #buildPanel() {
       this.#panel.hidden = true;
+      this.#panel.id = "kikilink-panel";
+      this.#panel.setAttribute("role", "region");
+      this.#launcher.setAttribute("aria-controls", this.#panel.id);
       this.#panel.dataset.mobileView = "list";
       this.#panel.dataset.workspace = "home";
       this.#connection.append(this.#connectionDot, this.#connectionText);
@@ -2995,11 +3298,13 @@ select:focus-visible {
         ariaLabel: "Close KikiLink",
         onClick: () => this.close()
       });
+      this.#topbarSettingsButton.addEventListener("click", () => this.#openSettings());
       const topbar = element(
         "header",
         { className: "kl-topbar" },
         brand,
-        element("div", { className: "kl-topbar-mode", text: "LINK DECK" }),
+        this.#contextTitle,
+        this.#topbarSettingsButton,
         close
       );
       this.#buildFeatureNavigation();
@@ -3044,12 +3349,21 @@ select:focus-visible {
       this.#buildChat();
       const main = element("main", { className: "kl-main" }, this.#empty, this.#chat);
       this.#chatLayout.append(sidebar, main);
-      this.#workspace.append(this.#home, this.#chatLayout);
+      this.#buildRosterPage();
+      this.#buildActivitiesPage();
+      this.#buildSettingsPage();
+      this.#workspace.append(
+        this.#home,
+        this.#chatLayout,
+        this.#rosterPage,
+        this.#activitiesPage,
+        this.#settingsPage
+      );
       const shell = element("div", { className: "kl-shell" }, this.#featureNav, this.#workspace);
       this.#panel.append(topbar, shell);
       this.#showWorkspace("home", false);
       this.#panel.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && !this.#settingsDialog.open && !this.#activitiesDialog.open && !this.#newChatDialog.open && !this.#rosterDialog.open) {
+        if (event.key === "Escape" && !this.#newChatDialog.open) {
           this.close();
         }
       });
@@ -3058,8 +3372,8 @@ select:focus-visible {
       this.#configureNavButton(this.#homeNavButton, "\u2302", "Home", "home");
       this.#configureNavButton(this.#chatNavButton, "\u2194", "Chat", "chat");
       this.#configureNavButton(this.#rosterButton, "\u2637", "Players", "roster");
-      this.#configureNavButton(this.#activitiesButton, "\u2726", "Studio", "activities");
-      this.#configureNavButton(this.#settingsNavButton, "\u2699", "Customize", "settings");
+      this.#configureNavButton(this.#activitiesButton, "\u2726", "Activities", "activities");
+      this.#configureNavButton(this.#settingsNavButton, "\u2699", "Settings", "settings");
       this.#rosterCount.hidden = true;
       this.#rosterButton.append(this.#rosterCount);
       this.#featureNav.append(
@@ -3156,14 +3470,14 @@ select:focus-visible {
       const settingsCard = element("button", {
         className: "kl-feature-card",
         type: "button",
-        title: "Customize KikiLink",
+        title: "KikiLink settings",
         onClick: () => this.#activateFeature("settings")
       });
       this.#fillFeatureCard(
         settingsCard,
         "\u2699",
         "YOUR SPACE",
-        "Customize",
+        "Settings",
         "Theme, accent, launcher behavior, privacy, and feature controls.",
         this.#homeSettingsMetric
       );
@@ -3214,20 +3528,32 @@ select:focus-visible {
       );
     }
     #showWorkspace(view, remember = true) {
+      if (this.#workspaceView === "roster" && view !== "roster") this.#saveNotebook(false);
       this.#workspaceView = view;
-      if (remember) this.#lastWorkspaceView = view;
+      if (remember && view !== "settings") this.#lastWorkspaceView = view;
       this.#panel.dataset.workspace = view;
       this.#home.hidden = view !== "home";
       this.#chatLayout.hidden = view !== "chat";
+      this.#rosterPage.hidden = view !== "roster";
+      this.#activitiesPage.hidden = view !== "activities";
+      this.#settingsPage.hidden = view !== "settings";
       if (view === "chat" && this.#activePeer === void 0) {
         this.#panel.dataset.mobileView = "list";
       }
+      this.#contextTitle.textContent = view === "home" ? "Home" : view === "chat" ? "Chat" : view === "roster" ? "Players" : view === "activities" ? "Activities" : "Settings";
       this.#updateNavigation();
     }
     #updateNavigation() {
-      const active = this.#settingsDialog.open ? "settings" : this.#rosterDialog.open ? "roster" : this.#activitiesDialog.open ? "activities" : this.#workspaceView;
       for (const button of this.#featureNav.querySelectorAll(".kl-nav-item")) {
-        button.dataset.active = String(button.dataset.target === active);
+        const active = button.dataset.target === this.#workspaceView;
+        button.dataset.active = String(active);
+        if (active) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      }
+      if (this.#workspaceView === "settings") {
+        this.#topbarSettingsButton.setAttribute("aria-current", "page");
+      } else {
+        this.#topbarSettingsButton.removeAttribute("aria-current");
       }
     }
     #buildChat() {
@@ -3283,32 +3609,36 @@ select:focus-visible {
       this.#renderQuickActions();
       this.#updateCounter();
     }
-    #buildSettingsDialog() {
-      const close = element("button", {
-        className: "kl-icon-button",
-        type: "button",
-        text: "\xD7",
-        title: "Close settings",
-        ariaLabel: "Close settings",
-        onClick: () => this.#settingsDialog.close()
-      });
+    #buildSettingsPage() {
       const header = element(
         "header",
-        { className: "kl-dialog-header" },
-        element("div", { className: "kl-dialog-title", text: "KikiLink settings" }),
-        close
+        { className: "kl-feature-page-header" },
+        element(
+          "div",
+          { className: "kl-feature-page-heading" },
+          element("div", { className: "kl-feature-page-eyebrow", text: "MAKE IT YOURS" }),
+          element("h1", { className: "kl-feature-page-title", text: "Settings" }),
+          element("p", {
+            className: "kl-feature-page-subtitle",
+            text: "Tune KikiLink for your screen, habits, and comfort without changing the game."
+          })
+        )
       );
       this.#themeSelect.replaceChildren(
         selectOption("dark", "Dark lacquer"),
         selectOption("light", "Light paper"),
         selectOption("system", "Follow system")
       );
+      this.#themeSelect.dataset.setting = "theme";
+      this.#themeSelect.setAttribute("aria-label", "Theme");
       const theme = this.#settingRow(
-        "Appearance",
+        "Theme",
         "Lacquer black, warm paper, or your system theme.",
         this.#themeSelect
       );
       this.#accentInput.type = "color";
+      this.#accentInput.dataset.setting = "accent";
+      this.#accentInput.setAttribute("aria-label", "Custom accent color");
       const accentPresets = element("div", { className: "kl-color-presets" });
       for (const [color, label] of [
         ["#d71932", "Crimson"],
@@ -3324,23 +3654,63 @@ select:focus-visible {
           ariaLabel: `Use ${label} accent`,
           onClick: () => {
             this.#accentInput.value = color;
+            this.#updateAccentPresets();
           }
         });
+        swatch.dataset.color = color;
+        swatch.setAttribute("aria-pressed", "false");
         swatch.style.setProperty("--kl-swatch", color);
         accentPresets.append(swatch);
       }
+      this.#accentInput.addEventListener("input", () => this.#updateAccentPresets());
       const accent = this.#settingRow(
         "Accent color",
         "Choose a preset or any color that feels like yours.",
         element("div", { className: "kl-color-control" }, accentPresets, this.#accentInput)
       );
+      this.#densitySelect.replaceChildren(
+        selectOption("comfortable", "Comfortable"),
+        selectOption("compact", "Compact")
+      );
+      this.#densitySelect.dataset.setting = "density";
+      this.#densitySelect.setAttribute("aria-label", "Interface spacing");
+      const density = this.#settingRow(
+        "Spacing",
+        "Comfortable is easier to tap; Compact fits more on screen.",
+        this.#densitySelect
+      );
+      this.#textScaleSelect.replaceChildren(
+        selectOption("normal", "Default"),
+        selectOption("large", "Large"),
+        selectOption("extra-large", "Extra large")
+      );
+      this.#textScaleSelect.dataset.setting = "text-scale";
+      this.#textScaleSelect.setAttribute("aria-label", "Text size");
+      const textScale = this.#settingRow(
+        "Text size",
+        "Increase labels and supporting text throughout the deck.",
+        this.#textScaleSelect
+      );
+      this.#homeLayoutSelect.replaceChildren(
+        selectOption("showcase", "Showcase"),
+        selectOption("compact", "Focused")
+      );
+      this.#homeLayoutSelect.dataset.setting = "home-layout";
+      this.#homeLayoutSelect.setAttribute("aria-label", "Home style");
+      const homeLayout = this.#settingRow(
+        "Home style",
+        "Showcase includes the welcome artwork; Focused removes decoration and descriptions.",
+        this.#homeLayoutSelect
+      );
       this.#launcherSideSelect.replaceChildren(
         selectOption("right", "Right"),
         selectOption("left", "Left")
       );
+      this.#launcherSideSelect.dataset.setting = "launcher-side";
+      this.#launcherSideSelect.setAttribute("aria-label", "Launcher side");
       const launcherSide = this.#settingRow(
         "Launcher side",
-        "Drag the emblem anywhere. Changing its side resets it to the default corner.",
+        "Choose its default side. You can still drag the emblem anywhere.",
         this.#launcherSideSelect
       );
       this.#launcherOpenSelect.replaceChildren(
@@ -3348,6 +3718,8 @@ select:focus-visible {
         selectOption("last", "Last section"),
         selectOption("chat", "LinkChat directly")
       );
+      this.#launcherOpenSelect.dataset.setting = "launcher-open";
+      this.#launcherOpenSelect.setAttribute("aria-label", "Launcher opens");
       const launcherOpen = this.#settingRow(
         "Launcher opens",
         "Choose what happens when you tap the floating emblem.",
@@ -3360,6 +3732,7 @@ select:focus-visible {
         this.#reducedMotionToggle,
         element("span", { className: "kl-switch-track" })
       );
+      this.#reducedMotionToggle.setAttribute("aria-label", "Reduced motion");
       const reducedMotion = this.#settingRow(
         "Reduced motion",
         "Disable panel and control animations.",
@@ -3372,6 +3745,7 @@ select:focus-visible {
         this.#historyToggle,
         element("span", { className: "kl-switch-track" })
       );
+      this.#historyToggle.setAttribute("aria-label", "Save message history");
       const history = this.#settingRow(
         "Save message history",
         "Stored only in this browser profile.",
@@ -3380,6 +3754,8 @@ select:focus-visible {
       this.#retentionInput.type = "number";
       this.#retentionInput.min = "1";
       this.#retentionInput.max = "3650";
+      this.#retentionInput.dataset.setting = "retention-days";
+      this.#retentionInput.setAttribute("aria-label", "Message retention in days");
       const retention = this.#settingRow(
         "Retention",
         "Automatically remove older messages.",
@@ -3391,15 +3767,43 @@ select:focus-visible {
         text: "Clear all LinkChat history",
         onClick: () => void this.#clearHistory()
       });
-      const appearanceSection = element(
-        "section",
-        { className: "kl-setting-section" },
-        element("div", { className: "kl-setting-section-title", text: "Interface" }),
+      const appearanceSection = this.#createSettingsPanel(
+        "appearance",
+        "Appearance & comfort",
+        "Choose a look and reading density that stays comfortable during long sessions.",
         theme,
         accent,
-        launcherSide,
-        launcherOpen,
+        density,
+        textScale,
+        homeLayout,
         reducedMotion
+      );
+      const resetLauncher = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Reset launcher position",
+        onClick: () => this.#resetLauncherPosition()
+      });
+      const navigationSection = this.#createSettingsPanel(
+        "navigation",
+        "Navigation & launcher",
+        "Decide where KikiLink lives and what you see first.",
+        launcherOpen,
+        launcherSide,
+        element(
+          "div",
+          { className: "kl-setting-action-row" },
+          element(
+            "div",
+            { className: "kl-setting-copy" },
+            element("div", { className: "kl-setting-name", text: "Launcher position" }),
+            element("div", {
+              className: "kl-setting-help",
+              text: "A button alternative to dragging: return the emblem to its safe corner."
+            })
+          ),
+          resetLauncher
+        )
       );
       this.#rosterEnabledToggle.type = "checkbox";
       const rosterEnabledSwitch = element(
@@ -3408,6 +3812,7 @@ select:focus-visible {
         this.#rosterEnabledToggle,
         element("span", { className: "kl-switch-track" })
       );
+      this.#rosterEnabledToggle.setAttribute("aria-label", "Enable LinkRoster");
       const rosterEnabled = this.#settingRow(
         "Enable LinkRoster",
         "Room roster, quick player actions, favorites, and private notes.",
@@ -3420,6 +3825,7 @@ select:focus-visible {
         this.#rosterTrackingToggle,
         element("span", { className: "kl-switch-track" })
       );
+      this.#rosterTrackingToggle.setAttribute("aria-label", "Remember player encounters");
       const rosterTracking = this.#settingRow(
         "Remember encounters",
         "Store the last room, time, and encounter count only in this browser.",
@@ -3431,21 +3837,13 @@ select:focus-visible {
         text: "Clear player notes & encounter history",
         onClick: () => this.#clearPeople()
       });
-      const rosterSection = element(
-        "section",
-        { className: "kl-setting-section" },
-        element("div", { className: "kl-setting-section-title", text: "LinkRoster" }),
+      const rosterSection = this.#createSettingsPanel(
+        "players",
+        "Players & private notebook",
+        "Control what the player workspace remembers in this browser.",
         rosterEnabled,
         rosterTracking,
         clearPeople
-      );
-      const privacySection = element(
-        "section",
-        { className: "kl-setting-section" },
-        element("div", { className: "kl-setting-section-title", text: "History & privacy" }),
-        history,
-        retention,
-        clearHistory
       );
       const addQuickAction = element("button", {
         className: "kl-text-button kl-add-action",
@@ -3455,7 +3853,7 @@ select:focus-visible {
       });
       const quickActionsSection = element(
         "section",
-        { className: "kl-setting-section" },
+        { className: "kl-setting-section kl-setting-editor-section" },
         element("div", { className: "kl-setting-section-title", text: "Quick actions" }),
         element("div", {
           className: "kl-setting-help",
@@ -3464,6 +3862,15 @@ select:focus-visible {
         this.#quickActionsEditor,
         addQuickAction
       );
+      const chatSection = this.#createSettingsPanel(
+        "chat",
+        "Chat, history & privacy",
+        "Keep Beep history useful, local, and under your control.",
+        history,
+        retention,
+        quickActionsSection,
+        clearHistory
+      );
       this.#activitiesToggle.type = "checkbox";
       const activitiesSwitch = element(
         "label",
@@ -3471,6 +3878,7 @@ select:focus-visible {
         this.#activitiesToggle,
         element("span", { className: "kl-switch-track" })
       );
+      this.#activitiesToggle.setAttribute("aria-label", "Enable LinkActivities");
       const activitiesEnabled = this.#settingRow(
         "Show Activity Studio shortcut",
         "Optional room-emote studio. Disabled by default to keep the toolbar focused.",
@@ -3482,10 +3890,10 @@ select:focus-visible {
         text: "+ Add room activity",
         onClick: () => this.#addActivityEditorRow()
       });
-      const activitiesSection = element(
-        "section",
-        { className: "kl-setting-section" },
-        element("div", { className: "kl-setting-section-title", text: "LinkActivities" }),
+      const activitiesSection = this.#createSettingsPanel(
+        "activities",
+        "Activities library",
+        "Keep reusable room emotes close without crowding the deck when you do not need them.",
         activitiesEnabled,
         element("div", {
           className: "kl-setting-help",
@@ -3494,27 +3902,103 @@ select:focus-visible {
         this.#activitiesEditor,
         addActivity
       );
-      const body = element(
+      const panels = element(
         "div",
-        { className: "kl-dialog-body" },
+        { className: "kl-settings-panels" },
         appearanceSection,
+        navigationSection,
+        chatSection,
         rosterSection,
-        quickActionsSection,
-        privacySection,
         activitiesSection
       );
       this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
       const cancel = element("button", {
         className: "kl-text-button",
         type: "button",
-        text: "Cancel",
-        onClick: () => this.#settingsDialog.close()
+        text: "Discard",
+        onClick: () => this.#cancelSettings()
       });
-      const actions = element("footer", { className: "kl-dialog-actions" }, cancel, this.#saveSettingsButton);
-      this.#settingsDialog.append(header, body, actions);
-      this.#settingsDialog.addEventListener("close", () => this.#updateNavigation());
+      const actions = element(
+        "footer",
+        { className: "kl-settings-actions" },
+        element("span", {
+          className: "kl-settings-local-note",
+          text: "Preferences stay in this browser."
+        }),
+        cancel,
+        this.#saveSettingsButton
+      );
+      this.#settingsPage.append(
+        header,
+        element("div", { className: "kl-settings-layout" }, this.#settingsTabs, panels),
+        actions
+      );
+      this.#updateSettingsTabOrientation();
+    }
+    #createSettingsPanel(section, title, description, ...children) {
+      const tabId = `kikilink-settings-tab-${section}`;
+      const panelId = `kikilink-settings-panel-${section}`;
+      const labels = {
+        appearance: { icon: "\u25D0", label: "Appearance" },
+        navigation: { icon: "\u2301", label: "Navigation" },
+        chat: { icon: "\u2194", label: "Chat" },
+        players: { icon: "\u2637", label: "Players" },
+        activities: { icon: "\u2726", label: "Activities" }
+      };
+      const tab = element(
+        "button",
+        { className: "kl-settings-tab", type: "button" },
+        element("span", { className: "kl-settings-tab-icon", text: labels[section].icon }),
+        element("span", { text: labels[section].label })
+      );
+      tab.id = tabId;
+      tab.dataset.section = section;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", panelId);
+      tab.setAttribute("aria-selected", "false");
+      tab.tabIndex = -1;
+      tab.addEventListener("click", () => this.#showSettingsSection(section, true));
+      tab.addEventListener("keydown", (event) => this.#handleSettingsTabKey(event));
+      this.#settingsTabs.setAttribute("role", "tablist");
+      this.#settingsTabs.setAttribute("aria-label", "Settings categories");
+      this.#settingsTabs.append(tab);
+      const panel = element(
+        "section",
+        { className: "kl-settings-panel" },
+        element("h2", { className: "kl-settings-panel-title", text: title }),
+        element("p", { className: "kl-settings-panel-description", text: description }),
+        element("div", { className: "kl-settings-panel-body" }, ...children)
+      );
+      panel.id = panelId;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabId);
+      panel.hidden = true;
+      this.#settingsPanels.set(section, panel);
+      return panel;
+    }
+    #handleSettingsTabKey(event) {
+      if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        return;
+      }
+      const tabs = [...this.#settingsTabs.querySelectorAll(".kl-settings-tab")];
+      const current = tabs.indexOf(event.currentTarget);
+      if (current < 0) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next]?.focus();
+      const section = tabs[next]?.dataset.section;
+      if (section) this.#showSettingsSection(section, true);
+    }
+    #updateSettingsTabOrientation() {
+      this.#settingsTabs.setAttribute(
+        "aria-orientation",
+        window.matchMedia?.("(max-width: 720px)").matches ? "horizontal" : "vertical"
+      );
     }
     #buildNewChatDialog() {
+      const title = element("div", { className: "kl-dialog-title", text: "New Beep chat" });
+      title.id = "kikilink-new-chat-title";
+      this.#newChatDialog.setAttribute("aria-labelledby", title.id);
       const close = element("button", {
         className: "kl-icon-button",
         type: "button",
@@ -3526,7 +4010,7 @@ select:focus-visible {
       const header = element(
         "header",
         { className: "kl-dialog-header" },
-        element("div", { className: "kl-dialog-title", text: "New Beep chat" }),
+        title,
         close
       );
       this.#newChatQuery.type = "search";
@@ -3563,25 +4047,23 @@ select:focus-visible {
         element("footer", { className: "kl-dialog-actions" }, cancel, open)
       );
     }
-    #buildRosterDialog() {
-      const close = element("button", {
-        className: "kl-icon-button",
-        type: "button",
-        text: "\xD7",
-        title: "Close LinkRoster",
-        ariaLabel: "Close LinkRoster",
-        onClick: () => this.#rosterDialog.close()
-      });
+    #buildRosterPage() {
       const header = element(
         "header",
-        { className: "kl-dialog-header" },
+        { className: "kl-feature-page-header" },
         element(
           "div",
-          { className: "kl-dialog-heading" },
-          element("div", { className: "kl-dialog-title", text: "LinkRoster" }),
+          { className: "kl-feature-page-heading" },
+          element("div", { className: "kl-feature-page-eyebrow", text: "PEOPLE" }),
+          element("h1", { className: "kl-feature-page-title", text: "Players" }),
           this.#rosterSubtitle
         ),
-        close
+        element("button", {
+          className: "kl-text-button",
+          type: "button",
+          text: "New chat",
+          onClick: () => this.#openNewChat()
+        })
       );
       for (const [scope, label] of [
         ["current", "In room"],
@@ -3615,7 +4097,7 @@ select:focus-visible {
       );
       const body = element(
         "div",
-        { className: "kl-dialog-body kl-roster-body" },
+        { className: "kl-roster-body" },
         listPane,
         this.#rosterDetail
       );
@@ -3623,13 +4105,7 @@ select:focus-visible {
         className: "kl-roster-privacy",
         text: "Notes, tags, favorites, and encounter history stay in this browser profile."
       });
-      const done = element("button", {
-        className: "kl-text-button kl-text-button--primary",
-        type: "button",
-        text: "Done",
-        onClick: () => this.#rosterDialog.close()
-      });
-      const footer = element("footer", { className: "kl-dialog-actions" }, privacy, done);
+      const footer = element("footer", { className: "kl-feature-page-footer" }, privacy);
       this.#saveNotebookButton.addEventListener("click", () => this.#saveNotebook(true));
       this.#rosterNote.maxLength = 2e3;
       this.#rosterNote.rows = 7;
@@ -3650,27 +4126,22 @@ select:focus-visible {
         this.#notebookDirty = true;
         this.#saveNotebookButton.disabled = false;
       });
-      this.#rosterDialog.addEventListener("close", () => {
-        this.#saveNotebook(false);
-        this.#updateNavigation();
-      });
-      this.#rosterDialog.append(header, body, footer);
+      this.#rosterPage.append(header, body, footer);
     }
     #openRoster() {
       if (!this.settings.get().linkRoster.enabled) {
-        this.#openSettings();
+        this.#openSettings("players");
         this.#rosterEnabledToggle.focus();
         this.#toast("Enable LinkRoster here to add it back to your deck.");
         return;
       }
+      this.#showWorkspace("roster");
       this.roster.sync();
       this.#rosterSearch.value = "";
       this.#rosterScope = this.adapter.isInChatRoom() ? "current" : "known";
       this.#selectedRosterMember = void 0;
       this.#notebookDirty = false;
       this.#renderRoster();
-      if (!this.#rosterDialog.open) this.#rosterDialog.showModal();
-      this.#updateNavigation();
       this.#rosterSearch.focus();
     }
     #renderRoster() {
@@ -3865,7 +4336,6 @@ select:focus-visible {
       this.#saveNotebook(false);
       try {
         this.adapter.startWhisper(entry.memberNumber);
-        this.#rosterDialog.close();
         this.close();
       } catch (error) {
         this.#toast(error instanceof Error ? error.message : "Unable to start Whisper", "error");
@@ -3874,14 +4344,12 @@ select:focus-visible {
     }
     async #openRosterBeep(entry) {
       this.#saveNotebook(false);
-      this.#rosterDialog.close();
       await this.openChat(entry.memberNumber, entry.displayName);
     }
     #openRosterProfile(entry) {
       this.#saveNotebook(false);
       try {
         this.adapter.openProfile(entry.memberNumber);
-        this.#rosterDialog.close();
         this.close();
       } catch (error) {
         this.#toast(error instanceof Error ? error.message : "Unable to open profile", "error");
@@ -3896,33 +4364,27 @@ select:focus-visible {
         this.#toast("The browser blocked clipboard access.", "error");
       }
     }
-    #buildActivitiesDialog() {
-      const close = element("button", {
-        className: "kl-icon-button",
-        type: "button",
-        text: "\xD7",
-        title: "Close LinkActivities",
-        ariaLabel: "Close LinkActivities",
-        onClick: () => this.#activitiesDialog.close()
-      });
+    #buildActivitiesPage() {
       const header = element(
         "header",
-        { className: "kl-dialog-header" },
+        { className: "kl-feature-page-header" },
         element(
           "div",
-          { className: "kl-dialog-heading" },
-          element("div", { className: "kl-dialog-title", text: "LinkActivities" }),
-          element("div", {
-            className: "kl-dialog-subtitle",
-            text: "Activity Studio \xB7 native room emotes"
+          { className: "kl-feature-page-heading" },
+          element("div", { className: "kl-feature-page-eyebrow", text: "ROOM TOOLS" }),
+          element("h1", { className: "kl-feature-page-title", text: "Activities" }),
+          element("p", {
+            className: "kl-feature-page-subtitle",
+            text: "Choose a person, preview your emote, then send it through the native room chat."
           })
-        ),
-        close
+        )
       );
       this.#activityTargetQuery.type = "search";
       this.#activityTargetQuery.placeholder = "Search room characters";
       this.#activityTargetQuery.autocomplete = "off";
-      this.#activityTargetQuery.addEventListener("input", () => this.#renderActivitiesDialog());
+      this.#activityTargetQuery.addEventListener("input", () => this.#renderActivitiesPage());
+      this.#activityStatus.setAttribute("role", "status");
+      this.#activityStatus.setAttribute("aria-live", "polite");
       const targetPane = element(
         "section",
         { className: "kl-activity-pane" },
@@ -3945,7 +4407,7 @@ select:focus-visible {
       );
       const body = element(
         "div",
-        { className: "kl-dialog-body kl-activities-body" },
+        { className: "kl-activities-body" },
         this.#activityStatus,
         studio,
         preview
@@ -3954,35 +4416,29 @@ select:focus-visible {
         className: "kl-text-button kl-edit-activities",
         type: "button",
         text: "Edit activities",
-        onClick: () => {
-          this.#activitiesDialog.close();
-          this.#openSettings();
-        }
-      });
-      const cancel = element("button", {
-        className: "kl-text-button",
-        type: "button",
-        text: "Cancel",
-        onClick: () => this.#activitiesDialog.close()
+        onClick: () => this.#openSettings("activities")
       });
       this.#performActivityButton.addEventListener("click", () => this.#performActivity());
       const actions = element(
         "footer",
-        { className: "kl-dialog-actions kl-activity-dialog-actions" },
+        { className: "kl-feature-page-footer kl-activity-actions" },
+        element("span", {
+          className: "kl-feature-page-footnote",
+          text: "Other players see a standard Bondage Club emote."
+        }),
         edit,
-        cancel,
         this.#performActivityButton
       );
-      this.#activitiesDialog.append(header, body, actions);
-      this.#activitiesDialog.addEventListener("close", () => this.#updateNavigation());
+      this.#activitiesPage.append(header, body, actions);
     }
     #openActivities() {
       if (!this.settings.get().linkActivities.enabled) {
-        this.#openSettings();
+        this.#openSettings("activities");
         this.#activitiesToggle.focus();
         this.#toast("Activity Studio is optional. Enable its shortcut here when you want it.");
         return;
       }
+      this.#showWorkspace("activities");
       this.#activityTargetQuery.value = "";
       const targets = this.activities.getTargets();
       const preferredTarget = targets.find(
@@ -3991,12 +4447,10 @@ select:focus-visible {
       this.#selectedActivityTarget = preferredTarget ?? targets[0];
       const activityCount = this.settings.get().linkActivities.activities.length;
       if (this.#selectedActivityIndex >= activityCount) this.#selectedActivityIndex = 0;
-      this.#renderActivitiesDialog();
-      if (!this.#activitiesDialog.open) this.#activitiesDialog.showModal();
-      this.#updateNavigation();
+      this.#renderActivitiesPage();
       this.#activityTargetQuery.focus();
     }
-    #renderActivitiesDialog() {
+    #renderActivitiesPage() {
       const targets = this.activities.getTargets();
       const currentTarget = targets.find(
         (target2) => target2.memberNumber === this.#selectedActivityTarget?.memberNumber
@@ -4035,7 +4489,7 @@ select:focus-visible {
           );
           button.addEventListener("click", () => {
             this.#selectedActivityTarget = target2;
-            this.#renderActivitiesDialog();
+            this.#renderActivitiesPage();
           });
           this.#activityTargetResults.append(button);
         }
@@ -4061,7 +4515,7 @@ select:focus-visible {
           button.dataset.selected = String(index === this.#selectedActivityIndex);
           button.addEventListener("click", () => {
             this.#selectedActivityIndex = index;
-            this.#renderActivitiesDialog();
+            this.#renderActivitiesPage();
           });
           this.#activityLibrary.append(button);
         });
@@ -4091,10 +4545,9 @@ select:focus-visible {
       if (!activity || !target) return;
       try {
         this.activities.perform(activity, target);
-        this.#activitiesDialog.close();
         this.#toast(`${activity.label} sent to the room.`);
       } catch (error) {
-        this.#renderActivitiesDialog();
+        this.#renderActivitiesPage();
         this.#toast(error instanceof Error ? error.message : "Unable to perform this activity", "error");
       }
     }
@@ -4144,7 +4597,8 @@ select:focus-visible {
       this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
       this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled ? `${settings.linkActivities.activities.length} saved ${settings.linkActivities.activities.length === 1 ? "activity" : "activities"}` : "Optional \xB7 tap to enable";
       const themeLabel = settings.ui.theme === "light" ? "Light paper" : settings.ui.theme === "system" ? "System theme" : "Dark lacquer";
-      this.#homeSettingsMetric.textContent = `${themeLabel} \xB7 ${settings.ui.accent.toUpperCase()}`;
+      const comfortLabel = settings.ui.density === "compact" ? "Compact" : "Comfortable";
+      this.#homeSettingsMetric.textContent = `${themeLabel} \xB7 ${comfortLabel} \xB7 ${settings.ui.accent.toUpperCase()}`;
     }
     async #renderConversations() {
       const query = this.#search.value.trim().toLocaleLowerCase();
@@ -4478,10 +4932,15 @@ ${expanded}` : expanded;
         template: row.querySelector('[data-field="template"]')?.value.trim() ?? ""
       })).filter((activity) => activity.label && activity.template);
     }
-    #openSettings() {
+    #openSettings(section) {
       const settings = this.settings.get();
+      if (this.#workspaceView !== "settings") this.#settingsReturnView = this.#workspaceView;
       this.#themeSelect.value = settings.ui.theme;
       this.#accentInput.value = settings.ui.accent;
+      this.#updateAccentPresets();
+      this.#densitySelect.value = settings.ui.density;
+      this.#textScaleSelect.value = settings.ui.textScale;
+      this.#homeLayoutSelect.value = settings.ui.homeLayout;
       this.#launcherSideSelect.value = settings.ui.launcherSide;
       this.#launcherOpenSelect.value = settings.ui.launcherOpen;
       this.#reducedMotionToggle.checked = settings.ui.reducedMotion;
@@ -4492,8 +4951,36 @@ ${expanded}` : expanded;
       this.#rosterTrackingToggle.checked = settings.linkRoster.trackEncounters;
       this.#activitiesToggle.checked = settings.linkActivities.enabled;
       this.#renderActivityEditor(settings.linkActivities.activities);
-      if (!this.#settingsDialog.open) this.#settingsDialog.showModal();
-      this.#updateNavigation();
+      this.#showWorkspace("settings", false);
+      this.#showSettingsSection(section ?? settings.ui.settingsSection, false);
+      this.#settingsTabs.querySelector(`[data-section="${this.#settingsSection}"]`)?.focus();
+    }
+    #showSettingsSection(section, remember) {
+      this.#settingsSection = section;
+      for (const [candidate, panel] of this.#settingsPanels) {
+        panel.hidden = candidate !== section;
+      }
+      for (const tab of this.#settingsTabs.querySelectorAll(".kl-settings-tab")) {
+        const selected = tab.dataset.section === section;
+        tab.dataset.active = String(selected);
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+      }
+      if (remember && this.settings.get().ui.settingsSection !== section) {
+        this.settings.update((draft) => {
+          draft.ui.settingsSection = section;
+        });
+      }
+    }
+    #updateAccentPresets() {
+      for (const swatch of this.#settingsPage.querySelectorAll(".kl-color-swatch")) {
+        const selected = swatch.dataset.color === this.#accentInput.value.toLocaleLowerCase();
+        swatch.dataset.selected = String(selected);
+        swatch.setAttribute("aria-pressed", String(selected));
+      }
+    }
+    #cancelSettings() {
+      this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView));
     }
     #saveSettings() {
       const retentionDays = Number(this.#retentionInput.value);
@@ -4502,10 +4989,14 @@ ${expanded}` : expanded;
       const settings = this.settings.update((draft) => {
         draft.ui.theme = this.#themeSelect.value === "light" || this.#themeSelect.value === "system" ? this.#themeSelect.value : "dark";
         draft.ui.accent = this.#accentInput.value;
+        draft.ui.density = this.#densitySelect.value === "compact" ? "compact" : "comfortable";
+        draft.ui.textScale = this.#textScaleSelect.value === "large" || this.#textScaleSelect.value === "extra-large" ? this.#textScaleSelect.value : "normal";
+        draft.ui.homeLayout = this.#homeLayoutSelect.value === "compact" ? "compact" : "showcase";
         draft.ui.launcherSide = launcherSide;
         draft.ui.launcherOpen = this.#launcherOpenSelect.value === "last" || this.#launcherOpenSelect.value === "chat" ? this.#launcherOpenSelect.value : "home";
         if (launcherSide !== currentSettings.ui.launcherSide) draft.ui.launcherPosition = null;
         draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
+        draft.ui.settingsSection = this.#settingsSection;
         draft.linkChat.saveHistory = this.#historyToggle.checked;
         draft.linkChat.quickActions = this.#readQuickActionEditor();
         draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
@@ -4517,9 +5008,16 @@ ${expanded}` : expanded;
       this.#applyTheme(settings);
       this.#renderQuickActions();
       this.#renderHomeStatus();
-      this.#settingsDialog.close();
+      this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView, settings));
       void this.service.prune();
       this.#toast("Settings saved.");
+    }
+    #resetLauncherPosition() {
+      const settings = this.settings.update((draft) => {
+        draft.ui.launcherPosition = null;
+      });
+      this.#applyTheme(settings);
+      this.#toast("Launcher returned to its default corner.");
     }
     async #clearHistory() {
       if (!window.confirm("Clear all KikiLink Beep history and conversation drafts?")) return;
@@ -4529,7 +5027,6 @@ ${expanded}` : expanded;
       this.#chat.hidden = true;
       this.#empty.hidden = false;
       this.#panel.dataset.mobileView = "list";
-      this.#settingsDialog.close();
       await this.refresh();
       this.#toast("LinkChat history cleared.");
     }
@@ -4560,7 +5057,11 @@ ${expanded}` : expanded;
     #applyTheme(settings) {
       this.#host.style.setProperty("--kl-accent", settings.ui.accent);
       this.#host.style.setProperty("--kl-accent-strong", settings.ui.accent);
+      this.#host.style.setProperty("--kl-accent-foreground", readableForeground(settings.ui.accent));
       this.#host.dataset.theme = settings.ui.theme;
+      this.#host.dataset.density = settings.ui.density;
+      this.#host.dataset.textScale = settings.ui.textScale;
+      this.#host.dataset.homeLayout = settings.ui.homeLayout;
       this.#host.dataset.reducedMotion = String(settings.ui.reducedMotion);
       this.#launcher.dataset.side = settings.ui.launcherSide;
       this.#panel.dataset.side = settings.ui.launcherSide;
@@ -4671,12 +5172,38 @@ ${expanded}` : expanded;
     }
     #toast(message, kind = "info") {
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
+      this.#toastTimer = void 0;
       this.#shadow.querySelector(".kl-toast")?.remove();
-      const toast = element("div", { className: "kl-toast", text: message });
+      const toast = element(
+        "div",
+        { className: "kl-toast" },
+        element("span", { className: "kl-toast-message", text: message })
+      );
       toast.dataset.kind = kind;
-      const surface = this.#rosterDialog.open ? this.#rosterDialog : this.#activitiesDialog.open ? this.#activitiesDialog : this.#newChatDialog.open ? this.#newChatDialog : this.#settingsDialog.open ? this.#settingsDialog : this.#panel;
+      toast.setAttribute("role", kind === "error" ? "alert" : "status");
+      toast.setAttribute("aria-live", kind === "error" ? "assertive" : "polite");
+      toast.setAttribute("aria-atomic", "true");
+      const dismiss = element("button", {
+        className: "kl-toast-dismiss",
+        type: "button",
+        text: "\xD7",
+        title: "Dismiss message",
+        ariaLabel: "Dismiss message",
+        onClick: () => {
+          if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
+          this.#toastTimer = void 0;
+          toast.remove();
+        }
+      });
+      toast.append(dismiss);
+      const surface = this.#newChatDialog.open ? this.#newChatDialog : this.#panel;
       surface.append(toast);
-      this.#toastTimer = setTimeout(() => toast.remove(), 3200);
+      if (kind === "info") {
+        this.#toastTimer = setTimeout(() => {
+          toast.remove();
+          this.#toastTimer = void 0;
+        }, 5e3);
+      }
     }
   };
   function selectOption(value, label) {
@@ -4745,6 +5272,20 @@ ${expanded}` : expanded;
     const copied = document.execCommand("copy");
     textarea.remove();
     if (!copied) throw new Error("Clipboard unavailable");
+  }
+  function readableForeground(background) {
+    const channels = [1, 3, 5].map((index) => Number.parseInt(background.slice(index, index + 2), 16));
+    const luminance = relativeLuminance(channels);
+    const darkContrast = (luminance + 0.05) / 0.057;
+    const lightContrast = 1.044 / (luminance + 0.05);
+    return darkContrast >= lightContrast ? "#17100d" : "#fff8ee";
+  }
+  function relativeLuminance(channels) {
+    const [red = 0, green = 0, blue = 0] = channels.map((value) => {
+      const channel = value / 255;
+      return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return red * 0.2126 + green * 0.7152 + blue * 0.0722;
   }
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -5218,7 +5759,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.6.0");
+    const app = new KikiLinkApp("0.7.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

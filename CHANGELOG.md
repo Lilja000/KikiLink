@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0 - 2026-08-23
+
+- Rebuilt Players, Activities, and Settings as first-class Link Deck workspaces instead of long blocking dialogs.
+- Simplified mobile navigation to four primary destinations and moved Settings to a familiar top-bar utility.
+- Added categorized Settings with Appearance, Navigation, Chat, Players, and Activities panes that remember the last category.
+- Added Comfortable and Compact spacing, Default/Large/Extra large text, and Showcase/Focused Home preferences.
+- Added contrast-aware foreground colors for arbitrary custom accents.
+- Increased important control and mobile tap targets and raised the smallest supporting text sizes.
+- Added `aria-current` wayfinding, keyboard-operated settings tabs, labeled form controls, dialog naming, and live status/error semantics.
+- Added a button alternative for resetting the draggable launcher position.
+- Made error messages persistent until dismissed while allowing informational confirmations to clear automatically.
+- Migrated settings to schema version 5 and expanded regression coverage to 36 tests.
+
 ## 0.6.0 - 2026-08-23
 
 - Replaced the chat-first launcher flow with a polished KikiLink Link Deck home screen.

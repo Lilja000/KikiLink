@@ -6,6 +6,10 @@ import type { SettingsStore } from "./settings";
 export type MessageDirection = "incoming" | "outgoing";
 export type ThemePreference = "dark" | "light" | "system";
 export type LauncherOpenPreference = "home" | "last" | "chat";
+export type InterfaceDensity = "comfortable" | "compact";
+export type TextScalePreference = "normal" | "large" | "extra-large";
+export type HomeLayoutPreference = "showcase" | "compact";
+export type SettingsSection = "appearance" | "navigation" | "chat" | "players" | "activities";
 export type BCConnectionState = "connecting" | "ready" | "error";
 
 export interface QuickAction {
@@ -78,14 +82,18 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 4;
+  schemaVersion: 5;
   ui: {
     accent: string;
     theme: ThemePreference;
+    density: InterfaceDensity;
+    textScale: TextScalePreference;
+    homeLayout: HomeLayoutPreference;
     launcherSide: "left" | "right";
     launcherOpen: LauncherOpenPreference;
     launcherPosition: { x: number; y: number } | null;
     reducedMotion: boolean;
+    settingsSection: SettingsSection;
   };
   linkChat: {
     enabled: boolean;

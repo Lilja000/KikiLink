@@ -11,17 +11,24 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.6.0` introduces the Link Deck: a friendly home screen and feature
-navigation that turns KikiLink into one connected, customizable workspace.
+Version `0.7.0` turns the Link Deck into a calmer, accessible, and deeply
+personalizable workspace built around clear destinations instead of stacked dialogs.
 
 ## Link Deck
 
 - The floating emblem opens a polished feature home instead of dropping straight into chat
 - Live cards for LinkChat, LinkRoster, Activity Studio, and customization
 - Current connection, room, unread-chat, and room-player context at a glance
-- Persistent feature rail on desktop and familiar bottom tabs on phones
+- Four clear primary destinations: Home, Chat, Players, and Activities
+- Persistent feature rail on desktop and a focused four-item bottom bar on phones
+- Players and Activities now stay inside the workspace instead of opening blocking dialogs
+- Settings is a full workspace with Appearance, Navigation, Chat, Players, and Activities categories
 - Configurable launcher behavior: open Home, the last section, or LinkChat directly
 - Dark lacquer, light paper, and system themes with five accent presets or any custom color
+- Comfortable or compact spacing, three text sizes, and Showcase or Focused Home styles
+- Contrast-aware text on every custom accent color
+- Larger mobile tap targets, visible focus states, current-page semantics, and keyboard-friendly settings
+- A button to reset the launcher position without dragging it
 - Disabled optional features remain discoverable and lead directly to the correct setting
 
 ## LinkRoster
@@ -33,7 +40,7 @@ navigation that turns KikiLink into one connected, customizable workspace.
 - Local last-seen time, last room, and encounter count
 - `In room`, `Known`, and `Favorites` views with name, number, tag, and note search
 - Optional encounter tracking and a one-click local-data clear action
-- Responsive two-pane desktop view and compact phone layout
+- Responsive two-pane desktop view and compact phone layout inside the main Link Deck
 
 LinkRoster notes, tags, favorites, and encounter history stay in the current
 browser profile. KikiLink does not upload them to a server.
@@ -55,7 +62,7 @@ browser profile. KikiLink does not upload them to a server.
 
 ## LinkActivities
 
-- Optional `✦` Activity Studio shortcut, disabled by default
+- Optional `✦` Activities destination, disabled by default
 - Current-room target picker with nickname and member-number search
 - Five original starter activities with live room preview
 - Editable activity library with up to 20 custom actions
@@ -72,9 +79,12 @@ character's items, pose, permissions, or game state.
 - Dark lacquer, light paper, and follow-system appearance modes
 - Red and gold design tokens shared by every LinkChat surface
 - Link Deck home with live feature status and quick access to every module
-- Desktop side navigation that becomes mobile bottom tabs
+- Desktop side navigation that becomes a four-destination mobile bottom bar
 - Custom accent color and configurable launcher destination
-- Draggable launcher with a saved position, configurable side, and reduced-motion mode
+- Comfortable/compact density, three text sizes, and Showcase/Focused Home layouts
+- Draggable launcher with a saved position, button-based reset, configurable side, and reduced-motion mode
+- Full-page categorized settings that remember the last category
+- Accessible current-location, focus, live-status, and error semantics
 - Full-width mobile conversation list with a clear back-to-list flow
 - Live Bondage Club connection status without blocking an available native Beep function
 
@@ -99,6 +109,7 @@ src/
   storage/            IndexedDB, player notebook, and in-memory repositories
   utils/              Small dependency-free helpers
 design/references/     Selected original KikiLink visual source
+docs/                  UX principles and accessibility decisions
 ```
 
 KikiLink uses ModSDK only as the shared compatibility layer for function hooks.

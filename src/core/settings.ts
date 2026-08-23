@@ -7,14 +7,18 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   ui: {
     accent: "#d71932",
     theme: "dark",
+    density: "comfortable",
+    textScale: "normal",
+    homeLayout: "showcase",
     launcherSide: "right",
     launcherOpen: "home",
     launcherPosition: null,
     reducedMotion: false,
+    settingsSection: "appearance",
   },
   linkChat: {
     enabled: true,
@@ -139,13 +143,20 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
         ui.theme === "light" || ui.theme === "system" || ui.theme === "dark"
           ? ui.theme
           : DEFAULT_SETTINGS.ui.theme,
+      density: ui.density === "compact" ? "compact" : DEFAULT_SETTINGS.ui.density,
+      textScale:
+        ui.textScale === "large" || ui.textScale === "extra-large"
+          ? ui.textScale
+          : DEFAULT_SETTINGS.ui.textScale,
+      homeLayout:
+        ui.homeLayout === "compact" ? "compact" : DEFAULT_SETTINGS.ui.homeLayout,
       launcherSide: ui.launcherSide === "left" ? "left" : "right",
       launcherOpen:
         ui.launcherOpen === "last" || ui.launcherOpen === "chat"
@@ -153,6 +164,9 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           : DEFAULT_SETTINGS.ui.launcherOpen,
       launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
       reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
+      settingsSection: isSettingsSection(ui.settingsSection)
+        ? ui.settingsSection
+        : DEFAULT_SETTINGS.ui.settingsSection,
     },
     linkChat: {
       enabled: booleanOr(linkChat.enabled, DEFAULT_SETTINGS.linkChat.enabled),
@@ -252,6 +266,18 @@ function finiteNumberInRange(value: unknown, min: number, max: number): value is
 
 function validColor(value: unknown): value is string {
   return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value);
+}
+
+function isSettingsSection(
+  value: unknown,
+): value is KikiLinkSettings["ui"]["settingsSection"] {
+  return (
+    value === "appearance" ||
+    value === "navigation" ||
+    value === "chat" ||
+    value === "players" ||
+    value === "activities"
+  );
 }
 
 function getDefaultStorage(): KeyValueStorage {

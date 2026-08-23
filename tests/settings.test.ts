@@ -23,6 +23,10 @@ describe("SettingsStore", () => {
       draft.ui.launcherSide = "left";
       draft.ui.launcherOpen = "last";
       draft.ui.launcherPosition = { x: 0.25, y: 0.6 };
+      draft.ui.density = "compact";
+      draft.ui.textScale = "large";
+      draft.ui.homeLayout = "compact";
+      draft.ui.settingsSection = "navigation";
       draft.linkChat.retentionDays = 30;
     });
 
@@ -31,6 +35,10 @@ describe("SettingsStore", () => {
     expect(second.get().ui.launcherSide).toBe("left");
     expect(second.get().ui.launcherOpen).toBe("last");
     expect(second.get().ui.launcherPosition).toEqual({ x: 0.25, y: 0.6 });
+    expect(second.get().ui.density).toBe("compact");
+    expect(second.get().ui.textScale).toBe("large");
+    expect(second.get().ui.homeLayout).toBe("compact");
+    expect(second.get().ui.settingsSection).toBe("navigation");
     expect(second.get().linkChat.retentionDays).toBe(30);
   });
 
@@ -42,6 +50,10 @@ describe("SettingsStore", () => {
         launcherSide: "middle",
         launcherOpen: "messages",
         launcherPosition: { x: -1, y: 4 },
+        density: "tiny",
+        textScale: "huge",
+        homeLayout: "busy",
+        settingsSection: "unknown",
       },
       linkChat: { retentionDays: -5, maxMessagesPerConversation: 10 },
     });
@@ -51,6 +63,10 @@ describe("SettingsStore", () => {
     expect(settings.ui.launcherSide).toBe("right");
     expect(settings.ui.launcherOpen).toBe("home");
     expect(settings.ui.launcherPosition).toBeNull();
+    expect(settings.ui.density).toBe("comfortable");
+    expect(settings.ui.textScale).toBe("normal");
+    expect(settings.ui.homeLayout).toBe("showcase");
+    expect(settings.ui.settingsSection).toBe("appearance");
     expect(settings.linkChat.retentionDays).toBe(DEFAULT_SETTINGS.linkChat.retentionDays);
     expect(settings.linkChat.maxMessagesPerConversation).toBe(
       DEFAULT_SETTINGS.linkChat.maxMessagesPerConversation,
@@ -108,7 +124,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(4);
+    expect(settings.schemaVersion).toBe(5);
     expect(settings.linkActivities).toEqual({
       enabled: false,
       activities: [{ label: "Sakura greeting", template: "bows to {target}." }],
@@ -122,9 +138,37 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(4);
+    expect(settings.schemaVersion).toBe(5);
     expect(settings.linkActivities.enabled).toBe(false);
     expect(settings.linkRoster).toEqual({ enabled: true, trackEncounters: true });
     expect(settings.ui.launcherOpen).toBe("home");
+  });
+
+  it("adds comfort preferences to 0.6 settings without changing existing choices", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 4,
+      ui: {
+        accent: "#247f7a",
+        theme: "light",
+        launcherSide: "left",
+        launcherOpen: "chat",
+        reducedMotion: true,
+      },
+      linkRoster: { enabled: false, trackEncounters: false },
+    });
+
+    expect(settings.schemaVersion).toBe(5);
+    expect(settings.ui).toMatchObject({
+      accent: "#247f7a",
+      theme: "light",
+      density: "comfortable",
+      textScale: "normal",
+      homeLayout: "showcase",
+      launcherSide: "left",
+      launcherOpen: "chat",
+      reducedMotion: true,
+      settingsSection: "appearance",
+    });
+    expect(settings.linkRoster).toEqual({ enabled: false, trackEncounters: false });
   });
 });
