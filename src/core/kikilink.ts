@@ -21,6 +21,7 @@ export class KikiLinkApp {
   readonly #adapter: BCAdapter;
   readonly #modules = new ModuleRegistry();
   readonly #linkChat = new LinkChatModule();
+  #adapterStart: Promise<void> | undefined;
   #started = false;
 
   constructor(private readonly version: string) {
@@ -42,8 +43,9 @@ export class KikiLinkApp {
   async start(): Promise<void> {
     if (this.#started) return;
     this.#started = true;
-    await this.#adapter.start();
+    await waitForDocumentBody();
     if (!this.#started) return;
+
     await this.#modules.startAll({
       adapter: this.#adapter,
       bus: this.#bus,
@@ -51,16 +53,28 @@ export class KikiLinkApp {
       settings: this.#settings,
       version: this.version,
     });
-    this.#logger.info(`KikiLink ${this.version} is ready`);
+
+    this.#adapterStart = this.#adapter.start().catch((error: unknown) => {
+      this.#logger.error("Bondage Club connection failed", error);
+    });
+    this.#logger.info(`KikiLink ${this.version} interface is ready`);
   }
 
   async destroy(): Promise<void> {
     if (!this.#started) return;
     this.#started = false;
-    await this.#modules.stopAll();
     this.#adapter.stop();
+    await this.#adapterStart;
+    this.#adapterStart = undefined;
+    await this.#modules.stopAll();
     this.#repository.close();
     this.#bus.clear();
     this.#logger.info("Stopped");
+  }
+}
+
+async function waitForDocumentBody(): Promise<void> {
+  while (typeof document === "undefined" || document.body === null) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
   }
 }

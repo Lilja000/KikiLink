@@ -11,7 +11,7 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.2.0` keeps the original core and LinkChat foundation, then adds the
+Version `0.2.1` keeps the original core and LinkChat foundation, then adds the
 first complete KikiLink visual system: the wolf-and-sakura emblem, lacquer-dark
 and warm-paper themes, and a dedicated phone navigation flow.
 
@@ -27,7 +27,7 @@ and warm-paper themes, and a dedicated phone navigation flow.
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
 
-## Interface in 0.2.0
+## Interface in 0.2.1
 
 - Embedded KikiLink wolf, red moon, gold ring, and sakura emblem
 - Dark lacquer, light paper, and follow-system appearance modes

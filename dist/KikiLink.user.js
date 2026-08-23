@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.2.0
+// @version      0.2.1
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -14,6 +14,8 @@
 // @match        https://*.bondage-europe.com/*
 // @match        https://*.bondage-asia.com/*
 // @run-at       document-end
+// @inject-into  page
+// @sandbox      raw
 // @grant        none
 // ==/UserScript==
 "use strict";
@@ -300,13 +302,18 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const message = content.trim();
       if (!message) throw new Error("A Beep message cannot be empty");
       if (message.length > 1e3) throw new Error("A Beep message cannot exceed 1000 characters");
+      if (typeof ServerSendBeepMessage !== "function") {
+        throw new Error("KikiLink is still connecting to Bondage Club");
+      }
       ServerSendBeepMessage(target, message, { includeRoom });
     }
     getMemberName(memberNumber) {
+      if (typeof Player !== "object" || Player === null) return `Member ${memberNumber}`;
       return Player.FriendNames?.get(memberNumber) ?? `Member ${memberNumber}`;
     }
     getOwnMemberNumber() {
-      return Player.MemberNumber;
+      if (typeof Player !== "object" || Player === null) return -1;
+      return Number.isSafeInteger(Player.MemberNumber) ? Player.MemberNumber : -1;
     }
     #normalizeIncoming(data) {
       if (!data || data.BeepType !== void 0 && data.BeepType !== "") return null;
@@ -2278,6 +2285,7 @@ select:focus-visible {
     #adapter;
     #modules = new ModuleRegistry();
     #linkChat = new LinkChatModule();
+    #adapterStart;
     #started = false;
     publicApi() {
       return {
@@ -2292,7 +2300,7 @@ select:focus-visible {
     async start() {
       if (this.#started) return;
       this.#started = true;
-      await this.#adapter.start();
+      await waitForDocumentBody();
       if (!this.#started) return;
       await this.#modules.startAll({
         adapter: this.#adapter,
@@ -2301,24 +2309,34 @@ select:focus-visible {
         settings: this.#settings,
         version: this.version
       });
-      this.#logger.info(`KikiLink ${this.version} is ready`);
+      this.#adapterStart = this.#adapter.start().catch((error) => {
+        this.#logger.error("Bondage Club connection failed", error);
+      });
+      this.#logger.info(`KikiLink ${this.version} interface is ready`);
     }
     async destroy() {
       if (!this.#started) return;
       this.#started = false;
-      await this.#modules.stopAll();
       this.#adapter.stop();
+      await this.#adapterStart;
+      this.#adapterStart = void 0;
+      await this.#modules.stopAll();
       this.#repository.close();
       this.#bus.clear();
       this.#logger.info("Stopped");
     }
   };
+  async function waitForDocumentBody() {
+    while (typeof document === "undefined" || document.body === null) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
 
   // src/index.ts
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.2.0");
+    const app = new KikiLinkApp("0.2.1");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

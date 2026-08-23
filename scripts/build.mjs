@@ -23,6 +23,8 @@ const userscriptHeader = `// ==UserScript==
 // @match        https://*.bondage-europe.com/*
 // @match        https://*.bondage-asia.com/*
 // @run-at       document-end
+// @inject-into  page
+// @sandbox      raw
 // @grant        none
 // ==/UserScript==`;
 

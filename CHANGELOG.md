@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.2.0 - Unreleased
+## 0.2.1 - 2026-08-23
+
+- Mount the KikiLink launcher before the Bondage Club connection hooks finish.
+- Force userscript execution in the page context for Tampermonkey and Violentmonkey.
+- Keep the interface usable while the game globals are still becoming available.
+- Confirm compatibility against the live Bondage Club R131 client.
+
+## 0.2.0 - 2026-08-23
 
 - Integrated the selected KikiLink wolf, red moon, gold ring, and sakura emblem.
 - Added dark lacquer, light paper, and follow-system appearance modes.

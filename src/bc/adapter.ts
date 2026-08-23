@@ -68,16 +68,21 @@ export class BCAdapter {
     const message = content.trim();
     if (!message) throw new Error("A Beep message cannot be empty");
     if (message.length > 1000) throw new Error("A Beep message cannot exceed 1000 characters");
+    if (typeof ServerSendBeepMessage !== "function") {
+      throw new Error("KikiLink is still connecting to Bondage Club");
+    }
 
     ServerSendBeepMessage(target, message, { includeRoom });
   }
 
   getMemberName(memberNumber: number): string {
+    if (typeof Player !== "object" || Player === null) return `Member ${memberNumber}`;
     return Player.FriendNames?.get(memberNumber) ?? `Member ${memberNumber}`;
   }
 
   getOwnMemberNumber(): number {
-    return Player.MemberNumber;
+    if (typeof Player !== "object" || Player === null) return -1;
+    return Number.isSafeInteger(Player.MemberNumber) ? Player.MemberNumber : -1;
   }
 
   #normalizeIncoming(data: BCServerAccountBeepResponse): BeepEvent | null {
