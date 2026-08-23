@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.4.0
+// @version      0.5.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -375,10 +375,15 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const ownMemberNumber = this.getOwnMemberNumber();
       return ChatRoomCharacter.filter(
         (character) => Number.isSafeInteger(character.MemberNumber) && character.MemberNumber !== ownMemberNumber
-      ).map((character) => ({
-        memberNumber: character.MemberNumber,
-        memberName: this.getMemberNickname(character.MemberNumber) ?? cleanName(character.Name) ?? `Member ${character.MemberNumber}`
-      })).sort((left, right) => left.memberName.localeCompare(right.memberName));
+      ).map((character) => {
+        const accountName = cleanName(character.Name);
+        return {
+          memberNumber: character.MemberNumber,
+          memberName: this.getMemberNickname(character.MemberNumber) ?? accountName ?? `Member ${character.MemberNumber}`,
+          ...accountName !== void 0 ? { accountName } : {},
+          isFriend: typeof Player === "object" && Player !== null && Player.FriendNames instanceof Map && Player.FriendNames.has(character.MemberNumber)
+        };
+      }).sort((left, right) => left.memberName.localeCompare(right.memberName));
     }
     sendRoomEmote(content) {
       const message = content.trim();
@@ -391,6 +396,38 @@ One of mods you are using is using an old version of SDK. It will work for now b
         throw new Error("The Bondage Club room chat is still loading");
       }
       ChatRoomSendEmote(message);
+    }
+    getCurrentRoomName() {
+      if (!this.isInChatRoom()) return void 0;
+      if (typeof ChatRoomData === "undefined" || ChatRoomData === null) return void 0;
+      return cleanName(ChatRoomData.Name);
+    }
+    startWhisper(memberNumber) {
+      if (!this.isInChatRoom()) throw new Error("Open a Bondage Club chat room first");
+      if (!this.#findRoomCharacter(memberNumber)) {
+        throw new Error("This player is no longer in the room");
+      }
+      if (typeof ChatRoomSetTarget !== "function") {
+        throw new Error("The native Whisper control is still loading");
+      }
+      ChatRoomSetTarget(memberNumber);
+      const input = document.getElementById("InputChat");
+      if (input instanceof HTMLElement) input.focus();
+    }
+    openProfile(memberNumber) {
+      if (!this.isInChatRoom()) throw new Error("Profiles can be opened from a chat room");
+      const character = this.#findRoomCharacter(memberNumber);
+      if (!character) throw new Error("This player is no longer in the room");
+      if (typeof InformationSheetLoadCharacter !== "function") {
+        throw new Error("The native profile screen is still loading");
+      }
+      InformationSheetLoadCharacter(character);
+    }
+    #findRoomCharacter(memberNumber) {
+      if (typeof ChatRoomCharacter === "undefined" || !Array.isArray(ChatRoomCharacter)) {
+        return void 0;
+      }
+      return ChatRoomCharacter.find((character) => character.MemberNumber === memberNumber);
     }
     getKnownContacts() {
       const contacts = /* @__PURE__ */ new Map();
@@ -675,6 +712,224 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return incoming || previous || fallback;
   }
 
+  // src/core/settings.ts
+  var DEFAULT_SETTINGS = {
+    schemaVersion: 3,
+    ui: {
+      accent: "#d71932",
+      theme: "dark",
+      launcherSide: "right",
+      launcherPosition: null,
+      reducedMotion: false
+    },
+    linkChat: {
+      enabled: true,
+      saveHistory: true,
+      includeRoomByDefault: false,
+      retentionDays: 90,
+      maxMessagesPerConversation: 500,
+      openOnIncoming: false,
+      quickActions: [
+        { label: "Wave", template: "*waves to {name}*" },
+        { label: "Hug", template: "*hugs {name} warmly*" },
+        { label: "Boop", template: "*gently boops {name}*" }
+      ]
+    },
+    linkActivities: {
+      enabled: false,
+      activities: [
+        {
+          label: "Sakura bow",
+          template: "bows gracefully to {target}, as if sakura petals drifted between them."
+        },
+        {
+          label: "Wolf greeting",
+          template: "greets {target} with a warm, playful wolfish grin."
+        },
+        {
+          label: "Inspect knots",
+          template: "circles {target}, carefully inspecting every knot."
+        },
+        {
+          label: "Offer hand",
+          template: "offers {target} a hand with an inviting smile."
+        },
+        {
+          label: "Moonlit promise",
+          template: "touches two fingers to their heart, then gestures solemnly toward {target}."
+        }
+      ]
+    },
+    linkRoster: {
+      enabled: true,
+      trackEncounters: true
+    }
+  };
+  var SETTINGS_KEY = "kikilink:settings:v1";
+  var SettingsStore = class {
+    #settings;
+    #storage;
+    constructor(storage) {
+      this.#storage = storage ?? getDefaultStorage();
+      this.#settings = this.#load();
+    }
+    get() {
+      return structuredClone(this.#settings);
+    }
+    update(mutator) {
+      const draft = this.get();
+      mutator(draft);
+      this.#settings = sanitizeSettings(draft);
+      try {
+        this.#storage.setItem(SETTINGS_KEY, JSON.stringify(this.#settings));
+      } catch {
+      }
+      return this.get();
+    }
+    reset() {
+      this.#settings = structuredClone(DEFAULT_SETTINGS);
+      try {
+        this.#storage.removeItem(SETTINGS_KEY);
+      } catch {
+      }
+      return this.get();
+    }
+    #load() {
+      let raw = null;
+      try {
+        raw = this.#storage.getItem(SETTINGS_KEY);
+      } catch {
+        return structuredClone(DEFAULT_SETTINGS);
+      }
+      if (!raw) return structuredClone(DEFAULT_SETTINGS);
+      try {
+        return sanitizeSettings(JSON.parse(raw));
+      } catch {
+        return structuredClone(DEFAULT_SETTINGS);
+      }
+    }
+  };
+  var MemoryKeyValueStorage = class {
+    #values = /* @__PURE__ */ new Map();
+    getItem(key) {
+      return this.#values.get(key) ?? null;
+    }
+    setItem(key, value) {
+      this.#values.set(key, value);
+    }
+    removeItem(key) {
+      this.#values.delete(key);
+    }
+  };
+  function sanitizeSettings(input) {
+    const source = isRecord(input) ? input : {};
+    const sourceSchema = source.schemaVersion;
+    const ui = isRecord(source.ui) ? source.ui : {};
+    const linkChat = isRecord(source.linkChat) ? source.linkChat : {};
+    const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
+    const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
+    return {
+      schemaVersion: 3,
+      ui: {
+        accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
+        theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
+        launcherSide: ui.launcherSide === "left" ? "left" : "right",
+        launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
+        reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion)
+      },
+      linkChat: {
+        enabled: booleanOr(linkChat.enabled, DEFAULT_SETTINGS.linkChat.enabled),
+        saveHistory: booleanOr(linkChat.saveHistory, DEFAULT_SETTINGS.linkChat.saveHistory),
+        includeRoomByDefault: booleanOr(
+          linkChat.includeRoomByDefault,
+          DEFAULT_SETTINGS.linkChat.includeRoomByDefault
+        ),
+        retentionDays: integerInRange(
+          linkChat.retentionDays,
+          1,
+          3650,
+          DEFAULT_SETTINGS.linkChat.retentionDays
+        ),
+        maxMessagesPerConversation: integerInRange(
+          linkChat.maxMessagesPerConversation,
+          50,
+          5e3,
+          DEFAULT_SETTINGS.linkChat.maxMessagesPerConversation
+        ),
+        openOnIncoming: booleanOr(
+          linkChat.openOnIncoming,
+          DEFAULT_SETTINGS.linkChat.openOnIncoming
+        ),
+        quickActions: sanitizeQuickActions(linkChat.quickActions)
+      },
+      linkActivities: {
+        enabled: sourceSchema === 2 ? false : booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
+        activities: sanitizeRoomActivities(linkActivities.activities)
+      },
+      linkRoster: {
+        enabled: booleanOr(linkRoster.enabled, DEFAULT_SETTINGS.linkRoster.enabled),
+        trackEncounters: booleanOr(
+          linkRoster.trackEncounters,
+          DEFAULT_SETTINGS.linkRoster.trackEncounters
+        )
+      }
+    };
+  }
+  function sanitizeQuickActions(value) {
+    if (value === void 0) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
+    if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
+    const actions = [];
+    for (const entry of value.slice(0, 12)) {
+      if (!isRecord(entry)) continue;
+      const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 24) : "";
+      const template = typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
+      if (label && template) actions.push({ label, template });
+    }
+    return actions;
+  }
+  function sanitizeRoomActivities(value) {
+    if (value === void 0) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
+    if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
+    const activities = [];
+    for (const entry of value.slice(0, 20)) {
+      if (!isRecord(entry)) continue;
+      const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 32) : "";
+      const template = typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
+      if (label && template) activities.push({ label, template });
+    }
+    return activities;
+  }
+  function sanitizeLauncherPosition(value) {
+    if (!isRecord(value)) return null;
+    if (!finiteNumberInRange(value.x, 0, 1) || !finiteNumberInRange(value.y, 0, 1)) return null;
+    return { x: value.x, y: value.y };
+  }
+  function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+  function booleanOr(value, fallback) {
+    return typeof value === "boolean" ? value : fallback;
+  }
+  function integerInRange(value, min, max, fallback) {
+    return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+  }
+  function finiteNumberInRange(value, min, max) {
+    return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
+  }
+  function validColor(value) {
+    return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value);
+  }
+  function getDefaultStorage() {
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.getItem("kikilink:storage-probe");
+        return localStorage;
+      }
+    } catch {
+    }
+    return new MemoryKeyValueStorage();
+  }
+
   // src/utils/dom.ts
   function element(tag, options = {}, ...children) {
     const node = document.createElement(tag);
@@ -730,6 +985,293 @@ One of mods you are using is using an old version of SDK. It will work for now b
   };
   function expandActivityTemplate(template, context) {
     return template.trim().replaceAll("{source}", context.sourceName).replaceAll("{target}", context.target.memberName).replaceAll("{member}", context.target.memberNumber.toString());
+  }
+
+  // src/modules/link-roster/link-roster-service.ts
+  var HEARTBEAT_MS = 3e4;
+  var LinkRosterService = class {
+    constructor(adapter, repository, settings) {
+      this.adapter = adapter;
+      this.repository = repository;
+      this.settings = settings;
+    }
+    adapter;
+    repository;
+    settings;
+    #present = /* @__PURE__ */ new Map();
+    #roomName = "";
+    #lastHeartbeatAt = 0;
+    sync(now = Date.now()) {
+      if (!this.adapter.isInChatRoom()) {
+        const left2 = [...this.#present.keys()];
+        this.#present.clear();
+        this.#roomName = "";
+        return { changed: left2.length > 0, presentCount: 0, joined: [], left: left2 };
+      }
+      const roomName = this.adapter.getCurrentRoomName() ?? "Unnamed room";
+      const roomChanged = roomName !== this.#roomName;
+      if (roomChanged) this.#present.clear();
+      this.#roomName = roomName;
+      const current = this.adapter.getRoomCharacters();
+      const currentNumbers = new Set(current.map((character) => character.memberNumber));
+      const joined = current.filter((character) => !this.#present.has(character.memberNumber)).map((character) => character.memberNumber);
+      const left = [...this.#present.keys()].filter((memberNumber) => !currentNumbers.has(memberNumber));
+      const heartbeat = now - this.#lastHeartbeatAt >= HEARTBEAT_MS;
+      const tracking = this.settings.get().linkRoster.trackEncounters;
+      const updates = [];
+      if (tracking) {
+        for (const character of current) {
+          const existing = this.repository.get(character.memberNumber);
+          const isNewEncounter = !this.#present.has(character.memberNumber);
+          const nameChanged = existing?.displayName !== character.memberName;
+          if (!existing || isNewEncounter || nameChanged || heartbeat) {
+            updates.push(
+              mergeObservedPerson(existing, character, roomName, now, isNewEncounter)
+            );
+          }
+        }
+        for (const memberNumber of left) {
+          const existing = this.repository.get(memberNumber);
+          const previous = this.#present.get(memberNumber);
+          if (existing && previous) {
+            updates.push({ ...existing, displayName: previous.memberName, lastSeenAt: now });
+          }
+        }
+        if (updates.length > 0) this.repository.putMany(updates);
+      }
+      this.#present.clear();
+      for (const character of current) this.#present.set(character.memberNumber, character);
+      if (heartbeat) this.#lastHeartbeatAt = now;
+      return {
+        changed: roomChanged || joined.length > 0 || left.length > 0,
+        presentCount: current.length,
+        joined,
+        left
+      };
+    }
+    observePerson(memberNumber, displayName, now = Date.now()) {
+      if (!Number.isSafeInteger(memberNumber) || memberNumber < 0) return;
+      const existing = this.repository.get(memberNumber);
+      this.repository.put({
+        ...existing ?? emptyPerson(memberNumber, displayName),
+        displayName: displayName.trim() || existing?.displayName || `Member ${memberNumber}`,
+        firstSeenAt: existing?.firstSeenAt || now,
+        lastSeenAt: Math.max(existing?.lastSeenAt ?? 0, now)
+      });
+    }
+    list(scope, query = "") {
+      const normalizedQuery = query.trim().toLocaleLowerCase();
+      const records = new Map(
+        this.repository.list().map((record) => [record.memberNumber, record])
+      );
+      const current = new Map(
+        this.adapter.getRoomCharacters().map((character) => [character.memberNumber, character])
+      );
+      const memberNumbers = scope === "current" ? [...current.keys()] : [.../* @__PURE__ */ new Set([...records.keys(), ...current.keys()])];
+      return memberNumbers.map((memberNumber) => {
+        const character = current.get(memberNumber);
+        const record = records.get(memberNumber) ?? emptyPerson(memberNumber, character?.memberName ?? `Member ${memberNumber}`);
+        return {
+          ...record,
+          displayName: character?.memberName ?? record.displayName,
+          present: character !== void 0,
+          isFriend: character?.isFriend === true
+        };
+      }).filter((entry) => scope !== "favorites" || entry.favorite).filter(
+        (entry) => !normalizedQuery || entry.displayName.toLocaleLowerCase().includes(normalizedQuery) || entry.memberNumber.toString().includes(normalizedQuery) || entry.note.toLocaleLowerCase().includes(normalizedQuery) || entry.tags.some((tag) => tag.toLocaleLowerCase().includes(normalizedQuery))
+      ).sort(compareRosterEntries);
+    }
+    get(memberNumber, fallbackName) {
+      return this.repository.get(memberNumber) ?? emptyPerson(memberNumber, fallbackName?.trim() || `Member ${memberNumber}`);
+    }
+    saveNotebook(memberNumber, displayName, note, tags) {
+      const existing = this.get(memberNumber, displayName);
+      return this.repository.put({
+        ...existing,
+        displayName: displayName.trim() || existing.displayName,
+        note: note.trim().slice(0, 2e3),
+        tags
+      });
+    }
+    toggleFavorite(memberNumber, displayName) {
+      const existing = this.get(memberNumber, displayName);
+      return this.repository.put({
+        ...existing,
+        displayName: displayName.trim() || existing.displayName,
+        favorite: !existing.favorite
+      });
+    }
+    clear() {
+      this.repository.clear();
+    }
+  };
+  function mergeObservedPerson(existing, character, roomName, now, newEncounter) {
+    const base = existing ?? emptyPerson(character.memberNumber, character.memberName);
+    return {
+      ...base,
+      displayName: character.memberName,
+      firstSeenAt: base.firstSeenAt || now,
+      lastSeenAt: now,
+      lastRoomName: roomName,
+      encounterCount: base.encounterCount + (newEncounter ? 1 : 0)
+    };
+  }
+  function emptyPerson(memberNumber, displayName) {
+    return {
+      memberNumber,
+      displayName,
+      favorite: false,
+      note: "",
+      tags: [],
+      firstSeenAt: 0,
+      lastSeenAt: 0,
+      lastRoomName: "",
+      encounterCount: 0
+    };
+  }
+  function compareRosterEntries(left, right) {
+    if (left.present !== right.present) return left.present ? -1 : 1;
+    if (left.favorite !== right.favorite) return left.favorite ? -1 : 1;
+    if (left.isFriend !== right.isFriend) return left.isFriend ? -1 : 1;
+    if (left.lastSeenAt !== right.lastSeenAt) return right.lastSeenAt - left.lastSeenAt;
+    return left.displayName.localeCompare(right.displayName);
+  }
+
+  // src/storage/people-repository.ts
+  var PEOPLE_KEY = "kikilink:people:v1";
+  var MAX_PEOPLE = 2e3;
+  var PeopleRepository = class {
+    constructor(storage = getDefaultStorage2()) {
+      this.storage = storage;
+      this.#load();
+    }
+    storage;
+    #records = /* @__PURE__ */ new Map();
+    get(memberNumber) {
+      const record = this.#records.get(memberNumber);
+      return record ? structuredClone(record) : void 0;
+    }
+    list() {
+      return [...this.#records.values()].map((record) => structuredClone(record)).sort((left, right) => right.lastSeenAt - left.lastSeenAt);
+    }
+    put(record) {
+      const sanitized = sanitizePerson(record);
+      if (!sanitized) throw new Error("Invalid player record");
+      this.#records.set(sanitized.memberNumber, sanitized);
+      this.#prune();
+      this.#persist();
+      return structuredClone(sanitized);
+    }
+    putMany(records) {
+      for (const record of records) {
+        const sanitized = sanitizePerson(record);
+        if (sanitized) this.#records.set(sanitized.memberNumber, sanitized);
+      }
+      this.#prune();
+      this.#persist();
+    }
+    clear() {
+      this.#records.clear();
+      try {
+        this.storage.removeItem(PEOPLE_KEY);
+      } catch {
+      }
+    }
+    #load() {
+      let raw = null;
+      try {
+        raw = this.storage.getItem(PEOPLE_KEY);
+      } catch {
+        return;
+      }
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return;
+        for (const value of parsed.slice(0, MAX_PEOPLE)) {
+          const record = sanitizePerson(value);
+          if (record) this.#records.set(record.memberNumber, record);
+        }
+      } catch {
+      }
+    }
+    #persist() {
+      try {
+        this.storage.setItem(PEOPLE_KEY, JSON.stringify(this.list()));
+      } catch {
+      }
+    }
+    #prune() {
+      if (this.#records.size <= MAX_PEOPLE) return;
+      const removable = [...this.#records.values()].filter((record) => !record.favorite && !record.note && record.tags.length === 0).sort((left, right) => left.lastSeenAt - right.lastSeenAt);
+      for (const record of removable) {
+        if (this.#records.size <= MAX_PEOPLE) break;
+        this.#records.delete(record.memberNumber);
+      }
+      if (this.#records.size <= MAX_PEOPLE) return;
+      const oldestRemaining = [...this.#records.values()].sort(
+        (left, right) => left.lastSeenAt - right.lastSeenAt
+      );
+      for (const record of oldestRemaining) {
+        if (this.#records.size <= MAX_PEOPLE) break;
+        this.#records.delete(record.memberNumber);
+      }
+    }
+  };
+  function sanitizePerson(value) {
+    if (!isRecord2(value) || !validMemberNumber(value.memberNumber)) return void 0;
+    const now = Date.now();
+    const lastSeenAt = validTime(value.lastSeenAt) ? value.lastSeenAt : 0;
+    const firstSeenAt = validTime(value.firstSeenAt) ? Math.min(value.firstSeenAt, lastSeenAt || now) : lastSeenAt;
+    const displayName = cleanText(value.displayName, 80) || `Member ${value.memberNumber}`;
+    const note = cleanText(value.note, 2e3);
+    const lastRoomName = cleanText(value.lastRoomName, 100);
+    const encounterCount = typeof value.encounterCount === "number" && Number.isInteger(value.encounterCount) && value.encounterCount >= 0 ? Math.min(value.encounterCount, 1e6) : 0;
+    const tags = [];
+    if (Array.isArray(value.tags)) {
+      const seen = /* @__PURE__ */ new Set();
+      for (const rawTag of value.tags.slice(0, 16)) {
+        const tag = cleanText(rawTag, 24);
+        const key = tag.toLocaleLowerCase();
+        if (!tag || seen.has(key)) continue;
+        seen.add(key);
+        tags.push(tag);
+        if (tags.length >= 8) break;
+      }
+    }
+    return {
+      memberNumber: value.memberNumber,
+      displayName,
+      favorite: value.favorite === true,
+      note,
+      tags,
+      firstSeenAt,
+      lastSeenAt,
+      lastRoomName,
+      encounterCount
+    };
+  }
+  function getDefaultStorage2() {
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.getItem("kikilink:people-storage-probe");
+        return localStorage;
+      }
+    } catch {
+    }
+    return new MemoryKeyValueStorage();
+  }
+  function isRecord2(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+  function validMemberNumber(value) {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  }
+  function validTime(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  }
+  function cleanText(value, maxLength) {
+    return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
   }
 
   // src/modules/link-chat/styles.ts
@@ -1017,6 +1559,24 @@ button { color: inherit; }
   font-size: 17px;
 }
 
+.kl-roster-button { position: relative; }
+.kl-roster-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  padding: 0 5px;
+  border: 2px solid var(--kl-bg);
+  border-radius: 999px;
+  background: var(--kl-gold);
+  color: #1b1005;
+  font-size: 9px;
+  font-weight: 900;
+}
+
 .kl-text-button {
   min-height: 36px;
   padding: 7px 12px;
@@ -1073,7 +1633,9 @@ button { color: inherit; }
 .kl-number-input,
 .kl-select,
 .kl-action-label,
-.kl-action-template {
+.kl-action-template,
+.kl-roster-note,
+.kl-roster-tags {
   border: 1px solid var(--kl-border);
   outline: none;
   background: var(--kl-input-bg);
@@ -1095,7 +1657,9 @@ button { color: inherit; }
 .kl-number-input:focus,
 .kl-select:focus,
 .kl-action-label:focus,
-.kl-action-template:focus {
+.kl-action-template:focus,
+.kl-roster-note:focus,
+.kl-roster-tags:focus {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 30%);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-accent), transparent 78%);
 }
@@ -1354,6 +1918,143 @@ button { color: inherit; }
 .kl-contact-empty { color: var(--kl-muted); font-size: 11px; }
 .kl-contact-empty { padding: 18px 8px; text-align: center; }
 
+.kl-roster-dialog { width: min(880px, calc(100vw - 32px)); }
+.kl-roster-body {
+  min-height: min(540px, calc(100vh - 190px));
+  display: grid;
+  grid-template-columns: minmax(280px, 0.78fr) minmax(360px, 1.22fr);
+  gap: 14px;
+  overflow: hidden;
+}
+.kl-roster-list-pane {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 9px;
+}
+.kl-roster-scopes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid var(--kl-border);
+  border-radius: 12px;
+  background: var(--kl-input-bg);
+}
+.kl-roster-scope {
+  min-height: 31px;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--kl-muted);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.kl-roster-scope:hover { color: var(--kl-text); background: var(--kl-surface-hover); }
+.kl-roster-scope[data-active="true"] {
+  border-color: var(--kl-border-strong);
+  background: var(--kl-surface-2);
+  color: var(--kl-text);
+}
+.kl-roster-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--kl-border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--kl-input-bg), transparent 18%);
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
+}
+.kl-roster-empty,
+.kl-roster-detail-empty {
+  display: grid;
+  min-height: 160px;
+  place-items: center;
+  padding: 18px;
+  color: var(--kl-muted);
+  font-size: 12px;
+  text-align: center;
+}
+.kl-roster-entry {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.kl-roster-entry:hover { background: var(--kl-surface-hover); }
+.kl-roster-entry[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 28%);
+  background: color-mix(in srgb, var(--kl-accent), transparent 87%);
+}
+.kl-roster-entry .kl-avatar { width: 42px; height: 42px; border-radius: 13px; }
+.kl-roster-entry-copy { min-width: 0; }
+.kl-roster-entry-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.kl-roster-entry-name { overflow: hidden; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.kl-roster-entry-badges { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.kl-roster-live,
+.kl-roster-friend {
+  padding: 1px 4px;
+  border-radius: 999px;
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+.kl-roster-live { background: rgba(104, 211, 145, 0.14); color: #68d391; }
+.kl-roster-friend { background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
+.kl-roster-favorite { color: var(--kl-gold); font-size: 11px; }
+.kl-roster-entry-preview {
+  overflow: hidden;
+  color: var(--kl-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kl-roster-entry-time { color: var(--kl-muted); font-size: 9px; }
+.kl-roster-detail {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 15px;
+  border: 1px solid var(--kl-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--kl-surface), transparent 12%);
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
+}
+.kl-roster-identity { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.kl-roster-avatar { width: 54px; height: 54px; border-radius: 17px; font-size: 17px; }
+.kl-roster-identity-copy { min-width: 0; }
+.kl-roster-name { overflow: hidden; font-family: Georgia, "Times New Roman", serif; font-size: 19px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.kl-roster-number { color: var(--kl-muted); font-size: 11px; }
+.kl-roster-star { color: var(--kl-gold); font-size: 20px; }
+.kl-roster-quick-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-top: 15px; }
+.kl-roster-quick-actions .kl-text-button { min-width: 0; padding-inline: 7px; font-size: 11px; }
+.kl-roster-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 15px; }
+.kl-roster-stat { min-width: 0; padding: 9px 10px; border: 1px solid var(--kl-border); border-radius: 11px; background: var(--kl-surface-2); }
+.kl-roster-stat-label { color: var(--kl-muted); font-size: 8px; font-weight: 850; letter-spacing: 0.08em; text-transform: uppercase; }
+.kl-roster-stat-value { margin-top: 3px; overflow: hidden; font-size: 11px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.kl-roster-notebook { display: grid; gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--kl-border); }
+.kl-roster-field-label { display: grid; gap: 5px; color: var(--kl-gold); font-size: 9px; font-weight: 850; letter-spacing: 0.09em; text-transform: uppercase; }
+.kl-roster-note,
+.kl-roster-tags { width: 100%; min-width: 0; padding: 9px 11px; border-radius: 11px; text-transform: none; }
+.kl-roster-tags { height: 38px; }
+.kl-roster-note { min-height: 120px; max-height: 230px; resize: vertical; line-height: 1.45; }
+.kl-roster-note-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.kl-roster-note-actions .kl-setting-help { margin-right: auto; }
+.kl-roster-privacy { align-self: center; margin-right: auto; color: var(--kl-muted); font-size: 9px; }
+
 .kl-activities-dialog { width: min(760px, calc(100vw - 32px)); }
 .kl-activities-body { gap: 13px; }
 .kl-activity-status {
@@ -1516,6 +2217,20 @@ select:focus-visible {
   .kl-activity-studio { grid-template-columns: minmax(0, 1fr); }
   .kl-activity-targets,
   .kl-activity-library { min-height: 130px; max-height: 190px; }
+  .kl-roster-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+  }
+  .kl-roster-body {
+    min-height: 0;
+    max-height: calc(100vh - 145px);
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+  .kl-roster-list-pane { min-height: 270px; }
+  .kl-roster-list { max-height: 235px; }
+  .kl-roster-detail { overflow: visible; }
+  .kl-roster-privacy { display: none; }
 }
 
 @media (max-width: 420px) {
@@ -1528,6 +2243,9 @@ select:focus-visible {
   .kl-select { width: 126px; }
   .kl-activity-dialog-actions { flex-wrap: wrap; }
   .kl-activity-dialog-actions .kl-edit-activities { width: 100%; margin-right: 0; }
+  .kl-roster-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kl-roster-stats { grid-template-columns: minmax(0, 1fr); }
+  .kl-roster-stat-value { white-space: normal; }
 }
 
 :host([data-reduced-motion="true"]) *,
@@ -1547,18 +2265,24 @@ select:focus-visible {
 
   // src/modules/link-chat/view.ts
   var LinkChatView = class {
-    constructor(adapter, service, settings, version, activities = new LinkActivitiesService(adapter)) {
+    constructor(adapter, service, settings, version, activities = new LinkActivitiesService(adapter), roster = new LinkRosterService(
+      adapter,
+      new PeopleRepository(new MemoryKeyValueStorage()),
+      settings
+    )) {
       this.adapter = adapter;
       this.service = service;
       this.settings = settings;
       this.version = version;
       this.activities = activities;
+      this.roster = roster;
     }
     adapter;
     service;
     settings;
     version;
     activities;
+    roster;
     #host = document.createElement("div");
     #shadow = this.#host.attachShadow({ mode: "open" });
     #launcher = element("button", {
@@ -1612,6 +2336,37 @@ select:focus-visible {
     });
     #reducedMotionToggle = element("input");
     #quickActionsEditor = element("div", { className: "kl-action-editor" });
+    #rosterEnabledToggle = element("input");
+    #rosterTrackingToggle = element("input");
+    #rosterButton = element("button", {
+      className: "kl-icon-button kl-roster-button",
+      type: "button",
+      text: "\u2637",
+      title: "LinkRoster",
+      ariaLabel: "Open LinkRoster"
+    });
+    #rosterCount = element("span", { className: "kl-roster-count" });
+    #rosterDialog = element("dialog", {
+      className: "kl-dialog kl-roster-dialog"
+    });
+    #rosterSubtitle = element("div", { className: "kl-dialog-subtitle" });
+    #rosterScopes = element("div", { className: "kl-roster-scopes" });
+    #rosterSearch = element("input", {
+      className: "kl-search kl-roster-search"
+    });
+    #rosterList = element("div", { className: "kl-roster-list" });
+    #rosterDetail = element("section", { className: "kl-roster-detail" });
+    #rosterNote = element("textarea", {
+      className: "kl-roster-note"
+    });
+    #rosterTags = element("input", {
+      className: "kl-roster-tags"
+    });
+    #saveNotebookButton = element("button", {
+      className: "kl-text-button kl-text-button--primary kl-save-notebook",
+      type: "button",
+      text: "Save note"
+    });
     #activitiesToggle = element("input");
     #activitiesEditor = element("div", {
       className: "kl-action-editor kl-activities-editor"
@@ -1652,6 +2407,9 @@ select:focus-visible {
     #activeName = "";
     #selectedActivityIndex = 0;
     #selectedActivityTarget;
+    #selectedRosterMember;
+    #rosterScope = "current";
+    #notebookDirty = false;
     #mounted = false;
     #connectionState = "connecting";
     #toastTimer;
@@ -1673,13 +2431,15 @@ select:focus-visible {
       this.#buildSettingsDialog();
       this.#buildNewChatDialog();
       this.#buildActivitiesDialog();
+      this.#buildRosterDialog();
       this.#shadow.append(
         style,
         this.#launcher,
         this.#panel,
         this.#settingsDialog,
         this.#newChatDialog,
-        this.#activitiesDialog
+        this.#activitiesDialog,
+        this.#rosterDialog
       );
       document.body.append(this.#host);
       this.#positionLauncher();
@@ -1691,6 +2451,7 @@ select:focus-visible {
       this.#settingsDialog.close();
       this.#newChatDialog.close();
       this.#activitiesDialog.close();
+      this.#rosterDialog.close();
       window.removeEventListener("resize", this.#handleViewportResize);
       this.#host.remove();
       this.#mounted = false;
@@ -1708,6 +2469,7 @@ select:focus-visible {
       this.#composer.placeholder = canSend ? "Write a Beep\u2026" : "Connecting to Bondage Club\u2026";
       if (this.#newChatDialog.open) this.#renderKnownContacts();
       if (this.#activitiesDialog.open) this.#renderActivitiesDialog();
+      if (this.#rosterDialog.open) this.#renderRoster();
     }
     async onMessage(peerNumber, incoming) {
       if (incoming && this.settings.get().linkChat.openOnIncoming) {
@@ -1734,6 +2496,15 @@ select:focus-visible {
     }
     openActivities() {
       this.#openActivities();
+    }
+    openRoster() {
+      this.#openRoster();
+    }
+    onRosterSync(result) {
+      this.#rosterCount.hidden = result.presentCount === 0;
+      this.#rosterCount.textContent = result.presentCount > 99 ? "99+" : result.presentCount.toString();
+      this.#rosterButton.title = result.presentCount ? `LinkRoster \xB7 ${result.presentCount} in room` : "LinkRoster";
+      if (this.#rosterDialog.open && result.changed) this.#renderRoster();
     }
     async refresh() {
       await Promise.all([this.#renderConversations(), this.#updateUnreadBadge()]);
@@ -1768,7 +2539,7 @@ select:focus-visible {
           element(
             "div",
             { className: "kl-brand-subtitle" },
-            `LinkChat + LinkActivities \xB7 v${this.version}`,
+            `LinkChat + LinkRoster \xB7 v${this.version}`,
             this.#connection
           )
         )
@@ -1799,10 +2570,15 @@ select:focus-visible {
       });
       this.#activitiesButton.addEventListener("click", () => this.#openActivities());
       this.#activitiesButton.hidden = !this.settings.get().linkActivities.enabled;
+      this.#rosterCount.hidden = true;
+      this.#rosterButton.append(this.#rosterCount);
+      this.#rosterButton.addEventListener("click", () => this.#openRoster());
+      this.#rosterButton.hidden = !this.settings.get().linkRoster.enabled;
       const topbar = element(
         "header",
         { className: "kl-topbar" },
         brand,
+        this.#rosterButton,
         this.#activitiesButton,
         newChat,
         settings,
@@ -1838,7 +2614,7 @@ select:focus-visible {
       const layout = element("div", { className: "kl-layout" }, sidebar, main);
       this.#panel.append(topbar, layout);
       this.#panel.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && !this.#settingsDialog.open && !this.#activitiesDialog.open && !this.#newChatDialog.open) {
+        if (event.key === "Escape" && !this.#settingsDialog.open && !this.#activitiesDialog.open && !this.#newChatDialog.open && !this.#rosterDialog.open) {
           this.close();
         }
       });
@@ -1976,6 +2752,44 @@ select:focus-visible {
         launcherSide,
         reducedMotion
       );
+      this.#rosterEnabledToggle.type = "checkbox";
+      const rosterEnabledSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#rosterEnabledToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      const rosterEnabled = this.#settingRow(
+        "Enable LinkRoster",
+        "Room roster, quick player actions, favorites, and private notes.",
+        rosterEnabledSwitch
+      );
+      this.#rosterTrackingToggle.type = "checkbox";
+      const rosterTrackingSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#rosterTrackingToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      const rosterTracking = this.#settingRow(
+        "Remember encounters",
+        "Store the last room, time, and encounter count only in this browser.",
+        rosterTrackingSwitch
+      );
+      const clearPeople = element("button", {
+        className: "kl-text-button kl-text-button--danger",
+        type: "button",
+        text: "Clear player notes & encounter history",
+        onClick: () => this.#clearPeople()
+      });
+      const rosterSection = element(
+        "section",
+        { className: "kl-setting-section" },
+        element("div", { className: "kl-setting-section-title", text: "LinkRoster" }),
+        rosterEnabled,
+        rosterTracking,
+        clearPeople
+      );
       const privacySection = element(
         "section",
         { className: "kl-setting-section" },
@@ -2009,8 +2823,8 @@ select:focus-visible {
         element("span", { className: "kl-switch-track" })
       );
       const activitiesEnabled = this.#settingRow(
-        "Enable LinkActivities",
-        "Show Activity Studio in the KikiLink toolbar.",
+        "Show Activity Studio shortcut",
+        "Optional room-emote studio. Disabled by default to keep the toolbar focused.",
         activitiesSwitch
       );
       const addActivity = element("button", {
@@ -2035,9 +2849,10 @@ select:focus-visible {
         "div",
         { className: "kl-dialog-body" },
         appearanceSection,
+        rosterSection,
         quickActionsSection,
-        activitiesSection,
-        privacySection
+        privacySection,
+        activitiesSection
       );
       this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
       const cancel = element("button", {
@@ -2097,6 +2912,333 @@ select:focus-visible {
         body,
         element("footer", { className: "kl-dialog-actions" }, cancel, open)
       );
+    }
+    #buildRosterDialog() {
+      const close = element("button", {
+        className: "kl-icon-button",
+        type: "button",
+        text: "\xD7",
+        title: "Close LinkRoster",
+        ariaLabel: "Close LinkRoster",
+        onClick: () => this.#rosterDialog.close()
+      });
+      const header = element(
+        "header",
+        { className: "kl-dialog-header" },
+        element(
+          "div",
+          { className: "kl-dialog-heading" },
+          element("div", { className: "kl-dialog-title", text: "LinkRoster" }),
+          this.#rosterSubtitle
+        ),
+        close
+      );
+      for (const [scope, label] of [
+        ["current", "In room"],
+        ["known", "Known"],
+        ["favorites", "Favorites"]
+      ]) {
+        const button = element("button", {
+          className: "kl-roster-scope",
+          type: "button",
+          text: label
+        });
+        button.dataset.scope = scope;
+        button.addEventListener("click", () => {
+          this.#saveNotebook(false);
+          this.#rosterScope = scope;
+          this.#selectedRosterMember = void 0;
+          this.#renderRoster();
+        });
+        this.#rosterScopes.append(button);
+      }
+      this.#rosterSearch.type = "search";
+      this.#rosterSearch.placeholder = "Search name, number, tag, or note";
+      this.#rosterSearch.autocomplete = "off";
+      this.#rosterSearch.addEventListener("input", () => this.#renderRoster());
+      const listPane = element(
+        "section",
+        { className: "kl-roster-list-pane" },
+        this.#rosterScopes,
+        this.#rosterSearch,
+        this.#rosterList
+      );
+      const body = element(
+        "div",
+        { className: "kl-dialog-body kl-roster-body" },
+        listPane,
+        this.#rosterDetail
+      );
+      const privacy = element("div", {
+        className: "kl-roster-privacy",
+        text: "Notes, tags, favorites, and encounter history stay in this browser profile."
+      });
+      const done = element("button", {
+        className: "kl-text-button kl-text-button--primary",
+        type: "button",
+        text: "Done",
+        onClick: () => this.#rosterDialog.close()
+      });
+      const footer = element("footer", { className: "kl-dialog-actions" }, privacy, done);
+      this.#saveNotebookButton.addEventListener("click", () => this.#saveNotebook(true));
+      this.#rosterNote.maxLength = 2e3;
+      this.#rosterNote.rows = 7;
+      this.#rosterNote.placeholder = "Private note about this player\u2026";
+      this.#rosterNote.addEventListener("input", () => {
+        this.#notebookDirty = true;
+        this.#saveNotebookButton.disabled = false;
+      });
+      this.#rosterNote.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          this.#saveNotebook(true);
+        }
+      });
+      this.#rosterTags.maxLength = 200;
+      this.#rosterTags.placeholder = "friend, roleplay, trusted";
+      this.#rosterTags.addEventListener("input", () => {
+        this.#notebookDirty = true;
+        this.#saveNotebookButton.disabled = false;
+      });
+      this.#rosterDialog.addEventListener("close", () => this.#saveNotebook(false));
+      this.#rosterDialog.append(header, body, footer);
+    }
+    #openRoster() {
+      if (!this.settings.get().linkRoster.enabled) {
+        this.#toast("LinkRoster is disabled in KikiLink settings.", "error");
+        return;
+      }
+      this.roster.sync();
+      this.#rosterSearch.value = "";
+      this.#rosterScope = this.adapter.isInChatRoom() ? "current" : "known";
+      this.#selectedRosterMember = void 0;
+      this.#notebookDirty = false;
+      this.#renderRoster();
+      if (!this.#rosterDialog.open) this.#rosterDialog.showModal();
+      this.#rosterSearch.focus();
+    }
+    #renderRoster() {
+      const roomName = this.adapter.getCurrentRoomName();
+      this.#rosterSubtitle.textContent = roomName ? `${roomName} \xB7 private player notebook` : "Private player notebook";
+      for (const button of this.#rosterScopes.querySelectorAll(
+        ".kl-roster-scope"
+      )) {
+        button.dataset.active = String(button.dataset.scope === this.#rosterScope);
+      }
+      const entries = this.roster.list(this.#rosterScope, this.#rosterSearch.value);
+      if (!entries.some((entry) => entry.memberNumber === this.#selectedRosterMember)) {
+        this.#selectedRosterMember = entries[0]?.memberNumber;
+        this.#notebookDirty = false;
+      }
+      this.#rosterList.replaceChildren();
+      if (entries.length === 0) {
+        this.#rosterList.append(
+          element("div", {
+            className: "kl-roster-empty",
+            text: this.#rosterScope === "current" && !this.adapter.isInChatRoom() ? "Join a chat room to see its roster." : this.#rosterScope === "favorites" ? "No favorite players yet. Use the star on any player." : this.#rosterSearch.value ? "No players match this search." : "No players recorded yet."
+          })
+        );
+      } else {
+        for (const entry of entries) this.#rosterList.append(this.#rosterEntryButton(entry));
+      }
+      const selected = entries.find(
+        (entry) => entry.memberNumber === this.#selectedRosterMember
+      );
+      if (!this.#notebookDirty) this.#renderRosterDetail(selected);
+    }
+    #rosterEntryButton(entry) {
+      const badges = element("div", { className: "kl-roster-entry-badges" });
+      if (entry.present) badges.append(element("span", { className: "kl-roster-live", text: "HERE" }));
+      if (entry.isFriend) badges.append(element("span", { className: "kl-roster-friend", text: "FRIEND" }));
+      if (entry.favorite) badges.append(element("span", { className: "kl-roster-favorite", text: "\u2605" }));
+      const preview = entry.tags.length ? entry.tags.join(" \xB7 ") : entry.note ? entry.note.replace(/\s+/gu, " ") : entry.lastRoomName || `Member ${entry.memberNumber}`;
+      const button = element(
+        "button",
+        { className: "kl-roster-entry", type: "button" },
+        element("div", { className: "kl-avatar", text: avatarText(entry.displayName) }),
+        element(
+          "div",
+          { className: "kl-roster-entry-copy" },
+          element(
+            "div",
+            { className: "kl-roster-entry-name-row" },
+            element("span", { className: "kl-roster-entry-name", text: entry.displayName }),
+            badges
+          ),
+          element("div", { className: "kl-roster-entry-preview", text: preview })
+        ),
+        element("span", {
+          className: "kl-roster-entry-time",
+          text: entry.present ? "now" : formatRelativeTime(entry.lastSeenAt)
+        })
+      );
+      button.dataset.selected = String(entry.memberNumber === this.#selectedRosterMember);
+      button.addEventListener("click", () => {
+        if (entry.memberNumber === this.#selectedRosterMember) return;
+        this.#saveNotebook(false);
+        this.#selectedRosterMember = entry.memberNumber;
+        this.#notebookDirty = false;
+        this.#renderRoster();
+      });
+      return button;
+    }
+    #renderRosterDetail(entry) {
+      this.#rosterDetail.replaceChildren();
+      if (!entry) {
+        this.#rosterDetail.append(
+          element("div", {
+            className: "kl-roster-detail-empty",
+            text: "Select a player to open quick actions and private notes."
+          })
+        );
+        return;
+      }
+      const favorite = element("button", {
+        className: "kl-icon-button kl-roster-star",
+        type: "button",
+        text: entry.favorite ? "\u2605" : "\u2606",
+        title: entry.favorite ? "Remove from favorites" : "Add to favorites",
+        ariaLabel: entry.favorite ? "Remove from favorites" : "Add to favorites",
+        onClick: () => {
+          this.#saveNotebook(false);
+          this.roster.toggleFavorite(entry.memberNumber, entry.displayName);
+          this.#notebookDirty = false;
+          this.#renderRoster();
+        }
+      });
+      const identity = element(
+        "div",
+        { className: "kl-roster-identity" },
+        element("div", { className: "kl-avatar kl-roster-avatar", text: avatarText(entry.displayName) }),
+        element(
+          "div",
+          { className: "kl-roster-identity-copy" },
+          element("div", { className: "kl-roster-name", text: entry.displayName }),
+          element("div", {
+            className: "kl-roster-number",
+            text: `Member ${entry.memberNumber}${entry.present ? " \xB7 in this room" : ""}`
+          })
+        ),
+        favorite
+      );
+      const whisper = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Whisper",
+        title: entry.present ? "Set native Whisper target" : "Player is not in this room",
+        onClick: () => this.#startRosterWhisper(entry)
+      });
+      whisper.disabled = !entry.present;
+      const beep = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Beep",
+        onClick: () => void this.#openRosterBeep(entry)
+      });
+      const profile = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Profile",
+        title: entry.present ? "Open native profile" : "Player is not in this room",
+        onClick: () => this.#openRosterProfile(entry)
+      });
+      profile.disabled = !entry.present;
+      const copy = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Copy ID",
+        onClick: () => void this.#copyRosterMemberNumber(entry.memberNumber)
+      });
+      const quickActions = element(
+        "div",
+        { className: "kl-roster-quick-actions" },
+        whisper,
+        beep,
+        profile,
+        copy
+      );
+      const stats = element(
+        "div",
+        { className: "kl-roster-stats" },
+        this.#rosterStat("Last seen", entry.present ? "Now" : formatFullSeenTime(entry.lastSeenAt)),
+        this.#rosterStat("Last room", entry.lastRoomName || "Not recorded"),
+        this.#rosterStat("Encounters", entry.encounterCount.toString())
+      );
+      this.#rosterTags.value = entry.tags.join(", ");
+      this.#rosterNote.value = entry.note;
+      this.#saveNotebookButton.disabled = true;
+      const notebook = element(
+        "div",
+        { className: "kl-roster-notebook" },
+        element("label", { className: "kl-roster-field-label" }, "Tags", this.#rosterTags),
+        element("label", { className: "kl-roster-field-label" }, "Private note", this.#rosterNote),
+        element(
+          "div",
+          { className: "kl-roster-note-actions" },
+          element("span", { className: "kl-setting-help", text: "Ctrl+Enter to save" }),
+          this.#saveNotebookButton
+        )
+      );
+      this.#rosterDetail.append(identity, quickActions, stats, notebook);
+    }
+    #rosterStat(label, value) {
+      return element(
+        "div",
+        { className: "kl-roster-stat" },
+        element("div", { className: "kl-roster-stat-label", text: label }),
+        element("div", { className: "kl-roster-stat-value", text: value })
+      );
+    }
+    #saveNotebook(showToast) {
+      if (!this.#notebookDirty || this.#selectedRosterMember === void 0) return;
+      const entry = this.roster.list("known").find((candidate) => candidate.memberNumber === this.#selectedRosterMember);
+      const displayName = entry?.displayName ?? this.adapter.getMemberName(this.#selectedRosterMember);
+      const tags = this.#rosterTags.value.split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 8);
+      this.roster.saveNotebook(
+        this.#selectedRosterMember,
+        displayName,
+        this.#rosterNote.value,
+        tags
+      );
+      this.#notebookDirty = false;
+      this.#saveNotebookButton.disabled = true;
+      if (showToast) this.#toast("Private player note saved.");
+      this.#renderRoster();
+    }
+    #startRosterWhisper(entry) {
+      this.#saveNotebook(false);
+      try {
+        this.adapter.startWhisper(entry.memberNumber);
+        this.#rosterDialog.close();
+        this.close();
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "Unable to start Whisper", "error");
+        this.#renderRoster();
+      }
+    }
+    async #openRosterBeep(entry) {
+      this.#saveNotebook(false);
+      this.#rosterDialog.close();
+      await this.openChat(entry.memberNumber, entry.displayName);
+    }
+    #openRosterProfile(entry) {
+      this.#saveNotebook(false);
+      try {
+        this.adapter.openProfile(entry.memberNumber);
+        this.#rosterDialog.close();
+        this.close();
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "Unable to open profile", "error");
+        this.#renderRoster();
+      }
+    }
+    async #copyRosterMemberNumber(memberNumber) {
+      try {
+        await copyText(memberNumber.toString());
+        this.#toast(`Member ${memberNumber} copied.`);
+      } catch {
+        this.#toast("The browser blocked clipboard access.", "error");
+      }
     }
     #buildActivitiesDialog() {
       const close = element("button", {
@@ -2649,6 +3791,8 @@ ${expanded}` : expanded;
       this.#historyToggle.checked = settings.linkChat.saveHistory;
       this.#retentionInput.value = settings.linkChat.retentionDays.toString();
       this.#renderQuickActionEditor(settings.linkChat.quickActions);
+      this.#rosterEnabledToggle.checked = settings.linkRoster.enabled;
+      this.#rosterTrackingToggle.checked = settings.linkRoster.trackEncounters;
       this.#activitiesToggle.checked = settings.linkActivities.enabled;
       this.#renderActivityEditor(settings.linkActivities.activities);
       if (!this.#settingsDialog.open) this.#settingsDialog.showModal();
@@ -2664,12 +3808,15 @@ ${expanded}` : expanded;
         draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
         draft.linkChat.saveHistory = this.#historyToggle.checked;
         draft.linkChat.quickActions = this.#readQuickActionEditor();
+        draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
+        draft.linkRoster.trackEncounters = this.#rosterTrackingToggle.checked;
         draft.linkActivities.enabled = this.#activitiesToggle.checked;
         draft.linkActivities.activities = this.#readActivityEditor();
         if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
       });
       this.#applyTheme(settings);
       this.#renderQuickActions();
+      this.#rosterButton.hidden = !settings.linkRoster.enabled;
       this.#activitiesButton.hidden = !settings.linkActivities.enabled;
       this.#settingsDialog.close();
       void this.service.prune();
@@ -2686,6 +3833,15 @@ ${expanded}` : expanded;
       this.#settingsDialog.close();
       await this.refresh();
       this.#toast("LinkChat history cleared.");
+    }
+    #clearPeople() {
+      if (!window.confirm("Clear all KikiLink player notes, tags, favorites, and encounter history?")) {
+        return;
+      }
+      this.roster.clear();
+      this.#selectedRosterMember = void 0;
+      this.#notebookDirty = false;
+      this.#toast("LinkRoster notebook cleared.");
     }
     async #updateUnreadBadge() {
       const unread = await this.service.totalUnread();
@@ -2817,7 +3973,7 @@ ${expanded}` : expanded;
       this.#shadow.querySelector(".kl-toast")?.remove();
       const toast = element("div", { className: "kl-toast", text: message });
       toast.dataset.kind = kind;
-      const surface = this.#newChatDialog.open ? this.#newChatDialog : this.#settingsDialog.open ? this.#settingsDialog : this.#panel;
+      const surface = this.#rosterDialog.open ? this.#rosterDialog : this.#activitiesDialog.open ? this.#activitiesDialog : this.#newChatDialog.open ? this.#newChatDialog : this.#settingsDialog.open ? this.#settingsDialog : this.#panel;
       surface.append(toast);
       this.#toastTimer = setTimeout(() => toast.remove(), 3200);
     }
@@ -2844,6 +4000,44 @@ ${expanded}` : expanded;
       new Date(timestamp)
     );
   }
+  function formatRelativeTime(timestamp) {
+    if (!timestamp) return "\u2014";
+    const elapsed = Math.max(0, Date.now() - timestamp);
+    const minutes = Math.floor(elapsed / 6e4);
+    if (minutes < 1) return "now";
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d`;
+    return new Intl.DateTimeFormat(void 0, { month: "short", day: "numeric" }).format(
+      new Date(timestamp)
+    );
+  }
+  function formatFullSeenTime(timestamp) {
+    if (!timestamp) return "Not recorded";
+    return new Intl.DateTimeFormat(void 0, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(new Date(timestamp));
+  }
+  async function copyText(value) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.remove();
+    if (!copied) throw new Error("Clipboard unavailable");
+  }
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
@@ -2855,7 +4049,9 @@ ${expanded}` : expanded;
     #unsubscribers = [];
     #context;
     #service;
+    #roster;
     #view;
+    #rosterTimer;
     isEnabled(settings) {
       return settings.linkChat.enabled;
     }
@@ -2863,12 +4059,18 @@ ${expanded}` : expanded;
       this.#context = context;
       this.#service = new ChatService(context.repository, context.settings);
       const activities = new LinkActivitiesService(context.adapter);
+      this.#roster = new LinkRosterService(
+        context.adapter,
+        new PeopleRepository(),
+        context.settings
+      );
       this.#view = new LinkChatView(
         context.adapter,
         this.#service,
         context.settings,
         context.version,
-        activities
+        activities,
+        this.#roster
       );
       this.#view.mount();
       this.#unsubscribers.push(
@@ -2876,18 +4078,26 @@ ${expanded}` : expanded;
           "bc:status",
           ({ state, message }) => this.#view?.setConnectionState(state, message)
         ),
-        context.bus.on("bc:ready", () => void this.#importRecentBeeps()),
+        context.bus.on("bc:ready", () => {
+          void this.#importRecentBeeps();
+          this.#syncRoster();
+        }),
         context.bus.on("beep:received", (event) => void this.#capture(event)),
         context.bus.on("beep:sent", (event) => void this.#capture(event))
       );
       this.#view.setConnectionState(context.adapter.isReady() ? "ready" : "connecting");
       void this.#service.prune();
+      this.#syncRoster();
+      this.#rosterTimer = setInterval(() => this.#syncRoster(), 2e3);
     }
     stop() {
+      if (this.#rosterTimer !== void 0) clearInterval(this.#rosterTimer);
+      this.#rosterTimer = void 0;
       for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
       this.#view?.destroy();
       this.#view = void 0;
       this.#service = void 0;
+      this.#roster = void 0;
       this.#context = void 0;
     }
     open() {
@@ -2899,12 +4109,18 @@ ${expanded}` : expanded;
     openChat(memberNumber, memberName) {
       void this.#view?.openChat(memberNumber, memberName);
     }
+    openRoster() {
+      this.#view?.openRoster();
+    }
     openActivities() {
       this.#view?.openActivities();
     }
     async #capture(event) {
       if (!this.#service || !this.#view || !this.#context) return;
       try {
+        if (this.#context.settings.get().linkRoster.enabled) {
+          this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
+        }
         const active = this.#view.isActiveConversation(event.peerNumber);
         await this.#service.capture(event, active);
         await this.#view.onMessage(event.peerNumber, event.direction === "incoming");
@@ -2913,10 +4129,25 @@ ${expanded}` : expanded;
         this.#logger.error("Failed to capture a Beep", error);
       }
     }
+    #syncRoster() {
+      if (!this.#roster || !this.#view || !this.#context) return;
+      if (!this.#context.settings.get().linkRoster.enabled) {
+        this.#view.onRosterSync({ changed: false, presentCount: 0, joined: [], left: [] });
+        return;
+      }
+      try {
+        this.#view.onRosterSync(this.#roster.sync());
+      } catch (error) {
+        this.#logger.error("Failed to synchronize LinkRoster", error);
+      }
+    }
     async #importRecentBeeps() {
       if (!this.#service || !this.#view || !this.#context) return;
       try {
         for (const event of this.#context.adapter.getRecentBeeps()) {
+          if (this.#context.settings.get().linkRoster.enabled) {
+            this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
+          }
           await this.#service.captureRecent(event);
           const nickname = this.#context.adapter.getMemberNickname(event.peerNumber);
           if (nickname) await this.#service.setPeerName(event.peerNumber, nickname);
@@ -3211,211 +4442,6 @@ ${expanded}` : expanded;
     }
   };
 
-  // src/core/settings.ts
-  var DEFAULT_SETTINGS = {
-    schemaVersion: 2,
-    ui: {
-      accent: "#d71932",
-      theme: "dark",
-      launcherSide: "right",
-      launcherPosition: null,
-      reducedMotion: false
-    },
-    linkChat: {
-      enabled: true,
-      saveHistory: true,
-      includeRoomByDefault: false,
-      retentionDays: 90,
-      maxMessagesPerConversation: 500,
-      openOnIncoming: false,
-      quickActions: [
-        { label: "Wave", template: "*waves to {name}*" },
-        { label: "Hug", template: "*hugs {name} warmly*" },
-        { label: "Boop", template: "*gently boops {name}*" }
-      ]
-    },
-    linkActivities: {
-      enabled: true,
-      activities: [
-        {
-          label: "Sakura bow",
-          template: "bows gracefully to {target}, as if sakura petals drifted between them."
-        },
-        {
-          label: "Wolf greeting",
-          template: "greets {target} with a warm, playful wolfish grin."
-        },
-        {
-          label: "Inspect knots",
-          template: "circles {target}, carefully inspecting every knot."
-        },
-        {
-          label: "Offer hand",
-          template: "offers {target} a hand with an inviting smile."
-        },
-        {
-          label: "Moonlit promise",
-          template: "touches two fingers to their heart, then gestures solemnly toward {target}."
-        }
-      ]
-    }
-  };
-  var SETTINGS_KEY = "kikilink:settings:v1";
-  var SettingsStore = class {
-    #settings;
-    #storage;
-    constructor(storage) {
-      this.#storage = storage ?? getDefaultStorage();
-      this.#settings = this.#load();
-    }
-    get() {
-      return structuredClone(this.#settings);
-    }
-    update(mutator) {
-      const draft = this.get();
-      mutator(draft);
-      this.#settings = sanitizeSettings(draft);
-      try {
-        this.#storage.setItem(SETTINGS_KEY, JSON.stringify(this.#settings));
-      } catch {
-      }
-      return this.get();
-    }
-    reset() {
-      this.#settings = structuredClone(DEFAULT_SETTINGS);
-      try {
-        this.#storage.removeItem(SETTINGS_KEY);
-      } catch {
-      }
-      return this.get();
-    }
-    #load() {
-      let raw = null;
-      try {
-        raw = this.#storage.getItem(SETTINGS_KEY);
-      } catch {
-        return structuredClone(DEFAULT_SETTINGS);
-      }
-      if (!raw) return structuredClone(DEFAULT_SETTINGS);
-      try {
-        return sanitizeSettings(JSON.parse(raw));
-      } catch {
-        return structuredClone(DEFAULT_SETTINGS);
-      }
-    }
-  };
-  var MemoryKeyValueStorage = class {
-    #values = /* @__PURE__ */ new Map();
-    getItem(key) {
-      return this.#values.get(key) ?? null;
-    }
-    setItem(key, value) {
-      this.#values.set(key, value);
-    }
-    removeItem(key) {
-      this.#values.delete(key);
-    }
-  };
-  function sanitizeSettings(input) {
-    const source = isRecord(input) ? input : {};
-    const ui = isRecord(source.ui) ? source.ui : {};
-    const linkChat = isRecord(source.linkChat) ? source.linkChat : {};
-    const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
-    return {
-      schemaVersion: 2,
-      ui: {
-        accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
-        theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
-        launcherSide: ui.launcherSide === "left" ? "left" : "right",
-        launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
-        reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion)
-      },
-      linkChat: {
-        enabled: booleanOr(linkChat.enabled, DEFAULT_SETTINGS.linkChat.enabled),
-        saveHistory: booleanOr(linkChat.saveHistory, DEFAULT_SETTINGS.linkChat.saveHistory),
-        includeRoomByDefault: booleanOr(
-          linkChat.includeRoomByDefault,
-          DEFAULT_SETTINGS.linkChat.includeRoomByDefault
-        ),
-        retentionDays: integerInRange(
-          linkChat.retentionDays,
-          1,
-          3650,
-          DEFAULT_SETTINGS.linkChat.retentionDays
-        ),
-        maxMessagesPerConversation: integerInRange(
-          linkChat.maxMessagesPerConversation,
-          50,
-          5e3,
-          DEFAULT_SETTINGS.linkChat.maxMessagesPerConversation
-        ),
-        openOnIncoming: booleanOr(
-          linkChat.openOnIncoming,
-          DEFAULT_SETTINGS.linkChat.openOnIncoming
-        ),
-        quickActions: sanitizeQuickActions(linkChat.quickActions)
-      },
-      linkActivities: {
-        enabled: booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
-        activities: sanitizeRoomActivities(linkActivities.activities)
-      }
-    };
-  }
-  function sanitizeQuickActions(value) {
-    if (value === void 0) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
-    if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
-    const actions = [];
-    for (const entry of value.slice(0, 12)) {
-      if (!isRecord(entry)) continue;
-      const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 24) : "";
-      const template = typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
-      if (label && template) actions.push({ label, template });
-    }
-    return actions;
-  }
-  function sanitizeRoomActivities(value) {
-    if (value === void 0) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
-    if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
-    const activities = [];
-    for (const entry of value.slice(0, 20)) {
-      if (!isRecord(entry)) continue;
-      const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 32) : "";
-      const template = typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
-      if (label && template) activities.push({ label, template });
-    }
-    return activities;
-  }
-  function sanitizeLauncherPosition(value) {
-    if (!isRecord(value)) return null;
-    if (!finiteNumberInRange(value.x, 0, 1) || !finiteNumberInRange(value.y, 0, 1)) return null;
-    return { x: value.x, y: value.y };
-  }
-  function isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-  function booleanOr(value, fallback) {
-    return typeof value === "boolean" ? value : fallback;
-  }
-  function integerInRange(value, min, max, fallback) {
-    return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
-  }
-  function finiteNumberInRange(value, min, max) {
-    return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
-  }
-  function validColor(value) {
-    return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value);
-  }
-  function getDefaultStorage() {
-    try {
-      if (typeof localStorage !== "undefined") {
-        localStorage.getItem("kikilink:storage-probe");
-        return localStorage;
-      }
-    } catch {
-    }
-    return new MemoryKeyValueStorage();
-  }
-
   // src/core/kikilink.ts
   var KikiLinkApp = class {
     constructor(version) {
@@ -3438,6 +4464,7 @@ ${expanded}` : expanded;
         name: "KikiLink",
         open: () => this.#linkChat.open(),
         openChat: (memberNumber, memberName) => this.#linkChat.openChat(memberNumber, memberName),
+        openRoster: () => this.#linkChat.openRoster(),
         openActivities: () => this.#linkChat.openActivities(),
         close: () => this.#linkChat.close(),
         getVersion: () => this.version,
@@ -3483,7 +4510,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.4.0");
+    const app = new KikiLinkApp("0.5.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();
@@ -3493,4 +4520,3 @@ ${expanded}` : expanded;
   }
   void bootstrap();
 })();
-//# sourceMappingURL=KikiLink.user.js.map

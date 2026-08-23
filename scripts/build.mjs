@@ -40,7 +40,7 @@ await build({
   target: ["es2022"],
   loader: { ".png": "dataurl" },
   legalComments: "eof",
-  sourcemap: true,
+  sourcemap: false,
   minify: false,
   banner: { js: userscriptHeader },
   define: {

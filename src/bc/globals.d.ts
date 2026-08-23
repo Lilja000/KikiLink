@@ -52,6 +52,8 @@ declare global {
     options?: { includeRoom?: boolean },
   ): void;
   function ChatRoomSendEmote(message: string): void;
+  function ChatRoomSetTarget(memberNumber: number): void;
+  function InformationSheetLoadCharacter(character: BCCharacter): void;
   function ServerIsLoggedIn(): boolean;
   function CharacterNickname(character: BCCharacter): string;
 }

@@ -104,10 +104,22 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(2);
+    expect(settings.schemaVersion).toBe(3);
     expect(settings.linkActivities).toEqual({
       enabled: false,
       activities: [{ label: "Sakura greeting", template: "bows to {target}." }],
     });
+    expect(settings.linkRoster).toEqual(DEFAULT_SETTINGS.linkRoster);
+  });
+
+  it("demotes the 0.4 Activity shortcut while adding LinkRoster", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 2,
+      linkActivities: { enabled: true },
+    });
+
+    expect(settings.schemaVersion).toBe(3);
+    expect(settings.linkActivities.enabled).toBe(false);
+    expect(settings.linkRoster).toEqual({ enabled: true, trackEncounters: true });
   });
 });

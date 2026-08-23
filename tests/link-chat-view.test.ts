@@ -3,9 +3,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter } from "../src/bc/adapter";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
+import { LinkActivitiesService } from "../src/modules/link-activities/link-activities-service";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import { LinkChatView } from "../src/modules/link-chat/view";
+import { LinkRosterService } from "../src/modules/link-roster/link-roster-service";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
+import { PeopleRepository } from "../src/storage/people-repository";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -189,6 +192,9 @@ describe("LinkChatView", () => {
       sendBeep: vi.fn(),
     } as unknown as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.linkActivities.enabled = true;
+    });
     const view = new LinkChatView(
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
@@ -212,6 +218,77 @@ describe("LinkChatView", () => {
     expect(sendRoomEmote).toHaveBeenCalledWith(
       "bows gracefully to Reina, as if sakura petals drifted between them.",
     );
+    view.destroy();
+  });
+
+  it("turns the current room into a nickname-first player notebook with native actions", () => {
+    const startWhisper = vi.fn();
+    const openProfile = vi.fn();
+    const adapter = {
+      getMemberName: (memberNumber: number) =>
+        memberNumber === 123 ? "Reina" : `Member ${memberNumber}`,
+      getMemberNickname: (memberNumber: number) =>
+        memberNumber === 123 ? "Reina" : undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getRoomCharacters: () => [
+        { memberNumber: 123, memberName: "Reina", accountName: "AccountReina", isFriend: true },
+      ],
+      getCurrentRoomName: () => "Moon Garden",
+      isInChatRoom: () => true,
+      startWhisper,
+      openProfile,
+      canSendRoomEmote: () => true,
+      sendRoomEmote: vi.fn(),
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const people = new PeopleRepository(new MemoryKeyValueStorage());
+    const roster = new LinkRosterService(adapter, people, settings);
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.5.0",
+      new LinkActivitiesService(adapter),
+      roster,
+    );
+    view.mount();
+
+    const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('button[title="LinkRoster"]')?.click();
+    expect(shadow?.querySelector<HTMLDialogElement>(".kl-roster-dialog")?.open).toBe(true);
+    expect(shadow?.querySelector(".kl-roster-entry-name")?.textContent).toBe("Reina");
+    expect(shadow?.querySelector(".kl-roster-friend")?.textContent).toBe("FRIEND");
+    expect(shadow?.querySelector(".kl-roster-number")?.textContent).toContain("Member 123");
+
+    const note = shadow?.querySelector<HTMLTextAreaElement>(".kl-roster-note");
+    const tags = shadow?.querySelector<HTMLInputElement>(".kl-roster-tags");
+    if (!note || !tags) throw new Error("Missing player notebook controls");
+    note.value = "Met during a calm rope scene.";
+    note.dispatchEvent(new Event("input", { bubbles: true }));
+    tags.value = "trusted, roleplay";
+    tags.dispatchEvent(new Event("input", { bubbles: true }));
+    shadow?.querySelector<HTMLButtonElement>(".kl-save-notebook")?.click();
+
+    expect(people.get(123)).toMatchObject({
+      displayName: "Reina",
+      note: "Met during a calm rope scene.",
+      tags: ["trusted", "roleplay"],
+    });
+
+    shadow?.querySelector<HTMLButtonElement>(".kl-roster-star")?.click();
+    expect(people.get(123)?.favorite).toBe(true);
+    const actionButtons = [
+      ...((shadow?.querySelectorAll<HTMLButtonElement>(".kl-roster-quick-actions button") ?? [])),
+    ];
+    actionButtons.find((button) => button.textContent === "Whisper")?.click();
+    expect(startWhisper).toHaveBeenCalledWith(123);
+    expect(shadow?.querySelector<HTMLDialogElement>(".kl-roster-dialog")?.open).toBe(false);
+
     view.destroy();
   });
 });

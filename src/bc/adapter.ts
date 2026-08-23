@@ -161,13 +161,22 @@ export class BCAdapter {
       (character) =>
         Number.isSafeInteger(character.MemberNumber) && character.MemberNumber !== ownMemberNumber,
     )
-      .map((character) => ({
-        memberNumber: character.MemberNumber,
-        memberName:
-          this.getMemberNickname(character.MemberNumber) ??
-          cleanName(character.Name) ??
-          `Member ${character.MemberNumber}`,
-      }))
+      .map((character) => {
+        const accountName = cleanName(character.Name);
+        return {
+          memberNumber: character.MemberNumber,
+          memberName:
+            this.getMemberNickname(character.MemberNumber) ??
+            accountName ??
+            `Member ${character.MemberNumber}`,
+          ...(accountName !== undefined ? { accountName } : {}),
+          isFriend:
+            typeof Player === "object" &&
+            Player !== null &&
+            Player.FriendNames instanceof Map &&
+            Player.FriendNames.has(character.MemberNumber),
+        };
+      })
       .sort((left, right) => left.memberName.localeCompare(right.memberName));
   }
 
@@ -182,6 +191,43 @@ export class BCAdapter {
       throw new Error("The Bondage Club room chat is still loading");
     }
     ChatRoomSendEmote(message);
+  }
+
+  getCurrentRoomName(): string | undefined {
+    if (!this.isInChatRoom()) return undefined;
+    if (typeof ChatRoomData === "undefined" || ChatRoomData === null) return undefined;
+    return cleanName(ChatRoomData.Name);
+  }
+
+  startWhisper(memberNumber: number): void {
+    if (!this.isInChatRoom()) throw new Error("Open a Bondage Club chat room first");
+    if (!this.#findRoomCharacter(memberNumber)) {
+      throw new Error("This player is no longer in the room");
+    }
+    if (typeof ChatRoomSetTarget !== "function") {
+      throw new Error("The native Whisper control is still loading");
+    }
+
+    ChatRoomSetTarget(memberNumber);
+    const input = document.getElementById("InputChat");
+    if (input instanceof HTMLElement) input.focus();
+  }
+
+  openProfile(memberNumber: number): void {
+    if (!this.isInChatRoom()) throw new Error("Profiles can be opened from a chat room");
+    const character = this.#findRoomCharacter(memberNumber);
+    if (!character) throw new Error("This player is no longer in the room");
+    if (typeof InformationSheetLoadCharacter !== "function") {
+      throw new Error("The native profile screen is still loading");
+    }
+    InformationSheetLoadCharacter(character);
+  }
+
+  #findRoomCharacter(memberNumber: number): BCCharacter | undefined {
+    if (typeof ChatRoomCharacter === "undefined" || !Array.isArray(ChatRoomCharacter)) {
+      return undefined;
+    }
+    return ChatRoomCharacter.find((character) => character.MemberNumber === memberNumber);
   }
 
   getKnownContacts(): Array<{ memberNumber: number; memberName: string }> {

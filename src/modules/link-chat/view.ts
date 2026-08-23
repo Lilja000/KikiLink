@@ -6,10 +6,17 @@ import type {
   QuickAction,
   RoomActivity,
   RoomCharacter,
+  RosterEntry,
 } from "../../core/types";
-import type { SettingsStore } from "../../core/settings";
+import { MemoryKeyValueStorage, type SettingsStore } from "../../core/settings";
 import { debounce, element } from "../../utils/dom";
 import { LinkActivitiesService } from "../link-activities/link-activities-service";
+import {
+  LinkRosterService,
+  type RosterScope,
+  type RosterSyncResult,
+} from "../link-roster/link-roster-service";
+import { PeopleRepository } from "../../storage/people-repository";
 import type { ChatService } from "./chat-service";
 import { LINK_CHAT_STYLES } from "./styles";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/references/3929.png";
@@ -68,6 +75,37 @@ export class LinkChatView {
   }) as HTMLSelectElement;
   readonly #reducedMotionToggle = element("input") as HTMLInputElement;
   readonly #quickActionsEditor = element("div", { className: "kl-action-editor" });
+  readonly #rosterEnabledToggle = element("input") as HTMLInputElement;
+  readonly #rosterTrackingToggle = element("input") as HTMLInputElement;
+  readonly #rosterButton = element("button", {
+    className: "kl-icon-button kl-roster-button",
+    type: "button",
+    text: "☷",
+    title: "LinkRoster",
+    ariaLabel: "Open LinkRoster",
+  });
+  readonly #rosterCount = element("span", { className: "kl-roster-count" });
+  readonly #rosterDialog = element("dialog", {
+    className: "kl-dialog kl-roster-dialog",
+  });
+  readonly #rosterSubtitle = element("div", { className: "kl-dialog-subtitle" });
+  readonly #rosterScopes = element("div", { className: "kl-roster-scopes" });
+  readonly #rosterSearch = element("input", {
+    className: "kl-search kl-roster-search",
+  }) as HTMLInputElement;
+  readonly #rosterList = element("div", { className: "kl-roster-list" });
+  readonly #rosterDetail = element("section", { className: "kl-roster-detail" });
+  readonly #rosterNote = element("textarea", {
+    className: "kl-roster-note",
+  }) as HTMLTextAreaElement;
+  readonly #rosterTags = element("input", {
+    className: "kl-roster-tags",
+  }) as HTMLInputElement;
+  readonly #saveNotebookButton = element("button", {
+    className: "kl-text-button kl-text-button--primary kl-save-notebook",
+    type: "button",
+    text: "Save note",
+  });
   readonly #activitiesToggle = element("input") as HTMLInputElement;
   readonly #activitiesEditor = element("div", {
     className: "kl-action-editor kl-activities-editor",
@@ -108,6 +146,9 @@ export class LinkChatView {
   #activeName = "";
   #selectedActivityIndex = 0;
   #selectedActivityTarget: RoomCharacter | undefined;
+  #selectedRosterMember: number | undefined;
+  #rosterScope: RosterScope = "current";
+  #notebookDirty = false;
   #mounted = false;
   #connectionState: BCConnectionState = "connecting";
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -135,6 +176,11 @@ export class LinkChatView {
     private readonly settings: SettingsStore,
     private readonly version: string,
     private readonly activities = new LinkActivitiesService(adapter),
+    private readonly roster = new LinkRosterService(
+      adapter,
+      new PeopleRepository(new MemoryKeyValueStorage()),
+      settings,
+    ),
   ) {}
 
   mount(): void {
@@ -150,6 +196,7 @@ export class LinkChatView {
     this.#buildSettingsDialog();
     this.#buildNewChatDialog();
     this.#buildActivitiesDialog();
+    this.#buildRosterDialog();
     this.#shadow.append(
       style,
       this.#launcher,
@@ -157,6 +204,7 @@ export class LinkChatView {
       this.#settingsDialog,
       this.#newChatDialog,
       this.#activitiesDialog,
+      this.#rosterDialog,
     );
     document.body.append(this.#host);
     this.#positionLauncher();
@@ -170,6 +218,7 @@ export class LinkChatView {
     this.#settingsDialog.close();
     this.#newChatDialog.close();
     this.#activitiesDialog.close();
+    this.#rosterDialog.close();
     window.removeEventListener("resize", this.#handleViewportResize);
     this.#host.remove();
     this.#mounted = false;
@@ -190,6 +239,7 @@ export class LinkChatView {
     this.#composer.placeholder = canSend ? "Write a Beep…" : "Connecting to Bondage Club…";
     if (this.#newChatDialog.open) this.#renderKnownContacts();
     if (this.#activitiesDialog.open) this.#renderActivitiesDialog();
+    if (this.#rosterDialog.open) this.#renderRoster();
   }
 
   async onMessage(peerNumber: number, incoming: boolean): Promise<void> {
@@ -227,6 +277,19 @@ export class LinkChatView {
     this.#openActivities();
   }
 
+  openRoster(): void {
+    this.#openRoster();
+  }
+
+  onRosterSync(result: RosterSyncResult): void {
+    this.#rosterCount.hidden = result.presentCount === 0;
+    this.#rosterCount.textContent = result.presentCount > 99 ? "99+" : result.presentCount.toString();
+    this.#rosterButton.title = result.presentCount
+      ? `LinkRoster · ${result.presentCount} in room`
+      : "LinkRoster";
+    if (this.#rosterDialog.open && result.changed) this.#renderRoster();
+  }
+
   async refresh(): Promise<void> {
     await Promise.all([this.#renderConversations(), this.#updateUnreadBadge()]);
   }
@@ -262,7 +325,7 @@ export class LinkChatView {
         element(
           "div",
           { className: "kl-brand-subtitle" },
-          `LinkChat + LinkActivities · v${this.version}`,
+          `LinkChat + LinkRoster · v${this.version}`,
           this.#connection,
         ),
       ),
@@ -293,10 +356,15 @@ export class LinkChatView {
     });
     this.#activitiesButton.addEventListener("click", () => this.#openActivities());
     this.#activitiesButton.hidden = !this.settings.get().linkActivities.enabled;
+    this.#rosterCount.hidden = true;
+    this.#rosterButton.append(this.#rosterCount);
+    this.#rosterButton.addEventListener("click", () => this.#openRoster());
+    this.#rosterButton.hidden = !this.settings.get().linkRoster.enabled;
     const topbar = element(
       "header",
       { className: "kl-topbar" },
       brand,
+      this.#rosterButton,
       this.#activitiesButton,
       newChat,
       settings,
@@ -339,7 +407,8 @@ export class LinkChatView {
         event.key === "Escape" &&
         !this.#settingsDialog.open &&
         !this.#activitiesDialog.open &&
-        !this.#newChatDialog.open
+        !this.#newChatDialog.open &&
+        !this.#rosterDialog.open
       ) {
         this.close();
       }
@@ -487,6 +556,45 @@ export class LinkChatView {
       launcherSide,
       reducedMotion,
     );
+
+    this.#rosterEnabledToggle.type = "checkbox";
+    const rosterEnabledSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#rosterEnabledToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    const rosterEnabled = this.#settingRow(
+      "Enable LinkRoster",
+      "Room roster, quick player actions, favorites, and private notes.",
+      rosterEnabledSwitch,
+    );
+    this.#rosterTrackingToggle.type = "checkbox";
+    const rosterTrackingSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#rosterTrackingToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    const rosterTracking = this.#settingRow(
+      "Remember encounters",
+      "Store the last room, time, and encounter count only in this browser.",
+      rosterTrackingSwitch,
+    );
+    const clearPeople = element("button", {
+      className: "kl-text-button kl-text-button--danger",
+      type: "button",
+      text: "Clear player notes & encounter history",
+      onClick: () => this.#clearPeople(),
+    });
+    const rosterSection = element(
+      "section",
+      { className: "kl-setting-section" },
+      element("div", { className: "kl-setting-section-title", text: "LinkRoster" }),
+      rosterEnabled,
+      rosterTracking,
+      clearPeople,
+    );
     const privacySection = element(
       "section",
       { className: "kl-setting-section" },
@@ -521,8 +629,8 @@ export class LinkChatView {
       element("span", { className: "kl-switch-track" }),
     );
     const activitiesEnabled = this.#settingRow(
-      "Enable LinkActivities",
-      "Show Activity Studio in the KikiLink toolbar.",
+      "Show Activity Studio shortcut",
+      "Optional room-emote studio. Disabled by default to keep the toolbar focused.",
       activitiesSwitch,
     );
     const addActivity = element("button", {
@@ -547,9 +655,10 @@ export class LinkChatView {
       "div",
       { className: "kl-dialog-body" },
       appearanceSection,
+      rosterSection,
       quickActionsSection,
-      activitiesSection,
       privacySection,
+      activitiesSection,
     );
 
     this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
@@ -613,6 +722,372 @@ export class LinkChatView {
       body,
       element("footer", { className: "kl-dialog-actions" }, cancel, open),
     );
+  }
+
+  #buildRosterDialog(): void {
+    const close = element("button", {
+      className: "kl-icon-button",
+      type: "button",
+      text: "×",
+      title: "Close LinkRoster",
+      ariaLabel: "Close LinkRoster",
+      onClick: () => this.#rosterDialog.close(),
+    });
+    const header = element(
+      "header",
+      { className: "kl-dialog-header" },
+      element(
+        "div",
+        { className: "kl-dialog-heading" },
+        element("div", { className: "kl-dialog-title", text: "LinkRoster" }),
+        this.#rosterSubtitle,
+      ),
+      close,
+    );
+
+    for (const [scope, label] of [
+      ["current", "In room"],
+      ["known", "Known"],
+      ["favorites", "Favorites"],
+    ] as const) {
+      const button = element("button", {
+        className: "kl-roster-scope",
+        type: "button",
+        text: label,
+      });
+      button.dataset.scope = scope;
+      button.addEventListener("click", () => {
+        this.#saveNotebook(false);
+        this.#rosterScope = scope;
+        this.#selectedRosterMember = undefined;
+        this.#renderRoster();
+      });
+      this.#rosterScopes.append(button);
+    }
+
+    this.#rosterSearch.type = "search";
+    this.#rosterSearch.placeholder = "Search name, number, tag, or note";
+    this.#rosterSearch.autocomplete = "off";
+    this.#rosterSearch.addEventListener("input", () => this.#renderRoster());
+
+    const listPane = element(
+      "section",
+      { className: "kl-roster-list-pane" },
+      this.#rosterScopes,
+      this.#rosterSearch,
+      this.#rosterList,
+    );
+    const body = element(
+      "div",
+      { className: "kl-dialog-body kl-roster-body" },
+      listPane,
+      this.#rosterDetail,
+    );
+    const privacy = element("div", {
+      className: "kl-roster-privacy",
+      text: "Notes, tags, favorites, and encounter history stay in this browser profile.",
+    });
+    const done = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Done",
+      onClick: () => this.#rosterDialog.close(),
+    });
+    const footer = element("footer", { className: "kl-dialog-actions" }, privacy, done);
+    this.#saveNotebookButton.addEventListener("click", () => this.#saveNotebook(true));
+    this.#rosterNote.maxLength = 2000;
+    this.#rosterNote.rows = 7;
+    this.#rosterNote.placeholder = "Private note about this player…";
+    this.#rosterNote.addEventListener("input", () => {
+      this.#notebookDirty = true;
+      this.#saveNotebookButton.disabled = false;
+    });
+    this.#rosterNote.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        this.#saveNotebook(true);
+      }
+    });
+    this.#rosterTags.maxLength = 200;
+    this.#rosterTags.placeholder = "friend, roleplay, trusted";
+    this.#rosterTags.addEventListener("input", () => {
+      this.#notebookDirty = true;
+      this.#saveNotebookButton.disabled = false;
+    });
+    this.#rosterDialog.addEventListener("close", () => this.#saveNotebook(false));
+    this.#rosterDialog.append(header, body, footer);
+  }
+
+  #openRoster(): void {
+    if (!this.settings.get().linkRoster.enabled) {
+      this.#toast("LinkRoster is disabled in KikiLink settings.", "error");
+      return;
+    }
+    this.roster.sync();
+    this.#rosterSearch.value = "";
+    this.#rosterScope = this.adapter.isInChatRoom() ? "current" : "known";
+    this.#selectedRosterMember = undefined;
+    this.#notebookDirty = false;
+    this.#renderRoster();
+    if (!this.#rosterDialog.open) this.#rosterDialog.showModal();
+    this.#rosterSearch.focus();
+  }
+
+  #renderRoster(): void {
+    const roomName = this.adapter.getCurrentRoomName();
+    this.#rosterSubtitle.textContent = roomName
+      ? `${roomName} · private player notebook`
+      : "Private player notebook";
+    for (const button of this.#rosterScopes.querySelectorAll<HTMLButtonElement>(
+      ".kl-roster-scope",
+    )) {
+      button.dataset.active = String(button.dataset.scope === this.#rosterScope);
+    }
+
+    const entries = this.roster.list(this.#rosterScope, this.#rosterSearch.value);
+    if (!entries.some((entry) => entry.memberNumber === this.#selectedRosterMember)) {
+      this.#selectedRosterMember = entries[0]?.memberNumber;
+      this.#notebookDirty = false;
+    }
+
+    this.#rosterList.replaceChildren();
+    if (entries.length === 0) {
+      this.#rosterList.append(
+        element("div", {
+          className: "kl-roster-empty",
+          text:
+            this.#rosterScope === "current" && !this.adapter.isInChatRoom()
+              ? "Join a chat room to see its roster."
+              : this.#rosterScope === "favorites"
+                ? "No favorite players yet. Use the star on any player."
+                : this.#rosterSearch.value
+                  ? "No players match this search."
+                  : "No players recorded yet.",
+        }),
+      );
+    } else {
+      for (const entry of entries) this.#rosterList.append(this.#rosterEntryButton(entry));
+    }
+
+    const selected = entries.find(
+      (entry) => entry.memberNumber === this.#selectedRosterMember,
+    );
+    if (!this.#notebookDirty) this.#renderRosterDetail(selected);
+  }
+
+  #rosterEntryButton(entry: RosterEntry): HTMLButtonElement {
+    const badges = element("div", { className: "kl-roster-entry-badges" });
+    if (entry.present) badges.append(element("span", { className: "kl-roster-live", text: "HERE" }));
+    if (entry.isFriend) badges.append(element("span", { className: "kl-roster-friend", text: "FRIEND" }));
+    if (entry.favorite) badges.append(element("span", { className: "kl-roster-favorite", text: "★" }));
+    const preview = entry.tags.length
+      ? entry.tags.join(" · ")
+      : entry.note
+        ? entry.note.replace(/\s+/gu, " ")
+        : entry.lastRoomName || `Member ${entry.memberNumber}`;
+    const button = element(
+      "button",
+      { className: "kl-roster-entry", type: "button" },
+      element("div", { className: "kl-avatar", text: avatarText(entry.displayName) }),
+      element(
+        "div",
+        { className: "kl-roster-entry-copy" },
+        element(
+          "div",
+          { className: "kl-roster-entry-name-row" },
+          element("span", { className: "kl-roster-entry-name", text: entry.displayName }),
+          badges,
+        ),
+        element("div", { className: "kl-roster-entry-preview", text: preview }),
+      ),
+      element("span", {
+        className: "kl-roster-entry-time",
+        text: entry.present ? "now" : formatRelativeTime(entry.lastSeenAt),
+      }),
+    );
+    button.dataset.selected = String(entry.memberNumber === this.#selectedRosterMember);
+    button.addEventListener("click", () => {
+      if (entry.memberNumber === this.#selectedRosterMember) return;
+      this.#saveNotebook(false);
+      this.#selectedRosterMember = entry.memberNumber;
+      this.#notebookDirty = false;
+      this.#renderRoster();
+    });
+    return button;
+  }
+
+  #renderRosterDetail(entry: RosterEntry | undefined): void {
+    this.#rosterDetail.replaceChildren();
+    if (!entry) {
+      this.#rosterDetail.append(
+        element("div", {
+          className: "kl-roster-detail-empty",
+          text: "Select a player to open quick actions and private notes.",
+        }),
+      );
+      return;
+    }
+
+    const favorite = element("button", {
+      className: "kl-icon-button kl-roster-star",
+      type: "button",
+      text: entry.favorite ? "★" : "☆",
+      title: entry.favorite ? "Remove from favorites" : "Add to favorites",
+      ariaLabel: entry.favorite ? "Remove from favorites" : "Add to favorites",
+      onClick: () => {
+        this.#saveNotebook(false);
+        this.roster.toggleFavorite(entry.memberNumber, entry.displayName);
+        this.#notebookDirty = false;
+        this.#renderRoster();
+      },
+    });
+    const identity = element(
+      "div",
+      { className: "kl-roster-identity" },
+      element("div", { className: "kl-avatar kl-roster-avatar", text: avatarText(entry.displayName) }),
+      element(
+        "div",
+        { className: "kl-roster-identity-copy" },
+        element("div", { className: "kl-roster-name", text: entry.displayName }),
+        element("div", {
+          className: "kl-roster-number",
+          text: `Member ${entry.memberNumber}${entry.present ? " · in this room" : ""}`,
+        }),
+      ),
+      favorite,
+    );
+
+    const whisper = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Whisper",
+      title: entry.present ? "Set native Whisper target" : "Player is not in this room",
+      onClick: () => this.#startRosterWhisper(entry),
+    });
+    whisper.disabled = !entry.present;
+    const beep = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Beep",
+      onClick: () => void this.#openRosterBeep(entry),
+    });
+    const profile = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Profile",
+      title: entry.present ? "Open native profile" : "Player is not in this room",
+      onClick: () => this.#openRosterProfile(entry),
+    });
+    profile.disabled = !entry.present;
+    const copy = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Copy ID",
+      onClick: () => void this.#copyRosterMemberNumber(entry.memberNumber),
+    });
+    const quickActions = element(
+      "div",
+      { className: "kl-roster-quick-actions" },
+      whisper,
+      beep,
+      profile,
+      copy,
+    );
+
+    const stats = element(
+      "div",
+      { className: "kl-roster-stats" },
+      this.#rosterStat("Last seen", entry.present ? "Now" : formatFullSeenTime(entry.lastSeenAt)),
+      this.#rosterStat("Last room", entry.lastRoomName || "Not recorded"),
+      this.#rosterStat("Encounters", entry.encounterCount.toString()),
+    );
+    this.#rosterTags.value = entry.tags.join(", ");
+    this.#rosterNote.value = entry.note;
+    this.#saveNotebookButton.disabled = true;
+    const notebook = element(
+      "div",
+      { className: "kl-roster-notebook" },
+      element("label", { className: "kl-roster-field-label" }, "Tags", this.#rosterTags),
+      element("label", { className: "kl-roster-field-label" }, "Private note", this.#rosterNote),
+      element(
+        "div",
+        { className: "kl-roster-note-actions" },
+        element("span", { className: "kl-setting-help", text: "Ctrl+Enter to save" }),
+        this.#saveNotebookButton,
+      ),
+    );
+    this.#rosterDetail.append(identity, quickActions, stats, notebook);
+  }
+
+  #rosterStat(label: string, value: string): HTMLDivElement {
+    return element(
+      "div",
+      { className: "kl-roster-stat" },
+      element("div", { className: "kl-roster-stat-label", text: label }),
+      element("div", { className: "kl-roster-stat-value", text: value }),
+    );
+  }
+
+  #saveNotebook(showToast: boolean): void {
+    if (!this.#notebookDirty || this.#selectedRosterMember === undefined) return;
+    const entry = this.roster
+      .list("known")
+      .find((candidate) => candidate.memberNumber === this.#selectedRosterMember);
+    const displayName = entry?.displayName ?? this.adapter.getMemberName(this.#selectedRosterMember);
+    const tags = this.#rosterTags.value
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    this.roster.saveNotebook(
+      this.#selectedRosterMember,
+      displayName,
+      this.#rosterNote.value,
+      tags,
+    );
+    this.#notebookDirty = false;
+    this.#saveNotebookButton.disabled = true;
+    if (showToast) this.#toast("Private player note saved.");
+    this.#renderRoster();
+  }
+
+  #startRosterWhisper(entry: RosterEntry): void {
+    this.#saveNotebook(false);
+    try {
+      this.adapter.startWhisper(entry.memberNumber);
+      this.#rosterDialog.close();
+      this.close();
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "Unable to start Whisper", "error");
+      this.#renderRoster();
+    }
+  }
+
+  async #openRosterBeep(entry: RosterEntry): Promise<void> {
+    this.#saveNotebook(false);
+    this.#rosterDialog.close();
+    await this.openChat(entry.memberNumber, entry.displayName);
+  }
+
+  #openRosterProfile(entry: RosterEntry): void {
+    this.#saveNotebook(false);
+    try {
+      this.adapter.openProfile(entry.memberNumber);
+      this.#rosterDialog.close();
+      this.close();
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "Unable to open profile", "error");
+      this.#renderRoster();
+    }
+  }
+
+  async #copyRosterMemberNumber(memberNumber: number): Promise<void> {
+    try {
+      await copyText(memberNumber.toString());
+      this.#toast(`Member ${memberNumber} copied.`);
+    } catch {
+      this.#toast("The browser blocked clipboard access.", "error");
+    }
   }
 
   #buildActivitiesDialog(): void {
@@ -1245,6 +1720,8 @@ export class LinkChatView {
     this.#historyToggle.checked = settings.linkChat.saveHistory;
     this.#retentionInput.value = settings.linkChat.retentionDays.toString();
     this.#renderQuickActionEditor(settings.linkChat.quickActions);
+    this.#rosterEnabledToggle.checked = settings.linkRoster.enabled;
+    this.#rosterTrackingToggle.checked = settings.linkRoster.trackEncounters;
     this.#activitiesToggle.checked = settings.linkActivities.enabled;
     this.#renderActivityEditor(settings.linkActivities.activities);
     if (!this.#settingsDialog.open) this.#settingsDialog.showModal();
@@ -1264,12 +1741,15 @@ export class LinkChatView {
       draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
       draft.linkChat.saveHistory = this.#historyToggle.checked;
       draft.linkChat.quickActions = this.#readQuickActionEditor();
+      draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
+      draft.linkRoster.trackEncounters = this.#rosterTrackingToggle.checked;
       draft.linkActivities.enabled = this.#activitiesToggle.checked;
       draft.linkActivities.activities = this.#readActivityEditor();
       if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
     });
     this.#applyTheme(settings);
     this.#renderQuickActions();
+    this.#rosterButton.hidden = !settings.linkRoster.enabled;
     this.#activitiesButton.hidden = !settings.linkActivities.enabled;
     this.#settingsDialog.close();
     void this.service.prune();
@@ -1287,6 +1767,16 @@ export class LinkChatView {
     this.#settingsDialog.close();
     await this.refresh();
     this.#toast("LinkChat history cleared.");
+  }
+
+  #clearPeople(): void {
+    if (!window.confirm("Clear all KikiLink player notes, tags, favorites, and encounter history?")) {
+      return;
+    }
+    this.roster.clear();
+    this.#selectedRosterMember = undefined;
+    this.#notebookDirty = false;
+    this.#toast("LinkRoster notebook cleared.");
   }
 
   async #updateUnreadBadge(): Promise<void> {
@@ -1438,11 +1928,15 @@ export class LinkChatView {
     this.#shadow.querySelector(".kl-toast")?.remove();
     const toast = element("div", { className: "kl-toast", text: message });
     toast.dataset.kind = kind;
-    const surface = this.#newChatDialog.open
-      ? this.#newChatDialog
-      : this.#settingsDialog.open
-        ? this.#settingsDialog
-        : this.#panel;
+    const surface = this.#rosterDialog.open
+      ? this.#rosterDialog
+      : this.#activitiesDialog.open
+        ? this.#activitiesDialog
+        : this.#newChatDialog.open
+          ? this.#newChatDialog
+          : this.#settingsDialog.open
+            ? this.#settingsDialog
+            : this.#panel;
     surface.append(toast);
     this.#toastTimer = setTimeout(() => toast.remove(), 3200);
   }
@@ -1472,6 +1966,48 @@ function formatMessageTime(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(
     new Date(timestamp),
   );
+}
+
+function formatRelativeTime(timestamp: number): string {
+  if (!timestamp) return "—";
+  const elapsed = Math.max(0, Date.now() - timestamp);
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d`;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
+    new Date(timestamp),
+  );
+}
+
+function formatFullSeenTime(timestamp: number): string {
+  if (!timestamp) return "Not recorded";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard unavailable");
 }
 
 function clamp(value: number, min: number, max: number): number {

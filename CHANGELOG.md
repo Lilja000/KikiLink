@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 - 2026-08-23
+
+- Added LinkRoster with live, nickname-first room membership and a current-player counter.
+- Added native `Whisper`, `Beep`, `Profile`, and `Copy ID` actions from one player card.
+- Added private per-player notes, searchable tags, and favorites stored only in the browser profile.
+- Added optional last-seen, last-room, and encounter-count tracking with a bounded local store.
+- Added `In room`, `Known`, and `Favorites` scopes with search across names, numbers, tags, and notes.
+- Added a responsive two-pane roster for desktop and a compact mobile layout.
+- Added `KikiLink.openRoster()` to the public API.
+- Moved LinkActivities behind an optional shortcut that is disabled by default.
+- Migrated settings to schema version 3 and expanded regression coverage to 34 tests.
+
 ## 0.4.0 - 2026-08-23
 
 - Added the first complete LinkActivities Activity Studio.

@@ -13,10 +13,13 @@ afterEach(() => {
     "FriendListBeepLog",
     "ServerSendBeepMessage",
     "ChatRoomSendEmote",
+    "ChatRoomSetTarget",
+    "InformationSheetLoadCharacter",
     "CurrentScreen",
   ]) {
     Reflect.deleteProperty(globalThis, key);
   }
+  document.body.replaceChildren();
 });
 
 describe("BCAdapter", () => {
@@ -93,9 +96,49 @@ describe("BCAdapter", () => {
 
     expect(adapter.canSendRoomEmote()).toBe(true);
     expect(adapter.getRoomCharacters()).toEqual([
-      { memberNumber: 123, memberName: "Reina" },
+      {
+        memberNumber: 123,
+        memberName: "Reina",
+        accountName: "AccountReina",
+        isFriend: false,
+      },
     ]);
     adapter.sendRoomEmote("  bows to Reina.  ");
     expect(nativeEmote).toHaveBeenCalledWith("bows to Reina.");
+  });
+
+  it("opens native Whisper and profile actions for a current-room nickname", () => {
+    const setTarget = vi.fn();
+    const openProfile = vi.fn();
+    globalThis.CurrentScreen = "ChatRoom";
+    globalThis.ChatRoomData = { Name: "Moon Garden" };
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      Nickname: "Kiki",
+      FriendNames: new Map([[123, "AccountReina"]]),
+    };
+    const reina = { MemberNumber: 123, Name: "AccountReina", Nickname: "Reina" };
+    globalThis.ChatRoomCharacter = [globalThis.Player, reina];
+    globalThis.ChatRoomSetTarget = setTarget;
+    globalThis.InformationSheetLoadCharacter = openProfile;
+    const input = document.createElement("textarea");
+    input.id = "InputChat";
+    document.body.append(input);
+
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.5.0");
+    expect(adapter.getCurrentRoomName()).toBe("Moon Garden");
+    expect(adapter.getRoomCharacters()[0]).toMatchObject({
+      memberName: "Reina",
+      accountName: "AccountReina",
+      isFriend: true,
+    });
+
+    adapter.startWhisper(123);
+    expect(setTarget).toHaveBeenCalledWith(123);
+    expect(document.activeElement).toBe(input);
+
+    adapter.openProfile(123);
+    expect(openProfile).toHaveBeenCalledWith(reina);
   });
 });

@@ -20,6 +20,25 @@ export interface RoomActivity {
 export interface RoomCharacter {
   memberNumber: number;
   memberName: string;
+  accountName?: string;
+  isFriend?: boolean;
+}
+
+export interface PersonRecord {
+  memberNumber: number;
+  displayName: string;
+  favorite: boolean;
+  note: string;
+  tags: string[];
+  firstSeenAt: number;
+  lastSeenAt: number;
+  lastRoomName: string;
+  encounterCount: number;
+}
+
+export interface RosterEntry extends PersonRecord {
+  present: boolean;
+  isFriend: boolean;
 }
 
 export interface BeepEvent {
@@ -58,7 +77,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 2;
+  schemaVersion: 3;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -78,6 +97,10 @@ export interface KikiLinkSettings {
   linkActivities: {
     enabled: boolean;
     activities: RoomActivity[];
+  };
+  linkRoster: {
+    enabled: boolean;
+    trackEncounters: boolean;
   };
 }
 
@@ -100,6 +123,7 @@ export interface KikiLinkPublicApi {
   readonly name: "KikiLink";
   open(): void;
   openChat(memberNumber: number, memberName?: string): void;
+  openRoster(): void;
   openActivities(): void;
   close(): void;
   getVersion(): string;

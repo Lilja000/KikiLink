@@ -7,7 +7,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -29,7 +29,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     ],
   },
   linkActivities: {
-    enabled: true,
+    enabled: false,
     activities: [
       {
         label: "Sakura bow",
@@ -52,6 +52,10 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
         template: "touches two fingers to their heart, then gestures solemnly toward {target}.",
       },
     ],
+  },
+  linkRoster: {
+    enabled: true,
+    trackEncounters: true,
   },
 };
 
@@ -127,12 +131,14 @@ export class MemoryKeyValueStorage implements KeyValueStorage {
 
 export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const source = isRecord(input) ? input : {};
+  const sourceSchema = source.schemaVersion;
   const ui = isRecord(source.ui) ? source.ui : {};
   const linkChat = isRecord(source.linkChat) ? source.linkChat : {};
   const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
+  const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -169,8 +175,18 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
       quickActions: sanitizeQuickActions(linkChat.quickActions),
     },
     linkActivities: {
-      enabled: booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
+      enabled:
+        sourceSchema === 2
+          ? false
+          : booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
       activities: sanitizeRoomActivities(linkActivities.activities),
+    },
+    linkRoster: {
+      enabled: booleanOr(linkRoster.enabled, DEFAULT_SETTINGS.linkRoster.enabled),
+      trackEncounters: booleanOr(
+        linkRoster.trackEncounters,
+        DEFAULT_SETTINGS.linkRoster.trackEncounters,
+      ),
     },
   };
 }

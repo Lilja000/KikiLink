@@ -55,6 +55,9 @@
       window.ServerAccountBeep = () => {};
       window.ServerSendBeepMessage = () => {};
       window.ChatRoomSendEmote = (message) => console.log("[Harness room emote]", message);
+      window.ChatRoomSetTarget = (memberNumber) => console.log("[Harness whisper]", memberNumber);
+      window.InformationSheetLoadCharacter = (character) =>
+        console.log("[Harness profile]", character.MemberNumber);
     </script>
     <script src="../dist/KikiLink.user.js"></script>
   </body>
