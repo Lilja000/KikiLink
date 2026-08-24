@@ -23,11 +23,12 @@ describe("SettingsStore", () => {
       draft.ui.launcherSide = "left";
       draft.ui.launcherOpen = "last";
       draft.ui.launcherPosition = { x: 0.25, y: 0.6 };
-      draft.ui.density = "compact";
+      draft.ui.density = "super-compact";
       draft.ui.textScale = "large";
       draft.ui.homeLayout = "compact";
       draft.ui.settingsSection = "navigation";
       draft.linkChat.retentionDays = 30;
+      draft.linkRoster.retentionDays = 180;
     });
 
     const second = new SettingsStore(storage);
@@ -35,11 +36,12 @@ describe("SettingsStore", () => {
     expect(second.get().ui.launcherSide).toBe("left");
     expect(second.get().ui.launcherOpen).toBe("last");
     expect(second.get().ui.launcherPosition).toEqual({ x: 0.25, y: 0.6 });
-    expect(second.get().ui.density).toBe("compact");
+    expect(second.get().ui.density).toBe("super-compact");
     expect(second.get().ui.textScale).toBe("large");
     expect(second.get().ui.homeLayout).toBe("compact");
     expect(second.get().ui.settingsSection).toBe("navigation");
     expect(second.get().linkChat.retentionDays).toBe(30);
+    expect(second.get().linkRoster.retentionDays).toBe(180);
   });
 
   it("rejects invalid persisted values", () => {
@@ -56,6 +58,7 @@ describe("SettingsStore", () => {
         settingsSection: "unknown",
       },
       linkChat: { retentionDays: -5, maxMessagesPerConversation: 10 },
+      linkRoster: { retentionDays: -20 },
     });
 
     expect(settings.ui.accent).toBe(DEFAULT_SETTINGS.ui.accent);
@@ -72,6 +75,7 @@ describe("SettingsStore", () => {
       DEFAULT_SETTINGS.linkChat.maxMessagesPerConversation,
     );
     expect(settings.linkChat.quickActions).toEqual(DEFAULT_SETTINGS.linkChat.quickActions);
+    expect(settings.linkRoster.retentionDays).toBe(DEFAULT_SETTINGS.linkRoster.retentionDays);
   });
 
   it("adds the default theme to 0.1 settings without losing LinkChat choices", () => {
@@ -124,7 +128,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(5);
+    expect(settings.schemaVersion).toBe(6);
     expect(settings.linkActivities).toEqual({
       enabled: false,
       activities: [{ label: "Sakura greeting", template: "bows to {target}." }],
@@ -138,9 +142,13 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(5);
+    expect(settings.schemaVersion).toBe(6);
     expect(settings.linkActivities.enabled).toBe(false);
-    expect(settings.linkRoster).toEqual({ enabled: true, trackEncounters: true });
+    expect(settings.linkRoster).toEqual({
+      enabled: true,
+      trackEncounters: true,
+      retentionDays: 365,
+    });
     expect(settings.ui.launcherOpen).toBe("home");
   });
 
@@ -157,7 +165,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(5);
+    expect(settings.schemaVersion).toBe(6);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -169,6 +177,10 @@ describe("SettingsStore", () => {
       reducedMotion: true,
       settingsSection: "appearance",
     });
-    expect(settings.linkRoster).toEqual({ enabled: false, trackEncounters: false });
+    expect(settings.linkRoster).toEqual({
+      enabled: false,
+      trackEncounters: false,
+      retentionDays: 365,
+    });
   });
 });

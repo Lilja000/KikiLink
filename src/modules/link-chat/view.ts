@@ -186,6 +186,11 @@ export class LinkChatView {
   readonly #quickActionsEditor = element("div", { className: "kl-action-editor" });
   readonly #rosterEnabledToggle = element("input") as HTMLInputElement;
   readonly #rosterTrackingToggle = element("input") as HTMLInputElement;
+  readonly #rosterRetentionSelect = element("select", {
+    className: "kl-select",
+  }) as HTMLSelectElement;
+  readonly #notebookFileInput = element("input") as HTMLInputElement;
+  readonly #notebookCount = element("span", { className: "kl-data-tools-count" });
   readonly #rosterButton = element("button", {
     className: "kl-nav-item kl-roster-button",
     type: "button",
@@ -985,12 +990,13 @@ export class LinkChatView {
     this.#densitySelect.replaceChildren(
       selectOption("comfortable", "Comfortable"),
       selectOption("compact", "Compact"),
+      selectOption("super-compact", "Super compact"),
     );
     this.#densitySelect.dataset.setting = "density";
     this.#densitySelect.setAttribute("aria-label", "Interface spacing");
     const density = this.#settingRow(
       "Spacing",
-      "Comfortable is easier to tap; Compact fits more on screen.",
+      "Comfortable is roomy; Compact fits more; Super compact keeps only the essentials.",
       this.#densitySelect,
     );
 
@@ -1155,6 +1161,61 @@ export class LinkChatView {
       "Store the last room, time, and encounter count only in this browser.",
       rosterTrackingSwitch,
     );
+    this.#rosterRetentionSelect.replaceChildren(
+      selectOption("30", "30 days"),
+      selectOption("90", "90 days"),
+      selectOption("180", "180 days"),
+      selectOption("365", "1 year"),
+      selectOption("730", "2 years"),
+      selectOption("0", "Keep forever"),
+    );
+    this.#rosterRetentionSelect.dataset.setting = "roster-retention";
+    this.#rosterRetentionSelect.setAttribute("aria-label", "Player encounter retention");
+    const rosterRetention = this.#settingRow(
+      "Forget old encounters",
+      "Applies only to players without notes, tags, or a favorite. Notebook entries stay safe.",
+      this.#rosterRetentionSelect,
+    );
+
+    this.#notebookFileInput.type = "file";
+    this.#notebookFileInput.accept = ".json,application/json";
+    this.#notebookFileInput.hidden = true;
+    this.#notebookFileInput.addEventListener("change", () => void this.#importNotebookFile());
+    const exportNotebook = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Export",
+      ariaLabel: "Export player notebook backup",
+      onClick: () => this.#exportNotebook(),
+    });
+    const importNotebook = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Import",
+      ariaLabel: "Import player notebook backup",
+      onClick: () => this.#notebookFileInput.click(),
+    });
+    const notebookTools = element(
+      "section",
+      { className: "kl-data-tools" },
+      element(
+        "div",
+        { className: "kl-data-tools-copy" },
+        element("div", { className: "kl-data-tools-title", text: "Notebook backup" }),
+        element("div", {
+          className: "kl-setting-help",
+          text: "Move private notes, tags, favorites, and encounter history between browsers.",
+        }),
+        this.#notebookCount,
+      ),
+      element(
+        "div",
+        { className: "kl-data-tools-actions" },
+        exportNotebook,
+        importNotebook,
+        this.#notebookFileInput,
+      ),
+    );
     const clearPeople = element("button", {
       className: "kl-text-button kl-text-button--danger",
       type: "button",
@@ -1167,6 +1228,8 @@ export class LinkChatView {
       "Control what the player workspace remembers in this browser.",
       rosterEnabled,
       rosterTracking,
+      rosterRetention,
+      notebookTools,
       clearPeople,
     );
     const addQuickAction = element("button", {
@@ -2951,6 +3014,8 @@ export class LinkChatView {
     this.#renderQuickActionEditor(settings.linkChat.quickActions);
     this.#rosterEnabledToggle.checked = settings.linkRoster.enabled;
     this.#rosterTrackingToggle.checked = settings.linkRoster.trackEncounters;
+    this.#rosterRetentionSelect.value = settings.linkRoster.retentionDays.toString();
+    this.#updateNotebookCount();
     this.#activitiesToggle.checked = settings.linkActivities.enabled;
     this.#renderActivityEditor(settings.linkActivities.activities);
     this.#showWorkspace("settings", false);
@@ -3000,7 +3065,11 @@ export class LinkChatView {
           ? this.#themeSelect.value
           : "dark";
       draft.ui.accent = this.#accentInput.value;
-      draft.ui.density = this.#densitySelect.value === "compact" ? "compact" : "comfortable";
+      draft.ui.density =
+        this.#densitySelect.value === "compact" ||
+        this.#densitySelect.value === "super-compact"
+          ? this.#densitySelect.value
+          : "comfortable";
       draft.ui.textScale =
         this.#textScaleSelect.value === "large" ||
         this.#textScaleSelect.value === "extra-large"
@@ -3019,17 +3088,27 @@ export class LinkChatView {
       draft.linkChat.quickActions = this.#readQuickActionEditor();
       draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
       draft.linkRoster.trackEncounters = this.#rosterTrackingToggle.checked;
+      const rosterRetentionDays = Number(this.#rosterRetentionSelect.value);
+      if (Number.isInteger(rosterRetentionDays)) {
+        draft.linkRoster.retentionDays = rosterRetentionDays;
+      }
       draft.linkActivities.enabled = this.#activitiesToggle.checked;
       draft.linkActivities.activities = this.#readActivityEditor();
       if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
     });
     this.#applyTheme(settings);
+    const removedPlayers = this.roster.prune();
+    this.#updateNotebookCount();
     this.#renderQuickActions();
     this.#renderHomeStatus();
     void this.#renderHome();
     this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView, settings));
     void this.service.prune();
-    this.#toast("Settings saved.");
+    this.#toast(
+      removedPlayers > 0
+        ? `Settings saved. Forgot ${removedPlayers} old encounter${removedPlayers === 1 ? "" : "s"}.`
+        : "Settings saved.",
+    );
   }
 
   #resetLauncherPosition(): void {
@@ -3052,6 +3131,66 @@ export class LinkChatView {
     this.#toast("LinkChat history cleared.");
   }
 
+  #exportNotebook(): void {
+    if (typeof URL.createObjectURL !== "function") {
+      this.#toast("This browser cannot create a notebook download.", "error");
+      return;
+    }
+    const backup = this.roster.exportNotebook();
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `KikiLink-player-notebook-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.hidden = true;
+    this.#shadow.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    this.#toast(
+      backup.records.length === 1
+        ? "Exported 1 player to a local JSON backup."
+        : `Exported ${backup.records.length} players to a local JSON backup.`,
+    );
+  }
+
+  async #importNotebookFile(): Promise<void> {
+    const file = this.#notebookFileInput.files?.[0];
+    this.#notebookFileInput.value = "";
+    if (!file) return;
+    if (file.size > 2_000_000) {
+      this.#toast("That notebook backup is larger than the 2 MB safety limit.", "error");
+      return;
+    }
+    if (
+      !window.confirm(
+        "Merge this KikiLink backup with the current player notebook? Existing notes, tags, and favorites will be preserved.",
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const result = this.roster.importNotebook(await file.text());
+      const removed = this.roster.prune();
+      this.#updateNotebookCount();
+      this.#selectedRosterMember = undefined;
+      this.#notebookDirty = false;
+      if (this.#workspaceView === "roster") this.#renderRoster();
+      void this.#renderHome();
+      const skipped = result.skipped > 0 ? ` ${result.skipped} invalid entr${result.skipped === 1 ? "y was" : "ies were"} skipped.` : "";
+      const expired = removed > 0 ? ` ${removed} expired encounter${removed === 1 ? " was" : "s were"} omitted.` : "";
+      this.#toast(`Merged ${result.imported} player${result.imported === 1 ? "" : "s"}.${skipped}${expired}`);
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "Could not import that notebook.", "error");
+    }
+  }
+
+  #updateNotebookCount(): void {
+    const count = this.roster.notebookCount();
+    this.#notebookCount.textContent = `${count} saved player${count === 1 ? "" : "s"} · JSON stays local`;
+  }
+
   #clearPeople(): void {
     if (!window.confirm("Clear all KikiLink player notes, tags, favorites, and encounter history?")) {
       return;
@@ -3059,6 +3198,9 @@ export class LinkChatView {
     this.roster.clear();
     this.#selectedRosterMember = undefined;
     this.#notebookDirty = false;
+    this.#updateNotebookCount();
+    if (this.#workspaceView === "roster") this.#renderRoster();
+    void this.#renderHome();
     this.#toast("LinkRoster notebook cleared.");
   }
 
@@ -3259,8 +3401,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "appearance",
       title: "Appearance & comfort",
-      detail: "Theme, accent, spacing, text size, Home style, and motion",
-      keywords: "light dark system color colour guided focused density font scale reduced motion",
+      detail: "Theme, accent, Super compact spacing, text size, Home style, and motion",
+      keywords: "light dark system color colour guided focused density compact super tiny font scale reduced motion",
     },
     {
       section: "navigation",
@@ -3277,8 +3419,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "players",
       title: "Players & notebook",
-      detail: "Roster, encounters, notes, favorites, and tags",
-      keywords: "people linkroster tracking private data clear whisper profile",
+      detail: "Roster, encounters, retention, notes, and notebook backup",
+      keywords: "people linkroster tracking private data clear whisper profile export import backup json favorites tags retention",
     },
     {
       section: "activities",

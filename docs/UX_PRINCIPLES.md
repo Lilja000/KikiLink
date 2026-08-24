@@ -62,6 +62,9 @@ References:
 
 - Themes and accents express identity, but text size, density, motion, and simplification
   determine whether the interface remains comfortable over time.
+- Treat Super compact as information prioritization rather than indiscriminate shrinking:
+  remove decorative chrome and repeated descriptions before reducing essential controls.
+- Preserve finger-sized primary actions on phones even when Super compact is selected.
 - Provide safe presets and preserve readable text for every custom accent.
 - Let people choose a Focused Home that removes the suggestion, nonessential artwork,
   and supporting descriptions.
@@ -78,6 +81,7 @@ References:
 - Keep visible labels beside controls; icons supplement words rather than replace them.
 - Prefer common names such as Settings, Chat, and Players in navigation.
 - Put consequences and privacy context beside the setting or action they describe.
+- Keep data tools together as one quiet backup surface with plain Export and Import verbs.
 - Empty, loading, disabled, success, and error states must explain the next useful step.
 
 References:
@@ -116,4 +120,6 @@ Before a UI release, verify:
 - Reduced motion and system motion preferences are respected.
 - Custom accents keep readable foreground text.
 - Destructive actions explain exactly what local data they remove.
+- Notebook imports are bounded, validated, and merge-safe; existing private notes are not overwritten.
+- Encounter retention never removes favorites or records containing notes or tags.
 - No chat, note, identity, or preference data is sent to a KikiLink server.

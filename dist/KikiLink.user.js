@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.9.0
+// @version      0.10.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -714,7 +714,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -767,7 +767,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
     },
     linkRoster: {
       enabled: true,
-      trackEncounters: true
+      trackEncounters: true,
+      retentionDays: 365
     }
   };
   var SETTINGS_KEY = "kikilink:settings:v1";
@@ -834,11 +835,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
     const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
     return {
-      schemaVersion: 5,
+      schemaVersion: 6,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
-        density: ui.density === "compact" ? "compact" : DEFAULT_SETTINGS.ui.density,
+        density: ui.density === "compact" || ui.density === "super-compact" ? ui.density : DEFAULT_SETTINGS.ui.density,
         textScale: ui.textScale === "large" || ui.textScale === "extra-large" ? ui.textScale : DEFAULT_SETTINGS.ui.textScale,
         homeLayout: ui.homeLayout === "compact" ? "compact" : DEFAULT_SETTINGS.ui.homeLayout,
         launcherSide: ui.launcherSide === "left" ? "left" : "right",
@@ -881,7 +882,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
         trackEncounters: booleanOr(
           linkRoster.trackEncounters,
           DEFAULT_SETTINGS.linkRoster.trackEncounters
-        )
+        ),
+        retentionDays: rosterRetentionDaysOr(linkRoster.retentionDays)
       }
     };
   }
@@ -922,6 +924,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
   }
   function integerInRange(value, min, max, fallback) {
     return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+  }
+  function rosterRetentionDaysOr(value) {
+    return value === 0 || value === 30 || value === 90 || value === 180 || value === 365 || value === 730 ? value : DEFAULT_SETTINGS.linkRoster.retentionDays;
   }
   function finiteNumberInRange(value, min, max) {
     return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
@@ -1055,6 +1060,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#present.clear();
       for (const character of current) this.#present.set(character.memberNumber, character);
       if (heartbeat) this.#lastHeartbeatAt = now;
+      if (heartbeat) this.prune(now);
       return {
         changed: roomChanged || joined.length > 0 || left.length > 0,
         presentCount: current.length,
@@ -1114,6 +1120,21 @@ One of mods you are using is using an old version of SDK. It will work for now b
         favorite: !existing.favorite
       });
     }
+    notebookCount() {
+      return this.repository.count();
+    }
+    exportNotebook(exportedAt = Date.now()) {
+      return this.repository.exportBackup(exportedAt);
+    }
+    importNotebook(value) {
+      return this.repository.importBackup(value);
+    }
+    prune(now = Date.now()) {
+      return this.repository.pruneEncounterHistory(
+        this.settings.get().linkRoster.retentionDays,
+        now
+      );
+    }
     clear() {
       this.repository.clear();
     }
@@ -1153,6 +1174,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
   // src/storage/people-repository.ts
   var PEOPLE_KEY = "kikilink:people:v1";
   var MAX_PEOPLE = 2e3;
+  var NOTEBOOK_FORMAT = "kikilink-player-notebook";
+  var NOTEBOOK_VERSION = 1;
   var PeopleRepository = class {
     constructor(storage = getDefaultStorage2()) {
       this.storage = storage;
@@ -1166,6 +1189,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     list() {
       return [...this.#records.values()].map((record) => structuredClone(record)).sort((left, right) => right.lastSeenAt - left.lastSeenAt);
+    }
+    count() {
+      return this.#records.size;
     }
     put(record) {
       const sanitized = sanitizePerson(record);
@@ -1182,6 +1208,47 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
       this.#prune();
       this.#persist();
+    }
+    exportBackup(exportedAt = Date.now()) {
+      return {
+        format: NOTEBOOK_FORMAT,
+        version: NOTEBOOK_VERSION,
+        exportedAt,
+        records: this.list()
+      };
+    }
+    importBackup(value) {
+      const backup = parseBackup(value);
+      const imported = /* @__PURE__ */ new Map();
+      let skipped = Math.max(0, backup.records.length - MAX_PEOPLE);
+      for (const candidate of backup.records.slice(0, MAX_PEOPLE)) {
+        const record = sanitizePerson(candidate);
+        if (!record) {
+          skipped += 1;
+          continue;
+        }
+        imported.set(record.memberNumber, record);
+      }
+      for (const record of imported.values()) {
+        const existing = this.#records.get(record.memberNumber);
+        this.#records.set(record.memberNumber, existing ? mergePeople(existing, record) : record);
+      }
+      this.#prune();
+      this.#persist();
+      return { imported: imported.size, skipped, total: this.#records.size };
+    }
+    pruneEncounterHistory(retentionDays, now = Date.now()) {
+      if (!Number.isInteger(retentionDays) || retentionDays <= 0) return 0;
+      const cutoff = now - retentionDays * 24 * 60 * 60 * 1e3;
+      let removed = 0;
+      for (const record of this.#records.values()) {
+        const protectedNotebook = record.favorite || record.note.length > 0 || record.tags.length > 0;
+        if (protectedNotebook || record.lastSeenAt <= 0 || record.lastSeenAt >= cutoff) continue;
+        this.#records.delete(record.memberNumber);
+        removed += 1;
+      }
+      if (removed > 0) this.#persist();
+      return removed;
     }
     clear() {
       this.#records.clear();
@@ -1263,6 +1330,51 @@ One of mods you are using is using an old version of SDK. It will work for now b
       lastRoomName,
       encounterCount
     };
+  }
+  function parseBackup(value) {
+    let parsed = value;
+    if (typeof value === "string") {
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        throw new Error("This file is not valid JSON.");
+      }
+    }
+    if (!isRecord2(parsed) || parsed.format !== NOTEBOOK_FORMAT || parsed.version !== NOTEBOOK_VERSION || !Array.isArray(parsed.records)) {
+      throw new Error("This is not a KikiLink player notebook backup.");
+    }
+    return { records: parsed.records };
+  }
+  function mergePeople(existing, imported) {
+    const importedIsNewer = imported.lastSeenAt > existing.lastSeenAt;
+    return {
+      memberNumber: existing.memberNumber,
+      displayName: importedIsNewer ? imported.displayName : existing.displayName,
+      favorite: existing.favorite || imported.favorite,
+      note: existing.note || imported.note,
+      tags: mergeTags(existing.tags, imported.tags),
+      firstSeenAt: earliestPositive(existing.firstSeenAt, imported.firstSeenAt),
+      lastSeenAt: Math.max(existing.lastSeenAt, imported.lastSeenAt),
+      lastRoomName: (importedIsNewer ? imported.lastRoomName : existing.lastRoomName) || existing.lastRoomName || imported.lastRoomName,
+      encounterCount: Math.max(existing.encounterCount, imported.encounterCount)
+    };
+  }
+  function mergeTags(existing, imported) {
+    const merged = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const tag of [...existing, ...imported]) {
+      const key = tag.toLocaleLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(tag);
+      if (merged.length >= 8) break;
+    }
+    return merged;
+  }
+  function earliestPositive(left, right) {
+    if (left <= 0) return right;
+    if (right <= 0) return left;
+    return Math.min(left, right);
   }
   function getDefaultStorage2() {
     try {
@@ -1900,6 +2012,31 @@ button { color: inherit; }
   justify-content: space-between;
   gap: 20px;
 }
+.kl-data-tools {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 15px 14px 17px;
+  overflow: hidden;
+  border: 1px solid var(--kl-border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 18%);
+}
+.kl-data-tools::before {
+  content: "";
+  position: absolute;
+  inset: 10px auto 10px 0;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(var(--kl-accent), var(--kl-gold));
+}
+.kl-data-tools-copy { min-width: 0; margin-right: auto; }
+.kl-data-tools-title { font-weight: 780; }
+.kl-data-tools-count { display: block; margin-top: 5px; color: var(--kl-meta); font-size: var(--kl-type-xs); }
+.kl-data-tools-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+.kl-data-tools-actions .kl-text-button { min-width: 76px; }
 
 .kl-home {
   position: relative;
@@ -2225,6 +2362,139 @@ button { color: inherit; }
 :host([data-density="compact"]) .kl-conversation { padding-block: 7px; }
 :host([data-density="compact"]) .kl-settings-panel { padding-top: 18px; }
 :host([data-density="compact"]) .kl-settings-panel-body { gap: 13px; }
+
+:host([data-density="super-compact"]) .kl-panel {
+  width: min(920px, calc(100vw - 40px));
+  height: min(600px, calc(100vh - 130px));
+  min-height: 380px;
+  grid-template-rows: 52px minmax(0, 1fr);
+  border-radius: 20px;
+  background: var(--kl-panel-bg);
+  backdrop-filter: blur(18px);
+}
+:host([data-density="super-compact"]) .kl-topbar { gap: 7px; padding-inline: 12px; }
+:host([data-density="super-compact"]) .kl-brand { gap: 7px; }
+:host([data-density="super-compact"]) .kl-brand-emblem { width: 32px; height: 32px; border-radius: 10px; }
+:host([data-density="super-compact"]) .kl-brand-subtitle,
+:host([data-density="super-compact"]) .kl-feature-page-eyebrow,
+:host([data-density="super-compact"]) .kl-feature-page-subtitle,
+:host([data-density="super-compact"]) .kl-settings-panel-description,
+:host([data-density="super-compact"]) .kl-home-lead,
+:host([data-density="super-compact"]) .kl-home-mark,
+:host([data-density="super-compact"]) .kl-home-section-description,
+:host([data-density="super-compact"]) .kl-feature-card-description,
+:host([data-density="super-compact"]) .kl-home-privacy { display: none; }
+:host([data-density="super-compact"]) .kl-finder-trigger { min-height: 34px; padding-block: 4px; }
+:host([data-density="super-compact"]) .kl-icon-button { width: 34px; height: 34px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-text-button { min-height: 34px; padding: 5px 10px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-shell { grid-template-columns: 72px minmax(0, 1fr); }
+:host([data-density="super-compact"]) .kl-feature-nav { gap: 3px; padding: 7px 6px; }
+:host([data-density="super-compact"]) .kl-nav-item { min-height: 46px; gap: 2px; padding: 4px 2px; border-radius: 11px; }
+:host([data-density="super-compact"]) .kl-nav-icon { font-size: 18px; }
+:host([data-density="super-compact"]) .kl-feature-page,
+:host([data-density="super-compact"]) .kl-settings-page,
+:host([data-density="super-compact"]) .kl-main { background: transparent; }
+:host([data-density="super-compact"]) .kl-feature-page-header { gap: 10px; padding: 10px 16px; }
+:host([data-density="super-compact"]) .kl-feature-page-title { margin-top: 0; font-size: var(--kl-type-lg); }
+:host([data-density="super-compact"]) .kl-feature-page-footer { min-height: 50px; padding: 7px 12px; }
+:host([data-density="super-compact"]) .kl-home { padding: 11px; background: transparent; }
+:host([data-density="super-compact"]) .kl-home-hero {
+  min-height: 130px;
+  gap: 14px;
+  margin-bottom: 10px;
+  padding: 13px 16px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--kl-surface), transparent 5%);
+}
+:host([data-density="super-compact"]) .kl-home-title { margin-block: 2px; font-size: clamp(22px, 2.7vw, 30px); }
+:host([data-density="super-compact"]) .kl-home-statuses { gap: 5px; margin-top: 9px; }
+:host([data-density="super-compact"]) .kl-home-status { min-height: 25px; padding: 3px 8px; }
+:host([data-density="super-compact"]) .kl-home-next {
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 8px 10px;
+  padding: 11px;
+  border-radius: 14px;
+  box-shadow: none;
+}
+:host([data-density="super-compact"]) .kl-home-next-icon { width: 38px; height: 38px; border-radius: 11px; font-size: 18px; }
+:host([data-density="super-compact"]) .kl-home-next-title { margin-top: 1px; font-size: var(--kl-type-lg); }
+:host([data-density="super-compact"]) .kl-home-next-description { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:host([data-density="super-compact"]) .kl-home-next-footer { gap: 8px; padding-top: 7px; }
+:host([data-density="super-compact"]) .kl-home-section-heading { margin-bottom: 6px; }
+:host([data-density="super-compact"]) .kl-home-section-heading h2 { font-size: var(--kl-type-lg); }
+:host([data-density="super-compact"]) .kl-feature-grid { gap: 7px; }
+:host([data-density="super-compact"]) .kl-feature-card {
+  min-height: 84px;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 6px 9px;
+  padding: 9px 10px;
+  border-radius: 13px;
+}
+:host([data-density="super-compact"]) .kl-feature-card-icon { width: 36px; height: 36px; border-radius: 10px; font-size: 17px; }
+:host([data-density="super-compact"]) .kl-feature-card-title { margin-top: 0; font-size: var(--kl-type-md); }
+:host([data-density="super-compact"]) .kl-feature-card-footer { gap: 7px; padding-top: 5px; }
+:host([data-density="super-compact"]) .kl-layout { grid-template-columns: 270px minmax(0, 1fr); }
+:host([data-density="super-compact"]) .kl-search-wrap { padding: 8px; }
+:host([data-density="super-compact"]) .kl-sidebar-heading { padding: 0 8px 5px 10px; }
+:host([data-density="super-compact"]) .kl-search { height: 36px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-sidebar-new-chat { width: 32px; height: 32px; }
+:host([data-density="super-compact"]) .kl-conversations { padding-inline: 5px; }
+:host([data-density="super-compact"]) .kl-conversation {
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 10px;
+}
+:host([data-density="super-compact"]) .kl-conversation .kl-avatar { width: 36px; height: 36px; border-radius: 10px; }
+:host([data-density="super-compact"]) .kl-conversation-side { gap: 2px; }
+:host([data-density="super-compact"]) .kl-chat { grid-template-rows: 50px minmax(0, 1fr) auto; }
+:host([data-density="super-compact"]) .kl-chat-header { gap: 8px; padding-inline: 10px; }
+:host([data-density="super-compact"]) .kl-chat-header .kl-avatar { width: 36px; height: 36px; border-radius: 10px; }
+:host([data-density="super-compact"]) .kl-messages { padding: 10px 12px; }
+:host([data-density="super-compact"]) .kl-message-row { margin-block: 4px; }
+:host([data-density="super-compact"]) .kl-message-bubble { padding: 7px 9px 6px; border-radius: 12px 12px 12px 4px; box-shadow: none; }
+:host([data-density="super-compact"]) .kl-message-row[data-direction="outgoing"] .kl-message-bubble { border-radius: 12px 12px 4px 12px; }
+:host([data-density="super-compact"]) .kl-message-meta { margin-top: 3px; }
+:host([data-density="super-compact"]) .kl-composer { padding: 7px 9px 8px; }
+:host([data-density="super-compact"]) .kl-quick-actions { gap: 5px; margin-bottom: 5px; padding-bottom: 2px; }
+:host([data-density="super-compact"]) .kl-action-chip { min-height: 30px; padding: 3px 8px; }
+:host([data-density="super-compact"]) .kl-composer-row { gap: 7px; }
+:host([data-density="super-compact"]) .kl-composer-input { min-height: 38px; padding: 8px 10px; border-radius: 10px; }
+:host([data-density="super-compact"]) .kl-send { height: 38px; min-width: 64px; }
+:host([data-density="super-compact"]) .kl-composer-options { margin-top: 4px; }
+:host([data-density="super-compact"]) .kl-settings-layout { grid-template-columns: 160px minmax(0, 1fr); }
+:host([data-density="super-compact"]) .kl-settings-tabs { gap: 3px; padding: 8px 7px; }
+:host([data-density="super-compact"]) .kl-settings-tab { min-height: 38px; gap: 7px; padding: 5px 8px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-settings-panel { padding: 13px 20px 20px; }
+:host([data-density="super-compact"]) .kl-settings-panel-body { gap: 10px; }
+:host([data-density="super-compact"]) .kl-settings-actions { min-height: 50px; padding: 7px 12px; }
+:host([data-density="super-compact"]) .kl-setting-section { gap: 9px; }
+:host([data-density="super-compact"]) .kl-setting-row,
+:host([data-density="super-compact"]) .kl-setting-action-row { gap: 13px; }
+:host([data-density="super-compact"]) .kl-select,
+:host([data-density="super-compact"]) .kl-number-input,
+:host([data-density="super-compact"]) .kl-color-input { height: 36px; }
+:host([data-density="super-compact"]) .kl-color-swatch { width: 27px; height: 27px; }
+:host([data-density="super-compact"]) .kl-switch { height: 36px; }
+:host([data-density="super-compact"]) .kl-switch-track { inset-block: 5px; }
+:host([data-density="super-compact"]) .kl-action-label,
+:host([data-density="super-compact"]) .kl-action-template { height: 35px; }
+:host([data-density="super-compact"]) .kl-data-tools { gap: 12px; padding: 10px 11px 10px 14px; border-radius: 11px; }
+:host([data-density="super-compact"]) .kl-roster-body { gap: 9px; padding: 10px; }
+:host([data-density="super-compact"]) .kl-roster-list-pane { gap: 6px; }
+:host([data-density="super-compact"]) .kl-roster-scope { min-height: 34px; }
+:host([data-density="super-compact"]) .kl-roster-entry { grid-template-columns: 35px minmax(0, 1fr) auto; gap: 7px; padding: 5px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-roster-entry .kl-avatar { width: 35px; height: 35px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-roster-detail { padding: 10px; border-radius: 12px; }
+:host([data-density="super-compact"]) .kl-roster-quick-actions,
+:host([data-density="super-compact"]) .kl-roster-stats { margin-top: 9px; }
+:host([data-density="super-compact"]) .kl-roster-notebook { gap: 7px; margin-top: 9px; padding-top: 9px; }
+:host([data-density="super-compact"]) .kl-roster-note { min-height: 86px; }
+:host([data-density="super-compact"]) .kl-activities-body { gap: 8px; padding: 10px 14px; }
+:host([data-density="super-compact"]) .kl-activity-studio { gap: 9px; }
+:host([data-density="super-compact"]) .kl-activity-target { padding: 5px; }
+:host([data-density="super-compact"]) .kl-activity-card { padding: 7px 9px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-activity-preview { min-height: 40px; padding: 9px 11px; }
 
 .kl-layout {
   position: relative;
@@ -3193,6 +3463,9 @@ select:focus-visible {
   .kl-settings-panel { padding-inline: 12px; }
   .kl-settings-panel-description { margin-bottom: 16px; }
   .kl-settings-panel-body { gap: 14px; }
+  .kl-data-tools { align-items: stretch; flex-direction: column; gap: 10px; }
+  .kl-data-tools-actions { width: 100%; }
+  .kl-data-tools-actions .kl-text-button { min-width: 0; flex: 1; }
   .kl-feature-page-subtitle { max-width: 260px; }
   .kl-roster-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kl-roster-stats { grid-template-columns: minmax(0, 1fr); }
@@ -3204,6 +3477,47 @@ select:focus-visible {
   .kl-finder-result-category { max-width: 82px; overflow: hidden; text-overflow: ellipsis; }
   .kl-finder-footer > span:first-child { display: none; }
   .kl-finder-footer { justify-content: center; }
+}
+
+@media (max-width: 720px) {
+  :host([data-density="super-compact"]) .kl-panel,
+  :host([data-density="super-compact"]) .kl-panel[data-side="left"] {
+    inset:
+      max(8px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom))
+      max(8px, env(safe-area-inset-left));
+    width: auto;
+    height: auto;
+    min-height: 0;
+  }
+  :host([data-density="super-compact"]) .kl-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 60px;
+  }
+  :host([data-density="super-compact"]) .kl-layout { grid-template-columns: minmax(0, 1fr); }
+  :host([data-density="super-compact"]) .kl-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  :host([data-density="super-compact"]) .kl-home { padding: 9px; }
+  :host([data-density="super-compact"]) .kl-home-hero { min-height: 0; gap: 10px; margin-bottom: 7px; padding: 12px; border-radius: 14px; }
+  :host([data-density="super-compact"]) .kl-home-next { padding: 9px; }
+  :host([data-density="super-compact"]) .kl-home-next-description { display: none; }
+  :host([data-density="super-compact"]) .kl-feature-grid { gap: 6px; }
+  :host([data-density="super-compact"]) .kl-feature-card { min-height: 76px; padding: 9px; border-radius: 12px; }
+  :host([data-density="super-compact"]) .kl-feature-page-header { padding: 9px 12px; }
+  :host([data-density="super-compact"]) .kl-settings-panel { padding: 12px 12px 20px; }
+  :host([data-density="super-compact"]) .kl-settings-panel-body { gap: 10px; }
+  :host([data-density="super-compact"]) .kl-settings-tab { min-height: 44px; }
+  :host([data-density="super-compact"]) .kl-roster-body { padding: 9px; }
+  :host([data-density="super-compact"]) .kl-activities-body { padding: 9px; }
+  :host([data-density="super-compact"]) .kl-icon-button { width: 44px; height: 44px; }
+  :host([data-density="super-compact"]) .kl-text-button { min-height: 44px; }
+  :host([data-density="super-compact"]) .kl-search,
+  :host([data-density="super-compact"]) .kl-select,
+  :host([data-density="super-compact"]) .kl-number-input,
+  :host([data-density="super-compact"]) .kl-color-input { height: 44px; }
 }
 
 :host([data-reduced-motion="true"]) *,
@@ -3374,6 +3688,11 @@ select:focus-visible {
     #quickActionsEditor = element("div", { className: "kl-action-editor" });
     #rosterEnabledToggle = element("input");
     #rosterTrackingToggle = element("input");
+    #rosterRetentionSelect = element("select", {
+      className: "kl-select"
+    });
+    #notebookFileInput = element("input");
+    #notebookCount = element("span", { className: "kl-data-tools-count" });
     #rosterButton = element("button", {
       className: "kl-nav-item kl-roster-button",
       type: "button",
@@ -4064,13 +4383,14 @@ select:focus-visible {
       );
       this.#densitySelect.replaceChildren(
         selectOption("comfortable", "Comfortable"),
-        selectOption("compact", "Compact")
+        selectOption("compact", "Compact"),
+        selectOption("super-compact", "Super compact")
       );
       this.#densitySelect.dataset.setting = "density";
       this.#densitySelect.setAttribute("aria-label", "Interface spacing");
       const density = this.#settingRow(
         "Spacing",
-        "Comfortable is easier to tap; Compact fits more on screen.",
+        "Comfortable is roomy; Compact fits more; Super compact keeps only the essentials.",
         this.#densitySelect
       );
       this.#textScaleSelect.replaceChildren(
@@ -4225,6 +4545,60 @@ select:focus-visible {
         "Store the last room, time, and encounter count only in this browser.",
         rosterTrackingSwitch
       );
+      this.#rosterRetentionSelect.replaceChildren(
+        selectOption("30", "30 days"),
+        selectOption("90", "90 days"),
+        selectOption("180", "180 days"),
+        selectOption("365", "1 year"),
+        selectOption("730", "2 years"),
+        selectOption("0", "Keep forever")
+      );
+      this.#rosterRetentionSelect.dataset.setting = "roster-retention";
+      this.#rosterRetentionSelect.setAttribute("aria-label", "Player encounter retention");
+      const rosterRetention = this.#settingRow(
+        "Forget old encounters",
+        "Applies only to players without notes, tags, or a favorite. Notebook entries stay safe.",
+        this.#rosterRetentionSelect
+      );
+      this.#notebookFileInput.type = "file";
+      this.#notebookFileInput.accept = ".json,application/json";
+      this.#notebookFileInput.hidden = true;
+      this.#notebookFileInput.addEventListener("change", () => void this.#importNotebookFile());
+      const exportNotebook = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Export",
+        ariaLabel: "Export player notebook backup",
+        onClick: () => this.#exportNotebook()
+      });
+      const importNotebook = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Import",
+        ariaLabel: "Import player notebook backup",
+        onClick: () => this.#notebookFileInput.click()
+      });
+      const notebookTools = element(
+        "section",
+        { className: "kl-data-tools" },
+        element(
+          "div",
+          { className: "kl-data-tools-copy" },
+          element("div", { className: "kl-data-tools-title", text: "Notebook backup" }),
+          element("div", {
+            className: "kl-setting-help",
+            text: "Move private notes, tags, favorites, and encounter history between browsers."
+          }),
+          this.#notebookCount
+        ),
+        element(
+          "div",
+          { className: "kl-data-tools-actions" },
+          exportNotebook,
+          importNotebook,
+          this.#notebookFileInput
+        )
+      );
       const clearPeople = element("button", {
         className: "kl-text-button kl-text-button--danger",
         type: "button",
@@ -4237,6 +4611,8 @@ select:focus-visible {
         "Control what the player workspace remembers in this browser.",
         rosterEnabled,
         rosterTracking,
+        rosterRetention,
+        notebookTools,
         clearPeople
       );
       const addQuickAction = element("button", {
@@ -5789,6 +6165,8 @@ ${expanded}` : expanded;
       this.#renderQuickActionEditor(settings.linkChat.quickActions);
       this.#rosterEnabledToggle.checked = settings.linkRoster.enabled;
       this.#rosterTrackingToggle.checked = settings.linkRoster.trackEncounters;
+      this.#rosterRetentionSelect.value = settings.linkRoster.retentionDays.toString();
+      this.#updateNotebookCount();
       this.#activitiesToggle.checked = settings.linkActivities.enabled;
       this.#renderActivityEditor(settings.linkActivities.activities);
       this.#showWorkspace("settings", false);
@@ -5829,7 +6207,7 @@ ${expanded}` : expanded;
       const settings = this.settings.update((draft) => {
         draft.ui.theme = this.#themeSelect.value === "light" || this.#themeSelect.value === "system" ? this.#themeSelect.value : "dark";
         draft.ui.accent = this.#accentInput.value;
-        draft.ui.density = this.#densitySelect.value === "compact" ? "compact" : "comfortable";
+        draft.ui.density = this.#densitySelect.value === "compact" || this.#densitySelect.value === "super-compact" ? this.#densitySelect.value : "comfortable";
         draft.ui.textScale = this.#textScaleSelect.value === "large" || this.#textScaleSelect.value === "extra-large" ? this.#textScaleSelect.value : "normal";
         draft.ui.homeLayout = this.#homeLayoutSelect.value === "compact" ? "compact" : "showcase";
         draft.ui.launcherSide = launcherSide;
@@ -5841,17 +6219,25 @@ ${expanded}` : expanded;
         draft.linkChat.quickActions = this.#readQuickActionEditor();
         draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
         draft.linkRoster.trackEncounters = this.#rosterTrackingToggle.checked;
+        const rosterRetentionDays = Number(this.#rosterRetentionSelect.value);
+        if (Number.isInteger(rosterRetentionDays)) {
+          draft.linkRoster.retentionDays = rosterRetentionDays;
+        }
         draft.linkActivities.enabled = this.#activitiesToggle.checked;
         draft.linkActivities.activities = this.#readActivityEditor();
         if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
       });
       this.#applyTheme(settings);
+      const removedPlayers = this.roster.prune();
+      this.#updateNotebookCount();
       this.#renderQuickActions();
       this.#renderHomeStatus();
       void this.#renderHome();
       this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView, settings));
       void this.service.prune();
-      this.#toast("Settings saved.");
+      this.#toast(
+        removedPlayers > 0 ? `Settings saved. Forgot ${removedPlayers} old encounter${removedPlayers === 1 ? "" : "s"}.` : "Settings saved."
+      );
     }
     #resetLauncherPosition() {
       const settings = this.settings.update((draft) => {
@@ -5871,6 +6257,58 @@ ${expanded}` : expanded;
       await this.refresh();
       this.#toast("LinkChat history cleared.");
     }
+    #exportNotebook() {
+      if (typeof URL.createObjectURL !== "function") {
+        this.#toast("This browser cannot create a notebook download.", "error");
+        return;
+      }
+      const backup = this.roster.exportNotebook();
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `KikiLink-player-notebook-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`;
+      anchor.hidden = true;
+      this.#shadow.append(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      this.#toast(
+        backup.records.length === 1 ? "Exported 1 player to a local JSON backup." : `Exported ${backup.records.length} players to a local JSON backup.`
+      );
+    }
+    async #importNotebookFile() {
+      const file = this.#notebookFileInput.files?.[0];
+      this.#notebookFileInput.value = "";
+      if (!file) return;
+      if (file.size > 2e6) {
+        this.#toast("That notebook backup is larger than the 2 MB safety limit.", "error");
+        return;
+      }
+      if (!window.confirm(
+        "Merge this KikiLink backup with the current player notebook? Existing notes, tags, and favorites will be preserved."
+      )) {
+        return;
+      }
+      try {
+        const result = this.roster.importNotebook(await file.text());
+        const removed = this.roster.prune();
+        this.#updateNotebookCount();
+        this.#selectedRosterMember = void 0;
+        this.#notebookDirty = false;
+        if (this.#workspaceView === "roster") this.#renderRoster();
+        void this.#renderHome();
+        const skipped = result.skipped > 0 ? ` ${result.skipped} invalid entr${result.skipped === 1 ? "y was" : "ies were"} skipped.` : "";
+        const expired = removed > 0 ? ` ${removed} expired encounter${removed === 1 ? " was" : "s were"} omitted.` : "";
+        this.#toast(`Merged ${result.imported} player${result.imported === 1 ? "" : "s"}.${skipped}${expired}`);
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "Could not import that notebook.", "error");
+      }
+    }
+    #updateNotebookCount() {
+      const count = this.roster.notebookCount();
+      this.#notebookCount.textContent = `${count} saved player${count === 1 ? "" : "s"} \xB7 JSON stays local`;
+    }
     #clearPeople() {
       if (!window.confirm("Clear all KikiLink player notes, tags, favorites, and encounter history?")) {
         return;
@@ -5878,6 +6316,9 @@ ${expanded}` : expanded;
       this.roster.clear();
       this.#selectedRosterMember = void 0;
       this.#notebookDirty = false;
+      this.#updateNotebookCount();
+      if (this.#workspaceView === "roster") this.#renderRoster();
+      void this.#renderHome();
       this.#toast("LinkRoster notebook cleared.");
     }
     async #updateUnreadBadge() {
@@ -6052,8 +6493,8 @@ ${expanded}` : expanded;
       {
         section: "appearance",
         title: "Appearance & comfort",
-        detail: "Theme, accent, spacing, text size, Home style, and motion",
-        keywords: "light dark system color colour guided focused density font scale reduced motion"
+        detail: "Theme, accent, Super compact spacing, text size, Home style, and motion",
+        keywords: "light dark system color colour guided focused density compact super tiny font scale reduced motion"
       },
       {
         section: "navigation",
@@ -6070,8 +6511,8 @@ ${expanded}` : expanded;
       {
         section: "players",
         title: "Players & notebook",
-        detail: "Roster, encounters, notes, favorites, and tags",
-        keywords: "people linkroster tracking private data clear whisper profile"
+        detail: "Roster, encounters, retention, notes, and notebook backup",
+        keywords: "people linkroster tracking private data clear whisper profile export import backup json favorites tags retention"
       },
       {
         section: "activities",
@@ -6225,6 +6666,7 @@ ${expanded}` : expanded;
         new PeopleRepository(),
         context.settings
       );
+      this.#roster.prune();
       this.#view = new LinkChatView(
         context.adapter,
         this.#service,
@@ -6671,7 +7113,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.9.0");
+    const app = new KikiLinkApp("0.10.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

@@ -29,6 +29,7 @@ export class LinkChatModule implements KikiLinkModule {
       new PeopleRepository(),
       context.settings,
     );
+    this.#roster.prune();
     this.#view = new LinkChatView(
       context.adapter,
       this.#service,

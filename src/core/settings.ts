@@ -7,7 +7,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -61,6 +61,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
   linkRoster: {
     enabled: true,
     trackEncounters: true,
+    retentionDays: 365,
   },
 };
 
@@ -143,14 +144,17 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
 
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
         ui.theme === "light" || ui.theme === "system" || ui.theme === "dark"
           ? ui.theme
           : DEFAULT_SETTINGS.ui.theme,
-      density: ui.density === "compact" ? "compact" : DEFAULT_SETTINGS.ui.density,
+      density:
+        ui.density === "compact" || ui.density === "super-compact"
+          ? ui.density
+          : DEFAULT_SETTINGS.ui.density,
       textScale:
         ui.textScale === "large" || ui.textScale === "extra-large"
           ? ui.textScale
@@ -206,6 +210,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         linkRoster.trackEncounters,
         DEFAULT_SETTINGS.linkRoster.trackEncounters,
       ),
+      retentionDays: rosterRetentionDaysOr(linkRoster.retentionDays),
     },
   };
 }
@@ -258,6 +263,12 @@ function integerInRange(value: unknown, min: number, max: number, fallback: numb
   return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
     ? value
     : fallback;
+}
+
+function rosterRetentionDaysOr(value: unknown): number {
+  return value === 0 || value === 30 || value === 90 || value === 180 || value === 365 || value === 730
+    ? value
+    : DEFAULT_SETTINGS.linkRoster.retentionDays;
 }
 
 function finiteNumberInRange(value: unknown, min: number, max: number): value is number {

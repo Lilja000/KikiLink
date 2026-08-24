@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.0 - 2026-08-24
+
+- Added a third `Super compact` density that reduces decorative chrome and supporting copy
+  while keeping primary labels, focus states, and phone tap targets intact.
+- Rebalanced the panel, feature rail, Home, conversation list, messages, composer, Players,
+  Activities, and Settings for a calmer high-information layout.
+- Added versioned local JSON export and import for the Player notebook.
+- Made notebook imports merge-safe: existing notes remain intact while favorites, tags,
+  newer names, and encounter history are restored without duplicate players.
+- Added configurable 30-day to 2-year cleanup or indefinite storage for encounter-only
+  player records; notes, tags, and favorites never expire automatically.
+- Added visible saved-player counts, a 2 MB import safety limit, clear confirmation copy,
+  and LinkFinder keywords for compact mode and notebook tools.
+- Migrated settings to schema version 6 without changing existing themes, launch behavior,
+  chat preferences, Activities, or Player settings.
+- Added backup, merge, retention, migration, and Super compact regression coverage,
+  bringing the suite to 44 tests.
+
 ## 0.9.0 - 2026-08-24
 
 - Added LinkFinder as a visible top-bar action available from every workspace.

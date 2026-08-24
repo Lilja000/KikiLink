@@ -6,7 +6,7 @@ import type { SettingsStore } from "./settings";
 export type MessageDirection = "incoming" | "outgoing";
 export type ThemePreference = "dark" | "light" | "system";
 export type LauncherOpenPreference = "home" | "last" | "chat";
-export type InterfaceDensity = "comfortable" | "compact";
+export type InterfaceDensity = "comfortable" | "compact" | "super-compact";
 export type TextScalePreference = "normal" | "large" | "extra-large";
 export type HomeLayoutPreference = "showcase" | "compact";
 export type SettingsSection = "appearance" | "navigation" | "chat" | "players" | "activities";
@@ -82,7 +82,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 5;
+  schemaVersion: 6;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -111,6 +111,7 @@ export interface KikiLinkSettings {
   linkRoster: {
     enabled: boolean;
     trackEncounters: boolean;
+    retentionDays: number;
   };
 }
 

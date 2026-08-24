@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.9.0` adds LinkFinder: one local, keyboard-friendly place to find any chat,
-player, activity, destination, or settings category without knowing where it lives first.
+Version `0.10.0` adds a genuinely quiet Super compact layout plus local Player notebook
+backup, safe restore, and automatic cleanup that never expires notes, tags, or favorites.
 
 ## Link Deck
 
@@ -28,7 +28,7 @@ player, activity, destination, or settings category without knowing where it liv
 - Settings is a full workspace with Appearance, Navigation, Chat, Players, and Activities categories
 - Configurable launcher behavior: open Home, the last section, or LinkChat directly
 - Dark lacquer, light paper, and system themes with five accent presets or any custom color
-- Comfortable or compact spacing, three text sizes, and Guided or Focused Home styles
+- Comfortable, Compact, or Super compact spacing, three text sizes, and Guided or Focused Home styles
 - Contrast-aware text on every custom accent color
 - Larger mobile tap targets, visible focus states, current-page semantics, and keyboard-friendly settings
 - A button to reset the launcher position without dragging it
@@ -56,6 +56,8 @@ player, activity, destination, or settings category without knowing where it liv
 - Local last-seen time, last room, and encounter count
 - `In room`, `Known`, and `Favorites` views with name, number, tag, and note search
 - Optional encounter tracking and a one-click local-data clear action
+- Versioned local JSON export and merge-safe import for moving the notebook between browsers
+- Configurable cleanup of old encounter-only records while notes, tags, and favorites stay protected
 - Responsive two-pane desktop view and compact phone layout inside the main Link Deck
 
 LinkRoster notes, tags, favorites, and encounter history stay in the current
@@ -97,7 +99,8 @@ character's items, pose, permissions, or game state.
 - Link Deck home with a context-aware next step, live feature status, and clear action labels
 - Desktop side navigation that becomes a four-destination mobile bottom bar
 - Custom accent color and configurable launcher destination
-- Comfortable/compact density, three text sizes, and Guided/Focused Home layouts
+- Comfortable/Compact/Super compact density, three text sizes, and Guided/Focused Home layouts
+- A calmer Super compact presentation that removes secondary chrome without hiding primary actions
 - Draggable launcher with a saved position, button-based reset, configurable side, and reduced-motion mode
 - Full-page categorized settings that remember the last category
 - LinkFinder for immediate access to chats, players, activities, and deeply nested settings
@@ -165,7 +168,6 @@ KikiLink.getVersion();
 
 ## Planned modules
 
-- Player notebook import/export and configurable retention
 - Activity packs, categories, favorites, and import/export
 - LinkReactions with configurable event rules
 - Command palette and configurable hotkeys

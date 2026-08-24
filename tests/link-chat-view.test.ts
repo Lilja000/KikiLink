@@ -188,7 +188,8 @@ describe("LinkChatView", () => {
     }
     launcherOpen.value = "chat";
     accent.value = "#247f7a";
-    density.value = "compact";
+    expect([...density.options].map((option) => option.value)).toContain("super-compact");
+    density.value = "super-compact";
     textScale.value = "large";
     settingsPage
       ?.querySelector<HTMLButtonElement>(".kl-settings-actions .kl-text-button--primary")
@@ -196,11 +197,11 @@ describe("LinkChatView", () => {
 
     expect(settings.get().ui.launcherOpen).toBe("chat");
     expect(settings.get().ui.accent).toBe("#247f7a");
-    expect(settings.get().ui.density).toBe("compact");
+    expect(settings.get().ui.density).toBe("super-compact");
     expect(settings.get().ui.textScale).toBe("large");
     expect(host?.style.getPropertyValue("--kl-accent")).toBe("#247f7a");
     expect(host?.style.getPropertyValue("--kl-accent-foreground")).not.toBe("");
-    expect(host?.dataset.density).toBe("compact");
+    expect(host?.dataset.density).toBe("super-compact");
     expect(host?.dataset.textScale).toBe("large");
 
     view.close();
@@ -210,6 +211,66 @@ describe("LinkChatView", () => {
         "chat",
       );
     });
+    view.destroy();
+  });
+
+  it("keeps notebook backup and safe encounter retention easy to find", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getCurrentRoomName: () => undefined,
+      getRoomCharacters: () => [],
+      isInChatRoom: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const people = new PeopleRepository(new MemoryKeyValueStorage());
+    people.put({
+      memberNumber: 123,
+      displayName: "Reina",
+      favorite: true,
+      note: "Trusted",
+      tags: ["Friend"],
+      firstSeenAt: 100,
+      lastSeenAt: 200,
+      lastRoomName: "Moon Garden",
+      encounterCount: 2,
+    });
+    const roster = new LinkRosterService(adapter, people, settings);
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.10.0",
+      new LinkActivitiesService(adapter),
+      roster,
+    );
+    view.mount();
+    const host = document.querySelector<HTMLElement>("#kikilink-root");
+    const shadow = host?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
+    shadow?.querySelector<HTMLButtonElement>('[data-section="players"]')?.click();
+    expect(shadow?.querySelector(".kl-data-tools")?.textContent).toContain("1 saved player");
+    expect(
+      [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-data-tools-actions button") ?? [])].map(
+        (button) => button.textContent,
+      ),
+    ).toEqual(["Export", "Import"]);
+
+    const retention = shadow?.querySelector<HTMLSelectElement>(
+      '[data-setting="roster-retention"]',
+    );
+    if (!retention) throw new Error("Missing player retention setting");
+    retention.value = "90";
+    shadow
+      ?.querySelector<HTMLButtonElement>(".kl-settings-actions .kl-text-button--primary")
+      ?.click();
+    expect(settings.get().linkRoster.retentionDays).toBe(90);
     view.destroy();
   });
 

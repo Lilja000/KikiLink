@@ -1,7 +1,11 @@
 import type { BCAdapter } from "../../bc/adapter";
 import type { SettingsStore } from "../../core/settings";
 import type { PersonRecord, RoomCharacter, RosterEntry } from "../../core/types";
-import type { PeopleRepository } from "../../storage/people-repository";
+import type {
+  PeopleRepository,
+  PlayerNotebookBackup,
+  PlayerNotebookImportResult,
+} from "../../storage/people-repository";
 
 export type RosterScope = "current" | "known" | "favorites";
 
@@ -72,6 +76,7 @@ export class LinkRosterService {
     this.#present.clear();
     for (const character of current) this.#present.set(character.memberNumber, character);
     if (heartbeat) this.#lastHeartbeatAt = now;
+    if (heartbeat) this.prune(now);
 
     return {
       changed: roomChanged || joined.length > 0 || left.length > 0,
@@ -159,6 +164,25 @@ export class LinkRosterService {
       displayName: displayName.trim() || existing.displayName,
       favorite: !existing.favorite,
     });
+  }
+
+  notebookCount(): number {
+    return this.repository.count();
+  }
+
+  exportNotebook(exportedAt = Date.now()): PlayerNotebookBackup {
+    return this.repository.exportBackup(exportedAt);
+  }
+
+  importNotebook(value: unknown): PlayerNotebookImportResult {
+    return this.repository.importBackup(value);
+  }
+
+  prune(now = Date.now()): number {
+    return this.repository.pruneEncounterHistory(
+      this.settings.get().linkRoster.retentionDays,
+      now,
+    );
   }
 
   clear(): void {

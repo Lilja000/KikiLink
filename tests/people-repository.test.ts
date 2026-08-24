@@ -72,4 +72,72 @@ describe("PeopleRepository", () => {
     expect(repository.list()).toEqual([]);
     expect(new PeopleRepository(storage).list()).toEqual([]);
   });
+
+  it("exports a versioned notebook and safely merges it without overwriting local notes", () => {
+    const source = new PeopleRepository(new MemoryKeyValueStorage());
+    source.put(
+      person(123, {
+        displayName: "Reina",
+        favorite: true,
+        note: "Backup note",
+        tags: ["Trusted"],
+        firstSeenAt: 40,
+        lastSeenAt: 200,
+        encounterCount: 8,
+      }),
+    );
+    const backup = source.exportBackup(500);
+    expect(backup).toMatchObject({
+      format: "kikilink-player-notebook",
+      version: 1,
+      exportedAt: 500,
+    });
+
+    const target = new PeopleRepository(new MemoryKeyValueStorage());
+    target.put(
+      person(123, {
+        displayName: "Old nickname",
+        note: "Keep my current note",
+        tags: ["Local"],
+        firstSeenAt: 20,
+        lastSeenAt: 100,
+        encounterCount: 3,
+      }),
+    );
+    const result = target.importBackup(JSON.stringify(backup));
+
+    expect(result).toEqual({ imported: 1, skipped: 0, total: 1 });
+    expect(target.get(123)).toMatchObject({
+      displayName: "Reina",
+      favorite: true,
+      note: "Keep my current note",
+      tags: ["Local", "Trusted"],
+      firstSeenAt: 20,
+      lastSeenAt: 200,
+      encounterCount: 8,
+    });
+    expect(() => target.importBackup("not-json")).toThrow("not valid JSON");
+    expect(() => target.importBackup({ records: [] })).toThrow(
+      "not a KikiLink player notebook backup",
+    );
+  });
+
+  it("prunes only expired encounter-only players and protects notebook content", () => {
+    const now = 200 * 24 * 60 * 60 * 1000;
+    const old = now - 31 * 24 * 60 * 60 * 1000;
+    const recent = now - 5 * 24 * 60 * 60 * 1000;
+    const repository = new PeopleRepository(new MemoryKeyValueStorage());
+    repository.putMany([
+      person(1, { lastSeenAt: old }),
+      person(2, { lastSeenAt: old, favorite: true }),
+      person(3, { lastSeenAt: old, note: "Remember this" }),
+      person(4, { lastSeenAt: old, tags: ["Friend"] }),
+      person(5, { lastSeenAt: recent }),
+    ]);
+
+    expect(repository.pruneEncounterHistory(30, now)).toBe(1);
+    expect(repository.get(1)).toBeUndefined();
+    expect(repository.list().map((record) => record.memberNumber).sort()).toEqual([2, 3, 4, 5]);
+    expect(repository.pruneEncounterHistory(0, now)).toBe(0);
+  });
 });
