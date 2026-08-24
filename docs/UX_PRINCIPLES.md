@@ -3,7 +3,22 @@
 KikiLink should feel like a small, dependable part of Bondage Club rather than a
 second game layered over it. These principles guide interface work from 0.7.0 onward.
 
-## 1. Navigation is for places; buttons are for actions
+## 1. The first screen answers “what can I do now?”
+
+- Lead with one useful, context-aware next step rather than decoration or a forced tour.
+- Keep onboarding optional and embedded in the task; do not block the workspace with lessons.
+- Use strong verbs on actions and familiar nouns for destinations.
+- Limit Home to one suggested action and four stable tools so the important choices stand out.
+- Give empty states a short explanation and a direct first action.
+
+References:
+
+- [Microsoft Fluent onboarding](https://fluent2.microsoft.design/onboarding)
+- [W3C Avoid Too Much Content](https://www.w3.org/WAI/WCAG2/supplemental/patterns/o5p03-manageable-quantity/)
+- [Shopify Polaris empty state composition](https://shopify.dev/docs/api/app-home/patterns/compositions/empty-state)
+- [Apple onboarding guidance](https://developer.apple.com/design/human-interface-guidelines/onboarding)
+
+## 2. Navigation is for places; buttons are for actions
 
 - Keep the primary destinations few, stable, visible, and named with familiar words.
 - Use Home, Chat, Players, and Activities as the main information architecture.
@@ -16,7 +31,7 @@ References:
 - [Material bottom navigation](https://m2.material.io/components/bottom-navigation/)
 - [WAI navigation landmark example](https://www.w3.org/WAI/ARIA/apg/patterns/landmarks/examples/navigation.html)
 
-## 2. Keep context visible
+## 3. Keep context visible
 
 - Use the workspace for features people browse or use for more than a quick decision.
 - Reserve modal dialogs for short, focused tasks such as choosing a new chat contact.
@@ -28,12 +43,13 @@ References:
 - [Microsoft Fluent Drawer guidance](https://fluent2.microsoft.design/components/web/react/core/drawer/usage)
 - [WAI modal dialog pattern](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/)
 
-## 3. Personalization must change comfort, not just decoration
+## 4. Personalization must change comfort, not just decoration
 
 - Themes and accents express identity, but text size, density, motion, and simplification
   determine whether the interface remains comfortable over time.
 - Provide safe presets and preserve readable text for every custom accent.
-- Let people choose a Focused Home that removes nonessential artwork and descriptions.
+- Let people choose a Focused Home that removes the suggestion, nonessential artwork,
+  and supporting descriptions.
 - Remember stable preferences and the last settings category locally.
 
 References:
@@ -42,7 +58,7 @@ References:
 - [Apple settings guidance](https://developer.apple.com/design/human-interface-guidelines/settings)
 - [Apple accessibility guidance](https://developer.apple.com/design/human-interface-guidelines/accessibility/)
 
-## 4. Clarity beats cleverness
+## 5. Clarity beats cleverness
 
 - Keep visible labels beside controls; icons supplement words rather than replace them.
 - Prefer common names such as Settings, Chat, and Players in navigation.
@@ -54,7 +70,7 @@ References:
 - [W3C clear visible labels pattern](https://www.w3.org/WAI/WCAG2/supplemental/patterns/o4p06-clear-labels/)
 - [Microsoft Fluent accessibility guidance](https://fluent2.microsoft.design/accessibility)
 
-## 5. Every important interaction has more than one path
+## 6. Every important interaction has more than one path
 
 - Important pointer targets should be generous; all interactive targets must meet the
   WCAG 2.2 minimum or have sufficient spacing.
@@ -79,6 +95,7 @@ Before a UI release, verify:
 - Controls have nearby visible labels and useful accessible names.
 - Keyboard order follows the visual order and focus never becomes invisible.
 - Mobile controls are comfortable to tap and content reflows without horizontal page scroll.
+- Home never presents more than five prominent choices and its suggested action remains optional.
 - Default, Large, and Extra large text remain usable in both themes and both densities.
 - Reduced motion and system motion preferences are respected.
 - Custom accents keep readable foreground text.

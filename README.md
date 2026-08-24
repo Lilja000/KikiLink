@@ -11,13 +11,16 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.7.0` turns the Link Deck into a calmer, accessible, and deeply
-personalizable workspace built around clear destinations instead of stacked dialogs.
+Version `0.8.0` makes the first screen explain itself: Guided Home suggests one useful
+next step from the current context, while Focused Home keeps a clean four-tool deck.
 
 ## Link Deck
 
-- The floating emblem opens a polished feature home instead of dropping straight into chat
-- Live cards for LinkChat, LinkRoster, Activity Studio, and customization
+- The floating emblem opens a clear feature home instead of dropping straight into chat
+- Guided Home surfaces one useful next step: read unread Beeps, begin a first chat, view
+  the current room, or continue the most recent conversation
+- Four action-first cards use familiar names and visible verbs: Chat, Players, Activities,
+  and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
 - Four clear primary destinations: Home, Chat, Players, and Activities
 - Persistent feature rail on desktop and a focused four-item bottom bar on phones
@@ -25,7 +28,7 @@ personalizable workspace built around clear destinations instead of stacked dial
 - Settings is a full workspace with Appearance, Navigation, Chat, Players, and Activities categories
 - Configurable launcher behavior: open Home, the last section, or LinkChat directly
 - Dark lacquer, light paper, and system themes with five accent presets or any custom color
-- Comfortable or compact spacing, three text sizes, and Showcase or Focused Home styles
+- Comfortable or compact spacing, three text sizes, and Guided or Focused Home styles
 - Contrast-aware text on every custom accent color
 - Larger mobile tap targets, visible focus states, current-page semantics, and keyboard-friendly settings
 - A button to reset the launcher position without dragging it
@@ -78,10 +81,10 @@ character's items, pose, permissions, or game state.
 - Embedded KikiLink wolf, red moon, gold ring, and sakura emblem
 - Dark lacquer, light paper, and follow-system appearance modes
 - Red and gold design tokens shared by every LinkChat surface
-- Link Deck home with live feature status and quick access to every module
+- Link Deck home with a context-aware next step, live feature status, and clear action labels
 - Desktop side navigation that becomes a four-destination mobile bottom bar
 - Custom accent color and configurable launcher destination
-- Comfortable/compact density, three text sizes, and Showcase/Focused Home layouts
+- Comfortable/compact density, three text sizes, and Guided/Focused Home layouts
 - Draggable launcher with a saved position, button-based reset, configurable side, and reduced-motion mode
 - Full-page categorized settings that remember the last category
 - Accessible current-location, focus, live-status, and error semantics

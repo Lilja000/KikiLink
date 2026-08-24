@@ -135,6 +135,20 @@ describe("LinkChatView", () => {
     });
     expect(shadow?.querySelector(".kl-home-statuses")?.textContent).toContain("Moon Garden");
     expect(shadow?.querySelectorAll(".kl-feature-card")).toHaveLength(4);
+    expect(shadow?.querySelector(".kl-home-next-title")?.textContent).toBe(
+      "Start your first chat",
+    );
+    expect(shadow?.querySelector(".kl-home-next-button")?.textContent).toBe("Start a chat");
+    expect(
+      [...(shadow?.querySelectorAll(".kl-feature-card-title") ?? [])].map(
+        (title) => title.textContent,
+      ),
+    ).toEqual(["Chat", "Players", "Activities", "Settings"]);
+    expect(
+      [...(shadow?.querySelectorAll(".kl-feature-card-action") ?? [])].map(
+        (action) => action.textContent,
+      ),
+    ).toEqual(["Open Chat", "View players", "Turn on Activities", "Customize"]);
     expect(shadow?.querySelector('.kl-nav-item[data-target="home"]')?.getAttribute("data-active")).toBe(
       "true",
     );
@@ -196,6 +210,55 @@ describe("LinkChatView", () => {
         "chat",
       );
     });
+    view.destroy();
+  });
+
+  it("prioritizes unread Beeps on Home and opens the suggested conversation", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: (memberNumber: number) => (memberNumber === 123 ? "Reina" : undefined),
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getCurrentRoomName: () => undefined,
+      getRoomCharacters: () => [],
+      isInChatRoom: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 123,
+        peerName: "Reina",
+        content: "Hello",
+        sentAt: Date.now(),
+        includeRoom: false,
+      },
+      false,
+    );
+    const view = new LinkChatView(adapter, service, settings, "0.8.0");
+    view.mount();
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".kl-launcher")?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-home-next-title")?.textContent).toBe("1 unread Beep");
+    });
+    expect(shadow?.querySelector(".kl-home-next-description")?.textContent).toContain("Reina");
+    expect(shadow?.querySelector(".kl-home-next-button")?.textContent).toBe("Read message");
+
+    shadow?.querySelector<HTMLButtonElement>(".kl-home-next-button")?.click();
+    await vi.waitFor(() => {
+      expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+        "chat",
+      );
+      expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Reina");
+    });
+    expect(await service.totalUnread()).toBe(0);
     view.destroy();
   });
 

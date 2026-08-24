@@ -25,6 +25,12 @@ import KIKILINK_EMBLEM_DATA_URL from "../../../design/references/3929.png";
 type WorkspaceView = "home" | "chat" | "roster" | "activities" | "settings";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
 type FeatureTarget = WorkspaceView;
+type HomeAction =
+  | { kind: "new-chat" }
+  | { kind: "chat"; peerNumber?: number; peerName?: string }
+  | { kind: "roster" }
+  | { kind: "activities" }
+  | { kind: "settings" };
 
 export class LinkChatView {
   readonly #host = document.createElement("div");
@@ -77,12 +83,22 @@ export class LinkChatView {
     ariaLabel: "Open KikiLink settings",
   });
   readonly #homeGreeting = element("h1", { className: "kl-home-title" });
+  readonly #homeActionIcon = element("span", { className: "kl-home-next-icon" });
+  readonly #homeActionTitle = element("h2", { className: "kl-home-next-title" });
+  readonly #homeActionDescription = element("p", { className: "kl-home-next-description" });
+  readonly #homeActionMeta = element("span", { className: "kl-home-next-meta" });
+  readonly #homeActionButton = element("button", {
+    className: "kl-text-button kl-text-button--primary kl-home-next-button",
+    type: "button",
+  });
   readonly #homeConnection = element("span", { className: "kl-home-status-value" });
   readonly #homeRoom = element("span", { className: "kl-home-status-value" });
   readonly #homeChatMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeRosterMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeActivitiesMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeSettingsMetric = element("span", { className: "kl-feature-card-metric" });
+  readonly #homeRosterAction = element("span", { className: "kl-feature-card-action" });
+  readonly #homeActivitiesAction = element("span", { className: "kl-feature-card-action" });
   readonly #homeRosterCard = element("button", {
     className: "kl-feature-card",
     type: "button",
@@ -224,6 +240,7 @@ export class LinkChatView {
   #notebookDirty = false;
   #mounted = false;
   #connectionState: BCConnectionState = "connecting";
+  #homeAction: HomeAction = { kind: "new-chat" };
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #launcherDrag:
     | {
@@ -380,6 +397,7 @@ export class LinkChatView {
       ? `LinkRoster · ${result.presentCount} in room`
       : "LinkRoster";
     this.#renderHomeStatus();
+    void this.#renderHome();
     if (this.#workspaceView === "roster" && result.changed) this.#renderRoster();
   }
 
@@ -560,17 +578,46 @@ export class LinkChatView {
   }
 
   #buildHome(): void {
+    this.#homeActionTitle.id = "kikilink-home-next-title";
+    this.#homeActionButton.addEventListener("click", () => void this.#runHomeAction());
+    const nextStep = element(
+      "section",
+      { className: "kl-home-next", ariaLabel: "Suggested next step" },
+      this.#homeActionIcon,
+      element(
+        "div",
+        { className: "kl-home-next-copy" },
+        element("div", { className: "kl-home-next-kicker", text: "SUGGESTED NEXT STEP" }),
+        this.#homeActionTitle,
+        this.#homeActionDescription,
+      ),
+      element(
+        "div",
+        { className: "kl-home-next-footer" },
+        this.#homeActionMeta,
+        this.#homeActionButton,
+      ),
+    );
+    nextStep.setAttribute("aria-labelledby", this.#homeActionTitle.id);
+
+    const homeMark = element(
+      "div",
+      { className: "kl-home-mark" },
+      this.#emblem("kl-home-emblem"),
+      element("span", { className: "kl-home-orbit" }),
+    );
+    homeMark.setAttribute("aria-hidden", "true");
     const hero = element(
       "header",
       { className: "kl-home-hero" },
       element(
         "div",
         { className: "kl-home-hero-copy" },
-        element("div", { className: "kl-home-eyebrow", text: "YOUR PERSONAL LINK DECK" }),
+        element("div", { className: "kl-home-eyebrow", text: "KIKILINK HOME" }),
         this.#homeGreeting,
         element("p", {
           className: "kl-home-lead",
-          text: "Chats, people, room tools, and your preferences — connected in one place.",
+          text: "Your Beeps and room tools, organized around what you want to do next.",
         }),
         element(
           "div",
@@ -579,12 +626,8 @@ export class LinkChatView {
           this.#homeStatus("Current room", this.#homeRoom),
         ),
       ),
-      element(
-        "div",
-        { className: "kl-home-mark", ariaLabel: "KikiLink emblem" },
-        this.#emblem("kl-home-emblem"),
-        element("span", { className: "kl-home-orbit" }),
-      ),
+      nextStep,
+      homeMark,
     );
 
     const chatCard = element("button", {
@@ -596,27 +639,30 @@ export class LinkChatView {
     this.#fillFeatureCard(
       chatCard,
       "↔",
-      "MESSAGES",
-      "LinkChat",
-      "Recent Beeps, pinned conversations, drafts, and quick actions.",
+      "START OR CONTINUE",
+      "Chat",
+      "Read recent Beeps, find conversations, and send a message.",
       this.#homeChatMetric,
+      element("span", { className: "kl-feature-card-action", text: "Open Chat" }),
     );
     this.#fillFeatureCard(
       this.#homeRosterCard,
       "☷",
-      "PEOPLE",
-      "LinkRoster",
-      "See who is here, Whisper instantly, and keep private notes.",
+      "SEE WHO IS HERE",
+      "Players",
+      "Find people in the room, Whisper, and keep private notes.",
       this.#homeRosterMetric,
+      this.#homeRosterAction,
     );
     this.#homeRosterCard.addEventListener("click", () => this.#activateFeature("roster"));
     this.#fillFeatureCard(
       this.#homeActivitiesCard,
       "✦",
-      "ROOM TOOLS",
-      "Activity Studio",
-      "Your optional library of reusable room emotes.",
+      "EXPRESS YOURSELF",
+      "Activities",
+      "Choose a reusable room emote and preview it before sending.",
       this.#homeActivitiesMetric,
+      this.#homeActivitiesAction,
     );
     this.#homeActivitiesCard.addEventListener("click", () => this.#activateFeature("activities"));
     const settingsCard = element("button", {
@@ -628,14 +674,24 @@ export class LinkChatView {
     this.#fillFeatureCard(
       settingsCard,
       "⚙",
-      "YOUR SPACE",
+      "MAKE IT YOURS",
       "Settings",
-      "Theme, accent, launcher behavior, privacy, and feature controls.",
+      "Adjust the look, comfort, launcher, privacy, and optional tools.",
       this.#homeSettingsMetric,
+      element("span", { className: "kl-feature-card-action", text: "Customize" }),
+    );
+    const sectionHeading = element(
+      "div",
+      { className: "kl-home-section-heading" },
+      element("h2", { text: "Choose a tool" }),
+      element("p", {
+        className: "kl-home-section-description",
+        text: "Four clear destinations. Home always brings you back here.",
+      }),
     );
     const cards = element(
-      "div",
-      { className: "kl-feature-grid" },
+      "section",
+      { className: "kl-feature-grid", ariaLabel: "KikiLink tools" },
       chatCard,
       this.#homeRosterCard,
       this.#homeActivitiesCard,
@@ -651,7 +707,7 @@ export class LinkChatView {
         "Private by design · chats, notes, favorites, and preferences stay in this browser.",
       ),
     );
-    this.#home.append(hero, cards, privacy);
+    this.#home.append(hero, sectionHeading, cards, privacy);
   }
 
   #homeStatus(label: string, value: HTMLElement): HTMLDivElement {
@@ -670,6 +726,7 @@ export class LinkChatView {
     title: string,
     description: string,
     metric: HTMLElement,
+    action: HTMLElement,
   ): void {
     card.replaceChildren(
       element("span", { className: "kl-feature-card-icon", text: icon }),
@@ -684,9 +741,26 @@ export class LinkChatView {
         "span",
         { className: "kl-feature-card-footer" },
         metric,
-        element("span", { className: "kl-feature-card-arrow", text: "↗" }),
+        action,
       ),
     );
+  }
+
+  async #runHomeAction(): Promise<void> {
+    const action = this.#homeAction;
+    if (action.kind === "new-chat") {
+      this.#openNewChat();
+      return;
+    }
+    if (action.kind === "chat") {
+      if (action.peerNumber !== undefined) {
+        await this.openChat(action.peerNumber, action.peerName);
+      } else {
+        this.#activateFeature("chat");
+      }
+      return;
+    }
+    this.#activateFeature(action.kind);
   }
 
   #showWorkspace(view: WorkspaceView, remember = true): void {
@@ -872,14 +946,14 @@ export class LinkChatView {
     );
 
     this.#homeLayoutSelect.replaceChildren(
-      selectOption("showcase", "Showcase"),
+      selectOption("showcase", "Guided"),
       selectOption("compact", "Focused"),
     );
     this.#homeLayoutSelect.dataset.setting = "home-layout";
     this.#homeLayoutSelect.setAttribute("aria-label", "Home style");
     const homeLayout = this.#settingRow(
       "Home style",
-      "Showcase includes the welcome artwork; Focused removes decoration and descriptions.",
+      "Guided suggests a useful next step; Focused keeps only the essentials.",
       this.#homeLayoutSelect,
     );
 
@@ -1853,6 +1927,79 @@ export class LinkChatView {
       this.#homeChatMetric.textContent = "Start your first Beep chat";
     }
     this.#renderHomeStatus();
+    this.#renderHomeAction(conversations, recent);
+  }
+
+  #renderHomeAction(
+    conversations: ConversationMeta[],
+    recent: ConversationMeta | undefined,
+  ): void {
+    const unread = conversations.find((conversation) => conversation.unread > 0);
+    const settings = this.settings.get();
+    const inRoom =
+      typeof this.adapter.isInChatRoom === "function" && this.adapter.isInChatRoom();
+    const roomName =
+      typeof this.adapter.getCurrentRoomName === "function"
+        ? this.adapter.getCurrentRoomName()?.trim()
+        : undefined;
+
+    this.#homeActionButton.disabled = false;
+    if (unread) {
+      const total = Math.max(
+        this.#unreadCount,
+        conversations.reduce((count, conversation) => count + conversation.unread, 0),
+      );
+      this.#homeAction = {
+        kind: "chat",
+        peerNumber: unread.peerNumber,
+        peerName: unread.peerName,
+      };
+      this.#homeActionIcon.textContent = "↔";
+      this.#homeActionTitle.textContent = `${total} unread ${total === 1 ? "Beep" : "Beeps"}`;
+      this.#homeActionDescription.textContent =
+        total === unread.unread
+          ? `Open the conversation with ${unread.peerName} and continue when you are ready.`
+          : `Start with ${unread.peerName}, then work through the rest at your pace.`;
+      this.#homeActionMeta.textContent =
+        total === unread.unread ? `From ${unread.peerName}` : "Across recent chats";
+      this.#homeActionButton.textContent = total === 1 ? "Read message" : "Read messages";
+    } else if (conversations.length === 0) {
+      this.#homeAction = { kind: "new-chat" };
+      this.#homeActionIcon.textContent = "+";
+      this.#homeActionTitle.textContent = "Start your first chat";
+      this.#homeActionDescription.textContent =
+        "Choose someone you know or enter a member number. KikiLink keeps the conversation together.";
+      this.#homeActionMeta.textContent = "Takes only a moment";
+      this.#homeActionButton.textContent = "Start a chat";
+    } else if (settings.linkRoster.enabled && inRoom && this.#presentCount > 0) {
+      this.#homeAction = { kind: "roster" };
+      this.#homeActionIcon.textContent = "☷";
+      this.#homeActionTitle.textContent = roomName ? `See who is in ${roomName}` : "See who is here";
+      this.#homeActionDescription.textContent =
+        "Open Players to Whisper, Beep, view a profile, or add a private note.";
+      this.#homeActionMeta.textContent = `${this.#presentCount} ${this.#presentCount === 1 ? "person" : "people"} here now`;
+      this.#homeActionButton.textContent = "View players";
+    } else if (recent) {
+      this.#homeAction = {
+        kind: "chat",
+        peerNumber: recent.peerNumber,
+        peerName: recent.peerName,
+      };
+      this.#homeActionIcon.textContent = "↔";
+      this.#homeActionTitle.textContent = `Continue with ${recent.peerName}`;
+      this.#homeActionDescription.textContent = "Pick up your most recent Beep conversation.";
+      this.#homeActionMeta.textContent =
+        recent.lastMessageAt > 0 ? formatRelativeTime(recent.lastMessageAt) : "Conversation ready";
+      this.#homeActionButton.textContent = "Open chat";
+    } else {
+      this.#homeAction = { kind: "chat" };
+      this.#homeActionIcon.textContent = "↔";
+      this.#homeActionTitle.textContent = "Open your chats";
+      this.#homeActionDescription.textContent = "Find a conversation or start a new Beep.";
+      this.#homeActionMeta.textContent = "Recent chats are kept together";
+      this.#homeActionButton.textContent = "Open Chat";
+    }
+    this.#homeActionButton.dataset.action = this.#homeAction.kind;
   }
 
   #renderHomeStatus(): void {
@@ -1876,12 +2023,16 @@ export class LinkChatView {
           ? "No other players in this room"
           : "Open while you are in a room"
       : "Disabled · tap to enable";
+    this.#homeRosterAction.textContent = settings.linkRoster.enabled ? "View players" : "Turn on Players";
 
     this.#activitiesButton.dataset.available = String(settings.linkActivities.enabled);
     this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
     this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled
       ? `${settings.linkActivities.activities.length} saved ${settings.linkActivities.activities.length === 1 ? "activity" : "activities"}`
       : "Optional · tap to enable";
+    this.#homeActivitiesAction.textContent = settings.linkActivities.enabled
+      ? "Choose activity"
+      : "Turn on Activities";
 
     const themeLabel =
       settings.ui.theme === "light"
@@ -2377,6 +2528,7 @@ export class LinkChatView {
     this.#applyTheme(settings);
     this.#renderQuickActions();
     this.#renderHomeStatus();
+    void this.#renderHome();
     this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView, settings));
     void this.service.prune();
     this.#toast("Settings saved.");

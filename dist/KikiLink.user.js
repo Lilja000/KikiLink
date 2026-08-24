@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.7.0
+// @version      0.8.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -1890,11 +1890,11 @@ button { color: inherit; }
 
 .kl-home-hero {
   position: relative;
-  min-height: 190px;
+  min-height: 214px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 176px;
+  grid-template-columns: minmax(230px, 0.82fr) minmax(330px, 1.18fr);
   align-items: center;
-  gap: 28px;
+  gap: clamp(20px, 3vw, 34px);
   margin-bottom: 22px;
   padding: 25px 28px;
   overflow: hidden;
@@ -1914,9 +1914,10 @@ button { color: inherit; }
   height: 1px;
   background: linear-gradient(90deg, var(--kl-accent), var(--kl-gold), transparent);
 }
-.kl-home-hero-copy { position: relative; z-index: 1; min-width: 0; }
+.kl-home-hero-copy { position: relative; z-index: 2; min-width: 0; }
 .kl-home-eyebrow,
-.kl-feature-card-kicker {
+.kl-feature-card-kicker,
+.kl-home-next-kicker {
   color: var(--kl-gold);
   font-size: var(--kl-type-xxs);
   font-weight: 900;
@@ -1946,7 +1947,16 @@ button { color: inherit; }
 .kl-home-status-value { font-weight: 780; }
 .kl-home-status-value[data-state="ready"] { color: #68d391; }
 .kl-home-status-value[data-state="error"] { color: var(--kl-danger); }
-.kl-home-mark { position: relative; width: 150px; height: 150px; place-self: center; }
+.kl-home-mark {
+  position: absolute;
+  left: 23%;
+  bottom: -28px;
+  width: 128px;
+  height: 128px;
+  opacity: 0.13;
+  pointer-events: none;
+  transform: rotate(-8deg);
+}
 .kl-home-emblem {
   position: absolute;
   inset: 14px;
@@ -1973,6 +1983,86 @@ button { color: inherit; }
   border-radius: 50%;
   background: var(--kl-accent);
   box-shadow: 0 0 14px color-mix(in srgb, var(--kl-accent), transparent 28%);
+}
+
+.kl-home-next {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 13px 15px;
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--kl-accent), var(--kl-gold) 26%);
+  border-radius: 19px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--kl-accent), transparent 80%), transparent 68%),
+    color-mix(in srgb, var(--kl-surface-2), transparent 5%);
+  box-shadow: 0 16px 35px rgba(0, 0, 0, 0.12);
+}
+.kl-home-next-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--kl-gold), transparent 36%);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--kl-surface), transparent 7%);
+  color: var(--kl-gold);
+  font-size: 22px;
+  font-weight: 850;
+}
+.kl-home-next-copy { min-width: 0; }
+.kl-home-next-title {
+  margin: 4px 0 3px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(20px, 2.3vw, 27px);
+  line-height: 1.12;
+}
+.kl-home-next-description {
+  max-width: 480px;
+  margin: 0;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-sm);
+}
+.kl-home-next-footer {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--kl-border);
+}
+.kl-home-next-meta {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--kl-meta);
+  font-size: var(--kl-type-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kl-home-next-button { flex: 0 0 auto; }
+
+.kl-home-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 0 2px 10px;
+}
+.kl-home-section-heading h2 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: var(--kl-type-xl);
+}
+.kl-home-section-heading p {
+  margin: 0;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-xs);
+  text-align: right;
 }
 
 .kl-feature-grid {
@@ -2063,7 +2153,15 @@ button { color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.kl-feature-card-arrow { margin-left: auto; color: var(--kl-gold); font-size: 14px; }
+.kl-feature-card-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--kl-gold);
+  font-size: var(--kl-type-xs);
+  font-weight: 820;
+  white-space: nowrap;
+}
+.kl-feature-card-action::after { content: " \u2192"; }
 .kl-home-privacy {
   display: flex;
   align-items: center;
@@ -2083,8 +2181,9 @@ button { color: inherit; }
   padding-block: 18px;
 }
 :host([data-home-layout="compact"]) .kl-home-mark,
-:host([data-home-layout="compact"]) .kl-home-eyebrow,
+:host([data-home-layout="compact"]) .kl-home-next,
 :host([data-home-layout="compact"]) .kl-home-lead,
+:host([data-home-layout="compact"]) .kl-home-section-description,
 :host([data-home-layout="compact"]) .kl-feature-card-description { display: none; }
 :host([data-home-layout="compact"]) .kl-feature-card {
   min-height: 112px;
@@ -2094,7 +2193,8 @@ button { color: inherit; }
 :host([data-density="compact"]) .kl-feature-nav { gap: 4px; padding-block: 9px; }
 :host([data-density="compact"]) .kl-nav-item { min-height: 52px; }
 :host([data-density="compact"]) .kl-home { padding: 18px; }
-:host([data-density="compact"]) .kl-home-hero { min-height: 160px; margin-bottom: 14px; padding: 19px 22px; }
+:host([data-density="compact"]) .kl-home-hero { min-height: 176px; margin-bottom: 14px; padding: 19px 22px; }
+:host([data-density="compact"]) .kl-home-next { padding: 15px; }
 :host([data-density="compact"]) .kl-feature-card { min-height: 126px; padding: 14px; }
 :host([data-density="compact"]) .kl-conversation { padding-block: 7px; }
 :host([data-density="compact"]) .kl-settings-panel { padding-top: 18px; }
@@ -2797,15 +2897,17 @@ select:focus-visible {
   .kl-roster-count { top: 1px; right: calc(50% - 25px); }
   .kl-home { padding: 18px; }
   .kl-home-hero {
-    min-height: 174px;
-    grid-template-columns: minmax(0, 1fr) 122px;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
     padding: 21px;
     border-radius: 19px;
   }
-  .kl-home-mark { width: 110px; height: 110px; }
+  .kl-home-mark { left: auto; right: 24px; bottom: auto; top: 18px; width: 110px; height: 110px; }
   .kl-home-emblem { inset: 11px; border-radius: 28px; }
   .kl-home-title { font-size: clamp(23px, 7vw, 31px); }
+  .kl-home-section-heading { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .kl-home-section-heading p { text-align: left; }
   .kl-feature-card { min-height: 142px; padding: 15px; }
   .kl-layout { grid-template-columns: minmax(0, 1fr); }
   .kl-sidebar { width: auto; border-right: 0; }
@@ -2884,6 +2986,10 @@ select:focus-visible {
   .kl-home { padding: 12px; }
   .kl-home-hero { min-height: 0; grid-template-columns: minmax(0, 1fr); margin-bottom: 10px; padding: 18px; }
   .kl-home-mark { display: none; }
+  .kl-home-next { grid-template-columns: 42px minmax(0, 1fr); gap: 11px; padding: 14px; }
+  .kl-home-next-icon { width: 42px; height: 42px; border-radius: 13px; font-size: 19px; }
+  .kl-home-next-footer { align-items: stretch; flex-direction: column; }
+  .kl-home-next-button { width: 100%; }
   .kl-home-lead { font-size: var(--kl-type-sm); }
   .kl-home-statuses { margin-top: 13px; }
   .kl-home-status { max-width: 100%; }
@@ -2996,12 +3102,22 @@ select:focus-visible {
       ariaLabel: "Open KikiLink settings"
     });
     #homeGreeting = element("h1", { className: "kl-home-title" });
+    #homeActionIcon = element("span", { className: "kl-home-next-icon" });
+    #homeActionTitle = element("h2", { className: "kl-home-next-title" });
+    #homeActionDescription = element("p", { className: "kl-home-next-description" });
+    #homeActionMeta = element("span", { className: "kl-home-next-meta" });
+    #homeActionButton = element("button", {
+      className: "kl-text-button kl-text-button--primary kl-home-next-button",
+      type: "button"
+    });
     #homeConnection = element("span", { className: "kl-home-status-value" });
     #homeRoom = element("span", { className: "kl-home-status-value" });
     #homeChatMetric = element("span", { className: "kl-feature-card-metric" });
     #homeRosterMetric = element("span", { className: "kl-feature-card-metric" });
     #homeActivitiesMetric = element("span", { className: "kl-feature-card-metric" });
     #homeSettingsMetric = element("span", { className: "kl-feature-card-metric" });
+    #homeRosterAction = element("span", { className: "kl-feature-card-action" });
+    #homeActivitiesAction = element("span", { className: "kl-feature-card-action" });
     #homeRosterCard = element("button", {
       className: "kl-feature-card",
       type: "button",
@@ -3143,6 +3259,7 @@ select:focus-visible {
     #notebookDirty = false;
     #mounted = false;
     #connectionState = "connecting";
+    #homeAction = { kind: "new-chat" };
     #toastTimer;
     #launcherDrag;
     #suppressLauncherClickUntil = 0;
@@ -3245,6 +3362,7 @@ select:focus-visible {
       this.#rosterCount.textContent = result.presentCount > 99 ? "99+" : result.presentCount.toString();
       this.#rosterButton.title = result.presentCount ? `LinkRoster \xB7 ${result.presentCount} in room` : "LinkRoster";
       this.#renderHomeStatus();
+      void this.#renderHome();
       if (this.#workspaceView === "roster" && result.changed) this.#renderRoster();
     }
     async refresh() {
@@ -3409,17 +3527,45 @@ select:focus-visible {
       this.#openSettings();
     }
     #buildHome() {
+      this.#homeActionTitle.id = "kikilink-home-next-title";
+      this.#homeActionButton.addEventListener("click", () => void this.#runHomeAction());
+      const nextStep = element(
+        "section",
+        { className: "kl-home-next", ariaLabel: "Suggested next step" },
+        this.#homeActionIcon,
+        element(
+          "div",
+          { className: "kl-home-next-copy" },
+          element("div", { className: "kl-home-next-kicker", text: "SUGGESTED NEXT STEP" }),
+          this.#homeActionTitle,
+          this.#homeActionDescription
+        ),
+        element(
+          "div",
+          { className: "kl-home-next-footer" },
+          this.#homeActionMeta,
+          this.#homeActionButton
+        )
+      );
+      nextStep.setAttribute("aria-labelledby", this.#homeActionTitle.id);
+      const homeMark = element(
+        "div",
+        { className: "kl-home-mark" },
+        this.#emblem("kl-home-emblem"),
+        element("span", { className: "kl-home-orbit" })
+      );
+      homeMark.setAttribute("aria-hidden", "true");
       const hero = element(
         "header",
         { className: "kl-home-hero" },
         element(
           "div",
           { className: "kl-home-hero-copy" },
-          element("div", { className: "kl-home-eyebrow", text: "YOUR PERSONAL LINK DECK" }),
+          element("div", { className: "kl-home-eyebrow", text: "KIKILINK HOME" }),
           this.#homeGreeting,
           element("p", {
             className: "kl-home-lead",
-            text: "Chats, people, room tools, and your preferences \u2014 connected in one place."
+            text: "Your Beeps and room tools, organized around what you want to do next."
           }),
           element(
             "div",
@@ -3428,12 +3574,8 @@ select:focus-visible {
             this.#homeStatus("Current room", this.#homeRoom)
           )
         ),
-        element(
-          "div",
-          { className: "kl-home-mark", ariaLabel: "KikiLink emblem" },
-          this.#emblem("kl-home-emblem"),
-          element("span", { className: "kl-home-orbit" })
-        )
+        nextStep,
+        homeMark
       );
       const chatCard = element("button", {
         className: "kl-feature-card kl-feature-card--primary",
@@ -3444,27 +3586,30 @@ select:focus-visible {
       this.#fillFeatureCard(
         chatCard,
         "\u2194",
-        "MESSAGES",
-        "LinkChat",
-        "Recent Beeps, pinned conversations, drafts, and quick actions.",
-        this.#homeChatMetric
+        "START OR CONTINUE",
+        "Chat",
+        "Read recent Beeps, find conversations, and send a message.",
+        this.#homeChatMetric,
+        element("span", { className: "kl-feature-card-action", text: "Open Chat" })
       );
       this.#fillFeatureCard(
         this.#homeRosterCard,
         "\u2637",
-        "PEOPLE",
-        "LinkRoster",
-        "See who is here, Whisper instantly, and keep private notes.",
-        this.#homeRosterMetric
+        "SEE WHO IS HERE",
+        "Players",
+        "Find people in the room, Whisper, and keep private notes.",
+        this.#homeRosterMetric,
+        this.#homeRosterAction
       );
       this.#homeRosterCard.addEventListener("click", () => this.#activateFeature("roster"));
       this.#fillFeatureCard(
         this.#homeActivitiesCard,
         "\u2726",
-        "ROOM TOOLS",
-        "Activity Studio",
-        "Your optional library of reusable room emotes.",
-        this.#homeActivitiesMetric
+        "EXPRESS YOURSELF",
+        "Activities",
+        "Choose a reusable room emote and preview it before sending.",
+        this.#homeActivitiesMetric,
+        this.#homeActivitiesAction
       );
       this.#homeActivitiesCard.addEventListener("click", () => this.#activateFeature("activities"));
       const settingsCard = element("button", {
@@ -3476,14 +3621,24 @@ select:focus-visible {
       this.#fillFeatureCard(
         settingsCard,
         "\u2699",
-        "YOUR SPACE",
+        "MAKE IT YOURS",
         "Settings",
-        "Theme, accent, launcher behavior, privacy, and feature controls.",
-        this.#homeSettingsMetric
+        "Adjust the look, comfort, launcher, privacy, and optional tools.",
+        this.#homeSettingsMetric,
+        element("span", { className: "kl-feature-card-action", text: "Customize" })
+      );
+      const sectionHeading = element(
+        "div",
+        { className: "kl-home-section-heading" },
+        element("h2", { text: "Choose a tool" }),
+        element("p", {
+          className: "kl-home-section-description",
+          text: "Four clear destinations. Home always brings you back here."
+        })
       );
       const cards = element(
-        "div",
-        { className: "kl-feature-grid" },
+        "section",
+        { className: "kl-feature-grid", ariaLabel: "KikiLink tools" },
         chatCard,
         this.#homeRosterCard,
         this.#homeActivitiesCard,
@@ -3499,7 +3654,7 @@ select:focus-visible {
           "Private by design \xB7 chats, notes, favorites, and preferences stay in this browser."
         )
       );
-      this.#home.append(hero, cards, privacy);
+      this.#home.append(hero, sectionHeading, cards, privacy);
     }
     #homeStatus(label, value) {
       return element(
@@ -3509,7 +3664,7 @@ select:focus-visible {
         value
       );
     }
-    #fillFeatureCard(card, icon, kicker, title, description, metric) {
+    #fillFeatureCard(card, icon, kicker, title, description, metric, action) {
       card.replaceChildren(
         element("span", { className: "kl-feature-card-icon", text: icon }),
         element(
@@ -3523,9 +3678,25 @@ select:focus-visible {
           "span",
           { className: "kl-feature-card-footer" },
           metric,
-          element("span", { className: "kl-feature-card-arrow", text: "\u2197" })
+          action
         )
       );
+    }
+    async #runHomeAction() {
+      const action = this.#homeAction;
+      if (action.kind === "new-chat") {
+        this.#openNewChat();
+        return;
+      }
+      if (action.kind === "chat") {
+        if (action.peerNumber !== void 0) {
+          await this.openChat(action.peerNumber, action.peerName);
+        } else {
+          this.#activateFeature("chat");
+        }
+        return;
+      }
+      this.#activateFeature(action.kind);
     }
     #showWorkspace(view, remember = true) {
       if (this.#workspaceView === "roster" && view !== "roster") this.#saveNotebook(false);
@@ -3692,14 +3863,14 @@ select:focus-visible {
         this.#textScaleSelect
       );
       this.#homeLayoutSelect.replaceChildren(
-        selectOption("showcase", "Showcase"),
+        selectOption("showcase", "Guided"),
         selectOption("compact", "Focused")
       );
       this.#homeLayoutSelect.dataset.setting = "home-layout";
       this.#homeLayoutSelect.setAttribute("aria-label", "Home style");
       const homeLayout = this.#settingRow(
         "Home style",
-        "Showcase includes the welcome artwork; Focused removes decoration and descriptions.",
+        "Guided suggests a useful next step; Focused keeps only the essentials.",
         this.#homeLayoutSelect
       );
       this.#launcherSideSelect.replaceChildren(
@@ -4582,6 +4753,63 @@ select:focus-visible {
         this.#homeChatMetric.textContent = "Start your first Beep chat";
       }
       this.#renderHomeStatus();
+      this.#renderHomeAction(conversations, recent);
+    }
+    #renderHomeAction(conversations, recent) {
+      const unread = conversations.find((conversation) => conversation.unread > 0);
+      const settings = this.settings.get();
+      const inRoom = typeof this.adapter.isInChatRoom === "function" && this.adapter.isInChatRoom();
+      const roomName = typeof this.adapter.getCurrentRoomName === "function" ? this.adapter.getCurrentRoomName()?.trim() : void 0;
+      this.#homeActionButton.disabled = false;
+      if (unread) {
+        const total = Math.max(
+          this.#unreadCount,
+          conversations.reduce((count, conversation) => count + conversation.unread, 0)
+        );
+        this.#homeAction = {
+          kind: "chat",
+          peerNumber: unread.peerNumber,
+          peerName: unread.peerName
+        };
+        this.#homeActionIcon.textContent = "\u2194";
+        this.#homeActionTitle.textContent = `${total} unread ${total === 1 ? "Beep" : "Beeps"}`;
+        this.#homeActionDescription.textContent = total === unread.unread ? `Open the conversation with ${unread.peerName} and continue when you are ready.` : `Start with ${unread.peerName}, then work through the rest at your pace.`;
+        this.#homeActionMeta.textContent = total === unread.unread ? `From ${unread.peerName}` : "Across recent chats";
+        this.#homeActionButton.textContent = total === 1 ? "Read message" : "Read messages";
+      } else if (conversations.length === 0) {
+        this.#homeAction = { kind: "new-chat" };
+        this.#homeActionIcon.textContent = "+";
+        this.#homeActionTitle.textContent = "Start your first chat";
+        this.#homeActionDescription.textContent = "Choose someone you know or enter a member number. KikiLink keeps the conversation together.";
+        this.#homeActionMeta.textContent = "Takes only a moment";
+        this.#homeActionButton.textContent = "Start a chat";
+      } else if (settings.linkRoster.enabled && inRoom && this.#presentCount > 0) {
+        this.#homeAction = { kind: "roster" };
+        this.#homeActionIcon.textContent = "\u2637";
+        this.#homeActionTitle.textContent = roomName ? `See who is in ${roomName}` : "See who is here";
+        this.#homeActionDescription.textContent = "Open Players to Whisper, Beep, view a profile, or add a private note.";
+        this.#homeActionMeta.textContent = `${this.#presentCount} ${this.#presentCount === 1 ? "person" : "people"} here now`;
+        this.#homeActionButton.textContent = "View players";
+      } else if (recent) {
+        this.#homeAction = {
+          kind: "chat",
+          peerNumber: recent.peerNumber,
+          peerName: recent.peerName
+        };
+        this.#homeActionIcon.textContent = "\u2194";
+        this.#homeActionTitle.textContent = `Continue with ${recent.peerName}`;
+        this.#homeActionDescription.textContent = "Pick up your most recent Beep conversation.";
+        this.#homeActionMeta.textContent = recent.lastMessageAt > 0 ? formatRelativeTime(recent.lastMessageAt) : "Conversation ready";
+        this.#homeActionButton.textContent = "Open chat";
+      } else {
+        this.#homeAction = { kind: "chat" };
+        this.#homeActionIcon.textContent = "\u2194";
+        this.#homeActionTitle.textContent = "Open your chats";
+        this.#homeActionDescription.textContent = "Find a conversation or start a new Beep.";
+        this.#homeActionMeta.textContent = "Recent chats are kept together";
+        this.#homeActionButton.textContent = "Open Chat";
+      }
+      this.#homeActionButton.dataset.action = this.#homeAction.kind;
     }
     #renderHomeStatus() {
       const settings = this.settings.get();
@@ -4593,9 +4821,11 @@ select:focus-visible {
       this.#rosterButton.dataset.available = String(settings.linkRoster.enabled);
       this.#homeRosterCard.dataset.available = String(settings.linkRoster.enabled);
       this.#homeRosterMetric.textContent = settings.linkRoster.enabled ? this.#presentCount > 0 ? `${this.#presentCount} ${this.#presentCount === 1 ? "person" : "people"} here now` : inRoom ? "No other players in this room" : "Open while you are in a room" : "Disabled \xB7 tap to enable";
+      this.#homeRosterAction.textContent = settings.linkRoster.enabled ? "View players" : "Turn on Players";
       this.#activitiesButton.dataset.available = String(settings.linkActivities.enabled);
       this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
       this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled ? `${settings.linkActivities.activities.length} saved ${settings.linkActivities.activities.length === 1 ? "activity" : "activities"}` : "Optional \xB7 tap to enable";
+      this.#homeActivitiesAction.textContent = settings.linkActivities.enabled ? "Choose activity" : "Turn on Activities";
       const themeLabel = settings.ui.theme === "light" ? "Light paper" : settings.ui.theme === "system" ? "System theme" : "Dark lacquer";
       const comfortLabel = settings.ui.density === "compact" ? "Compact" : "Comfortable";
       this.#homeSettingsMetric.textContent = `${themeLabel} \xB7 ${comfortLabel} \xB7 ${settings.ui.accent.toUpperCase()}`;
@@ -5008,6 +5238,7 @@ ${expanded}` : expanded;
       this.#applyTheme(settings);
       this.#renderQuickActions();
       this.#renderHomeStatus();
+      void this.#renderHome();
       this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView, settings));
       void this.service.prune();
       this.#toast("Settings saved.");
@@ -5759,7 +5990,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.7.0");
+    const app = new KikiLinkApp("0.8.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

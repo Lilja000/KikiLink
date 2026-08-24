@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.0 - 2026-08-24
+
+- Reworked Guided Home around one context-aware next step instead of decorative-first content.
+- Suggests reading unread Beeps, starting a first chat, viewing players in the current room,
+  or continuing the most recent conversation, with a direct action for each state.
+- Renamed Home cards with familiar destinations and explicit action labels: Chat, Players,
+  Activities, and Settings.
+- Kept the four-tool information architecture and made Focused Home remove the suggestion
+  and supporting copy for people who prefer a quieter interface.
+- Reflowed the new first-entry layout from a two-pane desktop composition to a one-pane
+  phone composition without stretching the primary action.
+- Documented the first-entry research and product decisions from Apple, Android, Fluent,
+  Atlassian, Shopify Polaris, and W3C guidance.
+- Added regression coverage for first-chat guidance and opening an unread suggested chat,
+  bringing the suite to 37 tests.
+
 ## 0.7.0 - 2026-08-23
 
 - Rebuilt Players, Activities, and Settings as first-class Link Deck workspaces instead of long blocking dialogs.
