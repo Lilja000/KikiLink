@@ -334,7 +334,7 @@ describe("LinkChatView", () => {
     view.destroy();
   });
 
-  it("configures a LinkReactions rule and shows private notices beside the closed launcher", () => {
+  it("keeps alerts simple while preserving optional advanced rules and private notices", () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
@@ -353,7 +353,7 @@ describe("LinkChatView", () => {
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
       settings,
-      "0.15.0",
+      "0.16.0",
     );
     view.mount();
 
@@ -361,7 +361,32 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
     shadow?.querySelector<HTMLButtonElement>('[data-section="reactions"]')?.click();
     const panel = shadow?.querySelector<HTMLElement>("#kikilink-settings-panel-reactions");
-    expect(panel?.textContent).toContain("0/20 rules · stored locally");
+    expect(panel?.querySelector(".kl-settings-panel-title")?.textContent).toBe(
+      "Notifications",
+    );
+    const advanced = panel?.querySelector<HTMLDetailsElement>(".kl-reaction-advanced");
+    expect(advanced?.open).toBe(false);
+    expect(advanced?.querySelector("summary")?.textContent).toContain("Optional");
+    const friendAlert = panel?.querySelector<HTMLInputElement>(
+      'input[aria-label="Friend online alerts"]',
+    );
+    const roomAlert = panel?.querySelector<HTMLInputElement>(
+      'input[aria-label="Room join alerts"]',
+    );
+    const sounds = panel?.querySelector<HTMLInputElement>(
+      'input[aria-label="Notification sounds"]',
+    );
+    const chatSound = panel?.querySelector<HTMLSelectElement>(
+      'select[aria-label="Chat notification sound"]',
+    );
+    if (!advanced || !friendAlert || !roomAlert || !sounds || !chatSound) {
+      throw new Error("Missing simple notification controls");
+    }
+    friendAlert.checked = true;
+    roomAlert.checked = true;
+    sounds.checked = true;
+    chatSound.value = "sparkle";
+    advanced.open = true;
     [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .find((button) => button.textContent === "+ Add event rule")
       ?.click();
@@ -383,7 +408,7 @@ describe("LinkChatView", () => {
     match.value = "urgent";
     template.value = "{name}: {message}";
     const globalToggle = panel?.querySelector<HTMLInputElement>(
-      'input[aria-label="Enable LinkReactions"]',
+      'input[aria-label="Enable advanced reaction rules"]',
     );
     if (!globalToggle) throw new Error("Missing LinkReactions toggle");
     globalToggle.checked = true;
@@ -392,6 +417,8 @@ describe("LinkChatView", () => {
       ?.click();
 
     expect(settings.get().linkReactions).toMatchObject({
+      quickAlerts: { friendOnline: true, roomJoin: true },
+      sounds: { enabled: true, chat: "sparkle" },
       enabled: true,
       rules: [
         {
@@ -405,6 +432,18 @@ describe("LinkChatView", () => {
       ],
     });
     view.close();
+    view.onNotification({
+      kind: "friend-online",
+      message: "Mina is online.",
+      showToast: true,
+      memberNumber: 456,
+      occurredAt: 900,
+    });
+    expect(
+      [...(shadow?.querySelectorAll(".kl-toast--floating") ?? [])].some((toast) =>
+        toast.textContent?.includes("Mina is online."),
+      ),
+    ).toBe(true);
     view.onReaction({
       ruleId: "test",
       ruleLabel: "Urgent Beep",
@@ -420,9 +459,11 @@ describe("LinkChatView", () => {
       },
       firedAt: 1_000,
     });
-    expect(shadow?.querySelector(".kl-toast--floating")?.textContent).toContain(
-      "Reina: urgent hello",
-    );
+    expect(
+      [...(shadow?.querySelectorAll(".kl-toast--floating") ?? [])].some((toast) =>
+        toast.textContent?.includes("Reina: urgent hello"),
+      ),
+    ).toBe(true);
     view.destroy();
   });
 

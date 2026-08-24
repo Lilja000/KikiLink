@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 10,
+  schemaVersion: 11,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -58,6 +58,16 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     retentionDays: 365,
   },
   linkReactions: {
+    quickAlerts: {
+      friendOnline: false,
+      roomJoin: false,
+    },
+    sounds: {
+      enabled: false,
+      chat: "chime",
+      friendOnline: "sparkle",
+      roomJoin: "pop",
+    },
     enabled: false,
     rules: [],
   },
@@ -147,7 +157,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
 
   return {
-    schemaVersion: 10,
+    schemaVersion: 11,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -251,10 +261,51 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
       retentionDays: rosterRetentionDaysOr(linkRoster.retentionDays),
     },
     linkReactions: {
+      quickAlerts: sanitizeQuickAlerts(linkReactions.quickAlerts),
+      sounds: sanitizeNotificationSounds(linkReactions.sounds),
       enabled: booleanOr(linkReactions.enabled, DEFAULT_SETTINGS.linkReactions.enabled),
       rules: sanitizeReactionRules(linkReactions.rules),
     },
   };
+}
+
+function sanitizeQuickAlerts(value: unknown): KikiLinkSettings["linkReactions"]["quickAlerts"] {
+  const source = isRecord(value) ? value : {};
+  return {
+    friendOnline: booleanOr(
+      source.friendOnline,
+      DEFAULT_SETTINGS.linkReactions.quickAlerts.friendOnline,
+    ),
+    roomJoin: booleanOr(
+      source.roomJoin,
+      DEFAULT_SETTINGS.linkReactions.quickAlerts.roomJoin,
+    ),
+  };
+}
+
+function sanitizeNotificationSounds(
+  value: unknown,
+): KikiLinkSettings["linkReactions"]["sounds"] {
+  const source = isRecord(value) ? value : {};
+  return {
+    enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.linkReactions.sounds.enabled),
+    chat: notificationSoundOr(source.chat, DEFAULT_SETTINGS.linkReactions.sounds.chat),
+    friendOnline: notificationSoundOr(
+      source.friendOnline,
+      DEFAULT_SETTINGS.linkReactions.sounds.friendOnline,
+    ),
+    roomJoin: notificationSoundOr(
+      source.roomJoin,
+      DEFAULT_SETTINGS.linkReactions.sounds.roomJoin,
+    ),
+  };
+}
+
+function notificationSoundOr(
+  value: unknown,
+  fallback: KikiLinkSettings["linkReactions"]["sounds"]["chat"],
+): KikiLinkSettings["linkReactions"]["sounds"]["chat"] {
+  return value === "sparkle" || value === "pop" || value === "chime" ? value : fallback;
 }
 
 function sanitizeQuickActions(value: unknown): QuickAction[] {

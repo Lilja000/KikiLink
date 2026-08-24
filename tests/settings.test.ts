@@ -128,7 +128,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(10);
+    expect(settings.schemaVersion).toBe(11);
     expect(settings.linkActivities).toEqual({
       enabled: false,
       activities: [
@@ -175,7 +175,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(10);
+    expect(settings.schemaVersion).toBe(11);
     expect(settings.linkActivities.enabled).toBe(false);
     expect(settings.linkRoster).toEqual({
       enabled: true,
@@ -198,7 +198,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(10);
+    expect(settings.schemaVersion).toBe(11);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -241,7 +241,7 @@ describe("SettingsStore", () => {
     });
   });
 
-  it("adds and sanitizes schema-10 LinkReactions rules", () => {
+  it("preserves advanced rules while adding schema-11 quick alerts", () => {
     const settings = sanitizeSettings({
       schemaVersion: 9,
       linkReactions: {
@@ -262,8 +262,18 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(10);
+    expect(settings.schemaVersion).toBe(11);
     expect(settings.linkReactions).toEqual({
+      quickAlerts: {
+        friendOnline: false,
+        roomJoin: false,
+      },
+      sounds: {
+        enabled: false,
+        chat: "chime",
+        friendOnline: "sparkle",
+        roomJoin: "pop",
+      },
       enabled: true,
       rules: [
         {
@@ -279,6 +289,32 @@ describe("SettingsStore", () => {
           cooldownSeconds: 15,
         },
       ],
+    });
+  });
+
+  it("sanitizes simple alerts and notification sound choices", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 11,
+      linkReactions: {
+        quickAlerts: { friendOnline: true, roomJoin: "yes" },
+        sounds: {
+          enabled: true,
+          chat: "sparkle",
+          friendOnline: "invalid",
+          roomJoin: "chime",
+        },
+      },
+    });
+
+    expect(settings.linkReactions.quickAlerts).toEqual({
+      friendOnline: true,
+      roomJoin: false,
+    });
+    expect(settings.linkReactions.sounds).toEqual({
+      enabled: true,
+      chat: "sparkle",
+      friendOnline: "sparkle",
+      roomJoin: "chime",
     });
   });
 });

@@ -3,8 +3,10 @@ import type {
   BCConnectionState,
   ConversationMeta,
   KikiLinkSettings,
+  LinkNotification,
   LinkReactionFired,
   LinkMessage,
+  NotificationSoundPreset,
   PresenceSnapshot,
   PresenceStatus,
   QuickAction,
@@ -39,6 +41,10 @@ import {
   MAX_REACTION_MEMBERS,
   MAX_REACTION_RULES,
 } from "../link-reactions/reaction-rules";
+import {
+  NOTIFICATION_SOUND_LABELS,
+  NotificationSoundService,
+} from "../link-reactions/notification-sounds";
 import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
 import { kikiIcon, type KikiLinkIconName } from "./icons";
@@ -282,6 +288,16 @@ export class LinkChatView {
     className: "kl-select kl-activity-pack-select",
   }) as HTMLSelectElement;
   readonly #activityCount = element("span", { className: "kl-data-tools-count" });
+  readonly #friendOnlineAlertToggle = element("input") as HTMLInputElement;
+  readonly #roomJoinAlertToggle = element("input") as HTMLInputElement;
+  readonly #notificationSoundsToggle = element("input") as HTMLInputElement;
+  readonly #chatSoundSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #friendOnlineSoundSelect = element("select", {
+    className: "kl-select",
+  }) as HTMLSelectElement;
+  readonly #roomJoinSoundSelect = element("select", {
+    className: "kl-select",
+  }) as HTMLSelectElement;
   readonly #reactionsToggle = element("input") as HTMLInputElement;
   readonly #reactionRulesEditor = element("div", { className: "kl-reaction-rules-editor" });
   readonly #reactionRuleCount = element("span", { className: "kl-data-tools-count" });
@@ -448,6 +464,7 @@ export class LinkChatView {
   }
 
   private readonly presence: LinkPresenceService;
+  readonly #notificationSounds = new NotificationSoundService();
 
   mount(): void {
     if (this.#mounted) return;
@@ -508,6 +525,7 @@ export class LinkChatView {
     this.#presenceUnsubscribe?.();
     this.#presenceUnsubscribe = undefined;
     this.#host.remove();
+    void this.#notificationSounds.destroy();
     this.#mounted = false;
   }
 
@@ -559,6 +577,19 @@ export class LinkChatView {
         ? `Reaction “${reaction.ruleLabel}” sent: ${reaction.message}`
         : reaction.message,
     );
+  }
+
+  onNotification(notification: LinkNotification): void {
+    if (notification.showToast) this.#toast(notification.message);
+    const sounds = this.settings.get().linkReactions.sounds;
+    if (!sounds.enabled) return;
+    const preset =
+      notification.kind === "chat"
+        ? sounds.chat
+        : notification.kind === "friend-online"
+          ? sounds.friendOnline
+          : sounds.roomJoin;
+    void this.#notificationSounds.play(preset);
   }
 
   async open(): Promise<void> {
@@ -1659,6 +1690,103 @@ export class LinkChatView {
       addActivity,
     );
 
+    this.#friendOnlineAlertToggle.type = "checkbox";
+    const friendOnlineSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#friendOnlineAlertToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#friendOnlineAlertToggle.setAttribute("aria-label", "Friend online alerts");
+    const friendOnlineAlerts = this.#settingRow(
+      "Friends come online",
+      "Show a small local notice when a friend appears online.",
+      friendOnlineSwitch,
+    );
+
+    this.#roomJoinAlertToggle.type = "checkbox";
+    const roomJoinSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#roomJoinAlertToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#roomJoinAlertToggle.setAttribute("aria-label", "Room join alerts");
+    const roomJoinAlerts = this.#settingRow(
+      "Someone joins your room",
+      "Show a small local notice after a player joins the current room.",
+      roomJoinSwitch,
+    );
+
+    this.#notificationSoundsToggle.type = "checkbox";
+    const notificationSoundsSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#notificationSoundsToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#notificationSoundsToggle.setAttribute("aria-label", "Notification sounds");
+    this.#notificationSoundsToggle.addEventListener("change", () => {
+      if (this.#notificationSoundsToggle.checked) void this.#notificationSounds.unlock();
+    });
+    const notificationSounds = this.#settingRow(
+      "Notification sounds",
+      "Use a different gentle sound for chats and the alerts above.",
+      notificationSoundsSwitch,
+    );
+
+    const soundEntries = Object.entries(NOTIFICATION_SOUND_LABELS) as Array<
+      [NotificationSoundPreset, string]
+    >;
+    for (const select of [
+      this.#chatSoundSelect,
+      this.#friendOnlineSoundSelect,
+      this.#roomJoinSoundSelect,
+    ]) {
+      select.replaceChildren(
+        ...soundEntries.map(([value, label]) => selectOption(value, label)),
+      );
+    }
+    this.#chatSoundSelect.setAttribute("aria-label", "Chat notification sound");
+    this.#friendOnlineSoundSelect.setAttribute("aria-label", "Friend online sound");
+    this.#roomJoinSoundSelect.setAttribute("aria-label", "Room join sound");
+    const soundChoice = (label: string, select: HTMLSelectElement): HTMLElement =>
+      element(
+        "div",
+        { className: "kl-sound-choice" },
+        element("span", { className: "kl-setting-name", text: label }),
+        element(
+          "div",
+          { className: "kl-sound-choice-controls" },
+          select,
+          element("button", {
+            className: "kl-text-button kl-sound-preview",
+            type: "button",
+            text: "Play",
+            ariaLabel: `Preview ${label.toLocaleLowerCase()} sound`,
+            onClick: () =>
+              void this.#notificationSounds.play(soundPresetOr(select.value, "chime")),
+          }),
+        ),
+      );
+    const soundChoices = element(
+      "details",
+      { className: "kl-settings-disclosure kl-sound-settings" },
+      element(
+        "summary",
+        {},
+        element("span", { text: "Choose sounds" }),
+        element("span", { className: "kl-disclosure-meta", text: "Optional" }),
+      ),
+      element(
+        "div",
+        { className: "kl-sound-choices" },
+        soundChoice("Incoming chat", this.#chatSoundSelect),
+        soundChoice("Friend online", this.#friendOnlineSoundSelect),
+        soundChoice("Room join", this.#roomJoinSoundSelect),
+      ),
+    );
+
     this.#reactionsToggle.type = "checkbox";
     const reactionsSwitch = element(
       "label",
@@ -1666,10 +1794,10 @@ export class LinkChatView {
       this.#reactionsToggle,
       element("span", { className: "kl-switch-track" }),
     );
-    this.#reactionsToggle.setAttribute("aria-label", "Enable LinkReactions");
+    this.#reactionsToggle.setAttribute("aria-label", "Enable advanced reaction rules");
     const reactionsEnabled = this.#settingRow(
-      "Enable LinkReactions",
-      "Watch selected local events and run the first eligible rule from top to bottom.",
+      "Enable custom rules",
+      "Run your own ordered event rules. Leave this off if the quick alerts are enough.",
       reactionsSwitch,
     );
     const addReactionRule = element("button", {
@@ -1684,8 +1812,7 @@ export class LinkChatView {
       element(
         "div",
         { className: "kl-reaction-rules-heading" },
-        element("div", { className: "kl-setting-section-title", text: "Event rules" }),
-        this.#reactionRuleCount,
+        element("div", { className: "kl-setting-section-title", text: "Custom rules" }),
       ),
       element("div", {
         className: "kl-setting-help",
@@ -1701,16 +1828,35 @@ export class LinkChatView {
       element(
         "span",
         {},
-        "Local notices never leave this browser. Room emotes are visible to everyone, never expose {message}, and have a global 10-second send guard.",
+        "Local notices stay private. Public room emotes never expose {message} and keep the 10-second send guard.",
+      ),
+    );
+    const advancedReactions = element(
+      "details",
+      { className: "kl-settings-disclosure kl-reaction-advanced" },
+      element(
+        "summary",
+        {},
+        element("span", { text: "Advanced" }),
+        this.#reactionRuleCount,
+      ),
+      element(
+        "div",
+        { className: "kl-reaction-advanced-content" },
+        reactionsEnabled,
+        reactionSafety,
+        reactionRules,
       ),
     );
     const reactionsSection = this.#createSettingsPanel(
       "reactions",
-      "Reactions & event rules",
-      "Create small automations without adding a remote service or automatic Beep replies.",
-      reactionsEnabled,
-      reactionSafety,
-      reactionRules,
+      "Notifications",
+      "Turn on only the alerts you want. Everything else stays out of the way.",
+      friendOnlineAlerts,
+      roomJoinAlerts,
+      notificationSounds,
+      soundChoices,
+      advancedReactions,
     );
 
     const panels = element(
@@ -1763,7 +1909,7 @@ export class LinkChatView {
       chat: { icon: "chat", label: "Chat" },
       players: { icon: "users", label: "Players" },
       activities: { icon: "activities", label: "Activities" },
-      reactions: { icon: "reactions", label: "Reactions" },
+      reactions: { icon: "reactions", label: "Alerts" },
     };
     const tab = element(
       "button",
@@ -5028,7 +5174,8 @@ export class LinkChatView {
 
   #updateReactionRuleCount(): void {
     const count = this.#reactionRulesEditor.childElementCount;
-    this.#reactionRuleCount.textContent = `${count}/${MAX_REACTION_RULES} rules · stored locally`;
+    this.#reactionRuleCount.textContent =
+      count === 0 ? "Optional" : `${count} rule${count === 1 ? "" : "s"}`;
   }
 
   #openSettings(section?: SettingsSection): void {
@@ -5055,6 +5202,12 @@ export class LinkChatView {
     this.#updateNotebookCount();
     this.#activitiesToggle.checked = settings.linkActivities.enabled;
     this.#renderActivityEditor(settings.linkActivities.activities);
+    this.#friendOnlineAlertToggle.checked = settings.linkReactions.quickAlerts.friendOnline;
+    this.#roomJoinAlertToggle.checked = settings.linkReactions.quickAlerts.roomJoin;
+    this.#notificationSoundsToggle.checked = settings.linkReactions.sounds.enabled;
+    this.#chatSoundSelect.value = settings.linkReactions.sounds.chat;
+    this.#friendOnlineSoundSelect.value = settings.linkReactions.sounds.friendOnline;
+    this.#roomJoinSoundSelect.value = settings.linkReactions.sounds.roomJoin;
     this.#reactionsToggle.checked = settings.linkReactions.enabled;
     this.#renderReactionRuleEditor(settings.linkReactions.rules);
     this.#showWorkspace("settings", false);
@@ -5141,11 +5294,24 @@ export class LinkChatView {
       }
       draft.linkActivities.enabled = this.#activitiesToggle.checked;
       draft.linkActivities.activities = this.#readActivityEditor();
+      draft.linkReactions.quickAlerts.friendOnline = this.#friendOnlineAlertToggle.checked;
+      draft.linkReactions.quickAlerts.roomJoin = this.#roomJoinAlertToggle.checked;
+      draft.linkReactions.sounds.enabled = this.#notificationSoundsToggle.checked;
+      draft.linkReactions.sounds.chat = soundPresetOr(this.#chatSoundSelect.value, "chime");
+      draft.linkReactions.sounds.friendOnline = soundPresetOr(
+        this.#friendOnlineSoundSelect.value,
+        "sparkle",
+      );
+      draft.linkReactions.sounds.roomJoin = soundPresetOr(
+        this.#roomJoinSoundSelect.value,
+        "pop",
+      );
       draft.linkReactions.enabled = this.#reactionsToggle.checked;
       draft.linkReactions.rules = reactionRules;
       if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
     });
     this.#applyTheme(settings);
+    if (settings.linkReactions.sounds.enabled) void this.#notificationSounds.unlock();
     if (!settings.linkChat.typingIndicators) this.#stopLocalTyping();
     const removedPlayers = this.roster.prune();
     this.#updateNotebookCount();
@@ -5593,6 +5759,13 @@ function createReactionRuleId(): string {
   return `reaction-${Date.now().toString(36)}-${random}`;
 }
 
+function soundPresetOr(
+  value: string,
+  fallback: NotificationSoundPreset,
+): NotificationSoundPreset {
+  return value === "sparkle" || value === "pop" || value === "chime" ? value : fallback;
+}
+
 function finderSettingResults(): FinderResult[] {
   const definitions: Array<{
     section: SettingsSection;
@@ -5632,9 +5805,10 @@ function finderSettingResults(): FinderResult[] {
     },
     {
       section: "reactions",
-      title: "Reactions & event rules",
-      detail: "Local notices, room emotes, triggers, scopes, templates, and cooldowns",
-      keywords: "linkreactions automation event rule beep join leave online friend notification notice emote scope member cooldown template",
+      title: "Notifications",
+      detail: "Friend, room, and chat alerts with optional sounds and advanced rules",
+      keywords:
+        "alert sound audio chime sparkle pop linkreactions automation event rule beep join leave online friend notification notice emote advanced cooldown template",
     },
   ];
   return definitions.map((definition, index) => ({

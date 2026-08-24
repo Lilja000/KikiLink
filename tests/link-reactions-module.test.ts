@@ -30,12 +30,18 @@ describe("LinkReactionsModule", () => {
       adapter,
       reactionRule({ trigger: "room-join", template: "{name} joined {room}." }),
     );
+    context.settings.update((draft) => {
+      draft.linkReactions.quickAlerts.roomJoin = true;
+    });
     const fired = vi.fn();
+    const notified = vi.fn();
     bus.on("link-reactions:fired", fired);
+    bus.on("link-reactions:notification", notified);
     const module = new LinkReactionsModule();
     module.start(context);
 
     expect(fired).not.toHaveBeenCalled();
+    expect(notified).not.toHaveBeenCalled();
     characters = [
       ...characters,
       { memberNumber: 456, memberName: "Mina", isFriend: false },
@@ -46,6 +52,13 @@ describe("LinkReactionsModule", () => {
     expect(fired.mock.calls[0]?.[0]).toMatchObject({
       message: "Mina joined Moon Garden.",
       event: { trigger: "room-join", memberNumber: 456 },
+    });
+    expect(notified).toHaveBeenCalledWith({
+      kind: "room-join",
+      message: "Mina joined Moon Garden.",
+      showToast: true,
+      memberNumber: 456,
+      occurredAt: 3_000,
     });
     context.settings.update((draft) => {
       draft.linkReactions.rules = [
@@ -69,8 +82,13 @@ describe("LinkReactionsModule", () => {
       adapter,
       reactionRule({ trigger: "friend-online", template: "{name} came online." }),
     );
+    context.settings.update((draft) => {
+      draft.linkReactions.quickAlerts.friendOnline = true;
+    });
     const fired = vi.fn();
+    const notified = vi.fn();
     bus.on("link-reactions:fired", fired);
+    bus.on("link-reactions:notification", notified);
     const module = new LinkReactionsModule();
     module.start(context);
 
@@ -79,6 +97,7 @@ describe("LinkReactionsModule", () => {
       receivedAt: 1_000,
     });
     expect(fired).not.toHaveBeenCalled();
+    expect(notified).not.toHaveBeenCalled();
     bus.emit("bc:online-friends", {
       friends: [
         { memberNumber: 123, memberName: "Reina", privateRoom: false },
@@ -91,6 +110,46 @@ describe("LinkReactionsModule", () => {
     expect(fired.mock.calls[0]?.[0]).toMatchObject({
       message: "Mina came online.",
       event: { trigger: "friend-online", memberNumber: 456, isFriend: true },
+    });
+    expect(notified).toHaveBeenCalledWith({
+      kind: "friend-online",
+      message: "Mina is online.",
+      showToast: true,
+      memberNumber: 456,
+      occurredAt: 2_000,
+    });
+    module.stop();
+  });
+
+  it("emits a sound-only notification for an incoming chat when sounds are enabled", () => {
+    const adapter = reactionAdapter({ isKnownFriend: () => true });
+    const { context, bus } = reactionContext(
+      adapter,
+      reactionRule({ trigger: "room-join" }),
+    );
+    context.settings.update((draft) => {
+      draft.linkReactions.sounds.enabled = true;
+    });
+    const notified = vi.fn();
+    bus.on("link-reactions:notification", notified);
+    const module = new LinkReactionsModule();
+    module.start(context);
+
+    bus.emit("beep:received", {
+      direction: "incoming",
+      peerNumber: 123,
+      peerName: "Reina",
+      content: "hello",
+      sentAt: 4_000,
+      includeRoom: false,
+    });
+
+    expect(notified).toHaveBeenCalledWith({
+      kind: "chat",
+      message: "New Beep from Reina.",
+      showToast: false,
+      memberNumber: 123,
+      occurredAt: 4_000,
     });
     module.stop();
   });
@@ -113,7 +172,7 @@ function reactionContext(
       bus,
       repository: new MemoryChatRepository(),
       settings,
-      version: "0.15.0",
+      version: "0.16.0",
     },
   };
 }

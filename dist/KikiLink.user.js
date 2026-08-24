@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.15.0
+// @version      0.16.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -1360,7 +1360,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 10,
+    schemaVersion: 11,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -1405,6 +1405,16 @@ One of mods you are using is using an old version of SDK. It will work for now b
       retentionDays: 365
     },
     linkReactions: {
+      quickAlerts: {
+        friendOnline: false,
+        roomJoin: false
+      },
+      sounds: {
+        enabled: false,
+        chat: "chime",
+        friendOnline: "sparkle",
+        roomJoin: "pop"
+      },
       enabled: false,
       rules: []
     }
@@ -1475,7 +1485,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkRoster = isRecord3(source.linkRoster) ? source.linkRoster : {};
     const linkReactions = isRecord3(source.linkReactions) ? source.linkReactions : {};
     return {
-      schemaVersion: 10,
+      schemaVersion: 11,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -1543,10 +1553,43 @@ One of mods you are using is using an old version of SDK. It will work for now b
         retentionDays: rosterRetentionDaysOr(linkRoster.retentionDays)
       },
       linkReactions: {
+        quickAlerts: sanitizeQuickAlerts(linkReactions.quickAlerts),
+        sounds: sanitizeNotificationSounds(linkReactions.sounds),
         enabled: booleanOr(linkReactions.enabled, DEFAULT_SETTINGS.linkReactions.enabled),
         rules: sanitizeReactionRules(linkReactions.rules)
       }
     };
+  }
+  function sanitizeQuickAlerts(value) {
+    const source = isRecord3(value) ? value : {};
+    return {
+      friendOnline: booleanOr(
+        source.friendOnline,
+        DEFAULT_SETTINGS.linkReactions.quickAlerts.friendOnline
+      ),
+      roomJoin: booleanOr(
+        source.roomJoin,
+        DEFAULT_SETTINGS.linkReactions.quickAlerts.roomJoin
+      )
+    };
+  }
+  function sanitizeNotificationSounds(value) {
+    const source = isRecord3(value) ? value : {};
+    return {
+      enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.linkReactions.sounds.enabled),
+      chat: notificationSoundOr(source.chat, DEFAULT_SETTINGS.linkReactions.sounds.chat),
+      friendOnline: notificationSoundOr(
+        source.friendOnline,
+        DEFAULT_SETTINGS.linkReactions.sounds.friendOnline
+      ),
+      roomJoin: notificationSoundOr(
+        source.roomJoin,
+        DEFAULT_SETTINGS.linkReactions.sounds.roomJoin
+      )
+    };
+  }
+  function notificationSoundOr(value, fallback) {
+    return value === "sparkle" || value === "pop" || value === "chime" ? value : fallback;
   }
   function sanitizeQuickActions(value) {
     if (value === void 0) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
@@ -2454,6 +2497,113 @@ One of mods you are using is using an old version of SDK. It will work for now b
   }
   function isPresenceStatus(value) {
     return value === "online" || value === "idle" || value === "dnd" || value === "offline";
+  }
+
+  // src/modules/link-reactions/notification-sounds.ts
+  var NOTIFICATION_SOUND_LABELS = {
+    chime: "Soft chime",
+    sparkle: "Sakura sparkle",
+    pop: "Gentle pop"
+  };
+  var NOTIFICATION_SOUND_PATTERNS = {
+    chime: [
+      { offset: 0, duration: 0.22, frequency: 659.25, gain: 0.055, wave: "sine" },
+      { offset: 0.11, duration: 0.32, frequency: 987.77, gain: 0.045, wave: "sine" }
+    ],
+    sparkle: [
+      { offset: 0, duration: 0.13, frequency: 523.25, gain: 0.04, wave: "triangle" },
+      { offset: 0.08, duration: 0.15, frequency: 659.25, gain: 0.045, wave: "triangle" },
+      { offset: 0.16, duration: 0.2, frequency: 1046.5, gain: 0.04, wave: "sine" }
+    ],
+    pop: [
+      {
+        offset: 0,
+        duration: 0.11,
+        frequency: 330,
+        endFrequency: 190,
+        gain: 0.06,
+        wave: "sine"
+      },
+      {
+        offset: 0.13,
+        duration: 0.09,
+        frequency: 280,
+        endFrequency: 170,
+        gain: 0.045,
+        wave: "sine"
+      }
+    ]
+  };
+  var SOUND_THROTTLE_MS = 350;
+  var NotificationSoundService = class {
+    #context;
+    #lastPlayedAt = Number.NEGATIVE_INFINITY;
+    async unlock() {
+      const context = this.#getContext();
+      if (!context) return false;
+      try {
+        if (context.state === "suspended") await context.resume();
+        return context.state !== "closed";
+      } catch {
+        return false;
+      }
+    }
+    async play(preset, now = Date.now()) {
+      if (now - this.#lastPlayedAt < SOUND_THROTTLE_MS) return false;
+      if (!await this.unlock()) return false;
+      const context = this.#context;
+      if (!context) return false;
+      try {
+        const startAt = context.currentTime + 0.01;
+        for (const note of NOTIFICATION_SOUND_PATTERNS[preset]) {
+          scheduleNote(context, startAt, note);
+        }
+        this.#lastPlayedAt = now;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    async destroy() {
+      const context = this.#context;
+      this.#context = void 0;
+      if (context && context.state !== "closed") {
+        try {
+          await context.close();
+        } catch {
+        }
+      }
+    }
+    #getContext() {
+      if (this.#context && this.#context.state !== "closed") return this.#context;
+      const scope = globalThis;
+      const Constructor = globalThis.AudioContext ?? scope.webkitAudioContext;
+      if (!Constructor) return void 0;
+      try {
+        this.#context = new Constructor();
+        return this.#context;
+      } catch {
+        return void 0;
+      }
+    }
+  };
+  function scheduleNote(context, startAt, note) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const start = startAt + note.offset;
+    const end = start + note.duration;
+    oscillator.type = note.wave;
+    oscillator.frequency.setValueAtTime(note.frequency, start);
+    if (note.endFrequency !== void 0) {
+      oscillator.frequency.exponentialRampToValueAtTime(note.endFrequency, end);
+    }
+    gain.gain.setValueAtTime(1e-4, start);
+    gain.gain.exponentialRampToValueAtTime(note.gain, start + Math.min(0.018, note.duration / 3));
+    gain.gain.exponentialRampToValueAtTime(1e-4, end);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(start);
+    oscillator.stop(end + 0.02);
   }
 
   // src/modules/link-chat/styles.ts
@@ -3973,6 +4123,21 @@ button { color: inherit; }
 .kl-activity-editor-favorite input { position: absolute; opacity: 0; pointer-events: none; }
 .kl-activity-editor-favorite:has(input:checked) { border-color: color-mix(in srgb, var(--kl-gold), transparent 25%); background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
 .kl-activity-editor-favorite:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-accent), transparent 78%); }
+.kl-settings-disclosure { overflow: clip; border: 1px solid var(--kl-border); border-radius: 13px; background: color-mix(in srgb, var(--kl-surface-2), transparent 30%); }
+.kl-settings-disclosure > summary { min-height: 48px; display: flex; align-items: center; gap: 10px; padding: 9px 12px; color: var(--kl-text); font-weight: 780; cursor: pointer; list-style: none; }
+.kl-settings-disclosure > summary::-webkit-details-marker { display: none; }
+.kl-settings-disclosure > summary::before { content: ""; width: 8px; height: 8px; flex: 0 0 auto; border-right: 2px solid var(--kl-muted); border-bottom: 2px solid var(--kl-muted); transform: rotate(-45deg); transition: transform 140ms ease; }
+.kl-settings-disclosure[open] > summary::before { transform: rotate(45deg); }
+.kl-settings-disclosure > summary:hover { background: var(--kl-surface-hover); }
+.kl-settings-disclosure > summary:focus-visible { outline: 2px solid color-mix(in srgb, var(--kl-accent), var(--kl-gold) 24%); outline-offset: -2px; }
+.kl-disclosure-meta { margin-left: auto; color: var(--kl-meta); font-size: var(--kl-type-xs); font-weight: 650; }
+.kl-settings-disclosure > summary .kl-data-tools-count { display: inline; margin: 0 0 0 auto; }
+.kl-sound-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0 12px 12px; border-top: 1px solid var(--kl-border); }
+.kl-sound-choice { min-width: 0; display: grid; gap: 6px; padding-top: 11px; }
+.kl-sound-choice-controls { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.kl-sound-choice .kl-select { width: 100%; min-width: 0; }
+.kl-sound-preview { min-width: 58px; padding-inline: 10px; }
+.kl-reaction-advanced-content { display: grid; gap: 16px; padding: 12px; border-top: 1px solid var(--kl-border); }
 .kl-reaction-safety { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--kl-gold), transparent 68%); border-radius: 12px; background: color-mix(in srgb, var(--kl-gold), transparent 92%); color: var(--kl-muted); font-size: var(--kl-type-sm); line-height: 1.45; }
 .kl-reaction-safety-icon { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 1px; color: var(--kl-gold); }
 .kl-reaction-rules-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
@@ -4578,6 +4743,7 @@ select:focus-visible {
   .kl-activity-editor-fields .kl-action-template { grid-column: 1 / -1; }
   .kl-reaction-rule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kl-reaction-template-field { grid-column: 1 / -1; }
+  .kl-sound-choices { grid-template-columns: minmax(0, 1fr); }
   .kl-feature-page-header { padding: 14px 16px 13px; }
   .kl-feature-page-footer { min-height: 60px; padding: 8px 12px; }
   .kl-activities-body { padding: 14px; }
@@ -4667,6 +4833,7 @@ select:focus-visible {
   .kl-reaction-rule-order { grid-column: 1 / -1; justify-content: flex-end; }
   .kl-reaction-rule-grid { grid-template-columns: minmax(0, 1fr); }
   .kl-reaction-template-field { grid-column: auto; }
+  .kl-sound-choice-controls { grid-template-columns: minmax(0, 1fr) 64px; }
   .kl-activity-actions { flex-wrap: wrap; }
   .kl-activity-actions .kl-feature-page-footnote { width: 100%; margin-right: 0; }
   .kl-settings-local-note { display: none; }
@@ -5158,8 +5325,9 @@ select:focus-visible {
       ["line", { x1: "14", y1: "13", x2: "18", y2: "13" }]
     ],
     reactions: [
-      ["path", { d: "m13.8 2.9-8 10.2h5.1l-.8 8 8.1-11h-5.1l.7-7.2Z" }, true],
-      ["path", { d: "M4.1 5.2c1 .2 1.6.8 1.8 1.8.2-1 .8-1.6 1.8-1.8-1-.2-1.6-.8-1.8-1.8-.2 1-.8 1.6-1.8 1.8Z" }, true]
+      ["path", { d: "M6.2 16.7h11.6l-1.5-2.2V10a4.3 4.3 0 0 0-8.6 0v4.5l-1.5 2.2Z" }],
+      ["path", { d: "M10 19a2.3 2.3 0 0 0 4 0" }],
+      ["line", { x1: "12", y1: "3.1", x2: "12", y2: "5.2" }]
     ],
     reply: [
       ["polyline", { points: "9.5 7 4.2 11.7 9.5 16.4" }],
@@ -5455,6 +5623,16 @@ select:focus-visible {
       className: "kl-select kl-activity-pack-select"
     });
     #activityCount = element("span", { className: "kl-data-tools-count" });
+    #friendOnlineAlertToggle = element("input");
+    #roomJoinAlertToggle = element("input");
+    #notificationSoundsToggle = element("input");
+    #chatSoundSelect = element("select", { className: "kl-select" });
+    #friendOnlineSoundSelect = element("select", {
+      className: "kl-select"
+    });
+    #roomJoinSoundSelect = element("select", {
+      className: "kl-select"
+    });
     #reactionsToggle = element("input");
     #reactionRulesEditor = element("div", { className: "kl-reaction-rules-editor" });
     #reactionRuleCount = element("span", { className: "kl-data-tools-count" });
@@ -5590,6 +5768,7 @@ select:focus-visible {
       void this.service.setDraft(peerNumber, peerName, value);
     }, 250);
     presence;
+    #notificationSounds = new NotificationSoundService();
     mount() {
       if (this.#mounted) return;
       this.#mounted = true;
@@ -5646,6 +5825,7 @@ select:focus-visible {
       this.#presenceUnsubscribe?.();
       this.#presenceUnsubscribe = void 0;
       this.#host.remove();
+      void this.#notificationSounds.destroy();
       this.#mounted = false;
     }
     isActiveConversation(peerNumber) {
@@ -5681,6 +5861,13 @@ select:focus-visible {
       this.#toast(
         reaction.action === "room-emote" ? `Reaction \u201C${reaction.ruleLabel}\u201D sent: ${reaction.message}` : reaction.message
       );
+    }
+    onNotification(notification) {
+      if (notification.showToast) this.#toast(notification.message);
+      const sounds = this.settings.get().linkReactions.sounds;
+      if (!sounds.enabled) return;
+      const preset = notification.kind === "chat" ? sounds.chat : notification.kind === "friend-online" ? sounds.friendOnline : sounds.roomJoin;
+      void this.#notificationSounds.play(preset);
     }
     async open() {
       const settings = this.settings.get();
@@ -6679,6 +6866,95 @@ select:focus-visible {
         this.#activitiesEditor,
         addActivity
       );
+      this.#friendOnlineAlertToggle.type = "checkbox";
+      const friendOnlineSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#friendOnlineAlertToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      this.#friendOnlineAlertToggle.setAttribute("aria-label", "Friend online alerts");
+      const friendOnlineAlerts = this.#settingRow(
+        "Friends come online",
+        "Show a small local notice when a friend appears online.",
+        friendOnlineSwitch
+      );
+      this.#roomJoinAlertToggle.type = "checkbox";
+      const roomJoinSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#roomJoinAlertToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      this.#roomJoinAlertToggle.setAttribute("aria-label", "Room join alerts");
+      const roomJoinAlerts = this.#settingRow(
+        "Someone joins your room",
+        "Show a small local notice after a player joins the current room.",
+        roomJoinSwitch
+      );
+      this.#notificationSoundsToggle.type = "checkbox";
+      const notificationSoundsSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#notificationSoundsToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      this.#notificationSoundsToggle.setAttribute("aria-label", "Notification sounds");
+      this.#notificationSoundsToggle.addEventListener("change", () => {
+        if (this.#notificationSoundsToggle.checked) void this.#notificationSounds.unlock();
+      });
+      const notificationSounds = this.#settingRow(
+        "Notification sounds",
+        "Use a different gentle sound for chats and the alerts above.",
+        notificationSoundsSwitch
+      );
+      const soundEntries = Object.entries(NOTIFICATION_SOUND_LABELS);
+      for (const select of [
+        this.#chatSoundSelect,
+        this.#friendOnlineSoundSelect,
+        this.#roomJoinSoundSelect
+      ]) {
+        select.replaceChildren(
+          ...soundEntries.map(([value, label]) => selectOption(value, label))
+        );
+      }
+      this.#chatSoundSelect.setAttribute("aria-label", "Chat notification sound");
+      this.#friendOnlineSoundSelect.setAttribute("aria-label", "Friend online sound");
+      this.#roomJoinSoundSelect.setAttribute("aria-label", "Room join sound");
+      const soundChoice = (label, select) => element(
+        "div",
+        { className: "kl-sound-choice" },
+        element("span", { className: "kl-setting-name", text: label }),
+        element(
+          "div",
+          { className: "kl-sound-choice-controls" },
+          select,
+          element("button", {
+            className: "kl-text-button kl-sound-preview",
+            type: "button",
+            text: "Play",
+            ariaLabel: `Preview ${label.toLocaleLowerCase()} sound`,
+            onClick: () => void this.#notificationSounds.play(soundPresetOr(select.value, "chime"))
+          })
+        )
+      );
+      const soundChoices = element(
+        "details",
+        { className: "kl-settings-disclosure kl-sound-settings" },
+        element(
+          "summary",
+          {},
+          element("span", { text: "Choose sounds" }),
+          element("span", { className: "kl-disclosure-meta", text: "Optional" })
+        ),
+        element(
+          "div",
+          { className: "kl-sound-choices" },
+          soundChoice("Incoming chat", this.#chatSoundSelect),
+          soundChoice("Friend online", this.#friendOnlineSoundSelect),
+          soundChoice("Room join", this.#roomJoinSoundSelect)
+        )
+      );
       this.#reactionsToggle.type = "checkbox";
       const reactionsSwitch = element(
         "label",
@@ -6686,10 +6962,10 @@ select:focus-visible {
         this.#reactionsToggle,
         element("span", { className: "kl-switch-track" })
       );
-      this.#reactionsToggle.setAttribute("aria-label", "Enable LinkReactions");
+      this.#reactionsToggle.setAttribute("aria-label", "Enable advanced reaction rules");
       const reactionsEnabled = this.#settingRow(
-        "Enable LinkReactions",
-        "Watch selected local events and run the first eligible rule from top to bottom.",
+        "Enable custom rules",
+        "Run your own ordered event rules. Leave this off if the quick alerts are enough.",
         reactionsSwitch
       );
       const addReactionRule = element("button", {
@@ -6704,8 +6980,7 @@ select:focus-visible {
         element(
           "div",
           { className: "kl-reaction-rules-heading" },
-          element("div", { className: "kl-setting-section-title", text: "Event rules" }),
-          this.#reactionRuleCount
+          element("div", { className: "kl-setting-section-title", text: "Custom rules" })
         ),
         element("div", {
           className: "kl-setting-help",
@@ -6721,16 +6996,35 @@ select:focus-visible {
         element(
           "span",
           {},
-          "Local notices never leave this browser. Room emotes are visible to everyone, never expose {message}, and have a global 10-second send guard."
+          "Local notices stay private. Public room emotes never expose {message} and keep the 10-second send guard."
+        )
+      );
+      const advancedReactions = element(
+        "details",
+        { className: "kl-settings-disclosure kl-reaction-advanced" },
+        element(
+          "summary",
+          {},
+          element("span", { text: "Advanced" }),
+          this.#reactionRuleCount
+        ),
+        element(
+          "div",
+          { className: "kl-reaction-advanced-content" },
+          reactionsEnabled,
+          reactionSafety,
+          reactionRules
         )
       );
       const reactionsSection = this.#createSettingsPanel(
         "reactions",
-        "Reactions & event rules",
-        "Create small automations without adding a remote service or automatic Beep replies.",
-        reactionsEnabled,
-        reactionSafety,
-        reactionRules
+        "Notifications",
+        "Turn on only the alerts you want. Everything else stays out of the way.",
+        friendOnlineAlerts,
+        roomJoinAlerts,
+        notificationSounds,
+        soundChoices,
+        advancedReactions
       );
       const panels = element(
         "div",
@@ -6775,7 +7069,7 @@ select:focus-visible {
         chat: { icon: "chat", label: "Chat" },
         players: { icon: "users", label: "Players" },
         activities: { icon: "activities", label: "Activities" },
-        reactions: { icon: "reactions", label: "Reactions" }
+        reactions: { icon: "reactions", label: "Alerts" }
       };
       const tab = element(
         "button",
@@ -9663,7 +9957,7 @@ ${expanded}` : expanded;
     }
     #updateReactionRuleCount() {
       const count2 = this.#reactionRulesEditor.childElementCount;
-      this.#reactionRuleCount.textContent = `${count2}/${MAX_REACTION_RULES} rules \xB7 stored locally`;
+      this.#reactionRuleCount.textContent = count2 === 0 ? "Optional" : `${count2} rule${count2 === 1 ? "" : "s"}`;
     }
     #openSettings(section) {
       const settings = this.settings.get();
@@ -9689,6 +9983,12 @@ ${expanded}` : expanded;
       this.#updateNotebookCount();
       this.#activitiesToggle.checked = settings.linkActivities.enabled;
       this.#renderActivityEditor(settings.linkActivities.activities);
+      this.#friendOnlineAlertToggle.checked = settings.linkReactions.quickAlerts.friendOnline;
+      this.#roomJoinAlertToggle.checked = settings.linkReactions.quickAlerts.roomJoin;
+      this.#notificationSoundsToggle.checked = settings.linkReactions.sounds.enabled;
+      this.#chatSoundSelect.value = settings.linkReactions.sounds.chat;
+      this.#friendOnlineSoundSelect.value = settings.linkReactions.sounds.friendOnline;
+      this.#roomJoinSoundSelect.value = settings.linkReactions.sounds.roomJoin;
       this.#reactionsToggle.checked = settings.linkReactions.enabled;
       this.#renderReactionRuleEditor(settings.linkReactions.rules);
       this.#showWorkspace("settings", false);
@@ -9752,11 +10052,24 @@ ${expanded}` : expanded;
         }
         draft.linkActivities.enabled = this.#activitiesToggle.checked;
         draft.linkActivities.activities = this.#readActivityEditor();
+        draft.linkReactions.quickAlerts.friendOnline = this.#friendOnlineAlertToggle.checked;
+        draft.linkReactions.quickAlerts.roomJoin = this.#roomJoinAlertToggle.checked;
+        draft.linkReactions.sounds.enabled = this.#notificationSoundsToggle.checked;
+        draft.linkReactions.sounds.chat = soundPresetOr(this.#chatSoundSelect.value, "chime");
+        draft.linkReactions.sounds.friendOnline = soundPresetOr(
+          this.#friendOnlineSoundSelect.value,
+          "sparkle"
+        );
+        draft.linkReactions.sounds.roomJoin = soundPresetOr(
+          this.#roomJoinSoundSelect.value,
+          "pop"
+        );
         draft.linkReactions.enabled = this.#reactionsToggle.checked;
         draft.linkReactions.rules = reactionRules;
         if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
       });
       this.#applyTheme(settings);
+      if (settings.linkReactions.sounds.enabled) void this.#notificationSounds.unlock();
       if (!settings.linkChat.typingIndicators) this.#stopLocalTyping();
       const removedPlayers = this.roster.prune();
       this.#updateNotebookCount();
@@ -10144,6 +10457,9 @@ ${expanded}` : expanded;
     const random = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID().slice(0, 12) : Math.random().toString(36).slice(2, 14);
     return `reaction-${Date.now().toString(36)}-${random}`;
   }
+  function soundPresetOr(value, fallback) {
+    return value === "sparkle" || value === "pop" || value === "chime" ? value : fallback;
+  }
   function finderSettingResults() {
     const definitions = [
       {
@@ -10178,9 +10494,9 @@ ${expanded}` : expanded;
       },
       {
         section: "reactions",
-        title: "Reactions & event rules",
-        detail: "Local notices, room emotes, triggers, scopes, templates, and cooldowns",
-        keywords: "linkreactions automation event rule beep join leave online friend notification notice emote scope member cooldown template"
+        title: "Notifications",
+        detail: "Friend, room, and chat alerts with optional sounds and advanced rules",
+        keywords: "alert sound audio chime sparkle pop linkreactions automation event rule beep join leave online friend notification notice emote advanced cooldown template"
       }
     ];
     return definitions.map((definition, index) => ({
@@ -10389,6 +10705,10 @@ ${expanded}` : expanded;
         }),
         context.bus.on("beep:received", (event) => void this.#capture(event)),
         context.bus.on("beep:sent", (event) => void this.#capture(event)),
+        context.bus.on(
+          "link-reactions:notification",
+          (event) => this.#view?.onNotification(event)
+        ),
         context.bus.on("link-reactions:fired", (event) => this.#view?.onReaction(event))
       );
       this.#view.setConnectionState(context.adapter.isReady() ? "ready" : "connecting");
@@ -10548,6 +10868,13 @@ ${expanded}` : expanded;
       this.#unsubscribers.push(
         context.bus.on("bc:ready", () => this.#resetBaselines()),
         context.bus.on("beep:received", (event) => {
+          this.#notify(
+            "chat",
+            `New Beep from ${event.peerName}.`,
+            false,
+            event.peerNumber,
+            event.sentAt
+          );
           this.#run({
             trigger: "beep-received",
             memberNumber: event.peerNumber,
@@ -10608,7 +10935,15 @@ ${expanded}` : expanded;
       this.#replaceRoomMembers(current);
       const occurredAt = Date.now();
       for (const character of joined) {
-        this.#run(roomEvent("room-join", character, roomName, occurredAt));
+        const event = roomEvent("room-join", character, roomName, occurredAt);
+        this.#notify(
+          "room-join",
+          `${character.memberName} joined ${roomName}.`,
+          true,
+          character.memberNumber,
+          occurredAt
+        );
+        this.#run(event);
       }
       for (const character of left) {
         this.#run(roomEvent("room-leave", character, roomName, occurredAt));
@@ -10627,15 +10962,37 @@ ${expanded}` : expanded;
       if (!previous) return;
       for (const friend of friends) {
         if (previous.has(friend.memberNumber)) continue;
-        this.#run({
+        const event = {
           trigger: "friend-online",
           memberNumber: friend.memberNumber,
           memberName: friend.memberName,
           isFriend: true,
           occurredAt,
           ...friend.roomName ? { roomName: friend.roomName } : {}
-        });
+        };
+        this.#notify(
+          "friend-online",
+          `${friend.memberName} is online.`,
+          true,
+          friend.memberNumber,
+          occurredAt
+        );
+        this.#run(event);
       }
+    }
+    #notify(kind, message, showToast, memberNumber, occurredAt) {
+      const context = this.#context;
+      if (!context) return;
+      const settings = context.settings.get().linkReactions;
+      const enabled = kind === "chat" ? settings.sounds.enabled : kind === "friend-online" ? settings.quickAlerts.friendOnline : settings.quickAlerts.roomJoin;
+      if (!enabled) return;
+      context.bus.emit("link-reactions:notification", {
+        kind,
+        message,
+        showToast,
+        memberNumber,
+        occurredAt
+      });
     }
     #run(event) {
       const context = this.#context;
@@ -10953,7 +11310,7 @@ ${expanded}` : expanded;
     async start() {
       if (this.#started) return;
       this.#started = true;
-      await waitForDocumentBody();
+      await waitForAuthenticatedPlayer(() => this.#started);
       if (!this.#started) return;
       await this.#modules.startAll({
         adapter: this.#adapter,
@@ -10979,9 +11336,19 @@ ${expanded}` : expanded;
       this.#logger.info("Stopped");
     }
   };
-  async function waitForDocumentBody() {
-    while (typeof document === "undefined" || document.body === null) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
+  async function waitForAuthenticatedPlayer(keepWaiting) {
+    while (keepWaiting() && !hasAuthenticatedPlayer()) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  function hasAuthenticatedPlayer() {
+    if (typeof document === "undefined" || document.body === null || typeof Player !== "object" || Player === null || !Number.isSafeInteger(Player.MemberNumber) || Player.MemberNumber <= 0) {
+      return false;
+    }
+    try {
+      return typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn();
+    } catch {
+      return false;
     }
   }
 
@@ -10989,7 +11356,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.15.0");
+    const app = new KikiLinkApp("0.16.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

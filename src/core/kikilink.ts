@@ -48,7 +48,7 @@ export class KikiLinkApp {
   async start(): Promise<void> {
     if (this.#started) return;
     this.#started = true;
-    await waitForDocumentBody();
+    await waitForAuthenticatedPlayer(() => this.#started);
     if (!this.#started) return;
 
     await this.#modules.startAll({
@@ -78,8 +78,26 @@ export class KikiLinkApp {
   }
 }
 
-async function waitForDocumentBody(): Promise<void> {
-  while (typeof document === "undefined" || document.body === null) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+async function waitForAuthenticatedPlayer(keepWaiting: () => boolean): Promise<void> {
+  while (keepWaiting() && !hasAuthenticatedPlayer()) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+function hasAuthenticatedPlayer(): boolean {
+  if (
+    typeof document === "undefined" ||
+    document.body === null ||
+    typeof Player !== "object" ||
+    Player === null ||
+    !Number.isSafeInteger(Player.MemberNumber) ||
+    Player.MemberNumber <= 0
+  ) {
+    return false;
+  }
+  try {
+    return typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn();
+  } catch {
+    return false;
   }
 }

@@ -28,6 +28,8 @@ export type ReactionTrigger =
   | "friend-online";
 export type ReactionScope = "anyone" | "friends" | "members";
 export type ReactionAction = "notice" | "room-emote";
+export type NotificationSoundPreset = "chime" | "sparkle" | "pop";
+export type LinkNotificationKind = "chat" | "friend-online" | "room-join";
 
 export interface OnlineFriend {
   memberNumber: number;
@@ -97,6 +99,14 @@ export interface LinkReactionFired {
   firedAt: number;
 }
 
+export interface LinkNotification {
+  kind: LinkNotificationKind;
+  message: string;
+  showToast: boolean;
+  memberNumber: number;
+  occurredAt: number;
+}
+
 export interface RoomCharacter {
   memberNumber: number;
   memberName: string;
@@ -157,12 +167,13 @@ export interface KikiLinkEvents {
   "bc:online-friends": { friends: OnlineFriend[]; receivedAt: number };
   "bc:protocol": KikiLinkProtocolEvent;
   "link-chat:updated": { peerNumber: number };
+  "link-reactions:notification": LinkNotification;
   "link-reactions:fired": LinkReactionFired;
   "settings:changed": KikiLinkSettings;
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 10;
+  schemaVersion: 11;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -203,6 +214,16 @@ export interface KikiLinkSettings {
     retentionDays: number;
   };
   linkReactions: {
+    quickAlerts: {
+      friendOnline: boolean;
+      roomJoin: boolean;
+    };
+    sounds: {
+      enabled: boolean;
+      chat: NotificationSoundPreset;
+      friendOnline: NotificationSoundPreset;
+      roomJoin: NotificationSoundPreset;
+    };
     enabled: boolean;
     rules: ReactionRule[];
   };

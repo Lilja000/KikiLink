@@ -3,6 +3,7 @@ import type {
   KikiLinkContext,
   KikiLinkModule,
   KikiLinkSettings,
+  LinkNotificationKind,
   LinkReactionEvent,
   OnlineFriend,
   RoomCharacter,
@@ -32,6 +33,13 @@ export class LinkReactionsModule implements KikiLinkModule {
     this.#unsubscribers.push(
       context.bus.on("bc:ready", () => this.#resetBaselines()),
       context.bus.on("beep:received", (event) => {
+        this.#notify(
+          "chat",
+          `New Beep from ${event.peerName}.`,
+          false,
+          event.peerNumber,
+          event.sentAt,
+        );
         this.#run({
           trigger: "beep-received",
           memberNumber: event.peerNumber,
@@ -98,7 +106,15 @@ export class LinkReactionsModule implements KikiLinkModule {
     this.#replaceRoomMembers(current);
     const occurredAt = Date.now();
     for (const character of joined) {
-      this.#run(roomEvent("room-join", character, roomName, occurredAt));
+      const event = roomEvent("room-join", character, roomName, occurredAt);
+      this.#notify(
+        "room-join",
+        `${character.memberName} joined ${roomName}.`,
+        true,
+        character.memberNumber,
+        occurredAt,
+      );
+      this.#run(event);
     }
     for (const character of left) {
       this.#run(roomEvent("room-leave", character, roomName, occurredAt));
@@ -120,15 +136,49 @@ export class LinkReactionsModule implements KikiLinkModule {
 
     for (const friend of friends) {
       if (previous.has(friend.memberNumber)) continue;
-      this.#run({
+      const event: LinkReactionEvent = {
         trigger: "friend-online",
         memberNumber: friend.memberNumber,
         memberName: friend.memberName,
         isFriend: true,
         occurredAt,
         ...(friend.roomName ? { roomName: friend.roomName } : {}),
-      });
+      };
+      this.#notify(
+        "friend-online",
+        `${friend.memberName} is online.`,
+        true,
+        friend.memberNumber,
+        occurredAt,
+      );
+      this.#run(event);
     }
+  }
+
+  #notify(
+    kind: LinkNotificationKind,
+    message: string,
+    showToast: boolean,
+    memberNumber: number,
+    occurredAt: number,
+  ): void {
+    const context = this.#context;
+    if (!context) return;
+    const settings = context.settings.get().linkReactions;
+    const enabled =
+      kind === "chat"
+        ? settings.sounds.enabled
+        : kind === "friend-online"
+          ? settings.quickAlerts.friendOnline
+          : settings.quickAlerts.roomJoin;
+    if (!enabled) return;
+    context.bus.emit("link-reactions:notification", {
+      kind,
+      message,
+      showToast,
+      memberNumber,
+      occurredAt,
+    });
   }
 
   #run(event: LinkReactionEvent): void {

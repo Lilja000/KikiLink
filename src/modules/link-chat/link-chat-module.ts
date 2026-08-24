@@ -60,6 +60,9 @@ export class LinkChatModule implements KikiLinkModule {
       }),
       context.bus.on("beep:received", (event) => void this.#capture(event)),
       context.bus.on("beep:sent", (event) => void this.#capture(event)),
+      context.bus.on("link-reactions:notification", (event) =>
+        this.#view?.onNotification(event),
+      ),
       context.bus.on("link-reactions:fired", (event) => this.#view?.onReaction(event)),
     );
     this.#view.setConnectionState(context.adapter.isReady() ? "ready" : "connecting");

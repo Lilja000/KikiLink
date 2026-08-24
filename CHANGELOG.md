@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.16.0 - 2026-08-24
+
+- Reworked LinkReactions into a focused Alerts screen with one-switch friend-online and
+  room-join notifications instead of showing the full rule editor immediately.
+- Moved sound selection and the existing rule engine into separate collapsed optional areas;
+  advanced rules, ordering, scopes, templates, cooldowns, and guarded room emotes remain intact.
+- Added three short locally synthesized notification sounds: Soft chime for chats, Sakura
+  sparkle for friends online, and Gentle pop for room joins, with per-event choices and previews.
+- Kept all alerts and sounds disabled by default, preserved quiet online and room baselines,
+  and added a global short audio throttle to prevent rapid overlapping sounds.
+- Delay mounting the KikiLink interface and launcher until Bondage Club reports an authenticated
+  account with a valid member number.
+- Migrated settings to schema version 11 and expanded startup, quick-alert, sound, migration,
+  and simplified-interface coverage, bringing the suite to 82 tests.
+
 ## 0.15.0 - 2026-08-24
 
 - Added LinkReactions with ordered, locally stored rules for incoming Beeps, room joins and

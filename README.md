@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.15.0` adds LinkReactions: local event rules for incoming Beeps, room joins and
-leaves, and friends coming online, with private notices or explicitly enabled room emotes.
+Version `0.16.0` makes notifications simple: one-switch friend and room alerts, distinct
+local sounds for chats and alerts, and the full rule editor tucked into an optional Advanced area.
 
 ## Link Deck
 
@@ -26,7 +26,7 @@ leaves, and friends coming online, with private notices or explicitly enabled ro
 - Four clear primary destinations: Home, Chat, Players, and Activities
 - Persistent feature rail on desktop and a focused four-item bottom bar on phones
 - Players and Activities now stay inside the workspace instead of opening blocking dialogs
-- Settings is a full workspace with Appearance, Navigation, Chat, Players, Activities, and Reactions categories
+- Settings is a full workspace with Appearance, Navigation, Chat, Players, Activities, and Alerts categories
 - Configurable launcher behavior: open Home, the last section, or LinkChat directly
 - Dark lacquer, light paper, and system themes with five accent presets or any custom color
 - Comfortable, Compact, or Super compact spacing, three text sizes, and Guided or Focused Home styles
@@ -118,21 +118,21 @@ character's items, pose, permissions, or game state.
 
 ## LinkReactions
 
-- Optional event-rule engine, disabled by default
-- Triggers for incoming Beeps, players joining or leaving the current room, and friends coming online
-- Rules checked top to bottom with per-rule enable switches and button-based ordering controls
-- Anyone, friends-only, or explicit member-number scopes
-- Optional case-insensitive text matching for incoming Beeps
-- Private KikiLink notices that remain visible beside the launcher while the panel is closed
-- Explicit public room-emote action with a global 10-second send guard
-- `{name}`, `{member}`, `{message}`, `{room}`, `{me}`, and `{event}` template variables
-- Private Beep `{message}` content is never substituted into a public room emote
+- Dedicated Alerts category with one switch for friends coming online and one for players joining the room
+- Private local notices that remain visible beside the launcher while the panel is closed
+- Optional notification sounds, disabled by default
+- Distinct built-in Soft chime, Sakura sparkle, and Gentle pop sounds for chats, friends, and room joins
+- Sound choices and preview controls stay inside a compact optional disclosure
+- The complete event-rule editor remains available inside Advanced instead of filling the main screen
+- Advanced triggers for incoming Beeps, room joins/leaves, and friends online, with scopes, text matching,
+  cooldowns, templates, private notices, or explicitly enabled room emotes
+- Public room emotes keep the global 10-second guard and never substitute private `{message}` content
 - Quiet room and online baselines prevent a new session from reacting to everyone already present
 - No automatic Beep replies, remote rules service, or background network polling
 
-Rules stay in the current browser profile, while cooldown timers exist only for the active addon
-session. Room-emote rules use the same native Bondage Club emote path as LinkActivities and are
-visible to everyone in the room.
+Alert choices and rules stay in the current browser profile. Sounds are synthesized locally with
+the browser audio API, so KikiLink downloads no audio files. Advanced room-emote rules use the
+same native Bondage Club emote path as LinkActivities and are visible to everyone in the room.
 
 ## Interface
 
@@ -147,6 +147,7 @@ visible to everyone in the room.
 - Comfortable/Compact/Super compact density, three text sizes, and Guided/Focused Home layouts
 - A calmer Super compact presentation that removes secondary chrome without hiding primary actions
 - Draggable launcher with a saved position, button-based reset, configurable side, and reduced-motion mode
+- Launcher appears only after Bondage Club has authenticated an account
 - Full-page categorized settings that remember the last category
 - LinkFinder for immediate access to chats, players, activities, and deeply nested settings
 - Accessible current-location, focus, live-status, and error semantics

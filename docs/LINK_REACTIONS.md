@@ -1,7 +1,20 @@
 # LinkReactions
 
-KikiLink 0.15.0 adds a bounded local event-rule engine. It does not add a remote rules
-service, automatic Beep replies, or a second room-chat transport.
+KikiLink 0.16.0 presents LinkReactions as a simple local notification feature first. The
+bounded rule engine remains available under Advanced, without adding a remote rules service,
+automatic Beep replies, or a second room-chat transport.
+
+## Simple alerts
+
+The main Alerts screen contains only three switches:
+
+- `Friends come online` shows a local notice for a newly online friend;
+- `Someone joins your room` shows a local notice for a later room arrival;
+- `Notification sounds` adds distinct sounds to incoming chats and the enabled alerts.
+
+All three are disabled by default. Sound selection is kept in a collapsed `Choose sounds`
+area. KikiLink includes Soft chime, Sakura sparkle, and Gentle pop presets, with a Play button
+for each choice. They are synthesized locally through Web Audio and do not download media.
 
 ## Event sources
 
@@ -13,10 +26,11 @@ service, automatic Beep replies, or a second room-chat transport.
 The first room roster and first online-friends snapshot establish a quiet baseline. Existing
 players therefore do not trigger rules when KikiLink starts or the user enters a room.
 
-## Rule model
+## Advanced rule model
 
-At most 20 rules are stored. They are checked from top to bottom, and the first enabled,
-matching rule that is not cooling down runs.
+The complete editor is kept inside a collapsed `Advanced` area. At most 20 rules are stored.
+They are checked from top to bottom, and the first enabled, matching rule that is not cooling
+down runs.
 
 Each rule contains:
 
