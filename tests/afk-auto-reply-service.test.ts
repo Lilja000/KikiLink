@@ -21,7 +21,7 @@ function setup() {
   let status: PresenceStatus = "idle";
   let config: AfkAutoReplyConfig = {
     enabled: true,
-    message: "Привет, я АФК, напишите мне позже!",
+    message: "Hi, I'm AFK. Message me later!",
   };
   let now = 1_000_000;
   const sendBeep = vi.fn(

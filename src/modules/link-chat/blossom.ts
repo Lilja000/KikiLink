@@ -1,136 +1,361 @@
-import type { BCAdapter } from "../../bc/adapter";
 import type { SettingsStore } from "../../core/settings";
 import type { KikiLinkSettings } from "../../core/types";
-import type { LinkPresenceService } from "../link-presence/link-presence-service";
 import BLOSSOM_ICON_DATA_URL from "../../../design/branding/kikilink-blossom.svg";
 
-const BADGE_PRESET_X = {
-  "before-addons": 216,
-  "between-addons": 332,
-  "after-addons": 417,
-} as const;
-const BADGE_BASE_Y = 5;
-const BADGE_SIZE = 32;
-const BADGE_MAX_X = 500 - BADGE_SIZE;
-const BADGE_MAX_Y = 160;
+const BADGE_HIT_SIZE = 44;
+const BADGE_VISUAL_SIZE = 32;
+const BADGE_DRAG_THRESHOLD = 6;
 const BADGE_OPACITY = 0.82;
+
+export interface NormalizedRoomBadgePosition {
+  x: number;
+  y: number;
+}
+
+export interface RoomBadgePixelPosition {
+  left: number;
+  top: number;
+}
+
+interface RoomBadgeDrag {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startLeft: number;
+  startTop: number;
+  currentLeft: number;
+  currentTop: number;
+  moved: boolean;
+}
 
 type RoomBadgeConfig = KikiLinkSettings["ui"]["roomBadge"];
 
-export interface RoomBadgeRect {
-  x: number;
-  y: number;
-  size: number;
-}
+/**
+ * The default is deliberately near the top addon cluster while remaining a
+ * viewport position rather than a character/canvas coordinate.
+ */
+export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
+  x: 0.7,
+  y: 0.055,
+});
 
 export { BLOSSOM_ICON_DATA_URL };
 
-export function resolveMainDrawingContext(
-  canvas: CanvasRenderingContext2D | HTMLCanvasElement,
-): CanvasRenderingContext2D | null {
-  return "drawImage" in canvas ? canvas : canvas.getContext("2d");
+/** Resolves a normalized setting to a clamped top-left viewport position. */
+export function resolveRoomBadgePosition(
+  position: NormalizedRoomBadgePosition | null,
+  viewportWidth: number,
+  viewportHeight: number,
+): RoomBadgePixelPosition {
+  const normalized = sanitizePosition(position) ?? DEFAULT_ROOM_BADGE_POSITION;
+  const maxLeft = Math.max(0, finiteDimension(viewportWidth) - BADGE_HIT_SIZE);
+  const maxTop = Math.max(0, finiteDimension(viewportHeight) - BADGE_HIT_SIZE);
+  return {
+    left: Math.round(normalized.x * maxLeft),
+    top: Math.round(normalized.y * maxTop),
+  };
 }
 
-/** Resolves a room badge into Bondage Club's scaled character coordinates. */
-export function resolveRoomBadgeRect(
-  config: RoomBadgeConfig,
-  characterX: number,
-  characterY: number,
-  zoom: number,
-): RoomBadgeRect {
-  const presetX = BADGE_PRESET_X[config.placement] ?? BADGE_PRESET_X["between-addons"];
-  const offsetX = Number.isFinite(config.offsetX) ? config.offsetX : 0;
-  const offsetY = Number.isFinite(config.offsetY) ? config.offsetY : 0;
-  const localX = clamp(presetX + offsetX, 0, BADGE_MAX_X);
-  const localY = clamp(BADGE_BASE_Y + offsetY, 0, BADGE_MAX_Y);
-
+/** Converts a clamped pixel position back into portable 0..1 coordinates. */
+export function normalizeRoomBadgePosition(
+  left: number,
+  top: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): NormalizedRoomBadgePosition {
+  const maxLeft = Math.max(0, finiteDimension(viewportWidth) - BADGE_HIT_SIZE);
+  const maxTop = Math.max(0, finiteDimension(viewportHeight) - BADGE_HIT_SIZE);
   return {
-    x: characterX + localX * zoom,
-    y: characterY + localY * zoom,
-    size: BADGE_SIZE * zoom,
+    x: maxLeft === 0 ? 0.5 : clamp(finiteNumber(left) / maxLeft, 0, 1),
+    y: maxTop === 0 ? 0.5 : clamp(finiteNumber(top) / maxTop, 0, 1),
   };
 }
 
 /**
- * Draws KikiLink's quiet room badge in a user-selected slot around common addon
- * indicators. The decoded SVG and validated placement are cached, so each frame
- * needs only one drawImage call.
+ * A small screen-space Blossom that can be dragged beside other addon icons.
+ * It has no click action: pointer input is used only to reposition it.
  */
 export class RoomBlossomBadge {
-  readonly #image = new Image();
-  #ready = false;
-  #canvas: CanvasRenderingContext2D | HTMLCanvasElement | undefined;
-  #context: CanvasRenderingContext2D | null = null;
+  readonly #element = document.createElement("span");
+  readonly #image = document.createElement("img");
+  readonly #settings: SettingsStore;
   #config: RoomBadgeConfig;
+  #drag: RoomBadgeDrag | undefined;
   #settingsUnsubscribe: (() => void) | undefined;
+  #mounted = false;
+  #destroyed = false;
 
-  readonly #handleImageLoad = (): void => {
-    this.#ready = this.#image.naturalWidth > 0;
+  readonly #handlePointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0 || this.#drag || !this.#config.enabled) return;
+    const rect = this.#element.getBoundingClientRect();
+    const styleLeft = parsePixel(this.#element.style.left);
+    const styleTop = parsePixel(this.#element.style.top);
+    const startLeft = rect.width > 0 && Number.isFinite(rect.left) ? rect.left : styleLeft;
+    const startTop = rect.height > 0 && Number.isFinite(rect.top) ? rect.top : styleTop;
+
+    this.#drag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft,
+      startTop,
+      currentLeft: startLeft,
+      currentTop: startTop,
+      moved: false,
+    };
+    event.preventDefault();
+    try {
+      this.#element.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is an enhancement. Pointer events delivered to the element still work.
+    }
   };
 
-  constructor(
-    private readonly adapter: BCAdapter,
-    private readonly presence: LinkPresenceService,
-    settings: SettingsStore,
-  ) {
-    this.#config = settings.get().ui.roomBadge;
-    this.#settingsUnsubscribe = settings.subscribe((next) => {
-      this.#config = next.ui.roomBadge;
+  readonly #handlePointerMove = (event: PointerEvent): void => {
+    const drag = this.#drag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - drag.startX;
+    const deltaY = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(deltaX, deltaY) < BADGE_DRAG_THRESHOLD) return;
+
+    drag.moved = true;
+    event.preventDefault();
+    this.#element.dataset.dragging = "true";
+    this.#element.style.cursor = "grabbing";
+    const next = clampPixelPosition(
+      drag.startLeft + deltaX,
+      drag.startTop + deltaY,
+      window.innerWidth,
+      window.innerHeight,
+    );
+    drag.currentLeft = next.left;
+    drag.currentTop = next.top;
+    this.#place(next);
+  };
+
+  readonly #handlePointerUp = (event: PointerEvent): void => {
+    const drag = this.#drag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    this.#drag = undefined;
+    this.#element.dataset.dragging = "false";
+    this.#element.style.cursor = "grab";
+    this.#releasePointer(event.pointerId);
+    if (!drag.moved) {
+      this.#positionFromConfig();
+      return;
+    }
+
+    const position = normalizeRoomBadgePosition(
+      drag.currentLeft,
+      drag.currentTop,
+      window.innerWidth,
+      window.innerHeight,
+    );
+    const next = this.#settings.update((draft) => {
+      draft.ui.roomBadge.position = position;
     });
-    this.#image.alt = "";
-    this.#image.decoding = "async";
-    this.#image.addEventListener("load", this.#handleImageLoad);
-    this.#image.src = BLOSSOM_ICON_DATA_URL;
-    this.#ready = this.#image.complete && this.#image.naturalWidth > 0;
+    this.#config = next.ui.roomBadge;
+    this.#positionFromConfig();
+  };
+
+  readonly #handlePointerCancel = (event: PointerEvent): void => {
+    if (!this.#drag || this.#drag.pointerId !== event.pointerId) return;
+    this.#cancelDrag(true);
+    this.#positionFromConfig();
+  };
+
+  readonly #handleLostPointerCapture = (event: PointerEvent): void => {
+    if (!this.#drag || this.#drag.pointerId !== event.pointerId) return;
+    this.#cancelDrag(false);
+    this.#positionFromConfig();
+  };
+
+  readonly #handleViewportResize = (): void => {
+    this.#cancelDrag(true);
+    this.#positionFromConfig();
+  };
+
+  constructor(settings: SettingsStore) {
+    this.#settings = settings;
+    this.#config = settings.get().ui.roomBadge;
+    this.#buildElement();
+    this.#settingsUnsubscribe = settings.subscribe((next) => {
+      const config = next.ui.roomBadge;
+      const changed =
+        config.enabled !== this.#config.enabled ||
+        config.position?.x !== this.#config.position?.x ||
+        config.position?.y !== this.#config.position?.y;
+      this.#config = config;
+      if (!changed) return;
+      this.#cancelDrag(true);
+      this.#sync();
+    });
+  }
+
+  /** Mounts the fixed badge into KikiLink's existing ShadowRoot. */
+  mount(root: ShadowRoot): void {
+    if (this.#destroyed) return;
+    if (!this.#mounted) {
+      this.#mounted = true;
+      window.addEventListener("resize", this.#handleViewportResize);
+    }
+    if (this.#element.parentNode !== root) root.append(this.#element);
+    this.#sync();
+  }
+
+  /** Restores the documented default without disabling the badge. */
+  resetPosition(): void {
+    if (this.#destroyed) return;
+    const next = this.#settings.update((draft) => {
+      draft.ui.roomBadge.position = null;
+    });
+    this.#config = next.ui.roomBadge;
+    this.#cancelDrag(true);
+    this.#sync();
   }
 
   destroy(): void {
+    if (this.#destroyed) return;
+    this.#destroyed = true;
+    this.#cancelDrag(true);
+    if (this.#mounted) window.removeEventListener("resize", this.#handleViewportResize);
+    this.#mounted = false;
     this.#settingsUnsubscribe?.();
     this.#settingsUnsubscribe = undefined;
-    this.#image.removeEventListener("load", this.#handleImageLoad);
-    this.#ready = false;
-    this.#canvas = undefined;
-    this.#context = null;
+    this.#element.removeEventListener("pointerdown", this.#handlePointerDown);
+    this.#element.removeEventListener("pointermove", this.#handlePointerMove);
+    this.#element.removeEventListener("pointerup", this.#handlePointerUp);
+    this.#element.removeEventListener("pointercancel", this.#handlePointerCancel);
+    this.#element.removeEventListener("lostpointercapture", this.#handleLostPointerCapture);
+    this.#element.remove();
   }
 
-  draw(character: BCCharacter, characterX: number, characterY: number, zoom: number): void {
-    if (
-      !this.#ready ||
-      !this.#config.enabled ||
-      !Number.isFinite(characterX) ||
-      !Number.isFinite(characterY) ||
-      !Number.isFinite(zoom) ||
-      zoom <= 0 ||
-      (typeof ChatRoomHideIconState === "number" && ChatRoomHideIconState !== 0)
-    ) {
-      return;
-    }
+  #buildElement(): void {
+    this.#element.className = "kl-room-blossom";
+    this.#element.dataset.dragging = "false";
+    this.#element.setAttribute("role", "img");
+    this.#element.setAttribute("aria-label", "KikiLink Blossom; drag to reposition");
+    this.#element.title = "KikiLink Blossom · drag to move";
+    Object.assign(this.#element.style, {
+      position: "fixed",
+      width: `${BADGE_HIT_SIZE}px`,
+      height: `${BADGE_HIT_SIZE}px`,
+      margin: "0",
+      padding: "0",
+      border: "0",
+      background: "transparent",
+      opacity: String(BADGE_OPACITY),
+      cursor: "grab",
+      touchAction: "none",
+      userSelect: "none",
+      webkitUserSelect: "none",
+      boxSizing: "border-box",
+      zIndex: "2147482998",
+      filter: "drop-shadow(0 2px 6px rgba(0, 0, 0, 0.32))",
+      willChange: "left, top",
+    });
 
-    const memberNumber = character.MemberNumber;
-    if (!Number.isSafeInteger(memberNumber)) return;
-    if (
-      memberNumber !== this.adapter.getOwnMemberNumber() &&
-      !this.presence.hasCompatiblePeer(memberNumber)
-    ) {
-      return;
-    }
+    this.#image.className = "kl-room-blossom-image";
+    this.#image.src = BLOSSOM_ICON_DATA_URL;
+    this.#image.alt = "";
+    this.#image.decoding = "async";
+    this.#image.draggable = false;
+    Object.assign(this.#image.style, {
+      position: "absolute",
+      left: `${(BADGE_HIT_SIZE - BADGE_VISUAL_SIZE) / 2}px`,
+      top: `${(BADGE_HIT_SIZE - BADGE_VISUAL_SIZE) / 2}px`,
+      width: `${BADGE_VISUAL_SIZE}px`,
+      height: `${BADGE_VISUAL_SIZE}px`,
+      pointerEvents: "none",
+    });
+    this.#element.append(this.#image);
+    this.#element.addEventListener("pointerdown", this.#handlePointerDown);
+    this.#element.addEventListener("pointermove", this.#handlePointerMove);
+    this.#element.addEventListener("pointerup", this.#handlePointerUp);
+    this.#element.addEventListener("pointercancel", this.#handlePointerCancel);
+    this.#element.addEventListener("lostpointercapture", this.#handleLostPointerCapture);
+  }
 
-    if (typeof MainCanvas === "undefined") return;
-    if (this.#canvas !== MainCanvas) {
-      this.#canvas = MainCanvas;
-      this.#context = resolveMainDrawingContext(MainCanvas);
-    }
-    if (!this.#context) return;
+  #sync(): void {
+    this.#element.hidden = !this.#config.enabled;
+    this.#element.style.display = this.#config.enabled ? "block" : "none";
+    if (this.#config.enabled) this.#positionFromConfig();
+  }
 
-    const rect = resolveRoomBadgeRect(this.#config, characterX, characterY, zoom);
-    const previousAlpha = this.#context.globalAlpha;
-    this.#context.globalAlpha = previousAlpha * BADGE_OPACITY;
+  #positionFromConfig(): void {
+    if (!this.#mounted || this.#drag) return;
+    this.#place(
+      resolveRoomBadgePosition(
+        this.#config.position,
+        window.innerWidth,
+        window.innerHeight,
+      ),
+    );
+  }
+
+  #place(position: RoomBadgePixelPosition): void {
+    this.#element.style.left = `${Math.round(position.left)}px`;
+    this.#element.style.top = `${Math.round(position.top)}px`;
+    this.#element.style.right = "auto";
+    this.#element.style.bottom = "auto";
+  }
+
+  #cancelDrag(releasePointer: boolean): void {
+    const pointerId = this.#drag?.pointerId;
+    this.#drag = undefined;
+    this.#element.dataset.dragging = "false";
+    this.#element.style.cursor = "grab";
+    if (releasePointer && pointerId !== undefined) this.#releasePointer(pointerId);
+  }
+
+  #releasePointer(pointerId: number): void {
     try {
-      this.#context.drawImage(this.#image, rect.x, rect.y, rect.size, rect.size);
-    } finally {
-      this.#context.globalAlpha = previousAlpha;
+      if (!this.#element.hasPointerCapture || this.#element.hasPointerCapture(pointerId)) {
+        this.#element.releasePointerCapture(pointerId);
+      }
+    } catch {
+      // Capture may already have been released by the browser.
     }
   }
+}
+
+function clampPixelPosition(
+  left: number,
+  top: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): RoomBadgePixelPosition {
+  return {
+    left: Math.round(
+      clamp(finiteNumber(left), 0, Math.max(0, finiteDimension(viewportWidth) - BADGE_HIT_SIZE)),
+    ),
+    top: Math.round(
+      clamp(finiteNumber(top), 0, Math.max(0, finiteDimension(viewportHeight) - BADGE_HIT_SIZE)),
+    ),
+  };
+}
+
+function sanitizePosition(
+  position: NormalizedRoomBadgePosition | null,
+): NormalizedRoomBadgePosition | null {
+  if (!position) return null;
+  return {
+    x: clamp(Number.isFinite(position.x) ? position.x : DEFAULT_ROOM_BADGE_POSITION.x, 0, 1),
+    y: clamp(Number.isFinite(position.y) ? position.y : DEFAULT_ROOM_BADGE_POSITION.y, 0, 1),
+  };
+}
+
+function parsePixel(value: string): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function finiteNumber(value: number): number {
+  return Number.isFinite(value) ? value : 0;
+}
+
+function finiteDimension(value: number): number {
+  return Math.max(0, finiteNumber(value));
 }
 
 function clamp(value: number, min: number, max: number): number {

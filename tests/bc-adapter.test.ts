@@ -21,6 +21,7 @@ afterEach(() => {
     "ChatRoomMessage",
     "ActivityDictionaryText",
     "ActivityRun",
+    "PreferenceGetActivityFactor",
     "ElementButton",
     "ChatRoomDrawCharacterStatusIcons",
     "ChatRoomCharacterViewDrawOverlay",
@@ -447,9 +448,11 @@ describe("BCAdapter", () => {
   });
 
   it("shares native activity hooks and handles only registered custom actions", async () => {
+    vi.useFakeTimers();
     const nativeMessage = vi.fn();
     const nativeDictionary = vi.fn((keyword: string) => `native:${keyword}`);
     const nativeRun = vi.fn();
+    const nativePreference = vi.fn(() => 0);
     const nativeCreateButton = vi.fn(
       (
         _idPrefix: string | null,
@@ -478,6 +481,7 @@ describe("BCAdapter", () => {
 
     const customName = "KikiLinkCustom_test";
     const integration: BCCustomActivityIntegration = {
+      isCustomActivity: vi.fn((activityName) => activityName === customName),
       resolveText: vi.fn((keyword) =>
         keyword === `Activity${customName}` ? "Elbow touch" : undefined,
       ),
@@ -495,9 +499,14 @@ describe("BCAdapter", () => {
     const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.19.0");
     adapter.registerCustomActivityIntegration(integration);
     await adapter.start();
+    globalThis.PreferenceGetActivityFactor = nativePreference;
+    vi.advanceTimersByTime(500);
 
     expect(globalThis.ActivityDictionaryText(`Activity${customName}`)).toBe("Elbow touch");
     expect(globalThis.ActivityDictionaryText("ActivityCaress")).toBe("native:ActivityCaress");
+    expect(globalThis.PreferenceGetActivityFactor(globalThis.Player, customName, false)).toBe(2);
+    expect(globalThis.PreferenceGetActivityFactor(globalThis.Player, "Caress", false)).toBe(0);
+    expect(nativePreference).toHaveBeenCalledOnce();
 
     const actor = globalThis.Player;
     const acted = { MemberNumber: 123, Name: "Reina" };

@@ -147,6 +147,11 @@ declare global {
     zone: string,
     count?: number,
   ): void;
+  function PreferenceGetActivityFactor(
+    character: BCCharacter,
+    activityName: string,
+    self: boolean,
+  ): number;
   function DrawCharacter(
     character: BCCharacter,
     x: number,

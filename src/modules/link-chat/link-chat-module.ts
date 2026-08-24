@@ -6,7 +6,6 @@ import { LinkActivitiesService } from "../link-activities/link-activities-servic
 import { LinkRosterService } from "../link-roster/link-roster-service";
 import { PeopleRepository } from "../../storage/people-repository";
 import { LinkPresenceService } from "../link-presence/link-presence-service";
-import { RoomBlossomBadge } from "./blossom";
 import { AfkAutoReplyService } from "./afk-auto-reply-service";
 
 export class LinkChatModule implements KikiLinkModule {
@@ -19,8 +18,6 @@ export class LinkChatModule implements KikiLinkModule {
   #roster: LinkRosterService | undefined;
   #presence: LinkPresenceService | undefined;
   #afkAutoReply: AfkAutoReplyService | undefined;
-  #roomBadge: RoomBlossomBadge | undefined;
-  #roomBadgeUnsubscribe: (() => void) | undefined;
   #view: LinkChatView | undefined;
   #rosterTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -52,11 +49,6 @@ export class LinkChatModule implements KikiLinkModule {
     this.#afkAutoReply.syncStatus();
     this.#unsubscribers.push(
       this.#presence.subscribe(() => this.#afkAutoReply?.syncStatus()),
-    );
-    this.#roomBadge = new RoomBlossomBadge(context.adapter, this.#presence, context.settings);
-    this.#roomBadgeUnsubscribe = context.adapter.registerCharacterOverlay(
-      (character, characterX, characterY, zoom) =>
-        this.#roomBadge?.draw(character, characterX, characterY, zoom),
     );
     this.#roster.prune();
     this.#view = new LinkChatView(
@@ -100,10 +92,6 @@ export class LinkChatModule implements KikiLinkModule {
     this.#view = undefined;
     this.#activities?.stop();
     this.#activities = undefined;
-    this.#roomBadgeUnsubscribe?.();
-    this.#roomBadgeUnsubscribe = undefined;
-    this.#roomBadge?.destroy();
-    this.#roomBadge = undefined;
     this.#presence?.stop();
     this.#presence = undefined;
     this.#afkAutoReply?.reset();

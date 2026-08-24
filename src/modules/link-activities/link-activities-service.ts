@@ -14,6 +14,7 @@ const ACTIVITY_PREFIX = "KikiLinkCustom_";
 const ACTION_CONTENT = "KikiLinkCustomActivity";
 const META_TAG = "KikiLinkActivityMeta";
 const MAX_SEEN_NONCES = 120;
+const REGISTRY_MONITOR_INTERVAL_MS = 500;
 const SAFE_ASSET_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
 /**
  * Canonical, byte-distinct activity pictures shipped by Bondage Club itself.
@@ -102,10 +103,19 @@ interface Pronouns {
   possessive: string;
 }
 
+interface NativeActivityRegistry {
+  activities: BCActivity[];
+  ordering: string[];
+}
+
 export class LinkActivitiesService implements BCCustomActivityIntegration {
   readonly #runtimeActivities = new Map<string, CustomActivityDefinition>();
+  readonly #injectedActivities = new Map<string, BCActivity>();
   readonly #seenNonces: string[] = [];
   #bodySlotsCache: ActivityBodySlot[] | undefined;
+  #registeredActivities: BCActivity[] | undefined;
+  #registeredOrdering: string[] | undefined;
+  #registryMonitor: ReturnType<typeof setInterval> | undefined;
   #unregister: (() => void) | undefined;
 
   constructor(
@@ -117,47 +127,49 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     if (!this.#unregister) {
       this.#unregister = this.adapter.registerCustomActivityIntegration(this);
     }
+    if (this.#registryMonitor === undefined) {
+      this.#registryMonitor = setInterval(() => {
+        this.#ensureRegistryInjection();
+      }, REGISTRY_MONITOR_INTERVAL_MS);
+    }
     this.syncFromSettings();
   }
 
   stop(): void {
+    if (this.#registryMonitor !== undefined) {
+      clearInterval(this.#registryMonitor);
+      this.#registryMonitor = undefined;
+    }
     this.#unregister?.();
     this.#unregister = undefined;
-    this.#removeRegisteredActivities();
+    this.#detachFromRegistries();
     this.#runtimeActivities.clear();
+    this.#injectedActivities.clear();
     this.#bodySlotsCache = undefined;
     this.#seenNonces.splice(0);
   }
 
   syncFromSettings(): void {
     this.#bodySlotsCache = undefined;
-    this.#removeRegisteredActivities();
+    this.#detachFromRegistries();
     this.#runtimeActivities.clear();
+    this.#injectedActivities.clear();
     const settings = this.settings?.get();
-    if (!settings?.linkActivities.enabled || !hasNativeActivityRegistry()) return;
+    if (!settings?.linkActivities.enabled) return;
 
     for (const definition of settings.linkActivities.customActivities) {
       const runtimeName = runtimeActivityName(definition.id);
-      const activity: BCActivity = {
-        Name: runtimeName,
-        MaxProgress: 0,
-        MaxProgressSelf: 0,
-        Prerequisite: [],
-        Target: definition.targetMode === "self" ? [] : [definition.targetGroup],
-        ...(definition.targetMode === "self"
-          ? { TargetSelf: [definition.targetGroup] }
-          : definition.targetMode === "both"
-            ? { TargetSelf: [definition.targetGroup] }
-            : {}),
-      };
       this.#runtimeActivities.set(runtimeName, definition);
-      ActivityFemale3DCG.push(activity);
-      ActivityFemale3DCGOrdering.push(runtimeName);
     }
+    this.#ensureRegistryInjection();
   }
 
   isAvailable(): boolean {
     return this.adapter.canSendRoomEmote();
+  }
+
+  isCustomActivity(activityName: string): boolean {
+    return this.#runtimeActivities.has(activityName);
   }
 
   getTargets(): RoomCharacter[] {
@@ -369,7 +381,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     mark.dataset.kikilinkActivityMark = "true";
     Object.assign(mark.style, {
       position: "absolute",
-      top: "4px",
+      bottom: "4px",
       right: "4px",
       width: "24px",
       height: "24px",
@@ -406,17 +418,86 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     ActivityEffectFlat(source, Player, meta.arousal, meta.group, 1);
   }
 
-  #removeRegisteredActivities(): void {
-    if (!hasNativeActivityRegistry()) return;
-    for (let index = ActivityFemale3DCG.length - 1; index >= 0; index -= 1) {
-      if (ActivityFemale3DCG[index]?.Name.startsWith(ACTIVITY_PREFIX)) {
-        ActivityFemale3DCG.splice(index, 1);
+  #ensureRegistryInjection(): void {
+    const registry = getNativeActivityRegistry();
+    if (!registry) return;
+    const registryChanged =
+      registry.activities !== this.#registeredActivities ||
+      registry.ordering !== this.#registeredOrdering;
+    if (registryChanged) {
+      this.#removeFromTrackedRegistry();
+      this.#registeredActivities = registry.activities;
+      this.#registeredOrdering = registry.ordering;
+      this.#injectedActivities.clear();
+      this.#bodySlotsCache = undefined;
+    }
+
+    if (!nativeActivityRegistryIsLoaded(registry)) {
+      removeActivitiesFromRegistry(registry.activities, registry.ordering);
+      this.#injectedActivities.clear();
+      return;
+    }
+    if (this.#runtimeActivities.size === 0) {
+      removeActivitiesFromRegistry(registry.activities, registry.ordering);
+      this.#injectedActivities.clear();
+      return;
+    }
+    if (!registryChanged && this.#registryInjectionIsHealthy(registry)) return;
+
+    removeActivitiesFromRegistry(registry.activities, registry.ordering);
+    this.#injectedActivities.clear();
+    for (const [runtimeName, definition] of this.#runtimeActivities) {
+      const activity = createNativeActivity(runtimeName, definition);
+      registry.activities.push(activity);
+      registry.ordering.push(runtimeName);
+      this.#injectedActivities.set(runtimeName, activity);
+    }
+  }
+
+  #registryInjectionIsHealthy(registry: NativeActivityRegistry): boolean {
+    const registeredActivities = registry.activities.filter((activity) =>
+      typeof activity?.Name === "string" && activity.Name.startsWith(ACTIVITY_PREFIX),
+    );
+    const registeredOrdering = registry.ordering.filter((name) =>
+      typeof name === "string" && name.startsWith(ACTIVITY_PREFIX),
+    );
+    if (
+      registeredActivities.length !== this.#runtimeActivities.size ||
+      registeredOrdering.length !== this.#runtimeActivities.size ||
+      this.#injectedActivities.size !== this.#runtimeActivities.size
+    ) {
+      return false;
+    }
+    for (const runtimeName of this.#runtimeActivities.keys()) {
+      const injected = this.#injectedActivities.get(runtimeName);
+      if (
+        !injected ||
+        registeredActivities.filter((activity) => activity === injected).length !== 1 ||
+        registeredOrdering.filter((name) => name === runtimeName).length !== 1
+      ) {
+        return false;
       }
     }
-    for (let index = ActivityFemale3DCGOrdering.length - 1; index >= 0; index -= 1) {
-      if (ActivityFemale3DCGOrdering[index]?.startsWith(ACTIVITY_PREFIX)) {
-        ActivityFemale3DCGOrdering.splice(index, 1);
-      }
+    return true;
+  }
+
+  #detachFromRegistries(): void {
+    this.#removeFromTrackedRegistry();
+    const current = getNativeActivityRegistry();
+    if (
+      current &&
+      (current.activities !== this.#registeredActivities ||
+        current.ordering !== this.#registeredOrdering)
+    ) {
+      removeActivitiesFromRegistry(current.activities, current.ordering);
+    }
+    this.#registeredActivities = undefined;
+    this.#registeredOrdering = undefined;
+  }
+
+  #removeFromTrackedRegistry(): void {
+    if (this.#registeredActivities && this.#registeredOrdering) {
+      removeActivitiesFromRegistry(this.#registeredActivities, this.#registeredOrdering);
     }
   }
 }
@@ -562,13 +643,58 @@ function createNonce(): string {
   return `${Date.now().toString(36)}-${random}`;
 }
 
-function hasNativeActivityRegistry(): boolean {
-  return (
+function getNativeActivityRegistry(): NativeActivityRegistry | undefined {
+  if (
     typeof ActivityFemale3DCG !== "undefined" &&
     Array.isArray(ActivityFemale3DCG) &&
     typeof ActivityFemale3DCGOrdering !== "undefined" &&
     Array.isArray(ActivityFemale3DCGOrdering)
+  ) {
+    return { activities: ActivityFemale3DCG, ordering: ActivityFemale3DCGOrdering };
+  }
+  return undefined;
+}
+
+function createNativeActivity(
+  runtimeName: string,
+  definition: CustomActivityDefinition,
+): BCActivity {
+  return {
+    Name: runtimeName,
+    MaxProgress: 0,
+    MaxProgressSelf: 0,
+    Prerequisite: [],
+    Target: definition.targetMode === "self" ? [] : [definition.targetGroup],
+    ...(definition.targetMode === "self"
+      ? { TargetSelf: [definition.targetGroup] }
+      : definition.targetMode === "both"
+        ? { TargetSelf: [definition.targetGroup] }
+        : {}),
+  };
+}
+
+function nativeActivityRegistryIsLoaded(registry: NativeActivityRegistry): boolean {
+  const availableNames = new Set(
+    registry.activities
+      .map((activity) => activity?.Name)
+      .filter((name): name is string =>
+        typeof name === "string" && !name.startsWith(ACTIVITY_PREFIX),
+      ),
   );
+  return registry.ordering.some(
+    (name) => typeof name === "string" && availableNames.has(name),
+  );
+}
+
+function removeActivitiesFromRegistry(activities: BCActivity[], ordering: string[]): void {
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const name = activities[index]?.Name;
+    if (typeof name === "string" && name.startsWith(ACTIVITY_PREFIX)) activities.splice(index, 1);
+  }
+  for (let index = ordering.length - 1; index >= 0; index -= 1) {
+    const name = ordering[index];
+    if (typeof name === "string" && name.startsWith(ACTIVITY_PREFIX)) ordering.splice(index, 1);
+  }
 }
 
 function fallbackBodySlots(): ActivityBodySlot[] {

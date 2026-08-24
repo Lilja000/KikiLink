@@ -22,7 +22,6 @@ export type PresenceState = PresenceStatus | "unknown";
 export type PresenceSource = "kikilink" | "room" | "friend-list" | "unknown";
 export type ImagePreviewPreference = "ask" | "always" | "never";
 export type ImageUploadRetention = "1h" | "12h" | "24h" | "72h";
-export type RoomBadgePlacement = "before-addons" | "between-addons" | "after-addons";
 export type ReactionTrigger =
   | "beep-received"
   | "room-join"
@@ -191,7 +190,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 14;
+  schemaVersion: 15;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -203,9 +202,8 @@ export interface KikiLinkSettings {
     launcherPosition: { x: number; y: number } | null;
     roomBadge: {
       enabled: boolean;
-      placement: RoomBadgePlacement;
-      offsetX: number;
-      offsetY: number;
+      /** Normalized viewport position, persisted after the user drags the flower. */
+      position: { x: number; y: number } | null;
     };
     reducedMotion: boolean;
     settingsSection: SettingsSection;

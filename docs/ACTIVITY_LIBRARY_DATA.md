@@ -1,6 +1,6 @@
 # Custom Activities data and compatibility
 
-KikiLink 0.20.0 stores user-created activities locally and registers them beside Bondage Club's
+KikiLink 0.20.1 stores user-created activities locally and registers them beside Bondage Club's
 vanilla activities at runtime. No account, cloud library, or remote activity index is involved.
 
 ## Local model
@@ -25,14 +25,15 @@ to their canonical vanilla image during editing and sanitation.
 
 ## Runtime registration
 
-KikiLink derives a private runtime name from each local ID, then appends an activity definition to
-Bondage Club's `ActivityFemale3DCG` registry and ordering list. Before every sync and during unload,
-all names under KikiLink's prefix are removed first. This makes updates idempotent and prevents
-duplicates after editing, reconnecting, or reloading the addon.
+KikiLink derives a private runtime name from each local ID, then waits until Bondage Club exposes its
+live `ActivityFemale3DCG` registry and ordering list before appending the definition. A lightweight
+lifecycle check detects replaced or rebuilt registry arrays and restores every saved definition
+exactly once. Before every sync and during unload, all names under KikiLink's prefix are removed
+from both the tracked and current registries. This keeps edits idempotent without load-order races.
 
 The activity uses `MaxProgress: 0`; optional arousal is not delegated to the vanilla activity cap.
 KikiLink intercepts only its own runtime names, reuses the chosen vanilla picture, and appends the
-Blossom marker after Bondage Club creates the native button. Other activities and hook handlers keep
+lower-right Blossom marker after Bondage Club creates the native button. Other activities and hook handlers keep
 their normal chain.
 
 ## Visible action and optional effect
@@ -62,6 +63,9 @@ default. Legacy user-written room actions are preserved and converted with:
 
 All processing and persistence remain in the current browser profile.
 
-Schema 14 adds only profile, AFK, temporary-upload, and room-badge preferences. Existing custom
+Schema 14 adds only profile, AFK, temporary-upload, and the former room-badge preferences. Existing custom
 activities remain intact. The former Cloudinary upload switch is reset to off once during migration
 so it is not silently treated as consent to send files to Litterbox.
+
+Schema 15 replaces the old badge presets with one normalized draggable position and changes only the
+untouched accidental Russian AFK default to English. User-edited AFK messages remain unchanged.

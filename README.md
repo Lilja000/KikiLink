@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.20.0` adds AFK replies, temporary Litterbox image uploads, profile avatars, a separate
-configurable room Blossom, smoother chat rendering, and a phone-friendly Custom Activities editor.
+Version `0.20.1` makes the Blossom freely draggable, guarantees that saved Custom Activities join
+Bondage Club's live native menu, and changes the untouched AFK reply default to English.
 
 ## Link Deck
 
@@ -125,8 +125,9 @@ browser profile. KikiLink does not upload them to a server.
 - Quick `{me}`, `{target}`, `{target's}`, and `{target's gender}` variables with a live preview
 - Other-character targeting by default; self-only and both modes live inside `Advanced`
 - Optional arousal is off by default and exposes a bounded `1–20` base-amount slider only when enabled
-- Saved actions are registered beside vanilla activities on the selected body slot
-- Every native custom-activity button carries KikiLink's translucent Blossom marker
+- Saved actions wait for Bondage Club's live registry and stay registered beside vanilla activities
+  on the selected body slot even if the game rebuilds that registry
+- Every native custom-activity button carries KikiLink's translucent Blossom marker in its lower-right corner
 - Other players receive one ordinary finished action sentence, including players without KikiLink
 - Compatible KikiLink recipients validate sender, target, body group, amount, and nonce before handing
   optional arousal to Bondage Club's own preference-aware activity system
@@ -159,9 +160,8 @@ same native Bondage Club emote path and are visible to everyone in the room.
 ## Interface
 
 - The original wolf-and-red-moon KikiLink emblem is restored in the launcher and workspace
-- A separate quiet translucent Blossom appears in the room addon-icon row for your own character and
-  confirmed compatible KikiLink peers; its preset position and fine offsets are configurable, it
-  respects Bondage Club's native icon-visibility control, and it adds no new presence traffic
+- A separate quiet translucent Blossom starts near the top addon-icon area and can be dragged freely
+  anywhere over the game; its responsive position saves automatically and can be reset in Appearance
 - Original dependency-free SVG icons with one consistent rounded line style across navigation,
   chat controls, favorites, pins, images, dialogs, and player actions
 - Dark lacquer, light paper, and follow-system appearance modes

@@ -112,7 +112,7 @@ References:
   history loading.
 - Use grouping, shape, and restrained surface contrast to distinguish message direction without
   adding labels or metadata the reader did not ask for.
-- Reuse existing compatibility state for room badges instead of adding a second heartbeat or poll.
+- Keep decorative screen badges local; moving or showing them must never add presence traffic.
 
 ## Review checklist
 

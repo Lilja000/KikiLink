@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.1 - 2026-08-24
+
+- Replaced the WCE/BCX preset selector and character-relative Blossom drawing with one visible,
+  freely draggable screen badge. Its normalized position follows viewport changes, saves after a
+  drag, and has a single reset action in Appearance settings.
+- Made Custom Activities wait for Bondage Club's live activity registries and monitor them for
+  replacement or in-place rebuilds. Saved actions are reinserted exactly once instead of silently
+  disappearing when the game finishes loading a registry after KikiLink.
+- Moved the Custom Activity Blossom marker to the lower-right corner of the native activity card,
+  matching the addon marker placement used in the supplied reference.
+- Changed the untouched AFK default to English (`Hi, I'm AFK. Message me later!`) and migrated only
+  the exact accidental Russian default, preserving genuinely customized messages.
+- Migrated settings to schema version 15 and removed the retired room-badge preset and offset fields.
+
 ## 0.20.0 - 2026-08-24
 
 - Restored the original wolf-and-red-moon KikiLink emblem everywhere inside the addon and kept the

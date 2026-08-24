@@ -10,6 +10,7 @@ import type { EventBus } from "../core/event-bus";
 import { cleanBeepMessageContent } from "./message-content";
 
 const READY_POLL_MS = 400;
+const ACTIVITY_HOOK_RETRY_MS = 500;
 const SOCKET_REBIND_MS = 2_000;
 const BEEP_LOG_POLL_MS = 1_000;
 const RECENT_INCOMING_TTL_MS = 10_000;
@@ -30,6 +31,7 @@ export type BCCharacterOverlayRenderer = (
 ) => void;
 
 export interface BCCustomActivityIntegration {
+  isCustomActivity?(activityName: string): boolean;
   resolveText(keyword: string): string | undefined;
   resolveImage(activityName: string): string | undefined;
   run(
@@ -50,10 +52,12 @@ export class BCAdapter {
   readonly #recentIncoming: RecentIncoming[] = [];
   readonly #characterOverlayRenderers = new Set<BCCharacterOverlayRenderer>();
   readonly #customActivityIntegrations = new Set<BCCustomActivityIntegration>();
+  readonly #installedActivityHooks = new Set<string>();
   #modApi: ModSDKModAPI | undefined;
   #socket: BCServerSocket | undefined;
   #socketRebindTimer: ReturnType<typeof setInterval> | undefined;
   #beepLogTimer: ReturnType<typeof setInterval> | undefined;
+  #activityHookRetryTimer: ReturnType<typeof setInterval> | undefined;
   #beepLogCursor = 0;
   #seenIncomingPayloads = new WeakSet<object>();
   #stopped = false;
@@ -106,12 +110,15 @@ export class BCAdapter {
     this.#onlineFriendSignature = undefined;
     if (this.#socketRebindTimer !== undefined) clearInterval(this.#socketRebindTimer);
     if (this.#beepLogTimer !== undefined) clearInterval(this.#beepLogTimer);
+    if (this.#activityHookRetryTimer !== undefined) clearInterval(this.#activityHookRetryTimer);
     this.#socketRebindTimer = undefined;
     this.#beepLogTimer = undefined;
+    this.#activityHookRetryTimer = undefined;
     this.#detachSocketListeners();
     for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
     this.#modApi?.unload();
     this.#modApi = undefined;
+    this.#installedActivityHooks.clear();
   }
 
   isReady(): boolean {
@@ -442,57 +449,11 @@ export class BCAdapter {
         }),
       );
     }
-    if (typeof ActivityDictionaryText === "function") {
-      this.#tryInstallHook("ActivityDictionaryText", () =>
-        modApi.hookFunction("ActivityDictionaryText", 10, (args, next) => {
-          const keyword = typeof args[0] === "string" ? args[0] : "";
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const text = this.#callActivityIntegration(integration, () =>
-              integration.resolveText(keyword),
-            );
-            if (text !== undefined) return text;
-          }
-          return next(args);
-        }),
-      );
-    }
-    if (typeof ActivityRun === "function") {
-      this.#tryInstallHook("ActivityRun", () =>
-        modApi.hookFunction("ActivityRun", 10, (args, next) => {
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const handled = this.#callActivityIntegration(integration, () =>
-              integration.run(args[0], args[1], args[2], args[3]),
-            );
-            if (handled) return undefined;
-          }
-          return next(args);
-        }),
-      );
-    }
-    if (typeof ElementButton === "object" && typeof ElementButton.CreateForActivity === "function") {
-      this.#tryInstallHook("ElementButton.CreateForActivity", () =>
-        modApi.hookFunction("ElementButton.CreateForActivity", 10, (args, next) => {
-          const itemActivity = args[1];
-          const activityName = itemActivity?.Activity?.Name;
-          if (typeof activityName === "string") {
-            for (const integration of [...this.#customActivityIntegrations]) {
-              const image = this.#callActivityIntegration(integration, () =>
-                integration.resolveImage(activityName),
-              );
-              if (image !== undefined) {
-                args[4] = { ...(args[4] ?? {}), image };
-                break;
-              }
-            }
-          }
-          const button = next(args);
-          for (const integration of [...this.#customActivityIntegrations]) {
-            this.#callActivityIntegration(integration, () => {
-              integration.decorateButton(button, itemActivity);
-            });
-          }
-          return button;
-        }),
+    this.#ensureActivityHooks();
+    if (this.#installedActivityHooks.size < 4 && this.#activityHookRetryTimer === undefined) {
+      this.#activityHookRetryTimer = setInterval(
+        () => this.#ensureActivityHooks(),
+        ACTIVITY_HOOK_RETRY_MS,
       );
     }
     this.#tryInstallHook("ServerSendBeepMessage", () =>
@@ -522,6 +483,100 @@ export class BCAdapter {
         }),
       );
     }
+  }
+
+  #ensureActivityHooks(): void {
+    const modApi = this.#modApi;
+    if (!modApi) return;
+
+    this.#tryInstallActivityHook(
+      "ActivityDictionaryText",
+      typeof ActivityDictionaryText === "function",
+      () =>
+        modApi.hookFunction("ActivityDictionaryText", 10, (args, next) => {
+          const keyword = typeof args[0] === "string" ? args[0] : "";
+          for (const integration of [...this.#customActivityIntegrations]) {
+            const text = this.#callActivityIntegration(integration, () =>
+              integration.resolveText(keyword),
+            );
+            if (text !== undefined) return text;
+          }
+          return next(args);
+        }),
+    );
+    this.#tryInstallActivityHook(
+      "ActivityRun",
+      typeof ActivityRun === "function",
+      () =>
+        modApi.hookFunction("ActivityRun", 10, (args, next) => {
+          for (const integration of [...this.#customActivityIntegrations]) {
+            const handled = this.#callActivityIntegration(integration, () =>
+              integration.run(args[0], args[1], args[2], args[3]),
+            );
+            if (handled) return undefined;
+          }
+          return next(args);
+        }),
+    );
+    this.#tryInstallActivityHook(
+      "ElementButton.CreateForActivity",
+      typeof ElementButton === "object" &&
+        ElementButton !== null &&
+        typeof ElementButton.CreateForActivity === "function",
+      () =>
+        modApi.hookFunction("ElementButton.CreateForActivity", 10, (args, next) => {
+          const itemActivity = args[1];
+          const activityName = itemActivity?.Activity?.Name;
+          if (typeof activityName === "string") {
+            for (const integration of [...this.#customActivityIntegrations]) {
+              const image = this.#callActivityIntegration(integration, () =>
+                integration.resolveImage(activityName),
+              );
+              if (image !== undefined) {
+                args[4] = { ...(args[4] ?? {}), image };
+                break;
+              }
+            }
+          }
+          const button = next(args);
+          for (const integration of [...this.#customActivityIntegrations]) {
+            this.#callActivityIntegration(integration, () => {
+              integration.decorateButton(button, itemActivity);
+            });
+          }
+          return button;
+        }),
+    );
+    this.#tryInstallActivityHook(
+      "PreferenceGetActivityFactor",
+      typeof PreferenceGetActivityFactor === "function",
+      () =>
+        modApi.hookFunction("PreferenceGetActivityFactor", 10, (args, next) => {
+          const activityName = typeof args[1] === "string" ? args[1] : "";
+          for (const integration of [...this.#customActivityIntegrations]) {
+            const custom = this.#callActivityIntegration(
+              integration,
+              () => integration.isCustomActivity?.(activityName) ?? false,
+            );
+            if (custom) return 2;
+          }
+          return next(args);
+        }),
+    );
+
+    if (this.#installedActivityHooks.size === 4 && this.#activityHookRetryTimer !== undefined) {
+      clearInterval(this.#activityHookRetryTimer);
+      this.#activityHookRetryTimer = undefined;
+    }
+  }
+
+  #tryInstallActivityHook(
+    name: string,
+    available: boolean,
+    install: () => () => void,
+  ): void {
+    if (!available || this.#installedActivityHooks.has(name)) return;
+    if (this.#tryInstallHook(name, install)) this.#installedActivityHooks.add(name);
   }
 
   #renderCharacterOverlays(
@@ -559,11 +614,13 @@ export class BCAdapter {
     }
   }
 
-  #tryInstallHook(name: string, install: () => () => void): void {
+  #tryInstallHook(name: string, install: () => () => void): boolean {
     try {
       this.#unhooks.push(install());
+      return true;
     } catch (error) {
       this.#logger.warn(`${name} hook unavailable; keeping native fallback`, error);
+      return false;
     }
   }
 

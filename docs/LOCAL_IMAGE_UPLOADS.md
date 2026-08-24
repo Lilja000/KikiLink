@@ -1,6 +1,6 @@
 # Local image upload privacy review
 
-KikiLink 0.20.0 can send a local image as the same ordinary HTTPS link used by existing image
+Since KikiLink 0.20.0, a local image can be sent as the same ordinary HTTPS link used by existing image
 messages. It does not add a KikiLink media server or require an image-host account.
 
 ## Provider choice

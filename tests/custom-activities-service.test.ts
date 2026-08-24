@@ -12,6 +12,7 @@ import {
 } from "../src/modules/link-activities/link-activities-service";
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const key of [
     "ActivityFemale3DCG",
     "ActivityFemale3DCGOrdering",
@@ -29,6 +30,109 @@ afterEach(() => {
 });
 
 describe("native Custom Activities", () => {
+  it("defers registration until Bondage Club creates its native activity registries", () => {
+    vi.useFakeTimers();
+    const settings = settingsWithElbowTouch();
+    const unregister = vi.fn();
+    const adapter = {
+      registerCustomActivityIntegration: () => unregister,
+    } as unknown as BCAdapter;
+    const service = new LinkActivitiesService(adapter, settings);
+
+    service.start();
+    expect(globalThis.ActivityFemale3DCG).toBeUndefined();
+
+    globalThis.ActivityFemale3DCG = [];
+    globalThis.ActivityFemale3DCGOrdering = [];
+    vi.advanceTimersByTime(500);
+    expect(globalThis.ActivityFemale3DCG).toEqual([]);
+    expect(globalThis.ActivityFemale3DCGOrdering).toEqual([]);
+
+    globalThis.ActivityFemale3DCG.push({
+      Name: "Caress",
+      MaxProgress: 10,
+      Prerequisite: [],
+      Target: ["ItemArms"],
+    });
+    globalThis.ActivityFemale3DCGOrdering.push("Caress");
+    vi.advanceTimersByTime(500);
+
+    expect(
+      globalThis.ActivityFemale3DCG.filter((activity) =>
+        activity.Name.startsWith("KikiLinkCustom_"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      globalThis.ActivityFemale3DCGOrdering.filter((name) =>
+        name.startsWith("KikiLinkCustom_"),
+      ),
+    ).toHaveLength(1);
+
+    service.stop();
+    expect(unregister).toHaveBeenCalledOnce();
+    expect(globalThis.ActivityFemale3DCG.map((activity) => activity.Name)).toEqual(["Caress"]);
+    expect(globalThis.ActivityFemale3DCGOrdering).toEqual(["Caress"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reinjects once when Bondage Club replaces or rebuilds the registry arrays", () => {
+    vi.useFakeTimers();
+    const oldActivities: BCActivity[] = [
+      { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
+    ];
+    const oldOrdering = ["Caress"];
+    globalThis.ActivityFemale3DCG = oldActivities;
+    globalThis.ActivityFemale3DCGOrdering = oldOrdering;
+    const service = new LinkActivitiesService(
+      { registerCustomActivityIntegration: () => () => undefined } as unknown as BCAdapter,
+      settingsWithElbowTouch(),
+    );
+
+    service.start();
+    expect(oldActivities.filter((activity) => activity.Name.startsWith("KikiLinkCustom_"))).toHaveLength(1);
+
+    const replacementActivities: BCActivity[] = [
+      { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
+    ];
+    const replacementOrdering = ["Caress"];
+    globalThis.ActivityFemale3DCG = replacementActivities;
+    globalThis.ActivityFemale3DCGOrdering = replacementOrdering;
+    vi.advanceTimersByTime(500);
+
+    expect(oldActivities.map((activity) => activity.Name)).toEqual(["Caress"]);
+    expect(oldOrdering).toEqual(["Caress"]);
+    expect(
+      replacementActivities.filter((activity) => activity.Name.startsWith("KikiLinkCustom_")),
+    ).toHaveLength(1);
+    expect(
+      replacementOrdering.filter((name) => name.startsWith("KikiLinkCustom_")),
+    ).toHaveLength(1);
+
+    for (let index = replacementActivities.length - 1; index >= 0; index -= 1) {
+      if (replacementActivities[index]?.Name.startsWith("KikiLinkCustom_")) {
+        replacementActivities.splice(index, 1);
+      }
+    }
+    for (let index = replacementOrdering.length - 1; index >= 0; index -= 1) {
+      if (replacementOrdering[index]?.startsWith("KikiLinkCustom_")) {
+        replacementOrdering.splice(index, 1);
+      }
+    }
+    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(500);
+
+    expect(
+      replacementActivities.filter((activity) => activity.Name.startsWith("KikiLinkCustom_")),
+    ).toHaveLength(1);
+    expect(
+      replacementOrdering.filter((name) => name.startsWith("KikiLinkCustom_")),
+    ).toHaveLength(1);
+
+    service.stop();
+    expect(replacementActivities.map((activity) => activity.Name)).toEqual(["Caress"]);
+    expect(replacementOrdering).toEqual(["Caress"]);
+  });
+
   it("offers only canonical, visually unique vanilla pictures from a fixed manifest", () => {
     globalThis.ActivityFemale3DCG = [
       { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
@@ -166,6 +270,9 @@ describe("native Custom Activities", () => {
     const blossom = button.querySelector<HTMLImageElement>("[data-kikilink-activity-mark]");
     expect(blossom?.alt).toBe("KikiLink custom activity");
     expect(blossom?.src).toContain("data:image/svg+xml");
+    expect(blossom?.style.bottom).toBe("4px");
+    expect(blossom?.style.right).toBe("4px");
+    expect(blossom?.style.top).toBe("");
 
     service.stop();
     expect(globalThis.ActivityFemale3DCG.map((activity) => activity.Name)).toEqual(["Caress"]);
@@ -173,8 +280,10 @@ describe("native Custom Activities", () => {
   });
 
   it("publishes only the finished sentence while carrying validated arousal metadata", () => {
-    globalThis.ActivityFemale3DCG = [];
-    globalThis.ActivityFemale3DCGOrdering = [];
+    globalThis.ActivityFemale3DCG = [
+      { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
+    ];
+    globalThis.ActivityFemale3DCGOrdering = ["Caress"];
     const publish = vi.fn();
     globalThis.ChatRoomPublishCustomAction = publish;
     globalThis.CharacterNickname = (character) => character.Nickname ?? character.Name;
@@ -199,7 +308,10 @@ describe("native Custom Activities", () => {
     } as unknown as BCAdapter;
     const service = new LinkActivitiesService(adapter, settings);
     service.start();
-    const custom = globalThis.ActivityFemale3DCG[0];
+    const custom = globalThis.ActivityFemale3DCG.find((activity) =>
+      activity.Name.startsWith("KikiLinkCustom_"),
+    );
+    if (!custom) throw new Error("Missing registered custom activity");
     const actor = { MemberNumber: 999, Name: "AccountKiki", Nickname: "Kiki" };
     const target = {
       MemberNumber: 123,
@@ -236,6 +348,7 @@ describe("native Custom Activities", () => {
       group: "ItemArms",
       arousal: 6,
     });
+    service.stop();
   });
 
   it("applies a valid incoming arousal effect once and rejects spoofed metadata", () => {
@@ -313,3 +426,19 @@ describe("native Custom Activities", () => {
     ).toBe("{target} greets {me}; she offer her hand to {target}.");
   });
 });
+
+function settingsWithElbowTouch(): SettingsStore {
+  const settings = new SettingsStore(new MemoryKeyValueStorage());
+  settings.update((draft) => {
+    draft.linkActivities.customActivities.push({
+      id: "elbow-touch",
+      name: "Elbow touch",
+      targetGroup: "ItemArms",
+      targetMode: "both",
+      template: "{me} touches {target's} elbow.",
+      image: "Caress",
+      arousal: 0,
+    });
+  });
+  return settings;
+}

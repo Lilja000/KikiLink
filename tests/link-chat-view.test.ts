@@ -22,6 +22,45 @@ afterEach(() => {
 });
 
 describe("LinkChatView", () => {
+  it("mounts the draggable screen Blossom without legacy WCE or BCX placement controls", () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.20.0",
+    );
+
+    view.mount();
+    const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
+    const blossom = shadow?.querySelector<HTMLElement>(".kl-room-blossom");
+    const blossomSettings = shadow?.querySelector<HTMLElement>(".kl-room-badge-settings");
+
+    expect(blossom).not.toBeNull();
+    expect(blossom?.style.position).toBe("fixed");
+    expect(blossom?.querySelector(".kl-room-blossom-image")).not.toBeNull();
+    expect(blossomSettings?.textContent).toContain("drag the flower anywhere");
+    expect(shadow?.querySelector('select[aria-label="Room Blossom position"]')).toBeNull();
+    expect(shadow?.querySelector(".kl-room-badge-advanced")).toBeNull();
+    expect(blossomSettings?.textContent).not.toMatch(/WCE|BCX|Before addon|Between WCE/i);
+    expect(
+      shadow?.querySelector<HTMLTextAreaElement>(".kl-afk-reply-message")?.placeholder,
+    ).toBe("Hi, I'm AFK. Message me later!");
+
+    view.destroy();
+    expect(shadow?.querySelector(".kl-room-blossom")).toBeNull();
+  });
+
   it("mounts, displays a conversation, and sends through the BC adapter", async () => {
     const sendBeep = vi.fn((peerNumber: number, content: string, includeRoom: boolean) => ({
       direction: "outgoing" as const,

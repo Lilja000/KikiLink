@@ -132,7 +132,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(14);
+    expect(settings.schemaVersion).toBe(15);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -256,7 +256,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(14);
+    expect(settings.schemaVersion).toBe(15);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -280,7 +280,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(14);
+    expect(settings.schemaVersion).toBe(15);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -346,7 +346,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(14);
+    expect(settings.schemaVersion).toBe(15);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -441,13 +441,11 @@ describe("SettingsStore", () => {
 
   it("sanitizes the room Blossom, profile avatar, and AFK reply", () => {
     const settings = sanitizeSettings({
-      schemaVersion: 14,
+      schemaVersion: 15,
       ui: {
         roomBadge: {
           enabled: true,
-          placement: "after-addons",
-          offsetX: 24,
-          offsetY: -8,
+          position: { x: 0.72, y: 0.08 },
         },
       },
       linkPresence: {
@@ -461,9 +459,7 @@ describe("SettingsStore", () => {
 
     expect(settings.ui.roomBadge).toEqual({
       enabled: true,
-      placement: "after-addons",
-      offsetX: 24,
-      offsetY: -8,
+      position: { x: 0.72, y: 0.08 },
     });
     expect(settings.linkPresence.avatarUrl).toBe("https://i.imgur.com/kiki.png");
     expect(settings.linkPresence.afkAutoReply).toEqual({
@@ -472,8 +468,9 @@ describe("SettingsStore", () => {
     });
 
     const rejected = sanitizeSettings({
+      schemaVersion: 15,
       ui: {
-        roomBadge: { placement: "over-face", offsetX: 999, offsetY: -999 },
+        roomBadge: { enabled: true, position: { x: 2, y: -1 } },
       },
       linkPresence: {
         avatarUrl: "http://tracker.example/avatar.png",
@@ -494,6 +491,47 @@ describe("SettingsStore", () => {
     expect(rejected.linkPresence.afkAutoReply).toEqual({
       enabled: true,
       message: DEFAULT_SETTINGS.linkPresence.afkAutoReply.message,
+    });
+  });
+
+  it("migrates the accidental Russian AFK default and old preset badge settings", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 14,
+      ui: {
+        roomBadge: {
+          enabled: true,
+          placement: "between-addons",
+          offsetX: 12,
+          offsetY: 4,
+        },
+      },
+      linkPresence: {
+        afkAutoReply: {
+          enabled: true,
+          message: "Привет, я АФК, напишите мне позже!",
+        },
+      },
+    });
+
+    expect(settings.schemaVersion).toBe(15);
+    expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
+    expect(settings.linkPresence.afkAutoReply).toEqual({
+      enabled: true,
+      message: "Hi, I'm AFK. Message me later!",
+    });
+
+    const customized = sanitizeSettings({
+      schemaVersion: 14,
+      linkPresence: {
+        afkAutoReply: {
+          enabled: true,
+          message: "Still drawing; I'll answer soon.",
+        },
+      },
+    });
+    expect(customized.linkPresence.afkAutoReply).toEqual({
+      enabled: true,
+      message: "Still drawing; I'll answer soon.",
     });
   });
 });

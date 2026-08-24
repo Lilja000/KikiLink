@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 14,
+  schemaVersion: 15,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -25,9 +25,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     launcherPosition: null,
     roomBadge: {
       enabled: true,
-      placement: "between-addons",
-      offsetX: 0,
-      offsetY: 0,
+      position: null,
     },
     reducedMotion: false,
     settingsSection: "appearance",
@@ -60,7 +58,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     autoIdleMinutes: 10,
     afkAutoReply: {
       enabled: false,
-      message: "Привет, я АФК, напишите мне позже!",
+      message: "Hi, I'm AFK. Message me later!",
     },
   },
   linkActivities: {
@@ -187,7 +185,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
 
   return {
-    schemaVersion: 14,
+    schemaVersion: 15,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -270,7 +268,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         120,
         DEFAULT_SETTINGS.linkPresence.autoIdleMinutes,
       ),
-      afkAutoReply: sanitizeAfkAutoReply(linkPresence.afkAutoReply),
+      afkAutoReply: sanitizeAfkAutoReply(linkPresence.afkAutoReply, sourceSchema),
     },
     linkActivities: {
       enabled:
@@ -322,12 +320,16 @@ function sanitizeImageUploads(
 
 function sanitizeAfkAutoReply(
   value: unknown,
+  sourceSchema: number,
 ): KikiLinkSettings["linkPresence"]["afkAutoReply"] {
   const source = isRecord(value) ? value : {};
-  const message =
+  let message =
     typeof source.message === "string"
       ? source.message.trim().slice(0, 500)
       : DEFAULT_SETTINGS.linkPresence.afkAutoReply.message;
+  if (sourceSchema < 15 && message === "Привет, я АФК, напишите мне позже!") {
+    message = DEFAULT_SETTINGS.linkPresence.afkAutoReply.message;
+  }
   return {
     enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.linkPresence.afkAutoReply.enabled),
     message: message || DEFAULT_SETTINGS.linkPresence.afkAutoReply.message,
@@ -344,14 +346,7 @@ function sanitizeRoomBadge(value: unknown): KikiLinkSettings["ui"]["roomBadge"] 
   const source = isRecord(value) ? value : {};
   return {
     enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.ui.roomBadge.enabled),
-    placement:
-      source.placement === "before-addons" ||
-      source.placement === "between-addons" ||
-      source.placement === "after-addons"
-        ? source.placement
-        : DEFAULT_SETTINGS.ui.roomBadge.placement,
-    offsetX: integerInRange(source.offsetX, -96, 96, DEFAULT_SETTINGS.ui.roomBadge.offsetX),
-    offsetY: integerInRange(source.offsetY, -40, 120, DEFAULT_SETTINGS.ui.roomBadge.offsetY),
+    position: sanitizeLauncherPosition(source.position),
   };
 }
 

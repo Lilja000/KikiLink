@@ -1,127 +1,224 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BCAdapter } from "../src/bc/adapter";
-import type { SettingsStore } from "../src/core/settings";
-import type { KikiLinkSettings } from "../src/core/types";
-import type { LinkPresenceService } from "../src/modules/link-presence/link-presence-service";
+import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import {
-  resolveMainDrawingContext,
-  resolveRoomBadgeRect,
+  BLOSSOM_ICON_DATA_URL,
+  DEFAULT_ROOM_BADGE_POSITION,
+  normalizeRoomBadgePosition,
+  resolveRoomBadgePosition,
   RoomBlossomBadge,
 } from "../src/modules/link-chat/blossom";
 
-type RoomBadgeConfig = Parameters<typeof resolveRoomBadgeRect>[0];
+function setViewport(width: number, height: number): void {
+  vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+  vi.spyOn(window, "innerHeight", "get").mockReturnValue(height);
+}
 
-function badgeConfig(
-  placement: RoomBadgeConfig["placement"] = "between-addons",
-  offsetX = 0,
-  offsetY = 0,
-  enabled = true,
-): RoomBadgeConfig {
-  return { enabled, placement, offsetX, offsetY };
+function mountedBadge(settings = new SettingsStore(new MemoryKeyValueStorage())): {
+  badge: RoomBlossomBadge;
+  element: HTMLSpanElement;
+  root: ShadowRoot;
+  settings: SettingsStore;
+} {
+  const host = document.createElement("div");
+  const root = host.attachShadow({ mode: "open" });
+  document.body.append(host);
+  const badge = new RoomBlossomBadge(settings);
+  badge.mount(root);
+  const element = root.querySelector<HTMLSpanElement>(".kl-room-blossom");
+  if (!element) throw new Error("Missing room Blossom");
+  return { badge, element, root, settings };
 }
 
 afterEach(() => {
-  vi.unstubAllGlobals();
+  document.body.replaceChildren();
+  vi.restoreAllMocks();
 });
 
-describe("room Blossom canvas compatibility", () => {
-  it("uses modern Bondage Club's drawing context directly", () => {
-    const context = { drawImage: vi.fn() } as unknown as CanvasRenderingContext2D;
-
-    expect(resolveMainDrawingContext(context)).toBe(context);
+describe("room Blossom viewport positioning", () => {
+  it("resolves defaults, normalized positions, and viewport clamps", () => {
+    expect(resolveRoomBadgePosition(null, 500, 900)).toEqual({ left: 319, top: 47 });
+    expect(resolveRoomBadgePosition({ x: 0.25, y: 0.5 }, 500, 300)).toEqual({
+      left: 114,
+      top: 128,
+    });
+    expect(resolveRoomBadgePosition({ x: -4, y: 7 }, 100, 100)).toEqual({
+      left: 0,
+      top: 56,
+    });
+    expect(resolveRoomBadgePosition({ x: 1, y: 1 }, 20, 20)).toEqual({ left: 0, top: 0 });
   });
 
-  it("still supports builds that expose the canvas element", () => {
-    const canvas = document.createElement("canvas");
-    const context = { drawImage: vi.fn() } as unknown as CanvasRenderingContext2D;
-    vi.spyOn(canvas, "getContext").mockReturnValue(context);
-
-    expect(resolveMainDrawingContext(canvas)).toBe(context);
+  it("normalizes pixels into portable 0..1 settings", () => {
+    expect(normalizeRoomBadgePosition(228, 128, 500, 300)).toEqual({ x: 0.5, y: 0.5 });
+    expect(normalizeRoomBadgePosition(-100, 9_999, 500, 300)).toEqual({ x: 0, y: 1 });
+    expect(normalizeRoomBadgePosition(0, 0, 20, 20)).toEqual({ x: 0.5, y: 0.5 });
   });
 
-  it("places the Blossom in safe slots before, between, and after common addon icons", () => {
-    expect(resolveRoomBadgeRect(badgeConfig("before-addons"), 0, 0, 1)).toEqual({
-      x: 216,
-      y: 5,
-      size: 32,
-    });
-    expect(resolveRoomBadgeRect(badgeConfig("between-addons"), 0, 0, 1)).toEqual({
-      x: 332,
-      y: 5,
-      size: 32,
-    });
-    expect(resolveRoomBadgeRect(badgeConfig("after-addons"), 0, 0, 1)).toEqual({
-      x: 417,
-      y: 5,
-      size: 32,
-    });
+  it("mounts a quiet fixed image in KikiLink's ShadowRoot and has no click action", () => {
+    setViewport(500, 900);
+    const { badge, element, root, settings } = mountedBadge();
+    const image = element.querySelector("img");
+
+    expect(element.style.position).toBe("fixed");
+    expect(element.style.opacity).toBe("0.82");
+    expect(element.style.width).toBe("44px");
+    expect(element.style.left).toBe("319px");
+    expect(element.style.top).toBe("47px");
+    expect(element.getAttribute("role")).toBe("img");
+    expect(image?.getAttribute("src")).toBe(BLOSSOM_ICON_DATA_URL);
+    expect(image?.draggable).toBe(false);
+
+    const before = settings.get().ui.roomBadge;
+    element.click();
+    expect(settings.get().ui.roomBadge).toEqual(before);
+    expect(root.querySelectorAll(".kl-room-blossom")).toHaveLength(1);
+    badge.mount(root);
+    expect(root.querySelectorAll(".kl-room-blossom")).toHaveLength(1);
+    badge.destroy();
   });
 
-  it("applies fine offsets, character coordinates, zoom, and safe clamps", () => {
-    expect(resolveRoomBadgeRect(badgeConfig("between-addons", 10, 15), 10, 20, 0.5)).toEqual({
-      x: 181,
-      y: 30,
-      size: 16,
+  it("follows enabled settings live", () => {
+    const { badge, element, settings } = mountedBadge();
+    expect(element.hidden).toBe(false);
+
+    settings.update((draft) => {
+      draft.ui.roomBadge.enabled = false;
     });
-    expect(resolveRoomBadgeRect(badgeConfig("before-addons", -1_000, -1_000), 0, 0, 1)).toEqual({
-      x: 0,
-      y: 0,
-      size: 32,
+    expect(element.hidden).toBe(true);
+    expect(element.style.display).toBe("none");
+
+    settings.update((draft) => {
+      draft.ui.roomBadge.enabled = true;
     });
-    expect(resolveRoomBadgeRect(badgeConfig("after-addons", 1_000, 1_000), 0, 0, 1)).toEqual({
-      x: 468,
-      y: 160,
-      size: 32,
+    expect(element.hidden).toBe(false);
+    expect(element.style.display).toBe("block");
+    badge.destroy();
+  });
+});
+
+describe("room Blossom dragging", () => {
+  it("uses a movement threshold, pointer capture, viewport clamps, and normalized persistence", () => {
+    setViewport(300, 200);
+    const { badge, element, settings } = mountedBadge();
+    const capture = vi.fn();
+    const release = vi.fn();
+    Object.defineProperties(element, {
+      setPointerCapture: { configurable: true, value: capture },
+      hasPointerCapture: { configurable: true, value: () => true },
+      releasePointerCapture: { configurable: true, value: release },
     });
+    const initialLeft = element.style.left;
+    const initialTop = element.style.top;
+
+    element.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, pointerId: 7, button: 0, clientX: 10, clientY: 10 }),
+    );
+    element.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, pointerId: 7, clientX: 13, clientY: 14 }),
+    );
+    expect(element.style.left).toBe(initialLeft);
+    expect(element.style.top).toBe(initialTop);
+    expect(settings.get().ui.roomBadge.position).toBeNull();
+
+    element.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, pointerId: 7, clientX: 900, clientY: 900 }),
+    );
+    expect(element.style.left).toBe("256px");
+    expect(element.style.top).toBe("156px");
+    expect(element.dataset.dragging).toBe("true");
+    element.dispatchEvent(
+      new PointerEvent("pointerup", { bubbles: true, pointerId: 7, clientX: 900, clientY: 900 }),
+    );
+
+    expect(capture).toHaveBeenCalledWith(7);
+    expect(release).toHaveBeenCalledWith(7);
+    expect(settings.get().ui.roomBadge.position).toEqual({ x: 1, y: 1 });
+    expect(element.dataset.dragging).toBe("false");
+    badge.destroy();
   });
 
-  it("caches live settings, draws translucently, and releases its subscription", () => {
-    class ReadyImage extends EventTarget {
-      alt = "";
-      decoding = "auto";
-      draggable = false;
-      complete = true;
-      naturalWidth = 64;
-      src = "";
-    }
+  it("restores the saved position when a drag is cancelled", () => {
+    setViewport(300, 200);
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.ui.roomBadge.position = { x: 0.25, y: 0.5 };
+    });
+    const { badge, element } = mountedBadge(settings);
+    const left = element.style.left;
+    const top = element.style.top;
 
-    vi.stubGlobal("Image", ReadyImage as unknown as typeof Image);
-    const context = {
-      drawImage: vi.fn(() => {
-        expect(context.globalAlpha).toBeCloseTo(0.82);
-      }),
-      globalAlpha: 1,
-    } as unknown as CanvasRenderingContext2D;
-    vi.stubGlobal("MainCanvas", context);
-    vi.stubGlobal("ChatRoomHideIconState", 0);
+    element.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, pointerId: 2, button: 0, clientX: 20, clientY: 20 }),
+    );
+    element.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, pointerId: 2, clientX: 100, clientY: 100 }),
+    );
+    element.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true, pointerId: 2 }));
 
+    expect(element.style.left).toBe(left);
+    expect(element.style.top).toBe(top);
+    expect(settings.get().ui.roomBadge.position).toEqual({ x: 0.25, y: 0.5 });
+    badge.destroy();
+  });
+
+  it("repositions on resize and resets to the documented default", () => {
+    setViewport(300, 200);
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.ui.roomBadge.position = { x: 0.5, y: 0.5 };
+    });
+    const { badge, element } = mountedBadge(settings);
+    expect(element.style.left).toBe("128px");
+    expect(element.style.top).toBe("78px");
+
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(500);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(300);
+    window.dispatchEvent(new Event("resize"));
+    expect(element.style.left).toBe("228px");
+    expect(element.style.top).toBe("128px");
+
+    badge.resetPosition();
+    expect(settings.get().ui.roomBadge.position).toBeNull();
+    expect(element.style.left).toBe(
+      `${Math.round(DEFAULT_ROOM_BADGE_POSITION.x * (500 - 44))}px`,
+    );
+    expect(element.style.top).toBe(
+      `${Math.round(DEFAULT_ROOM_BADGE_POSITION.y * (300 - 44))}px`,
+    );
+    badge.destroy();
+  });
+
+  it("removes DOM, resize handling, pointer listeners, and its subscription on destroy", () => {
+    setViewport(300, 200);
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
     const unsubscribe = vi.fn();
-    let settingsListener: ((settings: KikiLinkSettings) => void) | undefined;
-    const settings = {
-      get: () => ({ ui: { roomBadge: badgeConfig() } }) as KikiLinkSettings,
-      subscribe: vi.fn((listener: (settings: KikiLinkSettings) => void) => {
-        settingsListener = listener;
-        return unsubscribe;
-      }),
-    } as unknown as SettingsStore;
-    const adapter = { getOwnMemberNumber: () => 999 } as unknown as BCAdapter;
-    const presence = { hasCompatiblePeer: () => false } as unknown as LinkPresenceService;
-    const badge = new RoomBlossomBadge(adapter, presence, settings);
-
-    badge.draw({ MemberNumber: 999 } as BCCharacter, 100, 20, 0.5);
-    expect(context.drawImage).toHaveBeenCalledWith(expect.any(ReadyImage), 266, 22.5, 16, 16);
-    expect(context.globalAlpha).toBe(1);
-
-    settingsListener?.({
-      ui: { roomBadge: badgeConfig("after-addons", 3, 4, false) },
-    } as KikiLinkSettings);
-    badge.draw({ MemberNumber: 999 } as BCCharacter, 100, 20, 0.5);
-    expect(context.drawImage).toHaveBeenCalledTimes(1);
+    const originalSubscribe = settings.subscribe.bind(settings);
+    vi.spyOn(settings, "subscribe").mockImplementation((listener) => {
+      const dispose = originalSubscribe(listener);
+      return () => {
+        unsubscribe();
+        dispose();
+      };
+    });
+    const { badge, element, root } = mountedBadge(settings);
+    const left = element.style.left;
 
     badge.destroy();
     badge.destroy();
+    expect(root.querySelector(".kl-room-blossom")).toBeNull();
     expect(unsubscribe).toHaveBeenCalledOnce();
+
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(700);
+    window.dispatchEvent(new Event("resize"));
+    expect(element.style.left).toBe(left);
+    element.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, pointerId: 3, button: 0, clientX: 0, clientY: 0 }),
+    );
+    element.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, pointerId: 3, clientX: 90, clientY: 90 }),
+    );
+    expect(element.style.left).toBe(left);
   });
 });
