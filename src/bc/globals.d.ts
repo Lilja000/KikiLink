@@ -7,6 +7,22 @@ declare global {
     FriendList?: number[];
   }
 
+  interface BCServerSocket {
+    connected?: boolean;
+    on(event: "AccountBeep", listener: (data: BCServerAccountBeepResponse) => void): unknown;
+    on(event: "AccountQueryResult", listener: (data: BCAccountQueryResponse) => void): unknown;
+    off?(event: "AccountBeep", listener: (data: BCServerAccountBeepResponse) => void): unknown;
+    off?(event: "AccountQueryResult", listener: (data: BCAccountQueryResponse) => void): unknown;
+    removeListener?(
+      event: "AccountBeep",
+      listener: (data: BCServerAccountBeepResponse) => void,
+    ): unknown;
+    removeListener?(
+      event: "AccountQueryResult",
+      listener: (data: BCAccountQueryResponse) => void,
+    ): unknown;
+  }
+
   interface BCCharacter {
     MemberNumber: number;
     Name: string;
@@ -68,6 +84,7 @@ declare global {
   var ChatRoomData: BCChatRoomData | null;
   var ChatRoomCharacter: BCCharacter[];
   var FriendListBeepLog: BCFriendListBeepLogMessage[];
+  var ServerSocket: BCServerSocket | null;
 
   function ServerAccountBeep(data: BCServerAccountBeepResponse): void;
   function ServerAccountQueryResult(data: BCAccountQueryResponse): void;

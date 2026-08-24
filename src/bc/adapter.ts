@@ -9,21 +9,43 @@ import type {
 import type { EventBus } from "../core/event-bus";
 
 const READY_POLL_MS = 400;
+const SOCKET_REBIND_MS = 2_000;
+const BEEP_LOG_POLL_MS = 1_000;
+const RECENT_INCOMING_TTL_MS = 10_000;
 const KIKILINK_BEEP_TYPE = "KikiLink";
 const KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
 const MAX_PROTOCOL_PAYLOAD = 700;
+
+interface RecentIncoming {
+  fingerprint: string;
+  capturedAt: number;
+}
 
 export class BCAdapter {
   readonly #logger = new Logger("bc");
   readonly #unhooks: Array<() => void> = [];
   readonly #nicknameCache = new Map<number, string>();
   readonly #onlineFriends = new Map<number, OnlineFriend>();
+  readonly #recentIncoming: RecentIncoming[] = [];
   #modApi: ModSDKModAPI | undefined;
+  #socket: BCServerSocket | undefined;
+  #socketRebindTimer: ReturnType<typeof setInterval> | undefined;
+  #beepLogTimer: ReturnType<typeof setInterval> | undefined;
+  #beepLogCursor = 0;
+  #seenIncomingPayloads = new WeakSet<object>();
   #stopped = false;
   #ready = false;
   #sendingViaKikiLink = false;
   #hasOnlineFriendSnapshot = false;
   #onlineFriendSignature: string | undefined;
+
+  readonly #socketBeepListener = (data: BCServerAccountBeepResponse): void => {
+    this.#captureIncomingPayload(data);
+  };
+
+  readonly #socketQueryListener = (data: BCAccountQueryResponse): void => {
+    this.#captureOnlineFriends(data);
+  };
 
   constructor(
     private readonly bus: EventBus<KikiLinkEvents>,
@@ -36,83 +58,34 @@ export class BCAdapter {
     await this.#waitUntilReady();
     if (this.#stopped) return;
 
-    try {
-      this.#modApi = bcModSDK.registerMod(
-        {
-          name: "KikiLink",
-          fullName: "KikiLink",
-          version: this.version,
-        },
-        { allowReplace: true },
-      );
+    this.#initializeBeepLogCursor();
+    this.#attachSocketListeners();
+    this.#installCompatibilityHooks();
+    this.#socketRebindTimer = setInterval(
+      () => this.#attachSocketListeners(),
+      SOCKET_REBIND_MS,
+    );
+    this.#beepLogTimer = setInterval(() => this.#captureNewBeepLogEntries(), BEEP_LOG_POLL_MS);
 
-      this.#unhooks.push(
-        this.#modApi.hookFunction("ServerAccountBeep", 0, (args, next) => {
-          const data = args[0];
-          const protocol = this.#normalizeBeepProtocol(data);
-          if (protocol) this.bus.emit("bc:protocol", protocol);
-          const event = this.#normalizeIncoming(data);
-          if (event) this.bus.emit("beep:received", event);
-          return next(args);
-        }),
-      );
-
-      if (typeof ServerAccountQueryResult === "function") {
-        this.#unhooks.push(
-          this.#modApi.hookFunction("ServerAccountQueryResult", 0, (args, next) => {
-            this.#captureOnlineFriends(args[0]);
-            return next(args);
-          }),
-        );
-      }
-
-      if (typeof FriendListLoadFriendList === "function") {
-        this.#unhooks.push(
-          this.#modApi.hookFunction("FriendListLoadFriendList", 0, (args, next) => {
-            this.#captureOnlineFriends(args[0]);
-            return next(args);
-          }),
-        );
-      }
-
-      if (typeof ChatRoomMessage === "function") {
-        this.#unhooks.push(
-          this.#modApi.hookFunction("ChatRoomMessage", 0, (args, next) => {
-            const protocol = this.#normalizeRoomProtocol(args[0]);
-            if (protocol) this.bus.emit("bc:protocol", protocol);
-            return next(args);
-          }),
-        );
-      }
-
-      this.#unhooks.push(
-        this.#modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
-          const result = next(args);
-          if (this.#sendingViaKikiLink) return result;
-          const [target, message, options] = args;
-          const event = this.#normalizeOutgoing(target, message, options);
-          if (event) this.bus.emit("beep:sent", event);
-          return result;
-        }),
-      );
-
-      this.#ready = true;
-      this.bus.emit("bc:status", { state: "ready" });
-      this.bus.emit("bc:ready", { memberNumber: Player.MemberNumber });
-      this.#logger.info(`Connected as ${Player.Name} [${Player.MemberNumber}]`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to connect";
-      this.bus.emit("bc:status", { state: "error", message });
-      throw error;
-    }
+    this.#ready = true;
+    this.bus.emit("bc:status", { state: "ready" });
+    this.bus.emit("bc:ready", { memberNumber: Player.MemberNumber });
+    this.#logger.info(`Connected as ${Player.Name} [${Player.MemberNumber}]`);
   }
 
   stop(): void {
     this.#stopped = true;
     this.#ready = false;
     this.#onlineFriends.clear();
+    this.#recentIncoming.splice(0);
+    this.#seenIncomingPayloads = new WeakSet<object>();
     this.#hasOnlineFriendSnapshot = false;
     this.#onlineFriendSignature = undefined;
+    if (this.#socketRebindTimer !== undefined) clearInterval(this.#socketRebindTimer);
+    if (this.#beepLogTimer !== undefined) clearInterval(this.#beepLogTimer);
+    this.#socketRebindTimer = undefined;
+    this.#beepLogTimer = undefined;
+    this.#detachSocketListeners();
     for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
     this.#modApi?.unload();
     this.#modApi = undefined;
@@ -153,7 +126,7 @@ export class BCAdapter {
   }
 
   isMemberInCurrentRoom(memberNumber: number): boolean {
-    return this.#findRoomCharacter(memberNumber) !== undefined;
+    return this.isInChatRoom() && this.#findRoomCharacter(memberNumber) !== undefined;
   }
 
   sendKikiLinkProtocol(target: number, payload: string): "room" | "beep" {
@@ -345,6 +318,13 @@ export class BCAdapter {
       }
     }
 
+    if (typeof Player === "object" && Player !== null && Array.isArray(Player.FriendList)) {
+      for (const memberNumber of Player.FriendList) {
+        if (!Number.isSafeInteger(memberNumber)) continue;
+        contacts.set(memberNumber, this.getMemberName(memberNumber));
+      }
+    }
+
     if (typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter)) {
       for (const character of ChatRoomCharacter) {
         if (!Number.isSafeInteger(character.MemberNumber) || character.MemberNumber === this.getOwnMemberNumber()) {
@@ -373,26 +353,187 @@ export class BCAdapter {
     if (typeof FriendListBeepLog === "undefined" || !Array.isArray(FriendListBeepLog)) return [];
 
     return FriendListBeepLog.slice(-Math.max(0, limit))
-      .map((entry): BeepEvent | null => {
-        if (!Number.isSafeInteger(entry.MemberNumber)) return null;
-        const timestamp = new Date(entry.Time).getTime();
-        const sentAt = Number.isFinite(timestamp) ? timestamp : Date.now();
-        const roomName = cleanName(entry.ChatRoomName);
-        return {
-          direction: entry.Sent ? "outgoing" : "incoming",
-          peerNumber: entry.MemberNumber,
-          peerName:
-            this.getMemberNickname(entry.MemberNumber) ??
-            cleanName(entry.MemberName) ??
-            `Member ${entry.MemberNumber}`,
-          content: typeof entry.Message === "string" ? entry.Message.slice(0, 1000) : "",
-          sentAt,
-          includeRoom: roomName !== undefined,
-          ...(roomName !== undefined ? { roomName } : {}),
-        };
-      })
+      .map((entry) => this.#normalizeBeepLogEntry(entry))
       .filter((event): event is BeepEvent => event !== null)
       .sort((left, right) => left.sentAt - right.sentAt);
+  }
+
+  #installCompatibilityHooks(): void {
+    try {
+      this.#modApi = bcModSDK.registerMod(
+        {
+          name: "KikiLink",
+          fullName: "KikiLink",
+          version: this.version,
+        },
+        { allowReplace: true },
+      );
+    } catch (error) {
+      this.#logger.warn("ModSDK hooks unavailable; using direct Bondage Club events", error);
+      return;
+    }
+
+    const modApi = this.#modApi;
+    this.#tryInstallHook("ServerAccountBeep", () =>
+      modApi.hookFunction("ServerAccountBeep", 0, (args, next) => {
+        this.#captureIncomingPayload(args[0]);
+        return next(args);
+      }),
+    );
+    if (typeof ServerAccountQueryResult === "function") {
+      this.#tryInstallHook("ServerAccountQueryResult", () =>
+        modApi.hookFunction("ServerAccountQueryResult", 0, (args, next) => {
+          this.#captureOnlineFriends(args[0]);
+          return next(args);
+        }),
+      );
+    }
+    if (typeof FriendListLoadFriendList === "function") {
+      this.#tryInstallHook("FriendListLoadFriendList", () =>
+        modApi.hookFunction("FriendListLoadFriendList", 0, (args, next) => {
+          this.#captureOnlineFriends(args[0]);
+          return next(args);
+        }),
+      );
+    }
+    if (typeof ChatRoomMessage === "function") {
+      this.#tryInstallHook("ChatRoomMessage", () =>
+        modApi.hookFunction("ChatRoomMessage", 0, (args, next) => {
+          const protocol = this.#normalizeRoomProtocol(args[0]);
+          if (protocol) this.bus.emit("bc:protocol", protocol);
+          return next(args);
+        }),
+      );
+    }
+    this.#tryInstallHook("ServerSendBeepMessage", () =>
+      modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
+        const result = next(args);
+        if (this.#sendingViaKikiLink) return result;
+        const [target, message, options] = args;
+        const event = this.#normalizeOutgoing(target, message, options);
+        if (event) this.bus.emit("beep:sent", event);
+        return result;
+      }),
+    );
+  }
+
+  #tryInstallHook(name: string, install: () => () => void): void {
+    try {
+      this.#unhooks.push(install());
+    } catch (error) {
+      this.#logger.warn(`${name} hook unavailable; keeping native fallback`, error);
+    }
+  }
+
+  #attachSocketListeners(): void {
+    const socket =
+      typeof ServerSocket === "object" && ServerSocket !== null ? ServerSocket : undefined;
+    if (socket === this.#socket) return;
+    this.#detachSocketListeners();
+    if (!socket || typeof socket.on !== "function") return;
+    this.#socket = socket;
+    try {
+      socket.on("AccountBeep", this.#socketBeepListener);
+      socket.on("AccountQueryResult", this.#socketQueryListener);
+      if (this.#ready) this.refreshOnlineFriends();
+    } catch (error) {
+      this.#detachSocketListeners();
+      this.#logger.warn("Direct Bondage Club socket listeners unavailable", error);
+    }
+  }
+
+  #detachSocketListeners(): void {
+    const socket = this.#socket;
+    this.#socket = undefined;
+    if (!socket) return;
+    if (typeof socket.off === "function") {
+      socket.off("AccountBeep", this.#socketBeepListener);
+      socket.off("AccountQueryResult", this.#socketQueryListener);
+      return;
+    }
+    socket.removeListener?.("AccountBeep", this.#socketBeepListener);
+    socket.removeListener?.("AccountQueryResult", this.#socketQueryListener);
+  }
+
+  #captureIncomingPayload(data: BCServerAccountBeepResponse): void {
+    if (!data || typeof data !== "object" || Array.isArray(data)) return;
+    if (this.#seenIncomingPayloads.has(data)) return;
+    this.#seenIncomingPayloads.add(data);
+
+    const protocol = this.#normalizeBeepProtocol(data);
+    if (protocol) this.bus.emit("bc:protocol", protocol);
+    const event = this.#normalizeIncoming(data);
+    if (!event) return;
+    this.#rememberIncoming(event);
+    this.bus.emit("beep:received", event);
+  }
+
+  #initializeBeepLogCursor(): void {
+    this.#beepLogCursor =
+      typeof FriendListBeepLog !== "undefined" && Array.isArray(FriendListBeepLog)
+        ? FriendListBeepLog.length
+        : 0;
+  }
+
+  #captureNewBeepLogEntries(): void {
+    if (typeof FriendListBeepLog === "undefined" || !Array.isArray(FriendListBeepLog)) return;
+    if (FriendListBeepLog.length < this.#beepLogCursor) this.#beepLogCursor = 0;
+    const entries = FriendListBeepLog.slice(this.#beepLogCursor);
+    this.#beepLogCursor = FriendListBeepLog.length;
+    for (const entry of entries) {
+      if (entry.Sent) continue;
+      const event = this.#normalizeBeepLogEntry(entry);
+      if (!event || this.#consumeRememberedIncoming(event)) continue;
+      this.bus.emit("beep:received", event);
+    }
+    this.#pruneRememberedIncoming();
+  }
+
+  #normalizeBeepLogEntry(entry: BCFriendListBeepLogMessage): BeepEvent | null {
+    if (!entry || !Number.isSafeInteger(entry.MemberNumber)) return null;
+    const timestamp = new Date(entry.Time).getTime();
+    const sentAt = Number.isFinite(timestamp) ? timestamp : Date.now();
+    const roomName = cleanName(entry.ChatRoomName);
+    return {
+      direction: entry.Sent ? "outgoing" : "incoming",
+      peerNumber: entry.MemberNumber,
+      peerName:
+        this.getMemberNickname(entry.MemberNumber) ??
+        cleanName(entry.MemberName) ??
+        `Member ${entry.MemberNumber}`,
+      content: typeof entry.Message === "string" ? entry.Message.slice(0, 1000) : "",
+      sentAt,
+      includeRoom: roomName !== undefined,
+      ...(roomName !== undefined ? { roomName } : {}),
+    };
+  }
+
+  #rememberIncoming(event: BeepEvent): void {
+    this.#recentIncoming.push({
+      fingerprint: incomingFingerprint(event),
+      capturedAt: event.sentAt,
+    });
+    this.#pruneRememberedIncoming();
+  }
+
+  #consumeRememberedIncoming(event: BeepEvent): boolean {
+    const fingerprint = incomingFingerprint(event);
+    const index = this.#recentIncoming.findIndex(
+      (candidate) =>
+        candidate.fingerprint === fingerprint &&
+        Math.abs(candidate.capturedAt - event.sentAt) <= RECENT_INCOMING_TTL_MS,
+    );
+    if (index < 0) return false;
+    this.#recentIncoming.splice(index, 1);
+    return true;
+  }
+
+  #pruneRememberedIncoming(now = Date.now()): void {
+    while (this.#recentIncoming.length > 0) {
+      const first = this.#recentIncoming[0];
+      if (!first || now - first.capturedAt <= RECENT_INCOMING_TTL_MS) break;
+      this.#recentIncoming.shift();
+    }
   }
 
   #normalizeIncoming(data: BCServerAccountBeepResponse): BeepEvent | null {
@@ -540,6 +681,10 @@ function cleanName(value: unknown): string | undefined {
   return name || undefined;
 }
 
+function incomingFingerprint(event: BeepEvent): string {
+  return [event.peerNumber, event.content, event.roomName ?? ""].join("\u001f");
+}
+
 function isBondageClubReady(): boolean {
   return (
     typeof document !== "undefined" &&
@@ -547,8 +692,7 @@ function isBondageClubReady(): boolean {
     typeof Player === "object" &&
     Player !== null &&
     Number.isSafeInteger(Player.MemberNumber) &&
-    typeof ServerAccountBeep === "function" &&
-    typeof ServerSendBeepMessage === "function" &&
-    (typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn())
+    Player.MemberNumber > 0 &&
+    typeof ServerSendBeepMessage === "function"
   );
 }

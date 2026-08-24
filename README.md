@@ -11,8 +11,9 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.12.0` makes LinkChat reliable and smooth: live incoming Beeps, truthful native
-friend presence and room context, compatible typing indicators, and a bounded message feed.
+Version `0.12.1` receives Beeps and online-friend state directly from Bondage Club's active
+connection, recovers safely across addon-hook conflicts and reconnects, and keeps the smooth
+bounded message feed introduced in 0.12.0.
 
 ## Link Deck
 
@@ -153,8 +154,9 @@ design/references/     Selected original KikiLink visual source
 docs/                  UX principles and accessibility decisions
 ```
 
-KikiLink uses ModSDK only as the shared compatibility layer for function hooks.
-All KikiLink application logic, storage, UI, and module contracts are original.
+KikiLink listens to the native Bondage Club socket for Beeps and friend presence, and uses
+ModSDK only for isolated compatibility fallbacks around native functions. All KikiLink
+application logic, storage, UI, and module contracts are original.
 
 ## Development
 

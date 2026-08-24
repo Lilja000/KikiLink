@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.12.1 - 2026-08-24
+
+- Fixed KikiLink remaining in a false disconnected state when one or more ModSDK hooks could
+  not be installed alongside another addon.
+- Receive live `AccountBeep` and `OnlineFriends` events directly from the active Bondage Club
+  socket, while retaining isolated ModSDK hooks as compatibility fallbacks.
+- Rebind listeners automatically when Bondage Club replaces its socket during reconnect or
+  relog, without accumulating duplicate handlers.
+- Added a lightweight native `FriendListBeepLog` recovery cursor so an incoming message still
+  reaches LinkChat if another addon interrupts the normal callback chain.
+- Cross-check known and offline contacts against both `Player.FriendList` and
+  `Player.FriendNames`; online state continues to come from BC's mutual online-friend result.
+- Decoupled adapter readiness from the unreliable login callback once a valid player and native
+  Beep API are already present.
+- Added direct-socket, hook-failure, logged-in-state, reconnect cleanup, Beep-log recovery, and
+  duplicate-suppression coverage, bringing the suite to 58 tests.
+
 ## 0.12.0 - 2026-08-24
 
 - Fixed live incoming Beeps being discarded when Bondage Club supplies the normal

@@ -14,6 +14,10 @@ It deliberately separates facts supplied by Bondage Club from voluntary KikiLink
 4. A non-friend outside the current room is `Status unavailable`; KikiLink does not
    pretend that absence from an observable list proves they are offline.
 
+KikiLink receives the query result from the active Bondage Club socket and reattaches when
+that socket is replaced. `Player.FriendList` and `Player.FriendNames` identify known friends;
+only the server's mutual `OnlineFriends` result is treated as proof that a friend is online.
+
 ## Transport
 
 - In a room, KikiLink sends a single hidden query when joining or changing rooms.
