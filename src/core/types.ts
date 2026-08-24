@@ -111,7 +111,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 7;
+  schemaVersion: 8;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -132,6 +132,7 @@ export interface KikiLinkSettings {
     maxMessagesPerConversation: number;
     openOnIncoming: boolean;
     enterToSend: boolean;
+    typingIndicators: boolean;
     imagePreviews: ImagePreviewPreference;
     quickActions: QuickAction[];
   };

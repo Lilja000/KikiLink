@@ -4,6 +4,7 @@ declare global {
     Name: string;
     Nickname?: string;
     FriendNames: Map<number, string>;
+    FriendList?: number[];
   }
 
   interface BCCharacter {
@@ -21,7 +22,7 @@ declare global {
   interface BCServerAccountBeepResponse {
     MemberNumber: number;
     MemberName: string;
-    BeepType?: string;
+    BeepType?: string | null;
     Message?: string;
     ChatRoomName?: string;
     ChatRoomSpace?: string;
@@ -70,6 +71,7 @@ declare global {
 
   function ServerAccountBeep(data: BCServerAccountBeepResponse): void;
   function ServerAccountQueryResult(data: BCAccountQueryResponse): void;
+  function FriendListLoadFriendList(data: BCOnlineFriendInfo[]): void;
   function ChatRoomMessage(data: BCChatRoomMessage): void;
   function ServerSend(event: string, data: unknown): void;
   function ServerSendBeepMessage(

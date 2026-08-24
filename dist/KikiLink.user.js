@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.11.0
+// @version      0.12.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -265,6 +265,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #ready = false;
     #sendingViaKikiLink = false;
     #hasOnlineFriendSnapshot = false;
+    #onlineFriendSignature;
     async start() {
       this.#stopped = false;
       this.bus.emit("bc:status", { state: "connecting" });
@@ -281,31 +282,36 @@ One of mods you are using is using an old version of SDK. It will work for now b
         );
         this.#unhooks.push(
           this.#modApi.hookFunction("ServerAccountBeep", 0, (args, next) => {
-            const result = next(args);
             const data = args[0];
             const protocol = this.#normalizeBeepProtocol(data);
             if (protocol) this.bus.emit("bc:protocol", protocol);
             const event = this.#normalizeIncoming(data);
             if (event) this.bus.emit("beep:received", event);
-            return result;
+            return next(args);
           })
         );
         if (typeof ServerAccountQueryResult === "function") {
           this.#unhooks.push(
             this.#modApi.hookFunction("ServerAccountQueryResult", 0, (args, next) => {
-              const result = next(args);
               this.#captureOnlineFriends(args[0]);
-              return result;
+              return next(args);
+            })
+          );
+        }
+        if (typeof FriendListLoadFriendList === "function") {
+          this.#unhooks.push(
+            this.#modApi.hookFunction("FriendListLoadFriendList", 0, (args, next) => {
+              this.#captureOnlineFriends(args[0]);
+              return next(args);
             })
           );
         }
         if (typeof ChatRoomMessage === "function") {
           this.#unhooks.push(
             this.#modApi.hookFunction("ChatRoomMessage", 0, (args, next) => {
-              const result = next(args);
               const protocol = this.#normalizeRoomProtocol(args[0]);
               if (protocol) this.bus.emit("bc:protocol", protocol);
-              return result;
+              return next(args);
             })
           );
         }
@@ -334,6 +340,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#ready = false;
       this.#onlineFriends.clear();
       this.#hasOnlineFriendSnapshot = false;
+      this.#onlineFriendSignature = void 0;
       for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
       this.#modApi?.unload();
       this.#modApi = void 0;
@@ -359,7 +366,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return this.#hasOnlineFriendSnapshot;
     }
     isKnownFriend(memberNumber) {
-      return typeof Player === "object" && Player !== null && Player.FriendNames instanceof Map && Player.FriendNames.has(memberNumber);
+      if (typeof Player !== "object" || Player === null) return false;
+      return Player.FriendNames instanceof Map && Player.FriendNames.has(memberNumber) || Array.isArray(Player.FriendList) && Player.FriendList.includes(memberNumber);
     }
     isMemberInCurrentRoom(memberNumber) {
       return this.#findRoomCharacter(memberNumber) !== void 0;
@@ -461,7 +469,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
           memberNumber: character.MemberNumber,
           memberName: this.getMemberNickname(character.MemberNumber) ?? accountName ?? `Member ${character.MemberNumber}`,
           ...accountName !== void 0 ? { accountName } : {},
-          isFriend: typeof Player === "object" && Player !== null && Player.FriendNames instanceof Map && Player.FriendNames.has(character.MemberNumber)
+          isFriend: this.isKnownFriend(character.MemberNumber)
         };
       }).sort((left, right) => left.memberName.localeCompare(right.memberName));
     }
@@ -556,7 +564,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }).filter((event) => event !== null).sort((left, right) => left.sentAt - right.sentAt);
     }
     #normalizeIncoming(data) {
-      if (!data || data.BeepType !== void 0 && data.BeepType !== "") return null;
+      if (!data || data.BeepType != null && data.BeepType !== "") return null;
       if (!Number.isSafeInteger(data.MemberNumber) || typeof data.MemberName !== "string") return null;
       const roomName = typeof data.ChatRoomName === "string" ? data.ChatRoomName : void 0;
       return {
@@ -586,8 +594,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return { senderNumber: data.Sender, payload, channel: "room" };
     }
     #captureOnlineFriends(data) {
-      if (!data || data.Query !== "OnlineFriends" || !Array.isArray(data.Result)) return;
-      const friends = data.Result.map((entry) => {
+      const result = Array.isArray(data) ? data : data && data.Query === "OnlineFriends" && Array.isArray(data.Result) ? data.Result : void 0;
+      if (!result) return;
+      const friends = result.map((entry) => {
         if (!entry || typeof entry !== "object" || !("MemberNumber" in entry) || !Number.isSafeInteger(entry.MemberNumber) || !("MemberName" in entry) || typeof entry.MemberName !== "string") {
           return null;
         }
@@ -603,9 +612,20 @@ One of mods you are using is using an old version of SDK. It will work for now b
           ...roomSpace ? { roomSpace } : {}
         };
       }).filter((entry) => entry !== null);
+      const signature = friends.map(
+        (friend) => [
+          friend.memberNumber,
+          friend.memberName,
+          friend.roomName ?? "",
+          friend.roomSpace ?? "",
+          friend.privateRoom ? 1 : 0
+        ].join("")
+      ).sort().join("");
       this.#onlineFriends.clear();
       for (const friend of friends) this.#onlineFriends.set(friend.memberNumber, friend);
       this.#hasOnlineFriendSnapshot = true;
+      if (signature === this.#onlineFriendSignature) return;
+      this.#onlineFriendSignature = signature;
       this.bus.emit("bc:online-friends", { friends: this.getOnlineFriends(), receivedAt: Date.now() });
     }
     #normalizeOutgoing(target, message, options) {
@@ -851,7 +871,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 7,
+    schemaVersion: 8,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -872,6 +892,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       maxMessagesPerConversation: 500,
       openOnIncoming: false,
       enterToSend: true,
+      typingIndicators: true,
       imagePreviews: "ask",
       quickActions: [
         { label: "Wave", template: "*waves to {name}*" },
@@ -981,7 +1002,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
     const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
     return {
-      schemaVersion: 7,
+      schemaVersion: 8,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -1018,6 +1039,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
           DEFAULT_SETTINGS.linkChat.openOnIncoming
         ),
         enterToSend: booleanOr(linkChat.enterToSend, DEFAULT_SETTINGS.linkChat.enterToSend),
+        typingIndicators: booleanOr(
+          linkChat.typingIndicators,
+          DEFAULT_SETTINGS.linkChat.typingIndicators
+        ),
         imagePreviews: linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never" ? linkChat.imagePreviews : DEFAULT_SETTINGS.linkChat.imagePreviews,
         quickActions: sanitizeQuickActions(linkChat.quickActions)
       },
@@ -1605,6 +1630,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var RECENT_PACKET_ONLINE_MS = 9e4;
   var REQUEST_COOLDOWN_MS = 2e4;
   var RESPONSE_COOLDOWN_MS = 5e3;
+  var TYPING_REFRESH_MS = 1800;
+  var TYPING_TTL_MS = 5500;
   var LinkPresenceService = class {
     constructor(adapter, settings, bus, version) {
       this.adapter = adapter;
@@ -1620,6 +1647,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #listeners = /* @__PURE__ */ new Set();
     #lastRequestAt = /* @__PURE__ */ new Map();
     #lastResponseAt = /* @__PURE__ */ new Map();
+    #localTyping = /* @__PURE__ */ new Map();
+    #remoteTypingUntil = /* @__PURE__ */ new Map();
+    #typingExpiryTimers = /* @__PURE__ */ new Map();
     #unsubscribers = [];
     #nativeTimer;
     #statusTimer;
@@ -1646,10 +1676,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#lastEffectiveStatus = this.getOwnStatus();
       this.#unsubscribers.push(
         this.bus.on("bc:protocol", (event) => this.#receive(event.senderNumber, event.payload)),
-        this.bus.on("bc:online-friends", ({ friends }) => {
-          for (const friend of friends) this.#notify(friend.memberNumber);
-          this.#notify();
-        }),
+        this.bus.on("bc:online-friends", () => this.#notify()),
         this.bus.on("bc:ready", () => {
           this.adapter.refreshOnlineFriends();
           this.#syncRoom(true);
@@ -1675,6 +1702,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     stop() {
       if (!this.#started) return;
+      for (const memberNumber of this.#localTyping.keys()) {
+        this.setTyping(memberNumber, false, true);
+      }
       this.#started = false;
       if (this.#nativeTimer !== void 0) clearInterval(this.#nativeTimer);
       if (this.#statusTimer !== void 0) clearInterval(this.#statusTimer);
@@ -1690,6 +1720,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
       this.#listeners.clear();
       this.#remote.clear();
+      this.#localTyping.clear();
+      this.#remoteTypingUntil.clear();
+      for (const timer of this.#typingExpiryTimers.values()) clearTimeout(timer);
+      this.#typingExpiryTimers.clear();
     }
     subscribe(listener) {
       this.#listeners.add(listener);
@@ -1745,7 +1779,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
       const remote = this.#remote.get(memberNumber);
       const inRoom = typeof this.adapter.isMemberInCurrentRoom === "function" && this.adapter.isMemberInCurrentRoom(memberNumber);
+      const currentRoomName = inRoom && typeof this.adapter.getCurrentRoomName === "function" ? this.adapter.getCurrentRoomName() : void 0;
       const onlineFriend = typeof this.adapter.getOnlineFriends === "function" ? this.adapter.getOnlineFriends().find((friend) => friend.memberNumber === memberNumber) : void 0;
+      const observableRoomName = onlineFriend?.roomName ?? currentRoomName;
       if (remote && now - remote.receivedAt <= REMOTE_STATUS_TTL_MS && (remote.status === "offline" || inRoom || onlineFriend || now - remote.receivedAt <= RECENT_PACKET_ONLINE_MS)) {
         return {
           memberNumber,
@@ -1753,11 +1789,17 @@ One of mods you are using is using an old version of SDK. It will work for now b
           source: "kikilink",
           updatedAt: remote.remoteUpdatedAt,
           ...remote.statusMessage ? { statusMessage: remote.statusMessage } : {},
-          ...onlineFriend?.roomName ? { roomName: onlineFriend.roomName } : {}
+          ...observableRoomName ? { roomName: observableRoomName } : {}
         };
       }
       if (inRoom) {
-        return { memberNumber, status: "online", source: "room", updatedAt: now };
+        return {
+          memberNumber,
+          status: "online",
+          source: "room",
+          updatedAt: now,
+          ...currentRoomName ? { roomName: currentRoomName } : {}
+        };
       }
       if (onlineFriend) {
         return {
@@ -1790,12 +1832,38 @@ One of mods you are using is using an old version of SDK. It will work for now b
         return false;
       }
     }
-    #receive(senderNumber, payload) {
-      if (!this.settings.get().linkPresence.enabled || senderNumber === this.adapter.getOwnMemberNumber()) {
-        return;
+    isTyping(memberNumber, now = Date.now()) {
+      return (this.#remoteTypingUntil.get(memberNumber) ?? 0) > now;
+    }
+    setTyping(memberNumber, active, force = false) {
+      if (!Number.isSafeInteger(memberNumber) || memberNumber < 0 || memberNumber === this.adapter.getOwnMemberNumber()) {
+        return false;
       }
+      if (!this.settings.get().linkChat.typingIndicators && !(force && !active)) return false;
+      const previous = this.#localTyping.get(memberNumber);
+      const now = Date.now();
+      if (active && previous && now - previous.sentAt < TYPING_REFRESH_MS) return false;
+      if (!active && !previous) return false;
+      if (!active) this.#localTyping.delete(memberNumber);
+      const packet = { t: "ty", a: active ? 1 : 0 };
+      try {
+        this.adapter.sendKikiLinkProtocol(memberNumber, JSON.stringify(packet));
+        if (active) this.#localTyping.set(memberNumber, { active: true, sentAt: now });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    #receive(senderNumber, payload) {
+      if (senderNumber === this.adapter.getOwnMemberNumber()) return;
       const packet = parsePresencePacket(payload);
       if (!packet) return;
+      if (packet.t === "ty") {
+        if (!this.settings.get().linkChat.typingIndicators) return;
+        this.#receiveTyping(senderNumber, packet.a === 1);
+        return;
+      }
+      if (!this.settings.get().linkPresence.enabled) return;
       if (packet.t === "pq") {
         const now = Date.now();
         if (now - (this.#lastResponseAt.get(senderNumber) ?? 0) < RESPONSE_COOLDOWN_MS) return;
@@ -1810,6 +1878,27 @@ One of mods you are using is using an old version of SDK. It will work for now b
         receivedAt,
         remoteUpdatedAt: Math.abs(packet.u - receivedAt) <= 24 * 60 * 6e4 ? packet.u : receivedAt
       });
+      this.#notify(senderNumber);
+    }
+    #receiveTyping(senderNumber, active) {
+      const previousTimer = this.#typingExpiryTimers.get(senderNumber);
+      if (previousTimer !== void 0) clearTimeout(previousTimer);
+      this.#typingExpiryTimers.delete(senderNumber);
+      if (!active) {
+        const changed = this.#remoteTypingUntil.delete(senderNumber);
+        if (changed) this.#notify(senderNumber);
+        return;
+      }
+      const expiresAt = Date.now() + TYPING_TTL_MS;
+      this.#remoteTypingUntil.set(senderNumber, expiresAt);
+      this.#typingExpiryTimers.set(
+        senderNumber,
+        setTimeout(() => {
+          this.#typingExpiryTimers.delete(senderNumber);
+          if ((this.#remoteTypingUntil.get(senderNumber) ?? 0) > Date.now()) return;
+          if (this.#remoteTypingUntil.delete(senderNumber)) this.#notify(senderNumber);
+        }, TYPING_TTL_MS + 25)
+      );
       this.#notify(senderNumber);
     }
     #sendPresence(target, requestId) {
@@ -1879,6 +1968,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
         return null;
       }
       return { t: "pq", i: value.i, ..."b" in value && value.b === 1 ? { b: 1 } : {} };
+    }
+    if (value.t === "ty") {
+      if (!("a" in value) || value.a !== 0 && value.a !== 1) return null;
+      return { t: "ty", a: value.a };
     }
     if (value.t !== "ps" || !("s" in value) || !isPresenceStatus(value.s) || !("u" in value) || typeof value.u !== "number" || !Number.isFinite(value.u) || !("v" in value) || typeof value.v !== "string" || value.v.length > 24) {
       return null;
@@ -2115,7 +2208,8 @@ button { color: inherit; }
   border-radius: 24px;
   background: var(--kl-panel-art), var(--kl-panel-bg);
   box-shadow: var(--kl-shadow);
-  backdrop-filter: blur(22px);
+  contain: layout paint style;
+  isolation: isolate;
   transform-origin: bottom right;
   animation: kl-enter 160ms ease-out;
 }
@@ -2367,6 +2461,7 @@ button { color: inherit; }
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  contain: layout paint;
 }
 .kl-workspace > .kl-layout,
 .kl-workspace > .kl-home,
@@ -2869,7 +2964,6 @@ button { color: inherit; }
   grid-template-rows: 52px minmax(0, 1fr);
   border-radius: 20px;
   background: var(--kl-panel-bg);
-  backdrop-filter: blur(18px);
 }
 :host([data-density="super-compact"]) .kl-topbar { gap: 7px; padding-inline: 12px; }
 :host([data-density="super-compact"]) .kl-brand { gap: 7px; }
@@ -3085,6 +3179,8 @@ button { color: inherit; }
   padding: 0 8px 12px;
   scrollbar-color: var(--kl-border-strong) transparent;
   scrollbar-width: thin;
+  overscroll-behavior: contain;
+  contain: layout paint;
 }
 
 .kl-conversation {
@@ -3191,6 +3287,18 @@ button { color: inherit; }
 .kl-chat-person { min-width: 0; margin-right: auto; }
 .kl-chat-name { overflow: hidden; font-size: var(--kl-type-md); font-weight: 850; text-overflow: ellipsis; white-space: nowrap; }
 .kl-chat-number { color: var(--kl-muted); font-size: var(--kl-type-sm); }
+.kl-chat-room {
+  min-width: 0;
+  max-width: min(220px, 31vw);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--kl-gold);
+  font-size: var(--kl-type-sm);
+}
+.kl-chat-room::before { content: "\xB7"; color: var(--kl-meta); }
+.kl-chat-room-icon { flex: 0 0 auto; }
+.kl-chat-room-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .kl-messages {
   min-height: 0;
@@ -3198,9 +3306,16 @@ button { color: inherit; }
   padding: 18px;
   scrollbar-color: var(--kl-border-strong) transparent;
   scrollbar-width: thin;
+  overscroll-behavior: contain;
+  contain: layout paint;
 }
 
-.kl-message-row { display: flex; margin: 7px 0; }
+.kl-message-row {
+  display: flex;
+  margin: 7px 0;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
+}
 .kl-message-row[data-direction="outgoing"] { justify-content: flex-end; }
 .kl-message-bubble {
   max-width: min(72%, 540px);
@@ -3208,7 +3323,6 @@ button { color: inherit; }
   border: 1px solid var(--kl-border);
   border-radius: 16px 16px 16px 5px;
   background: var(--kl-surface-2);
-  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.10);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -3221,11 +3335,38 @@ button { color: inherit; }
 .kl-message-meta { display: flex; justify-content: flex-end; gap: 7px; margin-top: 5px; color: var(--kl-meta); font-size: var(--kl-type-xxs); }
 .kl-message-row[data-direction="outgoing"] .kl-message-meta { color: color-mix(in srgb, var(--kl-accent-foreground), transparent 32%); }
 .kl-message-room { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-load-older { display: flex; justify-content: center; padding: 3px 0 11px; }
+.kl-load-older .kl-text-button { min-height: 34px; }
 
 .kl-composer {
   padding: 12px 14px 14px;
   border-top: 1px solid var(--kl-border);
   background: var(--kl-composer-bg);
+}
+
+.kl-typing-indicator {
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 2px 6px;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-sm);
+}
+.kl-typing-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-typing-dots { display: inline-flex; align-items: center; gap: 3px; }
+.kl-typing-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--kl-gold);
+  animation: kl-typing-dot 1.15s ease-in-out infinite;
+}
+.kl-typing-dots i:nth-child(2) { animation-delay: 120ms; }
+.kl-typing-dots i:nth-child(3) { animation-delay: 240ms; }
+@keyframes kl-typing-dot {
+  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
 }
 
 .kl-quick-actions {
@@ -3276,7 +3417,7 @@ button { color: inherit; }
   color: var(--kl-text);
   box-shadow: var(--kl-shadow);
 }
-.kl-dialog::backdrop { background: rgba(0, 0, 0, 0.68); backdrop-filter: blur(4px); }
+.kl-dialog::backdrop { background: rgba(0, 0, 0, 0.68); }
 .kl-dialog-header { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--kl-border); background: var(--kl-topbar-bg); }
 .kl-dialog-heading { min-width: 0; margin-right: auto; }
 .kl-dialog-title { margin-right: auto; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); font-weight: 700; }
@@ -3555,6 +3696,8 @@ button { color: inherit; }
   background: color-mix(in srgb, var(--kl-input-bg), transparent 18%);
   scrollbar-color: var(--kl-border-strong) transparent;
   scrollbar-width: thin;
+  overscroll-behavior: contain;
+  contain: layout paint;
 }
 .kl-roster-empty,
 .kl-roster-detail-empty {
@@ -4149,7 +4292,6 @@ select:focus-visible {
   background: var(--kl-panel-art), var(--kl-panel-bg);
   color: var(--kl-text);
   box-shadow: 0 20px 58px rgba(0, 0, 0, 0.58);
-  backdrop-filter: blur(20px);
 }
 .kl-profile-menu-header {
   display: grid;
@@ -4427,6 +4569,7 @@ select:focus-visible {
     #chatName = element("div", { className: "kl-chat-name" });
     #chatNumber = element("div", { className: "kl-chat-number" });
     #chatPresence = element("div", { className: "kl-chat-presence" });
+    #chatRoom = element("div", { className: "kl-chat-room" });
     #pinButton = element("button", {
       className: "kl-icon-button",
       type: "button",
@@ -4441,6 +4584,10 @@ select:focus-visible {
       ariaLabel: "Open player actions"
     });
     #messages = element("div", { className: "kl-messages" });
+    #typingIndicator = element("div", {
+      className: "kl-typing-indicator",
+      ariaLabel: "Typing status"
+    });
     #composer = element("textarea", { className: "kl-composer-input" });
     #sendButton = element("button", {
       className: "kl-text-button kl-text-button--primary kl-send",
@@ -4465,6 +4612,7 @@ select:focus-visible {
     #settingsPanels = /* @__PURE__ */ new Map();
     #historyToggle = element("input");
     #enterToSendToggle = element("input");
+    #typingIndicatorsToggle = element("input");
     #imagePreviewSelect = element("select", { className: "kl-select" });
     #retentionInput = element("input", { className: "kl-number-input" });
     #saveSettingsButton = element("button", {
@@ -4607,6 +4755,13 @@ select:focus-visible {
     #launcherDrag;
     #suppressLauncherClickUntil = 0;
     #presenceUnsubscribe;
+    #presenceRenderFrame;
+    #pendingPresenceAll = false;
+    #pendingPresenceMembers = /* @__PURE__ */ new Set();
+    #typingStopTimer;
+    #messageRenderLimit = 120;
+    #messageRenderPeer;
+    #renderedMessageIds = /* @__PURE__ */ new Set();
     #suppressProfileClickUntil = /* @__PURE__ */ new WeakMap();
     #profileMenuToken = 0;
     #handleOutsidePointerDown = (event) => {
@@ -4653,16 +4808,16 @@ select:focus-visible {
       this.#positionLauncher();
       window.addEventListener("resize", this.#handleViewportResize);
       document.addEventListener("pointerdown", this.#handleOutsidePointerDown);
-      this.#presenceUnsubscribe = this.presence.subscribe((memberNumber) => {
-        if (memberNumber === void 0 || memberNumber === this.#activePeer) this.#renderActivePresence();
-        void this.#renderConversations();
-        if (this.#workspaceView === "roster") this.#renderRoster();
-        this.#renderHomeStatus();
-      });
+      this.#presenceUnsubscribe = this.presence.subscribe(
+        (memberNumber) => this.#schedulePresenceRender(memberNumber)
+      );
       void this.refresh();
     }
     destroy() {
+      this.#stopLocalTyping();
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
+      if (this.#presenceRenderFrame !== void 0) cancelAnimationFrame(this.#presenceRenderFrame);
+      this.#presenceRenderFrame = void 0;
       this.#finderDialog.close();
       this.#newChatDialog.close();
       this.#presenceDialog.close();
@@ -4693,13 +4848,16 @@ select:focus-visible {
       if (this.#workspaceView === "activities") this.#renderActivitiesPage();
       if (this.#workspaceView === "roster") this.#renderRoster();
     }
-    async onMessage(peerNumber, incoming) {
+    async onMessage(peerNumber, incoming, message) {
       if (incoming && this.settings.get().linkChat.openOnIncoming) {
         await this.openChat(peerNumber, this.adapter.getMemberName(peerNumber));
         return;
       }
       await this.refresh();
-      if (this.#activePeer === peerNumber) await this.#renderMessages(peerNumber);
+      if (this.#activePeer === peerNumber) {
+        if (message && this.#messageRenderPeer === peerNumber) this.#appendMessage(message);
+        else await this.#renderMessages(peerNumber);
+      }
     }
     async open() {
       const settings = this.settings.get();
@@ -4714,6 +4872,7 @@ select:focus-visible {
       await this.refresh();
     }
     close() {
+      this.#stopLocalTyping();
       if (this.#finderDialog.open) this.#finderDialog.close();
       if (this.#newChatDialog.open) this.#newChatDialog.close();
       if (this.#presenceDialog.open) this.#presenceDialog.close();
@@ -4740,12 +4899,20 @@ select:focus-visible {
       void this.#openPanel(this.#workspaceView).then(() => this.#openRoster());
     }
     onRosterSync(result) {
+      const countChanged = this.#presentCount !== result.presentCount;
       this.#presentCount = result.presentCount;
       this.#rosterCount.hidden = result.presentCount === 0;
       this.#rosterCount.textContent = result.presentCount > 99 ? "99+" : result.presentCount.toString();
       this.#rosterButton.title = result.presentCount ? `LinkRoster \xB7 ${result.presentCount} in room` : "LinkRoster";
-      this.#renderHomeStatus();
-      void this.#renderHome();
+      if (countChanged || result.changed) {
+        this.#renderHomeStatus();
+        void this.#renderHome();
+      }
+      if (result.changed) {
+        for (const memberNumber of /* @__PURE__ */ new Set([...result.joined, ...result.left])) {
+          this.#schedulePresenceRender(memberNumber);
+        }
+      }
       if (this.#workspaceView === "roster" && result.changed) this.#renderRoster();
     }
     async refresh() {
@@ -5148,7 +5315,13 @@ select:focus-visible {
         "div",
         { className: "kl-chat-person" },
         this.#chatName,
-        element("div", { className: "kl-chat-subline" }, this.#chatNumber, this.#chatPresence)
+        element(
+          "div",
+          { className: "kl-chat-subline" },
+          this.#chatNumber,
+          this.#chatPresence,
+          this.#chatRoom
+        )
       );
       const header = element(
         "header",
@@ -5184,8 +5357,10 @@ select:focus-visible {
         this.#updateCounter();
         if (this.#activePeer !== void 0) {
           this.#saveDraft(this.#activePeer, this.#activeName, this.#composer.value);
+          this.#updateLocalTyping();
         }
       });
+      this.#composer.addEventListener("blur", () => this.#stopLocalTyping());
       this.#composer.addEventListener("keydown", (event) => {
         const enterToSend = this.settings.get().linkChat.enterToSend;
         if (event.key === "Enter" && !event.isComposing && (event.ctrlKey || event.metaKey || enterToSend && !event.shiftKey && !event.altKey)) {
@@ -5210,6 +5385,7 @@ select:focus-visible {
       const composer = element(
         "footer",
         { className: "kl-composer" },
+        this.#typingIndicator,
         this.#quickActions,
         element(
           "div",
@@ -5220,6 +5396,9 @@ select:focus-visible {
         ),
         options
       );
+      this.#typingIndicator.hidden = true;
+      this.#typingIndicator.setAttribute("role", "status");
+      this.#typingIndicator.setAttribute("aria-live", "polite");
       this.#chat.append(header, this.#messages, composer);
       this.#renderQuickActions();
       this.#updateCounter();
@@ -5379,6 +5558,19 @@ select:focus-visible {
         "Enter sends",
         "Press Enter to send and Shift+Enter for a new line. Ctrl+Enter always sends.",
         enterToSendSwitch
+      );
+      this.#typingIndicatorsToggle.type = "checkbox";
+      const typingIndicatorsSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#typingIndicatorsToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      this.#typingIndicatorsToggle.setAttribute("aria-label", "Share typing indicators");
+      const typingIndicators = this.#settingRow(
+        "Typing indicators",
+        "Show and share a short-lived typing signal only with compatible KikiLink users.",
+        typingIndicatorsSwitch
       );
       this.#imagePreviewSelect.replaceChildren(
         selectOption("ask", "Ask before loading"),
@@ -5563,6 +5755,7 @@ select:focus-visible {
         "Chat, history & privacy",
         "Keep Beep history useful, local, and under your control.",
         enterToSend,
+        typingIndicators,
         imagePreviews,
         history,
         retention,
@@ -6538,14 +6731,14 @@ select:focus-visible {
       const presence = this.presence.get(entry.memberNumber);
       const badges = element("div", { className: "kl-roster-entry-badges" });
       if (entry.present) badges.append(element("span", { className: "kl-roster-live", text: "HERE" }));
-      if (presence.status !== "unknown") {
-        const status = element("span", {
-          className: "kl-roster-presence-label",
-          text: presenceLabel(presence.status).toLocaleUpperCase()
-        });
-        status.dataset.status = presence.status;
-        badges.append(status);
-      }
+      const status = element("span", {
+        className: "kl-roster-presence-label",
+        text: presenceLabel(presence.status)
+      });
+      status.dataset.status = presence.status;
+      status.dataset.presenceLabel = "true";
+      status.hidden = presence.status === "unknown";
+      badges.append(status);
       if (entry.isFriend) badges.append(element("span", { className: "kl-roster-friend", text: "FRIEND" }));
       if (entry.favorite) badges.append(element("span", { className: "kl-roster-favorite", text: "\u2605" }));
       const preview = entry.tags.length ? entry.tags.join(" \xB7 ") : entry.note ? entry.note.replace(/\s+/gu, " ") : entry.lastRoomName || `Member ${entry.memberNumber}`;
@@ -6641,6 +6834,11 @@ select:focus-visible {
         ),
         favorite
       );
+      identity.dataset.memberNumber = entry.memberNumber.toString();
+      const detailPresence = identity.querySelector(".kl-roster-detail-presence");
+      if (detailPresence) detailPresence.dataset.presenceDescription = "true";
+      const detailPresenceLabel = detailPresence?.querySelector("span:not(.kl-presence-dot)");
+      if (detailPresenceLabel) detailPresenceLabel.dataset.presenceLabel = "true";
       const whisper = element("button", {
         className: "kl-text-button",
         type: "button",
@@ -7084,7 +7282,11 @@ select:focus-visible {
     }
     #renderActivePresence() {
       this.#chatPresence.replaceChildren();
-      if (this.#activePeer === void 0) return;
+      this.#chatRoom.replaceChildren();
+      if (this.#activePeer === void 0) {
+        this.#renderTypingIndicator();
+        return;
+      }
       const snapshot = this.presence.get(this.#activePeer);
       this.#chatPresence.append(
         presenceDot(snapshot.status),
@@ -7095,7 +7297,92 @@ select:focus-visible {
           element("span", { className: "kl-presence-note", text: snapshot.statusMessage })
         );
       }
+      if (snapshot.roomName) {
+        this.#chatRoom.replaceChildren(
+          element("span", { className: "kl-chat-room-icon", text: "\u2302" }),
+          element("span", { className: "kl-chat-room-name", text: snapshot.roomName })
+        );
+        this.#chatRoom.hidden = false;
+        this.#chatRoom.title = `Current room: ${snapshot.roomName}`;
+      } else {
+        this.#chatRoom.hidden = true;
+        this.#chatRoom.removeAttribute("title");
+      }
       this.#chatPresence.title = presenceDescription(snapshot);
+      this.#renderTypingIndicator();
+    }
+    #renderTypingIndicator() {
+      const typing = this.settings.get().linkChat.typingIndicators && this.#activePeer !== void 0 && this.presence.isTyping(this.#activePeer);
+      this.#typingIndicator.hidden = !typing;
+      if (!typing) {
+        this.#typingIndicator.replaceChildren();
+        return;
+      }
+      this.#typingIndicator.replaceChildren(
+        element("span", { className: "kl-typing-name", text: `${this.#activeName} is typing` }),
+        element(
+          "span",
+          { className: "kl-typing-dots", ariaLabel: "" },
+          element("i"),
+          element("i"),
+          element("i")
+        )
+      );
+    }
+    #updateLocalTyping() {
+      if (this.#typingStopTimer !== void 0) clearTimeout(this.#typingStopTimer);
+      this.#typingStopTimer = void 0;
+      if (this.#activePeer === void 0 || !this.#composer.value.trim()) {
+        this.#stopLocalTyping();
+        return;
+      }
+      this.presence.setTyping(this.#activePeer, true);
+      this.#typingStopTimer = setTimeout(() => {
+        this.#typingStopTimer = void 0;
+        if (this.#activePeer !== void 0) this.presence.setTyping(this.#activePeer, false, true);
+      }, 2400);
+    }
+    #stopLocalTyping() {
+      if (this.#typingStopTimer !== void 0) clearTimeout(this.#typingStopTimer);
+      this.#typingStopTimer = void 0;
+      if (this.#activePeer !== void 0) this.presence.setTyping(this.#activePeer, false, true);
+    }
+    #schedulePresenceRender(memberNumber) {
+      if (memberNumber === void 0) this.#pendingPresenceAll = true;
+      else this.#pendingPresenceMembers.add(memberNumber);
+      if (this.#presenceRenderFrame !== void 0) return;
+      this.#presenceRenderFrame = requestAnimationFrame(() => {
+        this.#presenceRenderFrame = void 0;
+        const updateAll = this.#pendingPresenceAll;
+        const members = [...this.#pendingPresenceMembers];
+        this.#pendingPresenceAll = false;
+        this.#pendingPresenceMembers.clear();
+        this.#updateVisiblePresence(updateAll ? void 0 : members);
+        if (updateAll || this.#activePeer !== void 0 && members.includes(this.#activePeer)) {
+          this.#renderActivePresence();
+        }
+        const ownMemberNumber = this.adapter.getOwnMemberNumber();
+        if (updateAll || members.includes(ownMemberNumber)) this.#renderHomeStatus();
+        if (updateAll) void this.#renderHome();
+      });
+    }
+    #updateVisiblePresence(memberNumbers) {
+      const filter = memberNumbers ? new Set(memberNumbers) : void 0;
+      for (const target of this.#shadow.querySelectorAll("[data-member-number]")) {
+        const memberNumber = Number(target.dataset.memberNumber);
+        if (!Number.isSafeInteger(memberNumber) || filter && !filter.has(memberNumber)) continue;
+        const snapshot = this.presence.get(memberNumber);
+        for (const dot of target.querySelectorAll(".kl-presence-dot")) {
+          dot.dataset.status = snapshot.status;
+        }
+        for (const label of target.querySelectorAll("[data-presence-label]")) {
+          label.textContent = presenceLabel(snapshot.status);
+          label.dataset.status = snapshot.status;
+          label.hidden = snapshot.status === "unknown";
+        }
+        const description = target.querySelector("[data-presence-description]");
+        if (description) description.title = presenceDescription(snapshot);
+      }
     }
     async #renderConversations() {
       const query = this.#search.value.trim().toLocaleLowerCase();
@@ -7104,7 +7391,7 @@ select:focus-visible {
         const nickname = this.adapter.getMemberNickname(conversation.peerNumber);
         if (!nickname || nickname === conversation.peerName) continue;
         conversation.peerName = nickname;
-        await this.service.setPeerName(conversation.peerNumber, nickname);
+        void this.service.setPeerName(conversation.peerNumber, nickname);
         if (conversation.peerNumber === this.#activePeer) {
           this.#activeName = nickname;
           this.#chatName.textContent = nickname;
@@ -7170,6 +7457,7 @@ select:focus-visible {
         main,
         side
       );
+      button.dataset.memberNumber = conversation.peerNumber.toString();
       button.dataset.active = String(conversation.peerNumber === this.#activePeer);
       button.addEventListener(
         "click",
@@ -7182,6 +7470,9 @@ select:focus-visible {
       return button;
     }
     async #selectConversation(peerNumber, peerName) {
+      if (this.#activePeer !== void 0 && this.#activePeer !== peerNumber) {
+        this.#stopLocalTyping();
+      }
       const displayName = this.adapter.getMemberNickname(peerNumber) ?? peerName;
       this.#activePeer = peerNumber;
       this.#activeName = displayName;
@@ -7197,6 +7488,9 @@ select:focus-visible {
       this.#chatAvatar.textContent = avatarText(displayName);
       this.#chatName.textContent = displayName;
       this.#chatNumber.textContent = `Member ${peerNumber}`;
+      this.#messageRenderLimit = 120;
+      this.#messageRenderPeer = peerNumber;
+      this.#renderedMessageIds.clear();
       this.#renderActivePresence();
       this.presence.request(peerNumber);
       this.#pinButton.textContent = conversation.pinned ? "\u25C6" : "\u25C7";
@@ -7209,10 +7503,15 @@ select:focus-visible {
       await Promise.all([this.#renderMessages(peerNumber), this.refresh()]);
       this.#composer.focus();
     }
-    async #renderMessages(peerNumber) {
-      const messages = await this.service.getMessages(peerNumber);
+    async #renderMessages(peerNumber, scrollToBottom = true) {
+      const messages = await this.service.getMessages(peerNumber, this.#messageRenderLimit + 1);
+      if (this.#activePeer !== peerNumber) return;
+      const hasOlder = messages.length > this.#messageRenderLimit;
+      const visibleMessages = hasOlder ? messages.slice(-this.#messageRenderLimit) : messages;
+      this.#messageRenderPeer = peerNumber;
+      this.#renderedMessageIds.clear();
       this.#messages.replaceChildren();
-      if (messages.length === 0) {
+      if (visibleMessages.length === 0) {
         this.#messages.append(
           element("div", {
             className: "kl-empty-copy",
@@ -7221,40 +7520,97 @@ select:focus-visible {
         );
         return;
       }
-      for (const message of messages) {
-        const body = this.#renderMessageBody(message);
-        const actions = element(
-          "div",
-          { className: "kl-message-actions" },
-          element("button", {
-            className: "kl-message-action",
-            type: "button",
-            text: "Reply",
-            title: "Quote this message in your reply",
-            onClick: () => this.#replyToMessage(message)
-          }),
-          element("button", {
-            className: "kl-message-action",
-            type: "button",
-            text: "Copy",
-            title: "Copy message",
-            onClick: () => void this.#copyMessage(message.content)
-          })
-        );
-        const meta = element(
-          "div",
-          { className: "kl-message-meta" },
-          message.roomName ? element("span", { className: "kl-message-room", text: message.roomName }) : null,
-          element("time", { text: formatMessageTime(message.sentAt) })
-        );
-        const bubble = element("div", { className: "kl-message-bubble" }, body, actions, meta);
-        const row = element("div", { className: "kl-message-row" }, bubble);
-        row.dataset.direction = message.direction;
-        this.#messages.append(row);
+      if (hasOlder) {
+        this.#messages.append(this.#olderMessagesControl(peerNumber));
       }
+      for (const message of visibleMessages) {
+        this.#renderedMessageIds.add(message.id);
+        this.#messages.append(this.#messageNode(message));
+      }
+      if (scrollToBottom) {
+        requestAnimationFrame(() => {
+          this.#messages.scrollTop = this.#messages.scrollHeight;
+        });
+      }
+    }
+    async #loadOlderMessages(peerNumber) {
+      if (this.#activePeer !== peerNumber) return;
+      const previousHeight = this.#messages.scrollHeight;
+      const previousTop = this.#messages.scrollTop;
+      this.#messageRenderLimit += 120;
+      await this.#renderMessages(peerNumber, false);
       requestAnimationFrame(() => {
-        this.#messages.scrollTop = this.#messages.scrollHeight;
+        this.#messages.scrollTop = previousTop + (this.#messages.scrollHeight - previousHeight);
       });
+    }
+    #olderMessagesControl(peerNumber) {
+      return element(
+        "div",
+        { className: "kl-load-older" },
+        element("button", {
+          className: "kl-text-button",
+          type: "button",
+          text: "Load earlier messages",
+          onClick: () => void this.#loadOlderMessages(peerNumber)
+        })
+      );
+    }
+    #messageNode(message) {
+      const body = this.#renderMessageBody(message);
+      const actions = element(
+        "div",
+        { className: "kl-message-actions" },
+        element("button", {
+          className: "kl-message-action",
+          type: "button",
+          text: "Reply",
+          title: "Quote this message in your reply",
+          onClick: () => this.#replyToMessage(message)
+        }),
+        element("button", {
+          className: "kl-message-action",
+          type: "button",
+          text: "Copy",
+          title: "Copy message",
+          onClick: () => void this.#copyMessage(message.content)
+        })
+      );
+      const meta = element(
+        "div",
+        { className: "kl-message-meta" },
+        message.roomName ? element("span", { className: "kl-message-room", text: message.roomName }) : null,
+        element("time", { text: formatMessageTime(message.sentAt) })
+      );
+      const bubble = element("div", { className: "kl-message-bubble" }, body, actions, meta);
+      const row = element("div", { className: "kl-message-row" }, bubble);
+      row.dataset.direction = message.direction;
+      row.dataset.messageId = message.id;
+      return row;
+    }
+    #appendMessage(message) {
+      if (this.#activePeer !== message.peerNumber || this.#messageRenderPeer !== message.peerNumber || this.#renderedMessageIds.has(message.id)) {
+        return;
+      }
+      const nearBottom = this.#messages.scrollHeight - this.#messages.scrollTop - this.#messages.clientHeight < 96;
+      this.#messages.querySelector(".kl-empty-copy")?.remove();
+      this.#messages.append(this.#messageNode(message));
+      this.#renderedMessageIds.add(message.id);
+      const rows = this.#messages.querySelectorAll(".kl-message-row");
+      if (rows.length > this.#messageRenderLimit) {
+        if (!this.#messages.querySelector(".kl-load-older")) {
+          this.#messages.prepend(this.#olderMessagesControl(message.peerNumber));
+        }
+        const oldest = rows[0];
+        if (oldest) {
+          if (oldest.dataset.messageId) this.#renderedMessageIds.delete(oldest.dataset.messageId);
+          oldest.remove();
+        }
+      }
+      if (message.direction === "outgoing" || nearBottom) {
+        requestAnimationFrame(() => {
+          this.#messages.scrollTop = this.#messages.scrollHeight;
+        });
+      }
     }
     async #send() {
       const message = this.#composer.value.trim();
@@ -7271,14 +7627,15 @@ select:focus-visible {
           this.#includeRoom.checked
         );
         sent = true;
-        await this.service.capture(event, true);
+        const storedMessage = await this.service.capture(event, true);
+        this.#stopLocalTyping();
         if (clearComposer) {
           this.#composer.value = "";
           await this.service.setDraft(this.#activePeer, this.#activeName, "");
           this.#resizeComposer();
           this.#updateCounter();
         }
-        await this.onMessage(this.#activePeer, false);
+        await this.onMessage(this.#activePeer, false, storedMessage);
         if (clearComposer) this.#composer.focus();
         return true;
       } catch (error) {
@@ -7802,6 +8159,7 @@ ${expanded}` : expanded;
       this.#reducedMotionToggle.checked = settings.ui.reducedMotion;
       this.#historyToggle.checked = settings.linkChat.saveHistory;
       this.#enterToSendToggle.checked = settings.linkChat.enterToSend;
+      this.#typingIndicatorsToggle.checked = settings.linkChat.typingIndicators;
       this.#imagePreviewSelect.value = settings.linkChat.imagePreviews;
       this.#retentionInput.value = settings.linkChat.retentionDays.toString();
       this.#renderQuickActionEditor(settings.linkChat.quickActions);
@@ -7859,6 +8217,7 @@ ${expanded}` : expanded;
         draft.ui.settingsSection = this.#settingsSection;
         draft.linkChat.saveHistory = this.#historyToggle.checked;
         draft.linkChat.enterToSend = this.#enterToSendToggle.checked;
+        draft.linkChat.typingIndicators = this.#typingIndicatorsToggle.checked;
         draft.linkChat.imagePreviews = this.#imagePreviewSelect.value === "always" || this.#imagePreviewSelect.value === "never" ? this.#imagePreviewSelect.value : "ask";
         draft.linkChat.quickActions = this.#readQuickActionEditor();
         draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
@@ -7872,10 +8231,12 @@ ${expanded}` : expanded;
         if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
       });
       this.#applyTheme(settings);
+      if (!settings.linkChat.typingIndicators) this.#stopLocalTyping();
       const removedPlayers = this.roster.prune();
       this.#updateNotebookCount();
       this.#renderQuickActions();
       if (this.#activePeer !== void 0) void this.#renderMessages(this.#activePeer);
+      this.#renderActivePresence();
       this.#renderHomeStatus();
       void this.#renderHome();
       this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView, settings));
@@ -8151,8 +8512,8 @@ ${expanded}` : expanded;
       {
         section: "chat",
         title: "Chat & history",
-        detail: "Images, Enter-to-send, history, retention, and Quick Actions",
-        keywords: "beep messages image picture preview privacy enter send newline save storage days clear wave hug boop template"
+        detail: "Typing, images, Enter-to-send, history, retention, and Quick Actions",
+        keywords: "beep messages typing indicator realtime image picture preview privacy enter send newline save storage days clear wave hug boop template"
       },
       {
         section: "players",
@@ -8413,8 +8774,8 @@ ${expanded}` : expanded;
           this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
         }
         const active = this.#view.isActiveConversation(event.peerNumber);
-        await this.#service.capture(event, active);
-        await this.#view.onMessage(event.peerNumber, event.direction === "incoming");
+        const message = await this.#service.capture(event, active);
+        await this.#view.onMessage(event.peerNumber, event.direction === "incoming", message);
         this.#context.bus.emit("link-chat:updated", { peerNumber: event.peerNumber });
       } catch (error) {
         this.#logger.error("Failed to capture a Beep", error);
@@ -8761,7 +9122,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.11.0");
+    const app = new KikiLinkApp("0.12.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

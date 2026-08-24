@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.11.0` turns LinkChat into a calmer social layer with real BC friend presence,
-four KikiLink statuses, privacy-aware image messages, and right-click/hold player actions.
+Version `0.12.0` makes LinkChat reliable and smooth: live incoming Beeps, truthful native
+friend presence and room context, compatible typing indicators, and a bounded message feed.
 
 ## Link Deck
 
@@ -75,6 +75,8 @@ browser profile. KikiLink does not upload them to a server.
 - Drafts saved per conversation
 - Real Online/Offline information for BC friends plus Online, Idle, Do not disturb, and
   Offline status shared between compatible KikiLink users
+- Short-lived typing indicators between compatible KikiLink users, with a private on/off preference
+- The friend's observable current room beside their identity in the active chat
 - Status notes and optional automatic Idle with an explicit presence on/off control
 - Direct HTTPS image messages that remain ordinary usable links for players without KikiLink
 - Privacy-aware inline image previews: ask before loading, always show, or links only
@@ -88,6 +90,8 @@ browser profile. KikiLink does not upload them to a server.
 - Editable Quick Actions with `{name}`, `{member}`, and `{me}` variables
 - Optional room information on outgoing Beeps
 - Immediate outgoing-message display independent of the compatibility hook
+- Reliable live incoming-message capture across Bondage Club's null and empty normal Beep types
+- Smooth bounded rendering: 120 recent messages at once, incremental live append, and on-demand older history
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
 

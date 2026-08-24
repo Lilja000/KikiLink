@@ -128,7 +128,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(7);
+    expect(settings.schemaVersion).toBe(8);
     expect(settings.linkActivities).toEqual({
       enabled: false,
       activities: [{ label: "Sakura greeting", template: "bows to {target}." }],
@@ -142,7 +142,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(7);
+    expect(settings.schemaVersion).toBe(8);
     expect(settings.linkActivities.enabled).toBe(false);
     expect(settings.linkRoster).toEqual({
       enabled: true,
@@ -165,7 +165,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(7);
+    expect(settings.schemaVersion).toBe(8);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -188,7 +188,7 @@ describe("SettingsStore", () => {
   it("sanitizes presence and modern chat preferences", () => {
     const settings = sanitizeSettings({
       schemaVersion: 7,
-      linkChat: { enterToSend: false, imagePreviews: "always" },
+      linkChat: { enterToSend: false, typingIndicators: false, imagePreviews: "always" },
       linkPresence: {
         enabled: true,
         status: "dnd",
@@ -198,6 +198,7 @@ describe("SettingsStore", () => {
     });
 
     expect(settings.linkChat.enterToSend).toBe(false);
+    expect(settings.linkChat.typingIndicators).toBe(false);
     expect(settings.linkChat.imagePreviews).toBe("always");
     expect(settings.linkPresence).toEqual({
       enabled: true,

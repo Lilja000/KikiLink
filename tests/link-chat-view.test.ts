@@ -2,11 +2,14 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter } from "../src/bc/adapter";
+import { EventBus } from "../src/core/event-bus";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
+import type { KikiLinkEvents } from "../src/core/types";
 import { LinkActivitiesService } from "../src/modules/link-activities/link-activities-service";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import { LinkChatView } from "../src/modules/link-chat/view";
 import { LinkRosterService } from "../src/modules/link-roster/link-roster-service";
+import { LinkPresenceService } from "../src/modules/link-presence/link-presence-service";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 import { PeopleRepository } from "../src/storage/people-repository";
 
@@ -290,7 +293,12 @@ describe("LinkChatView", () => {
       getOwnName: () => "Kiki",
       getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
       getOnlineFriends: () => [
-        { memberNumber: 123, memberName: "Reina", privateRoom: false },
+        {
+          memberNumber: 123,
+          memberName: "Reina",
+          roomName: "Moon Garden",
+          privateRoom: false,
+        },
       ],
       hasOnlineFriendSnapshot: () => true,
       isKnownFriend: () => true,
@@ -325,6 +333,7 @@ describe("LinkChatView", () => {
 
     const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
     expect(shadow?.querySelector(".kl-chat-presence")?.textContent).toContain("Online");
+    expect(shadow?.querySelector(".kl-chat-room")?.textContent).toContain("Moon Garden");
     expect(shadow?.querySelector(".kl-image-load")?.textContent).toBe("Show image");
 
     shadow?.querySelector<HTMLButtonElement>(".kl-attach-image")?.click();
@@ -817,6 +826,143 @@ describe("LinkChatView", () => {
     expect(startWhisper).toHaveBeenCalledWith(123);
     expect(shadow?.querySelector<HTMLElement>(".kl-panel")?.hidden).toBe(true);
 
+    view.destroy();
+  });
+
+  it("shows compatible typing signals and sends them without creating chat messages", async () => {
+    const sendKikiLinkProtocol = vi.fn(() => "beep" as const);
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => "Reina",
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [
+        { memberNumber: 123, memberName: "Reina", privateRoom: false },
+      ],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => false,
+      isInChatRoom: () => false,
+      getCurrentRoomName: () => undefined,
+      refreshOnlineFriends: vi.fn(() => true),
+      sendKikiLinkProtocol,
+      broadcastKikiLinkProtocol: vi.fn(() => false),
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+      getRoomCharacters: () => [],
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const bus = new EventBus<KikiLinkEvents>();
+    const presence = new LinkPresenceService(adapter, settings, bus, "0.12.0");
+    presence.start();
+    const chatService = new ChatService(new MemoryChatRepository(), settings);
+    const view = new LinkChatView(
+      adapter,
+      chatService,
+      settings,
+      "0.12.0",
+      new LinkActivitiesService(adapter),
+      new LinkRosterService(
+        adapter,
+        new PeopleRepository(new MemoryKeyValueStorage()),
+        settings,
+      ),
+      presence,
+    );
+    view.mount();
+    await view.openChat(123, "Reina");
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({ t: "ty", a: 1 }),
+    });
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLElement>(".kl-typing-indicator")?.hidden).toBe(false);
+      expect(shadow?.querySelector(".kl-typing-indicator")?.textContent).toContain(
+        "Reina is typing",
+      );
+    });
+
+    const composer = shadow?.querySelector<HTMLTextAreaElement>(".kl-composer-input");
+    if (!composer) throw new Error("Missing composer");
+    composer.value = "A local draft";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(sendKikiLinkProtocol).toHaveBeenCalledWith(
+      123,
+      JSON.stringify({ t: "ty", a: 1 }),
+    );
+    expect(await chatService.getMessages(123)).toEqual([]);
+
+    composer.dispatchEvent(new Event("blur", { bubbles: true }));
+    view.destroy();
+    presence.stop();
+  });
+
+  it("keeps a bounded message DOM and appends live messages without rebuilding the feed", async () => {
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => "Reina",
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => false,
+      isInChatRoom: () => false,
+      getCurrentRoomName: () => undefined,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+      getRoomCharacters: () => [],
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    for (let index = 0; index < 170; index += 1) {
+      await service.capture(
+        {
+          direction: index % 2 === 0 ? "incoming" : "outgoing",
+          peerNumber: 123,
+          peerName: "Reina",
+          content: `Message ${index}`,
+          sentAt: index + 1,
+          includeRoom: false,
+        },
+        true,
+      );
+    }
+    const view = new LinkChatView(adapter, service, settings, "0.12.0");
+    view.mount();
+    await view.openChat(123, "Reina");
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    const initialRows = shadow?.querySelectorAll<HTMLElement>(".kl-message-row") ?? [];
+    expect(initialRows).toHaveLength(120);
+    expect(shadow?.querySelector(".kl-load-older")?.textContent).toContain("Load earlier");
+    const preservedRow = initialRows[1];
+
+    const liveMessage = await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 123,
+        peerName: "Reina",
+        content: "Live message 170",
+        sentAt: 171,
+        includeRoom: false,
+      },
+      true,
+    );
+    await view.onMessage(123, true, liveMessage);
+
+    expect(shadow?.querySelectorAll(".kl-message-row")).toHaveLength(120);
+    expect(preservedRow?.isConnected).toBe(true);
+    expect(shadow?.querySelector(".kl-message-row:last-child")?.textContent).toContain(
+      "Live message 170",
+    );
     view.destroy();
   });
 });

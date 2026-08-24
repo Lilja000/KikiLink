@@ -160,6 +160,7 @@ export class LinkChatView {
   readonly #chatName = element("div", { className: "kl-chat-name" });
   readonly #chatNumber = element("div", { className: "kl-chat-number" });
   readonly #chatPresence = element("div", { className: "kl-chat-presence" });
+  readonly #chatRoom = element("div", { className: "kl-chat-room" });
   readonly #pinButton = element("button", {
     className: "kl-icon-button",
     type: "button",
@@ -174,6 +175,10 @@ export class LinkChatView {
     ariaLabel: "Open player actions",
   });
   readonly #messages = element("div", { className: "kl-messages" });
+  readonly #typingIndicator = element("div", {
+    className: "kl-typing-indicator",
+    ariaLabel: "Typing status",
+  });
   readonly #composer = element("textarea", { className: "kl-composer-input" });
   readonly #sendButton = element("button", {
     className: "kl-text-button kl-text-button--primary kl-send",
@@ -198,6 +203,7 @@ export class LinkChatView {
   readonly #settingsPanels = new Map<SettingsSection, HTMLElement>();
   readonly #historyToggle = element("input") as HTMLInputElement;
   readonly #enterToSendToggle = element("input") as HTMLInputElement;
+  readonly #typingIndicatorsToggle = element("input") as HTMLInputElement;
   readonly #imagePreviewSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
   readonly #retentionInput = element("input", { className: "kl-number-input" }) as HTMLInputElement;
   readonly #saveSettingsButton = element("button", {
@@ -349,6 +355,13 @@ export class LinkChatView {
     | undefined;
   #suppressLauncherClickUntil = 0;
   #presenceUnsubscribe: (() => void) | undefined;
+  #presenceRenderFrame: number | undefined;
+  #pendingPresenceAll = false;
+  readonly #pendingPresenceMembers = new Set<number>();
+  #typingStopTimer: ReturnType<typeof setTimeout> | undefined;
+  #messageRenderLimit = 120;
+  #messageRenderPeer: number | undefined;
+  readonly #renderedMessageIds = new Set<string>();
   readonly #suppressProfileClickUntil = new WeakMap<HTMLElement, number>();
   #profileMenuToken = 0;
 
@@ -419,18 +432,18 @@ export class LinkChatView {
     this.#positionLauncher();
     window.addEventListener("resize", this.#handleViewportResize);
     document.addEventListener("pointerdown", this.#handleOutsidePointerDown);
-    this.#presenceUnsubscribe = this.presence.subscribe((memberNumber) => {
-      if (memberNumber === undefined || memberNumber === this.#activePeer) this.#renderActivePresence();
-      void this.#renderConversations();
-      if (this.#workspaceView === "roster") this.#renderRoster();
-      this.#renderHomeStatus();
-    });
+    this.#presenceUnsubscribe = this.presence.subscribe((memberNumber) =>
+      this.#schedulePresenceRender(memberNumber),
+    );
 
     void this.refresh();
   }
 
   destroy(): void {
+    this.#stopLocalTyping();
     if (this.#toastTimer !== undefined) clearTimeout(this.#toastTimer);
+    if (this.#presenceRenderFrame !== undefined) cancelAnimationFrame(this.#presenceRenderFrame);
+    this.#presenceRenderFrame = undefined;
     this.#finderDialog.close();
     this.#newChatDialog.close();
     this.#presenceDialog.close();
@@ -469,14 +482,21 @@ export class LinkChatView {
     if (this.#workspaceView === "roster") this.#renderRoster();
   }
 
-  async onMessage(peerNumber: number, incoming: boolean): Promise<void> {
+  async onMessage(
+    peerNumber: number,
+    incoming: boolean,
+    message?: LinkMessage,
+  ): Promise<void> {
     if (incoming && this.settings.get().linkChat.openOnIncoming) {
       await this.openChat(peerNumber, this.adapter.getMemberName(peerNumber));
       return;
     }
 
     await this.refresh();
-    if (this.#activePeer === peerNumber) await this.#renderMessages(peerNumber);
+    if (this.#activePeer === peerNumber) {
+      if (message && this.#messageRenderPeer === peerNumber) this.#appendMessage(message);
+      else await this.#renderMessages(peerNumber);
+    }
   }
 
   async open(): Promise<void> {
@@ -495,6 +515,7 @@ export class LinkChatView {
   }
 
   close(): void {
+    this.#stopLocalTyping();
     if (this.#finderDialog.open) this.#finderDialog.close();
     if (this.#newChatDialog.open) this.#newChatDialog.close();
     if (this.#presenceDialog.open) this.#presenceDialog.close();
@@ -532,14 +553,22 @@ export class LinkChatView {
   }
 
   onRosterSync(result: RosterSyncResult): void {
+    const countChanged = this.#presentCount !== result.presentCount;
     this.#presentCount = result.presentCount;
     this.#rosterCount.hidden = result.presentCount === 0;
     this.#rosterCount.textContent = result.presentCount > 99 ? "99+" : result.presentCount.toString();
     this.#rosterButton.title = result.presentCount
       ? `LinkRoster · ${result.presentCount} in room`
       : "LinkRoster";
-    this.#renderHomeStatus();
-    void this.#renderHome();
+    if (countChanged || result.changed) {
+      this.#renderHomeStatus();
+      void this.#renderHome();
+    }
+    if (result.changed) {
+      for (const memberNumber of new Set([...result.joined, ...result.left])) {
+        this.#schedulePresenceRender(memberNumber);
+      }
+    }
     if (this.#workspaceView === "roster" && result.changed) this.#renderRoster();
   }
 
@@ -997,7 +1026,13 @@ export class LinkChatView {
       "div",
       { className: "kl-chat-person" },
       this.#chatName,
-      element("div", { className: "kl-chat-subline" }, this.#chatNumber, this.#chatPresence),
+      element(
+        "div",
+        { className: "kl-chat-subline" },
+        this.#chatNumber,
+        this.#chatPresence,
+        this.#chatRoom,
+      ),
     );
     const header = element(
       "header",
@@ -1036,8 +1071,10 @@ export class LinkChatView {
       this.#updateCounter();
       if (this.#activePeer !== undefined) {
         this.#saveDraft(this.#activePeer, this.#activeName, this.#composer.value);
+        this.#updateLocalTyping();
       }
     });
+    this.#composer.addEventListener("blur", () => this.#stopLocalTyping());
     this.#composer.addEventListener("keydown", (event) => {
       const enterToSend = this.settings.get().linkChat.enterToSend;
       if (
@@ -1066,6 +1103,7 @@ export class LinkChatView {
     const composer = element(
       "footer",
       { className: "kl-composer" },
+      this.#typingIndicator,
       this.#quickActions,
       element(
         "div",
@@ -1076,6 +1114,9 @@ export class LinkChatView {
       ),
       options,
     );
+    this.#typingIndicator.hidden = true;
+    this.#typingIndicator.setAttribute("role", "status");
+    this.#typingIndicator.setAttribute("aria-live", "polite");
     this.#chat.append(header, this.#messages, composer);
     this.#renderQuickActions();
     this.#updateCounter();
@@ -1246,6 +1287,20 @@ export class LinkChatView {
       "Enter sends",
       "Press Enter to send and Shift+Enter for a new line. Ctrl+Enter always sends.",
       enterToSendSwitch,
+    );
+
+    this.#typingIndicatorsToggle.type = "checkbox";
+    const typingIndicatorsSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#typingIndicatorsToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#typingIndicatorsToggle.setAttribute("aria-label", "Share typing indicators");
+    const typingIndicators = this.#settingRow(
+      "Typing indicators",
+      "Show and share a short-lived typing signal only with compatible KikiLink users.",
+      typingIndicatorsSwitch,
     );
 
     this.#imagePreviewSelect.replaceChildren(
@@ -1436,6 +1491,7 @@ export class LinkChatView {
       "Chat, history & privacy",
       "Keep Beep history useful, local, and under your control.",
       enterToSend,
+      typingIndicators,
       imagePreviews,
       history,
       retention,
@@ -2511,14 +2567,14 @@ export class LinkChatView {
     const presence = this.presence.get(entry.memberNumber);
     const badges = element("div", { className: "kl-roster-entry-badges" });
     if (entry.present) badges.append(element("span", { className: "kl-roster-live", text: "HERE" }));
-    if (presence.status !== "unknown") {
-      const status = element("span", {
-        className: "kl-roster-presence-label",
-        text: presenceLabel(presence.status).toLocaleUpperCase(),
-      });
-      status.dataset.status = presence.status;
-      badges.append(status);
-    }
+    const status = element("span", {
+      className: "kl-roster-presence-label",
+      text: presenceLabel(presence.status),
+    });
+    status.dataset.status = presence.status;
+    status.dataset.presenceLabel = "true";
+    status.hidden = presence.status === "unknown";
+    badges.append(status);
     if (entry.isFriend) badges.append(element("span", { className: "kl-roster-friend", text: "FRIEND" }));
     if (entry.favorite) badges.append(element("span", { className: "kl-roster-favorite", text: "★" }));
     const preview = entry.tags.length
@@ -2622,6 +2678,11 @@ export class LinkChatView {
       ),
       favorite,
     );
+    identity.dataset.memberNumber = entry.memberNumber.toString();
+    const detailPresence = identity.querySelector<HTMLElement>(".kl-roster-detail-presence");
+    if (detailPresence) detailPresence.dataset.presenceDescription = "true";
+    const detailPresenceLabel = detailPresence?.querySelector<HTMLElement>("span:not(.kl-presence-dot)");
+    if (detailPresenceLabel) detailPresenceLabel.dataset.presenceLabel = "true";
 
     const whisper = element("button", {
       className: "kl-text-button",
@@ -3156,7 +3217,11 @@ export class LinkChatView {
 
   #renderActivePresence(): void {
     this.#chatPresence.replaceChildren();
-    if (this.#activePeer === undefined) return;
+    this.#chatRoom.replaceChildren();
+    if (this.#activePeer === undefined) {
+      this.#renderTypingIndicator();
+      return;
+    }
     const snapshot = this.presence.get(this.#activePeer);
     this.#chatPresence.append(
       presenceDot(snapshot.status),
@@ -3167,7 +3232,104 @@ export class LinkChatView {
         element("span", { className: "kl-presence-note", text: snapshot.statusMessage }),
       );
     }
+    if (snapshot.roomName) {
+      this.#chatRoom.replaceChildren(
+        element("span", { className: "kl-chat-room-icon", text: "⌂" }),
+        element("span", { className: "kl-chat-room-name", text: snapshot.roomName }),
+      );
+      this.#chatRoom.hidden = false;
+      this.#chatRoom.title = `Current room: ${snapshot.roomName}`;
+    } else {
+      this.#chatRoom.hidden = true;
+      this.#chatRoom.removeAttribute("title");
+    }
     this.#chatPresence.title = presenceDescription(snapshot);
+    this.#renderTypingIndicator();
+  }
+
+  #renderTypingIndicator(): void {
+    const typing =
+      this.settings.get().linkChat.typingIndicators &&
+      this.#activePeer !== undefined &&
+      this.presence.isTyping(this.#activePeer);
+    this.#typingIndicator.hidden = !typing;
+    if (!typing) {
+      this.#typingIndicator.replaceChildren();
+      return;
+    }
+    this.#typingIndicator.replaceChildren(
+      element("span", { className: "kl-typing-name", text: `${this.#activeName} is typing` }),
+      element(
+        "span",
+        { className: "kl-typing-dots", ariaLabel: "" },
+        element("i"),
+        element("i"),
+        element("i"),
+      ),
+    );
+  }
+
+  #updateLocalTyping(): void {
+    if (this.#typingStopTimer !== undefined) clearTimeout(this.#typingStopTimer);
+    this.#typingStopTimer = undefined;
+    if (this.#activePeer === undefined || !this.#composer.value.trim()) {
+      this.#stopLocalTyping();
+      return;
+    }
+    this.presence.setTyping(this.#activePeer, true);
+    this.#typingStopTimer = setTimeout(() => {
+      this.#typingStopTimer = undefined;
+      if (this.#activePeer !== undefined) this.presence.setTyping(this.#activePeer, false, true);
+    }, 2_400);
+  }
+
+  #stopLocalTyping(): void {
+    if (this.#typingStopTimer !== undefined) clearTimeout(this.#typingStopTimer);
+    this.#typingStopTimer = undefined;
+    if (this.#activePeer !== undefined) this.presence.setTyping(this.#activePeer, false, true);
+  }
+
+  #schedulePresenceRender(memberNumber?: number): void {
+    if (memberNumber === undefined) this.#pendingPresenceAll = true;
+    else this.#pendingPresenceMembers.add(memberNumber);
+    if (this.#presenceRenderFrame !== undefined) return;
+    this.#presenceRenderFrame = requestAnimationFrame(() => {
+      this.#presenceRenderFrame = undefined;
+      const updateAll = this.#pendingPresenceAll;
+      const members = [...this.#pendingPresenceMembers];
+      this.#pendingPresenceAll = false;
+      this.#pendingPresenceMembers.clear();
+
+      this.#updateVisiblePresence(updateAll ? undefined : members);
+      if (
+        updateAll ||
+        (this.#activePeer !== undefined && members.includes(this.#activePeer))
+      ) {
+        this.#renderActivePresence();
+      }
+      const ownMemberNumber = this.adapter.getOwnMemberNumber();
+      if (updateAll || members.includes(ownMemberNumber)) this.#renderHomeStatus();
+      if (updateAll) void this.#renderHome();
+    });
+  }
+
+  #updateVisiblePresence(memberNumbers?: number[]): void {
+    const filter = memberNumbers ? new Set(memberNumbers) : undefined;
+    for (const target of this.#shadow.querySelectorAll<HTMLElement>("[data-member-number]")) {
+      const memberNumber = Number(target.dataset.memberNumber);
+      if (!Number.isSafeInteger(memberNumber) || (filter && !filter.has(memberNumber))) continue;
+      const snapshot = this.presence.get(memberNumber);
+      for (const dot of target.querySelectorAll<HTMLElement>(".kl-presence-dot")) {
+        dot.dataset.status = snapshot.status;
+      }
+      for (const label of target.querySelectorAll<HTMLElement>("[data-presence-label]")) {
+        label.textContent = presenceLabel(snapshot.status);
+        label.dataset.status = snapshot.status;
+        label.hidden = snapshot.status === "unknown";
+      }
+      const description = target.querySelector<HTMLElement>("[data-presence-description]");
+      if (description) description.title = presenceDescription(snapshot);
+    }
   }
 
   async #renderConversations(): Promise<void> {
@@ -3177,7 +3339,7 @@ export class LinkChatView {
       const nickname = this.adapter.getMemberNickname(conversation.peerNumber);
       if (!nickname || nickname === conversation.peerName) continue;
       conversation.peerName = nickname;
-      await this.service.setPeerName(conversation.peerNumber, nickname);
+      void this.service.setPeerName(conversation.peerNumber, nickname);
       if (conversation.peerNumber === this.#activePeer) {
         this.#activeName = nickname;
         this.#chatName.textContent = nickname;
@@ -3254,6 +3416,7 @@ export class LinkChatView {
       main,
       side,
     );
+    button.dataset.memberNumber = conversation.peerNumber.toString();
     button.dataset.active = String(conversation.peerNumber === this.#activePeer);
     button.addEventListener("click", () =>
       void this.#selectConversation(conversation.peerNumber, conversation.peerName),
@@ -3266,6 +3429,9 @@ export class LinkChatView {
   }
 
   async #selectConversation(peerNumber: number, peerName: string): Promise<void> {
+    if (this.#activePeer !== undefined && this.#activePeer !== peerNumber) {
+      this.#stopLocalTyping();
+    }
     const displayName = this.adapter.getMemberNickname(peerNumber) ?? peerName;
     this.#activePeer = peerNumber;
     this.#activeName = displayName;
@@ -3282,6 +3448,9 @@ export class LinkChatView {
     this.#chatAvatar.textContent = avatarText(displayName);
     this.#chatName.textContent = displayName;
     this.#chatNumber.textContent = `Member ${peerNumber}`;
+    this.#messageRenderLimit = 120;
+    this.#messageRenderPeer = peerNumber;
+    this.#renderedMessageIds.clear();
     this.#renderActivePresence();
     this.presence.request(peerNumber);
     this.#pinButton.textContent = conversation.pinned ? "◆" : "◇";
@@ -3295,10 +3464,15 @@ export class LinkChatView {
     this.#composer.focus();
   }
 
-  async #renderMessages(peerNumber: number): Promise<void> {
-    const messages = await this.service.getMessages(peerNumber);
+  async #renderMessages(peerNumber: number, scrollToBottom = true): Promise<void> {
+    const messages = await this.service.getMessages(peerNumber, this.#messageRenderLimit + 1);
+    if (this.#activePeer !== peerNumber) return;
+    const hasOlder = messages.length > this.#messageRenderLimit;
+    const visibleMessages = hasOlder ? messages.slice(-this.#messageRenderLimit) : messages;
+    this.#messageRenderPeer = peerNumber;
+    this.#renderedMessageIds.clear();
     this.#messages.replaceChildren();
-    if (messages.length === 0) {
+    if (visibleMessages.length === 0) {
       this.#messages.append(
         element("div", {
           className: "kl-empty-copy",
@@ -3308,42 +3482,109 @@ export class LinkChatView {
       return;
     }
 
-    for (const message of messages) {
-      const body = this.#renderMessageBody(message);
-      const actions = element(
-        "div",
-        { className: "kl-message-actions" },
-        element("button", {
-          className: "kl-message-action",
-          type: "button",
-          text: "Reply",
-          title: "Quote this message in your reply",
-          onClick: () => this.#replyToMessage(message),
-        }),
-        element("button", {
-          className: "kl-message-action",
-          type: "button",
-          text: "Copy",
-          title: "Copy message",
-          onClick: () => void this.#copyMessage(message.content),
-        }),
-      );
-      const meta = element(
-        "div",
-        { className: "kl-message-meta" },
-        message.roomName
-          ? element("span", { className: "kl-message-room", text: message.roomName })
-          : null,
-        element("time", { text: formatMessageTime(message.sentAt) }),
-      );
-      const bubble = element("div", { className: "kl-message-bubble" }, body, actions, meta);
-      const row = element("div", { className: "kl-message-row" }, bubble);
-      row.dataset.direction = message.direction;
-      this.#messages.append(row);
+    if (hasOlder) {
+      this.#messages.append(this.#olderMessagesControl(peerNumber));
     }
+    for (const message of visibleMessages) {
+      this.#renderedMessageIds.add(message.id);
+      this.#messages.append(this.#messageNode(message));
+    }
+    if (scrollToBottom) {
+      requestAnimationFrame(() => {
+        this.#messages.scrollTop = this.#messages.scrollHeight;
+      });
+    }
+  }
+
+  async #loadOlderMessages(peerNumber: number): Promise<void> {
+    if (this.#activePeer !== peerNumber) return;
+    const previousHeight = this.#messages.scrollHeight;
+    const previousTop = this.#messages.scrollTop;
+    this.#messageRenderLimit += 120;
+    await this.#renderMessages(peerNumber, false);
     requestAnimationFrame(() => {
-      this.#messages.scrollTop = this.#messages.scrollHeight;
+      this.#messages.scrollTop = previousTop + (this.#messages.scrollHeight - previousHeight);
     });
+  }
+
+  #olderMessagesControl(peerNumber: number): HTMLDivElement {
+    return element(
+      "div",
+      { className: "kl-load-older" },
+      element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Load earlier messages",
+        onClick: () => void this.#loadOlderMessages(peerNumber),
+      }),
+    );
+  }
+
+  #messageNode(message: LinkMessage): HTMLDivElement {
+    const body = this.#renderMessageBody(message);
+    const actions = element(
+      "div",
+      { className: "kl-message-actions" },
+      element("button", {
+        className: "kl-message-action",
+        type: "button",
+        text: "Reply",
+        title: "Quote this message in your reply",
+        onClick: () => this.#replyToMessage(message),
+      }),
+      element("button", {
+        className: "kl-message-action",
+        type: "button",
+        text: "Copy",
+        title: "Copy message",
+        onClick: () => void this.#copyMessage(message.content),
+      }),
+    );
+    const meta = element(
+      "div",
+      { className: "kl-message-meta" },
+      message.roomName
+        ? element("span", { className: "kl-message-room", text: message.roomName })
+        : null,
+      element("time", { text: formatMessageTime(message.sentAt) }),
+    );
+    const bubble = element("div", { className: "kl-message-bubble" }, body, actions, meta);
+    const row = element("div", { className: "kl-message-row" }, bubble);
+    row.dataset.direction = message.direction;
+    row.dataset.messageId = message.id;
+    return row;
+  }
+
+  #appendMessage(message: LinkMessage): void {
+    if (
+      this.#activePeer !== message.peerNumber ||
+      this.#messageRenderPeer !== message.peerNumber ||
+      this.#renderedMessageIds.has(message.id)
+    ) {
+      return;
+    }
+    const nearBottom =
+      this.#messages.scrollHeight - this.#messages.scrollTop - this.#messages.clientHeight < 96;
+    this.#messages.querySelector(".kl-empty-copy")?.remove();
+    this.#messages.append(this.#messageNode(message));
+    this.#renderedMessageIds.add(message.id);
+
+    const rows = this.#messages.querySelectorAll<HTMLElement>(".kl-message-row");
+    if (rows.length > this.#messageRenderLimit) {
+      if (!this.#messages.querySelector(".kl-load-older")) {
+        this.#messages.prepend(this.#olderMessagesControl(message.peerNumber));
+      }
+      const oldest = rows[0];
+      if (oldest) {
+        if (oldest.dataset.messageId) this.#renderedMessageIds.delete(oldest.dataset.messageId);
+        oldest.remove();
+      }
+    }
+    if (message.direction === "outgoing" || nearBottom) {
+      requestAnimationFrame(() => {
+        this.#messages.scrollTop = this.#messages.scrollHeight;
+      });
+    }
   }
 
   async #send(): Promise<void> {
@@ -3362,14 +3603,15 @@ export class LinkChatView {
         this.#includeRoom.checked,
       );
       sent = true;
-      await this.service.capture(event, true);
+      const storedMessage = await this.service.capture(event, true);
+      this.#stopLocalTyping();
       if (clearComposer) {
         this.#composer.value = "";
         await this.service.setDraft(this.#activePeer, this.#activeName, "");
         this.#resizeComposer();
         this.#updateCounter();
       }
-      await this.onMessage(this.#activePeer, false);
+      await this.onMessage(this.#activePeer, false, storedMessage);
       if (clearComposer) this.#composer.focus();
       return true;
     } catch (error) {
@@ -3967,6 +4209,7 @@ export class LinkChatView {
     this.#reducedMotionToggle.checked = settings.ui.reducedMotion;
     this.#historyToggle.checked = settings.linkChat.saveHistory;
     this.#enterToSendToggle.checked = settings.linkChat.enterToSend;
+    this.#typingIndicatorsToggle.checked = settings.linkChat.typingIndicators;
     this.#imagePreviewSelect.value = settings.linkChat.imagePreviews;
     this.#retentionInput.value = settings.linkChat.retentionDays.toString();
     this.#renderQuickActionEditor(settings.linkChat.quickActions);
@@ -4044,6 +4287,7 @@ export class LinkChatView {
       draft.ui.settingsSection = this.#settingsSection;
       draft.linkChat.saveHistory = this.#historyToggle.checked;
       draft.linkChat.enterToSend = this.#enterToSendToggle.checked;
+      draft.linkChat.typingIndicators = this.#typingIndicatorsToggle.checked;
       draft.linkChat.imagePreviews =
         this.#imagePreviewSelect.value === "always" || this.#imagePreviewSelect.value === "never"
           ? this.#imagePreviewSelect.value
@@ -4060,10 +4304,12 @@ export class LinkChatView {
       if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
     });
     this.#applyTheme(settings);
+    if (!settings.linkChat.typingIndicators) this.#stopLocalTyping();
     const removedPlayers = this.roster.prune();
     this.#updateNotebookCount();
     this.#renderQuickActions();
     if (this.#activePeer !== undefined) void this.#renderMessages(this.#activePeer);
+    this.#renderActivePresence();
     this.#renderHomeStatus();
     void this.#renderHome();
     this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView, settings));
@@ -4378,8 +4624,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "chat",
       title: "Chat & history",
-      detail: "Images, Enter-to-send, history, retention, and Quick Actions",
-      keywords: "beep messages image picture preview privacy enter send newline save storage days clear wave hug boop template",
+      detail: "Typing, images, Enter-to-send, history, retention, and Quick Actions",
+      keywords: "beep messages typing indicator realtime image picture preview privacy enter send newline save storage days clear wave hug boop template",
     },
     {
       section: "players",

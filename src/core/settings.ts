@@ -7,7 +7,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 7,
+  schemaVersion: 8,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -28,6 +28,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     maxMessagesPerConversation: 500,
     openOnIncoming: false,
     enterToSend: true,
+    typingIndicators: true,
     imagePreviews: "ask",
     quickActions: [
       { label: "Wave", template: "*waves to {name}*" },
@@ -153,7 +154,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
 
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -205,6 +206,10 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         DEFAULT_SETTINGS.linkChat.openOnIncoming,
       ),
       enterToSend: booleanOr(linkChat.enterToSend, DEFAULT_SETTINGS.linkChat.enterToSend),
+      typingIndicators: booleanOr(
+        linkChat.typingIndicators,
+        DEFAULT_SETTINGS.linkChat.typingIndicators,
+      ),
       imagePreviews:
         linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never"
           ? linkChat.imagePreviews

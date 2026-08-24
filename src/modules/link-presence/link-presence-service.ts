@@ -14,12 +14,15 @@ const REMOTE_STATUS_TTL_MS = 5 * 60_000;
 const RECENT_PACKET_ONLINE_MS = 90_000;
 const REQUEST_COOLDOWN_MS = 20_000;
 const RESPONSE_COOLDOWN_MS = 5_000;
+const TYPING_REFRESH_MS = 1_800;
+const TYPING_TTL_MS = 5_500;
 
 type PresenceListener = (memberNumber?: number) => void;
 
 type PresencePacket =
   | { t: "pq"; i: string; b?: 1 }
-  | { t: "ps"; i?: string; s: PresenceStatus; m?: string; u: number; v: string };
+  | { t: "ps"; i?: string; s: PresenceStatus; m?: string; u: number; v: string }
+  | { t: "ty"; a: 0 | 1 };
 
 interface RemotePresence {
   status: PresenceStatus;
@@ -33,6 +36,9 @@ export class LinkPresenceService {
   readonly #listeners = new Set<PresenceListener>();
   readonly #lastRequestAt = new Map<number, number>();
   readonly #lastResponseAt = new Map<number, number>();
+  readonly #localTyping = new Map<number, { active: true; sentAt: number }>();
+  readonly #remoteTypingUntil = new Map<number, number>();
+  readonly #typingExpiryTimers = new Map<number, ReturnType<typeof setTimeout>>();
   readonly #unsubscribers: Array<() => void> = [];
   #nativeTimer: ReturnType<typeof setInterval> | undefined;
   #statusTimer: ReturnType<typeof setInterval> | undefined;
@@ -69,10 +75,7 @@ export class LinkPresenceService {
     this.#lastEffectiveStatus = this.getOwnStatus();
     this.#unsubscribers.push(
       this.bus.on("bc:protocol", (event) => this.#receive(event.senderNumber, event.payload)),
-      this.bus.on("bc:online-friends", ({ friends }) => {
-        for (const friend of friends) this.#notify(friend.memberNumber);
-        this.#notify();
-      }),
+      this.bus.on("bc:online-friends", () => this.#notify()),
       this.bus.on("bc:ready", () => {
         this.adapter.refreshOnlineFriends();
         this.#syncRoom(true);
@@ -101,6 +104,9 @@ export class LinkPresenceService {
 
   stop(): void {
     if (!this.#started) return;
+    for (const memberNumber of this.#localTyping.keys()) {
+      this.setTyping(memberNumber, false, true);
+    }
     this.#started = false;
     if (this.#nativeTimer !== undefined) clearInterval(this.#nativeTimer);
     if (this.#statusTimer !== undefined) clearInterval(this.#statusTimer);
@@ -116,6 +122,10 @@ export class LinkPresenceService {
     }
     this.#listeners.clear();
     this.#remote.clear();
+    this.#localTyping.clear();
+    this.#remoteTypingUntil.clear();
+    for (const timer of this.#typingExpiryTimers.values()) clearTimeout(timer);
+    this.#typingExpiryTimers.clear();
   }
 
   subscribe(listener: PresenceListener): () => void {
@@ -183,10 +193,15 @@ export class LinkPresenceService {
     const inRoom =
       typeof this.adapter.isMemberInCurrentRoom === "function" &&
       this.adapter.isMemberInCurrentRoom(memberNumber);
+    const currentRoomName =
+      inRoom && typeof this.adapter.getCurrentRoomName === "function"
+        ? this.adapter.getCurrentRoomName()
+        : undefined;
     const onlineFriend =
       typeof this.adapter.getOnlineFriends === "function"
         ? this.adapter.getOnlineFriends().find((friend) => friend.memberNumber === memberNumber)
         : undefined;
+    const observableRoomName = onlineFriend?.roomName ?? currentRoomName;
     if (
       remote &&
       now - remote.receivedAt <= REMOTE_STATUS_TTL_MS &&
@@ -198,11 +213,17 @@ export class LinkPresenceService {
         source: "kikilink",
         updatedAt: remote.remoteUpdatedAt,
         ...(remote.statusMessage ? { statusMessage: remote.statusMessage } : {}),
-        ...(onlineFriend?.roomName ? { roomName: onlineFriend.roomName } : {}),
+        ...(observableRoomName ? { roomName: observableRoomName } : {}),
       };
     }
     if (inRoom) {
-      return { memberNumber, status: "online", source: "room", updatedAt: now };
+      return {
+        memberNumber,
+        status: "online",
+        source: "room",
+        updatedAt: now,
+        ...(currentRoomName ? { roomName: currentRoomName } : {}),
+      };
     }
     if (onlineFriend) {
       return {
@@ -242,12 +263,46 @@ export class LinkPresenceService {
     }
   }
 
-  #receive(senderNumber: number, payload: string): void {
-    if (!this.settings.get().linkPresence.enabled || senderNumber === this.adapter.getOwnMemberNumber()) {
-      return;
+  isTyping(memberNumber: number, now = Date.now()): boolean {
+    return (this.#remoteTypingUntil.get(memberNumber) ?? 0) > now;
+  }
+
+  setTyping(memberNumber: number, active: boolean, force = false): boolean {
+    if (
+      !Number.isSafeInteger(memberNumber) ||
+      memberNumber < 0 ||
+      memberNumber === this.adapter.getOwnMemberNumber()
+    ) {
+      return false;
     }
+    if (!this.settings.get().linkChat.typingIndicators && !(force && !active)) return false;
+
+    const previous = this.#localTyping.get(memberNumber);
+    const now = Date.now();
+    if (active && previous && now - previous.sentAt < TYPING_REFRESH_MS) return false;
+    if (!active && !previous) return false;
+
+    if (!active) this.#localTyping.delete(memberNumber);
+    const packet: PresencePacket = { t: "ty", a: active ? 1 : 0 };
+    try {
+      this.adapter.sendKikiLinkProtocol(memberNumber, JSON.stringify(packet));
+      if (active) this.#localTyping.set(memberNumber, { active: true, sentAt: now });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  #receive(senderNumber: number, payload: string): void {
+    if (senderNumber === this.adapter.getOwnMemberNumber()) return;
     const packet = parsePresencePacket(payload);
     if (!packet) return;
+    if (packet.t === "ty") {
+      if (!this.settings.get().linkChat.typingIndicators) return;
+      this.#receiveTyping(senderNumber, packet.a === 1);
+      return;
+    }
+    if (!this.settings.get().linkPresence.enabled) return;
     if (packet.t === "pq") {
       const now = Date.now();
       if (now - (this.#lastResponseAt.get(senderNumber) ?? 0) < RESPONSE_COOLDOWN_MS) return;
@@ -263,6 +318,30 @@ export class LinkPresenceService {
       receivedAt,
       remoteUpdatedAt: Math.abs(packet.u - receivedAt) <= 24 * 60 * 60_000 ? packet.u : receivedAt,
     });
+    this.#notify(senderNumber);
+  }
+
+  #receiveTyping(senderNumber: number, active: boolean): void {
+    const previousTimer = this.#typingExpiryTimers.get(senderNumber);
+    if (previousTimer !== undefined) clearTimeout(previousTimer);
+    this.#typingExpiryTimers.delete(senderNumber);
+
+    if (!active) {
+      const changed = this.#remoteTypingUntil.delete(senderNumber);
+      if (changed) this.#notify(senderNumber);
+      return;
+    }
+
+    const expiresAt = Date.now() + TYPING_TTL_MS;
+    this.#remoteTypingUntil.set(senderNumber, expiresAt);
+    this.#typingExpiryTimers.set(
+      senderNumber,
+      setTimeout(() => {
+        this.#typingExpiryTimers.delete(senderNumber);
+        if ((this.#remoteTypingUntil.get(senderNumber) ?? 0) > Date.now()) return;
+        if (this.#remoteTypingUntil.delete(senderNumber)) this.#notify(senderNumber);
+      }, TYPING_TTL_MS + 25),
+    );
     this.#notify(senderNumber);
   }
 
@@ -340,6 +419,10 @@ function parsePresencePacket(payload: string): PresencePacket | null {
       return null;
     }
     return { t: "pq", i: value.i, ...("b" in value && value.b === 1 ? { b: 1 } : {}) };
+  }
+  if (value.t === "ty") {
+    if (!("a" in value) || (value.a !== 0 && value.a !== 1)) return null;
+    return { t: "ty", a: value.a };
   }
   if (
     value.t !== "ps" ||

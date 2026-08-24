@@ -23,6 +23,7 @@ export class BCAdapter {
   #ready = false;
   #sendingViaKikiLink = false;
   #hasOnlineFriendSnapshot = false;
+  #onlineFriendSignature: string | undefined;
 
   constructor(
     private readonly bus: EventBus<KikiLinkEvents>,
@@ -47,22 +48,29 @@ export class BCAdapter {
 
       this.#unhooks.push(
         this.#modApi.hookFunction("ServerAccountBeep", 0, (args, next) => {
-          const result = next(args);
           const data = args[0];
           const protocol = this.#normalizeBeepProtocol(data);
           if (protocol) this.bus.emit("bc:protocol", protocol);
           const event = this.#normalizeIncoming(data);
           if (event) this.bus.emit("beep:received", event);
-          return result;
+          return next(args);
         }),
       );
 
       if (typeof ServerAccountQueryResult === "function") {
         this.#unhooks.push(
           this.#modApi.hookFunction("ServerAccountQueryResult", 0, (args, next) => {
-            const result = next(args);
             this.#captureOnlineFriends(args[0]);
-            return result;
+            return next(args);
+          }),
+        );
+      }
+
+      if (typeof FriendListLoadFriendList === "function") {
+        this.#unhooks.push(
+          this.#modApi.hookFunction("FriendListLoadFriendList", 0, (args, next) => {
+            this.#captureOnlineFriends(args[0]);
+            return next(args);
           }),
         );
       }
@@ -70,10 +78,9 @@ export class BCAdapter {
       if (typeof ChatRoomMessage === "function") {
         this.#unhooks.push(
           this.#modApi.hookFunction("ChatRoomMessage", 0, (args, next) => {
-            const result = next(args);
             const protocol = this.#normalizeRoomProtocol(args[0]);
             if (protocol) this.bus.emit("bc:protocol", protocol);
-            return result;
+            return next(args);
           }),
         );
       }
@@ -105,6 +112,7 @@ export class BCAdapter {
     this.#ready = false;
     this.#onlineFriends.clear();
     this.#hasOnlineFriendSnapshot = false;
+    this.#onlineFriendSignature = undefined;
     for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
     this.#modApi?.unload();
     this.#modApi = undefined;
@@ -137,11 +145,10 @@ export class BCAdapter {
   }
 
   isKnownFriend(memberNumber: number): boolean {
+    if (typeof Player !== "object" || Player === null) return false;
     return (
-      typeof Player === "object" &&
-      Player !== null &&
-      Player.FriendNames instanceof Map &&
-      Player.FriendNames.has(memberNumber)
+      (Player.FriendNames instanceof Map && Player.FriendNames.has(memberNumber)) ||
+      (Array.isArray(Player.FriendList) && Player.FriendList.includes(memberNumber))
     );
   }
 
@@ -272,11 +279,7 @@ export class BCAdapter {
             accountName ??
             `Member ${character.MemberNumber}`,
           ...(accountName !== undefined ? { accountName } : {}),
-          isFriend:
-            typeof Player === "object" &&
-            Player !== null &&
-            Player.FriendNames instanceof Map &&
-            Player.FriendNames.has(character.MemberNumber),
+          isFriend: this.isKnownFriend(character.MemberNumber),
         };
       })
       .sort((left, right) => left.memberName.localeCompare(right.memberName));
@@ -393,7 +396,7 @@ export class BCAdapter {
   }
 
   #normalizeIncoming(data: BCServerAccountBeepResponse): BeepEvent | null {
-    if (!data || (data.BeepType !== undefined && data.BeepType !== "")) return null;
+    if (!data || (data.BeepType != null && data.BeepType !== "")) return null;
     if (!Number.isSafeInteger(data.MemberNumber) || typeof data.MemberName !== "string") return null;
 
     const roomName = typeof data.ChatRoomName === "string" ? data.ChatRoomName : undefined;
@@ -442,9 +445,14 @@ export class BCAdapter {
     return { senderNumber: data.Sender, payload, channel: "room" };
   }
 
-  #captureOnlineFriends(data: BCAccountQueryResponse): void {
-    if (!data || data.Query !== "OnlineFriends" || !Array.isArray(data.Result)) return;
-    const friends = data.Result
+  #captureOnlineFriends(data: BCAccountQueryResponse | BCOnlineFriendInfo[]): void {
+    const result = Array.isArray(data)
+      ? data
+      : data && data.Query === "OnlineFriends" && Array.isArray(data.Result)
+        ? data.Result
+        : undefined;
+    if (!result) return;
+    const friends = result
       .map((entry): OnlineFriend | null => {
         if (
           !entry ||
@@ -470,9 +478,24 @@ export class BCAdapter {
       })
       .filter((entry): entry is OnlineFriend => entry !== null);
 
+    const signature = friends
+      .map((friend) =>
+        [
+          friend.memberNumber,
+          friend.memberName,
+          friend.roomName ?? "",
+          friend.roomSpace ?? "",
+          friend.privateRoom ? 1 : 0,
+        ].join("\u001f"),
+      )
+      .sort()
+      .join("\u001e");
+
     this.#onlineFriends.clear();
     for (const friend of friends) this.#onlineFriends.set(friend.memberNumber, friend);
     this.#hasOnlineFriendSnapshot = true;
+    if (signature === this.#onlineFriendSignature) return;
+    this.#onlineFriendSignature = signature;
     this.bus.emit("bc:online-friends", { friends: this.getOnlineFriends(), receivedAt: Date.now() });
   }
 

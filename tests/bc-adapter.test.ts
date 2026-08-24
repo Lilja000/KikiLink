@@ -11,11 +11,15 @@ afterEach(() => {
     "ChatRoomData",
     "ChatRoomCharacter",
     "FriendListBeepLog",
+    "FriendListLoadFriendList",
+    "ServerAccountBeep",
+    "ServerAccountQueryResult",
     "ServerSendBeepMessage",
     "ChatRoomSendEmote",
     "ChatRoomSetTarget",
     "InformationSheetLoadCharacter",
     "ServerSend",
+    "ServerIsLoggedIn",
     "CurrentScreen",
   ]) {
     Reflect.deleteProperty(globalThis, key);
@@ -175,5 +179,66 @@ describe("BCAdapter", () => {
         IsSecret: true,
       }),
     );
+  });
+
+  it("captures null-type incoming Beeps and native online friends before BC mutates them", async () => {
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      Nickname: "Kiki",
+      FriendNames: new Map([[123, "AccountReina"]]),
+      FriendList: [123],
+    };
+    globalThis.ServerIsLoggedIn = () => true;
+    globalThis.ServerSendBeepMessage = vi.fn();
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerAccountBeep = vi.fn();
+    globalThis.ServerAccountQueryResult = vi.fn();
+    globalThis.FriendListLoadFriendList = vi.fn();
+
+    const bus = new EventBus<KikiLinkEvents>();
+    const incoming = vi.fn();
+    bus.on("beep:received", incoming);
+    const adapter = new BCAdapter(bus, "0.12.0");
+    await adapter.start();
+
+    globalThis.ServerAccountBeep({
+      MemberNumber: 123,
+      MemberName: "AccountReina",
+      BeepType: null,
+      Message: "A live incoming Beep",
+    });
+    expect(incoming).toHaveBeenCalledWith(
+      expect.objectContaining({
+        direction: "incoming",
+        peerNumber: 123,
+        content: "A live incoming Beep",
+      }),
+    );
+
+    globalThis.ServerAccountQueryResult({
+      Query: "OnlineFriends",
+      Result: [
+        {
+          Type: "Friend",
+          MemberNumber: 123,
+          MemberName: "AccountReina",
+          MemberNickname: "Reina",
+          ChatRoomName: "Moon Garden",
+          ChatRoomSpace: "MainHall",
+        },
+      ],
+    });
+    expect(adapter.getOnlineFriends()).toEqual([
+      {
+        memberNumber: 123,
+        memberName: "Reina",
+        roomName: "Moon Garden",
+        roomSpace: "MainHall",
+        privateRoom: false,
+      },
+    ]);
+    expect(adapter.isKnownFriend(123)).toBe(true);
+    adapter.stop();
   });
 });

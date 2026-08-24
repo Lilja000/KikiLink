@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.12.0 - 2026-08-24
+
+- Fixed live incoming Beeps being discarded when Bondage Club supplies the normal
+  `BeepType` as `null`.
+- Capture the native OnlineFriends result before Bondage Club renders or mutates it, with a
+  direct friend-list callback fallback and support for both native friend collections.
+- Added short-lived, throttled typing indicators between compatible KikiLink users, an
+  explicit Chat preference, automatic stop signals, and lost-packet expiry.
+- Added the observable current room beside the player identity in the chat header, using only
+  room information supplied by Bondage Club or the shared current room.
+- Replaced presence-driven conversation and Players rebuilds with one animation-frame batch
+  and targeted status-dot updates.
+- Append live messages without rebuilding the feed, render only the newest 120 messages by
+  default, and provide an anchored `Load earlier messages` control for longer histories.
+- Removed costly panel backdrop blur and per-message shadows, isolated scroll paint regions,
+  and stopped rebuilding Home during unchanged two-second room-roster checks.
+- Migrated settings to schema version 8 and expanded incoming, online-friend, typing, room,
+  bounded-DOM, and append-without-rebuild coverage to 56 tests.
+
 ## 0.11.0 - 2026-08-24
 
 - Added truthful native Online/Offline state from Bondage Club's online-friends query and

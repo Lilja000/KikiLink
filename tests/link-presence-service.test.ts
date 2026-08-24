@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter } from "../src/bc/adapter";
 import { EventBus } from "../src/core/event-bus";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
@@ -31,6 +31,8 @@ function setup() {
   const service = new LinkPresenceService(adapter, settings, bus, "0.11.0");
   return { adapter, settings, bus, service, sendKikiLinkProtocol };
 }
+
+afterEach(() => vi.useRealTimers());
 
 describe("LinkPresenceService", () => {
   it("combines native online friends with a truthful offline fallback", () => {
@@ -80,5 +82,35 @@ describe("LinkPresenceService", () => {
 
     expect(service.getOwnStatus()).toBe("offline");
     expect(settings.get().linkPresence.status).toBe("offline");
+  });
+
+  it("shares throttled typing state only through short-lived KikiLink packets", () => {
+    vi.useFakeTimers();
+    const { bus, service, sendKikiLinkProtocol } = setup();
+    service.start();
+
+    expect(service.setTyping(123, true)).toBe(true);
+    expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
+      123,
+      JSON.stringify({ t: "ty", a: 1 }),
+    );
+    expect(service.setTyping(123, true)).toBe(false);
+    vi.advanceTimersByTime(1_801);
+    expect(service.setTyping(123, true)).toBe(true);
+    expect(service.setTyping(123, false)).toBe(true);
+    expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
+      123,
+      JSON.stringify({ t: "ty", a: 0 }),
+    );
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({ t: "ty", a: 1 }),
+    });
+    expect(service.isTyping(123)).toBe(true);
+    vi.advanceTimersByTime(5_526);
+    expect(service.isTyping(123)).toBe(false);
+    service.stop();
   });
 });

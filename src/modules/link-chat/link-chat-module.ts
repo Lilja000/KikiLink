@@ -107,8 +107,8 @@ export class LinkChatModule implements KikiLinkModule {
         this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
       }
       const active = this.#view.isActiveConversation(event.peerNumber);
-      await this.#service.capture(event, active);
-      await this.#view.onMessage(event.peerNumber, event.direction === "incoming");
+      const message = await this.#service.capture(event, active);
+      await this.#view.onMessage(event.peerNumber, event.direction === "incoming", message);
       this.#context.bus.emit("link-chat:updated", { peerNumber: event.peerNumber });
     } catch (error) {
       this.#logger.error("Failed to capture a Beep", error);
