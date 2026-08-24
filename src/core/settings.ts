@@ -5,6 +5,7 @@ import {
   sanitizeRoomActivities,
 } from "../modules/link-activities/activity-library";
 import { sanitizeReactionRules } from "../modules/link-reactions/reaction-rules";
+import { normalizeCloudinaryUploadConfig } from "../modules/link-chat/image-upload";
 
 export interface KeyValueStorage {
   getItem(key: string): string | null;
@@ -13,7 +14,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 11,
+  schemaVersion: 12,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -36,6 +37,11 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     enterToSend: true,
     typingIndicators: true,
     imagePreviews: "ask",
+    imageUploads: {
+      enabled: false,
+      cloudName: "",
+      uploadPreset: "",
+    },
     quickActions: [
       { label: "Wave", template: "*waves to {name}*" },
       { label: "Hug", template: "*hugs {name} warmly*" },
@@ -151,13 +157,14 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
       : 1;
   const ui = isRecord(source.ui) ? source.ui : {};
   const linkChat = isRecord(source.linkChat) ? source.linkChat : {};
+  const imageUploads = isRecord(linkChat.imageUploads) ? linkChat.imageUploads : {};
   const linkPresence = isRecord(source.linkPresence) ? source.linkPresence : {};
   const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
   const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
   const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
 
   return {
-    schemaVersion: 11,
+    schemaVersion: 12,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -217,6 +224,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never"
           ? linkChat.imagePreviews
           : DEFAULT_SETTINGS.linkChat.imagePreviews,
+      imageUploads: sanitizeImageUploads(imageUploads),
       quickActions: sanitizeQuickActions(linkChat.quickActions),
     },
     linkPresence: {
@@ -266,6 +274,17 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
       enabled: booleanOr(linkReactions.enabled, DEFAULT_SETTINGS.linkReactions.enabled),
       rules: sanitizeReactionRules(linkReactions.rules),
     },
+  };
+}
+
+function sanitizeImageUploads(
+  value: Record<string, unknown>,
+): KikiLinkSettings["linkChat"]["imageUploads"] {
+  const config = normalizeCloudinaryUploadConfig(value);
+  return {
+    enabled: value.enabled === true && config !== null,
+    cloudName: config?.cloudName ?? "",
+    uploadPreset: config?.uploadPreset ?? "",
   };
 }
 

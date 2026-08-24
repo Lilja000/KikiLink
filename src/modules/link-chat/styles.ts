@@ -1464,6 +1464,20 @@ button { color: inherit; }
 .kl-setting-copy { min-width: 0; }
 .kl-setting-name { font-weight: 750; }
 .kl-setting-help { margin-top: 2px; color: var(--kl-muted); font-size: var(--kl-type-sm); }
+.kl-image-upload-settings-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--kl-border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 24%);
+}
+.kl-image-upload-setting-field { min-width: 0; display: grid; gap: 5px; color: var(--kl-muted); font-size: var(--kl-type-xs); font-weight: 750; }
+.kl-image-upload-setting-input { width: 100%; min-width: 0; }
+.kl-image-upload-privacy { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 8px; margin: 1px 0 0; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-image-upload-privacy .kl-icon { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; color: var(--kl-gold); }
+.kl-inline-link { color: var(--kl-gold); text-underline-offset: 2px; }
 .kl-number-input { width: 90px; height: 44px; padding: 0 10px; border-radius: 11px; }
 .kl-select { width: 156px; height: 44px; padding: 0 10px; border-radius: 11px; }
 .kl-color-control { display: flex; align-items: center; gap: 8px; }
@@ -2128,6 +2142,8 @@ select:focus-visible {
   .kl-send-label { display: none; }
   .kl-setting-row { gap: 14px; }
   .kl-setting-help { max-width: 230px; }
+  .kl-image-upload-settings-options { grid-template-columns: minmax(0, 1fr); }
+  .kl-image-upload-privacy { grid-column: 1; }
   .kl-action-editor-row { grid-template-columns: 82px minmax(0, 1fr) 40px; }
   .kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 44px 44px; }
   .kl-activity-editor-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2460,6 +2476,10 @@ select:focus-visible {
 .kl-profile-menu-help { overflow: hidden; color: var(--kl-muted); font-size: var(--kl-type-xxs); text-overflow: ellipsis; white-space: nowrap; }
 .kl-composer-row { grid-template-columns: auto minmax(0, 1fr) auto; }
 .kl-attach-image { width: 44px; height: 44px; border-radius: 13px; color: var(--kl-gold); }
+.kl-image-source-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid var(--kl-border); border-radius: 13px; background: var(--kl-surface); }
+.kl-image-source-tab { min-height: 38px; padding: 7px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--kl-muted); font: inherit; font-weight: 750; cursor: pointer; }
+.kl-image-source-tab[data-active="true"] { background: var(--kl-surface-2); color: var(--kl-text); box-shadow: inset 0 -2px var(--kl-accent); }
+.kl-image-source-panel { display: grid; gap: 14px; }
 .kl-image-compose-preview {
   min-height: 62px;
   display: flex;
@@ -2473,10 +2493,15 @@ select:focus-visible {
 }
 .kl-image-compose-preview[data-state="ready"] { border-style: solid; border-color: color-mix(in srgb, #39c884, transparent 36%); }
 .kl-image-compose-preview[data-state="error"] { border-style: solid; border-color: color-mix(in srgb, var(--kl-danger), transparent 38%); color: var(--kl-danger); }
+.kl-image-compose-preview[data-state="loading"] { border-style: solid; border-color: color-mix(in srgb, var(--kl-gold), transparent 42%); }
 .kl-image-compose-icon { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; background: var(--kl-surface-2); font-weight: 900; }
 .kl-image-compose-preview > span:last-child { min-width: 0; display: grid; gap: 2px; }
 .kl-image-compose-preview small { overflow: hidden; color: var(--kl-muted); text-overflow: ellipsis; white-space: nowrap; }
 .kl-image-upload-note { margin: -4px 0 0; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-image-file-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.kl-image-file-privacy { display: flex; align-items: flex-start; gap: 7px; }
+.kl-image-file-privacy .kl-icon { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; color: var(--kl-gold); }
+.kl-local-image-thumbnail { width: 54px; height: 54px; flex: 0 0 auto; object-fit: cover; border-radius: 10px; background: #09090a; }
 .kl-message-content { white-space: pre-wrap; }
 .kl-message-link { color: #efc56c; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor, transparent 48%); text-underline-offset: 2px; }
 .kl-message-row[data-direction="outgoing"] .kl-message-link { color: var(--kl-accent-foreground); }

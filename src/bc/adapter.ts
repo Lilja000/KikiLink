@@ -7,6 +7,7 @@ import type {
   RoomCharacter,
 } from "../core/types";
 import type { EventBus } from "../core/event-bus";
+import { cleanBeepMessageContent } from "./message-content";
 
 const READY_POLL_MS = 400;
 const SOCKET_REBIND_MS = 2_000;
@@ -504,7 +505,7 @@ export class BCAdapter {
         this.getMemberNickname(entry.MemberNumber) ??
         cleanName(entry.MemberName) ??
         `Member ${entry.MemberNumber}`,
-      content: typeof entry.Message === "string" ? entry.Message.slice(0, 1000) : "",
+      content: cleanBeepMessageContent(entry.Message),
       sentAt,
       includeRoom: roomName !== undefined,
       ...(roomName !== undefined ? { roomName } : {}),
@@ -548,7 +549,7 @@ export class BCAdapter {
       direction: "incoming",
       peerNumber: data.MemberNumber,
       peerName: this.getMemberNickname(data.MemberNumber) ?? data.MemberName,
-      content: typeof data.Message === "string" ? data.Message.slice(0, 1000) : "",
+      content: cleanBeepMessageContent(data.Message),
       sentAt: Date.now(),
       includeRoom: roomName !== undefined,
       ...(roomName !== undefined ? { roomName } : {}),
@@ -656,7 +657,7 @@ export class BCAdapter {
       direction: "outgoing",
       peerNumber: target,
       peerName: this.getMemberName(target),
-      content: message ?? "",
+      content: cleanBeepMessageContent(message),
       sentAt: Date.now(),
       includeRoom,
       ...(roomName !== undefined ? { roomName } : {}),

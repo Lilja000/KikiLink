@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.0 - 2026-08-24
+
+- Removed the trailing private-use marker and exact `messageType`/`messageColor` compatibility
+  envelope from received normal Beeps, including native-log recovery, while preserving malformed,
+  unrelated, or extended JSON-like text.
+- Added optional local JPG, PNG, and WebP uploads through a user-configured Cloudinary unsigned
+  preset; the feature remains disabled until a complete setup is explicitly saved.
+- Added a two-source image composer for direct links and local files. Selecting a file performs no
+  network request; only `Upload & send` contacts the configured provider.
+- Re-encode local images to WebP before upload, discard the original filename and embedded metadata,
+  cap input at 10 MB and 32 megapixels, and resize the longest edge to 2560 pixels.
+- Send uploads without credentials or referrer data, use a generic filename, and accept only a direct
+  HTTPS response under the configured `res.cloudinary.com` account path.
+- Added a focused privacy review, schema version 12 migration, upload failure recovery, and coverage
+  for metadata cleanup, file signatures, provider validation, deferred upload, and settings safety,
+  bringing the suite to 93 tests.
+
 ## 0.16.0 - 2026-08-24
 
 - Reworked LinkReactions into a focused Alerts screen with one-switch friend-online and

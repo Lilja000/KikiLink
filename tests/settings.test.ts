@@ -128,7 +128,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(11);
+    expect(settings.schemaVersion).toBe(12);
     expect(settings.linkActivities).toEqual({
       enabled: false,
       activities: [
@@ -175,7 +175,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(11);
+    expect(settings.schemaVersion).toBe(12);
     expect(settings.linkActivities.enabled).toBe(false);
     expect(settings.linkRoster).toEqual({
       enabled: true,
@@ -198,7 +198,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(11);
+    expect(settings.schemaVersion).toBe(12);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -262,7 +262,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(11);
+    expect(settings.schemaVersion).toBe(12);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -315,6 +315,32 @@ describe("SettingsStore", () => {
       chat: "sparkle",
       friendOnline: "sparkle",
       roomJoin: "chime",
+    });
+  });
+
+  it("keeps local image uploads off until a complete Cloudinary setup is present", () => {
+    expect(
+      sanitizeSettings({
+        schemaVersion: 11,
+        linkChat: { imageUploads: { enabled: true, cloudName: "", uploadPreset: "bad preset" } },
+      }).linkChat.imageUploads,
+    ).toEqual(DEFAULT_SETTINGS.linkChat.imageUploads);
+
+    expect(
+      sanitizeSettings({
+        schemaVersion: 11,
+        linkChat: {
+          imageUploads: {
+            enabled: true,
+            cloudName: "  sakura-cloud  ",
+            uploadPreset: "  kikilink_unsigned  ",
+          },
+        },
+      }).linkChat.imageUploads,
+    ).toEqual({
+      enabled: true,
+      cloudName: "sakura-cloud",
+      uploadPreset: "kikilink_unsigned",
     });
   });
 });

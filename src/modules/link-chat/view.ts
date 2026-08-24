@@ -47,6 +47,12 @@ import {
 } from "../link-reactions/notification-sounds";
 import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
+import {
+  CloudinaryImageUploader,
+  normalizeCloudinaryUploadConfig,
+  type LocalImageUploader,
+  type PreparedLocalImage,
+} from "./image-upload";
 import { kikiIcon, type KikiLinkIconName } from "./icons";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/references/3929.png";
 
@@ -208,8 +214,8 @@ export class LinkChatView {
   readonly #attachImageButton = element("button", {
     className: "kl-icon-button kl-attach-image",
     type: "button",
-    title: "Send an image link",
-    ariaLabel: "Send an image link",
+    title: "Send an image",
+    ariaLabel: "Send an image",
   });
   readonly #quickActions = element("div", { className: "kl-quick-actions" });
   readonly #includeRoom = element("input") as HTMLInputElement;
@@ -224,6 +230,16 @@ export class LinkChatView {
   readonly #enterToSendToggle = element("input") as HTMLInputElement;
   readonly #typingIndicatorsToggle = element("input") as HTMLInputElement;
   readonly #imagePreviewSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #imageUploadsToggle = element("input") as HTMLInputElement;
+  readonly #cloudinaryCloudNameInput = element("input", {
+    className: "kl-search kl-image-upload-setting-input",
+  }) as HTMLInputElement;
+  readonly #cloudinaryPresetInput = element("input", {
+    className: "kl-search kl-image-upload-setting-input",
+  }) as HTMLInputElement;
+  readonly #imageUploadSettingsOptions = element("div", {
+    className: "kl-image-upload-settings-options",
+  });
   readonly #retentionInput = element("input", { className: "kl-number-input" }) as HTMLInputElement;
   readonly #saveSettingsButton = element("button", {
     className: "kl-text-button kl-text-button--primary",
@@ -352,6 +368,27 @@ export class LinkChatView {
   readonly #imageDialog = element("dialog", { className: "kl-dialog kl-image-dialog" });
   readonly #imageUrlInput = element("input", { className: "kl-search kl-image-url" }) as HTMLInputElement;
   readonly #imagePreview = element("div", { className: "kl-image-compose-preview" });
+  readonly #imageLinkTab = element("button", {
+    className: "kl-image-source-tab",
+    type: "button",
+    text: "Image link",
+  });
+  readonly #imageFileTab = element("button", {
+    className: "kl-image-source-tab",
+    type: "button",
+    text: "Local file",
+  });
+  readonly #imageLinkPanel = element("div", { className: "kl-image-source-panel" });
+  readonly #imageFilePanel = element("div", { className: "kl-image-source-panel" });
+  readonly #imageFileInput = element("input") as HTMLInputElement;
+  readonly #chooseImageFileButton = element("button", {
+    className: "kl-text-button kl-image-file-choose",
+    type: "button",
+    text: "Choose image",
+  });
+  readonly #localImageStatus = element("div", {
+    className: "kl-image-compose-preview kl-local-image-status",
+  });
   readonly #sendImageButton = element("button", {
     className: "kl-text-button kl-text-button--primary",
     type: "button",
@@ -428,6 +465,13 @@ export class LinkChatView {
   #profileMenuToken = 0;
   #aliasTarget: { memberNumber: number; nativeName: string } | undefined;
   #removeChatTarget: { memberNumber: number; displayName: string } | undefined;
+  #imageSourceMode: "link" | "file" = "link";
+  #preparedLocalImage: PreparedLocalImage | undefined;
+  #localImageObjectUrl: string | undefined;
+  #imageUploadBusy = false;
+  #imageUploadToken = 0;
+  #imagePrepareToken = 0;
+  #localImageError: string | undefined;
 
   readonly #handleOutsidePointerDown = (event: PointerEvent): void => {
     if (this.#profileMenu.hidden) return;
@@ -457,6 +501,7 @@ export class LinkChatView {
       settings,
     ),
     presence?: LinkPresenceService,
+    private readonly imageUploader: LocalImageUploader = new CloudinaryImageUploader(),
   ) {
     this.presence =
       presence ??
@@ -509,6 +554,9 @@ export class LinkChatView {
   }
 
   destroy(): void {
+    this.#saveDraft.cancel();
+    this.#imageUploadToken += 1;
+    this.#imageUploadBusy = false;
     this.#stopLocalTyping();
     if (this.#toastTimer !== undefined) clearTimeout(this.#toastTimer);
     if (this.#presenceRenderFrame !== undefined) cancelAnimationFrame(this.#presenceRenderFrame);
@@ -517,6 +565,7 @@ export class LinkChatView {
     this.#newChatDialog.close();
     this.#presenceDialog.close();
     this.#imageDialog.close();
+    this.#resetLocalImage();
     this.#aliasDialog.close();
     this.#removeChatDialog.close();
     this.#closeProfileMenu();
@@ -1421,6 +1470,77 @@ export class LinkChatView {
       this.#imagePreviewSelect,
     );
 
+    this.#imageUploadsToggle.type = "checkbox";
+    this.#imageUploadsToggle.setAttribute("aria-label", "Enable local image uploads");
+    this.#imageUploadsToggle.addEventListener("change", () =>
+      this.#renderImageUploadSettingsOptions(),
+    );
+    const imageUploadsSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#imageUploadsToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#cloudinaryCloudNameInput.type = "text";
+    this.#cloudinaryCloudNameInput.maxLength = 64;
+    this.#cloudinaryCloudNameInput.autocomplete = "off";
+    this.#cloudinaryCloudNameInput.spellcheck = false;
+    this.#cloudinaryCloudNameInput.placeholder = "your-cloud-name";
+    this.#cloudinaryCloudNameInput.setAttribute("aria-label", "Cloudinary cloud name");
+    this.#cloudinaryPresetInput.type = "text";
+    this.#cloudinaryPresetInput.maxLength = 128;
+    this.#cloudinaryPresetInput.autocomplete = "off";
+    this.#cloudinaryPresetInput.spellcheck = false;
+    this.#cloudinaryPresetInput.placeholder = "unsigned-upload-preset";
+    this.#cloudinaryPresetInput.setAttribute("aria-label", "Cloudinary unsigned upload preset");
+    const cloudinaryDocs = element("a", {
+      className: "kl-inline-link",
+      text: "Cloudinary setup guide",
+    });
+    cloudinaryDocs.href = "https://cloudinary.com/documentation/upload_presets";
+    cloudinaryDocs.target = "_blank";
+    cloudinaryDocs.rel = "noopener noreferrer";
+    this.#imageUploadSettingsOptions.append(
+      element(
+        "label",
+        { className: "kl-image-upload-setting-field" },
+        element("span", { text: "Cloud name" }),
+        this.#cloudinaryCloudNameInput,
+      ),
+      element(
+        "label",
+        { className: "kl-image-upload-setting-field" },
+        element("span", { text: "Unsigned preset" }),
+        this.#cloudinaryPresetInput,
+      ),
+      element(
+        "p",
+        { className: "kl-image-upload-privacy" },
+        kikiIcon("lock"),
+        element(
+          "span",
+          {},
+          "Selection stays local. On Upload & send, KikiLink removes the original filename and metadata, resizes to 2560 px, then uploads to your Cloudinary account. The resulting link is public. ",
+          cloudinaryDocs,
+          ".",
+        ),
+      ),
+    );
+    const imageUploads = element(
+      "section",
+      { className: "kl-setting-section kl-image-upload-settings" },
+      element("div", {
+        className: "kl-setting-section-title",
+        text: "Local images · optional",
+      }),
+      this.#settingRow(
+        "Upload local files",
+        "Connect your own Cloudinary unsigned preset. Off by default.",
+        imageUploadsSwitch,
+      ),
+      this.#imageUploadSettingsOptions,
+    );
+
     this.#retentionInput.type = "number";
     this.#retentionInput.min = "1";
     this.#retentionInput.max = "3650";
@@ -1599,6 +1719,7 @@ export class LinkChatView {
       enterToSend,
       typingIndicators,
       imagePreviews,
+      imageUploads,
       history,
       retention,
       quickActionsSection,
@@ -2288,7 +2409,7 @@ export class LinkChatView {
           text: "A normal Beep link for everyone; an inline preview for KikiLink.",
         }),
       ),
-      this.#dialogCloseButton("Close image sender", () => this.#imageDialog.close()),
+      this.#dialogCloseButton("Close image sender", () => this.#requestCloseImageDialog()),
     );
     this.#imageUrlInput.type = "url";
     this.#imageUrlInput.maxLength = 900;
@@ -2301,9 +2422,24 @@ export class LinkChatView {
       event.preventDefault();
       void this.#sendImage();
     });
-    const body = element(
-      "div",
-      { className: "kl-dialog-body kl-image-body" },
+    this.#imageLinkTab.id = "kikilink-image-source-link";
+    this.#imageLinkTab.setAttribute("role", "tab");
+    this.#imageLinkTab.setAttribute("aria-controls", "kikilink-image-link-panel");
+    this.#imageLinkTab.addEventListener("click", () => this.#setImageSourceMode("link"));
+    this.#imageLinkTab.addEventListener("keydown", (event) =>
+      this.#handleImageSourceTabKey(event),
+    );
+    this.#imageFileTab.id = "kikilink-image-source-file";
+    this.#imageFileTab.setAttribute("role", "tab");
+    this.#imageFileTab.setAttribute("aria-controls", "kikilink-image-file-panel");
+    this.#imageFileTab.addEventListener("click", () => this.#setImageSourceMode("file"));
+    this.#imageFileTab.addEventListener("keydown", (event) =>
+      this.#handleImageSourceTabKey(event),
+    );
+    this.#imageLinkPanel.id = "kikilink-image-link-panel";
+    this.#imageLinkPanel.setAttribute("role", "tabpanel");
+    this.#imageLinkPanel.setAttribute("aria-labelledby", this.#imageLinkTab.id);
+    this.#imageLinkPanel.append(
       element(
         "label",
         { className: "kl-presence-field" },
@@ -2313,10 +2449,70 @@ export class LinkChatView {
       this.#imagePreview,
       element("p", {
         className: "kl-image-upload-note",
-        text: "Supported: JPG, PNG, GIF, WebP, and AVIF. Local file upload needs a privacy-reviewed media service and is not silently sent through Beeps.",
+        text: "Supported links: JPG, PNG, GIF, WebP, and AVIF.",
       }),
     );
+    this.#imageFilePanel.id = "kikilink-image-file-panel";
+    this.#imageFilePanel.setAttribute("role", "tabpanel");
+    this.#imageFilePanel.setAttribute("aria-labelledby", this.#imageFileTab.id);
+    this.#imageFileInput.type = "file";
+    this.#imageFileInput.accept = "image/jpeg,image/png,image/webp";
+    this.#imageFileInput.hidden = true;
+    this.#imageFileInput.addEventListener("change", () => {
+      const file = this.#imageFileInput.files?.[0];
+      if (file) void this.#prepareLocalImage(file);
+    });
+    this.#chooseImageFileButton.addEventListener("click", () => this.#imageFileInput.click());
+    const setupUploads = element("button", {
+      className: "kl-text-button kl-image-upload-setup",
+      type: "button",
+      text: "Set up local uploads",
+      onClick: () => {
+        this.#imageDialog.close();
+        this.#openSettings("chat");
+        this.#imageUploadsToggle.focus();
+      },
+    });
+    this.#imageFilePanel.append(
+      this.#localImageStatus,
+      element(
+        "div",
+        { className: "kl-image-file-actions" },
+        this.#chooseImageFileButton,
+        setupUploads,
+        this.#imageFileInput,
+      ),
+      element(
+        "p",
+        { className: "kl-image-upload-note kl-image-file-privacy" },
+        kikiIcon("lock"),
+        element("span", {
+          text: "Nothing uploads on selection. KikiLink first removes the filename and metadata; Upload & send is the only network action.",
+        }),
+      ),
+    );
+    const sourceTabs = element(
+      "div",
+      { className: "kl-image-source-tabs" },
+      this.#imageLinkTab,
+      this.#imageFileTab,
+    );
+    sourceTabs.setAttribute("role", "tablist");
+    sourceTabs.setAttribute("aria-label", "Image source");
+    const body = element(
+      "div",
+      { className: "kl-dialog-body kl-image-body" },
+      sourceTabs,
+      this.#imageLinkPanel,
+      this.#imageFilePanel,
+    );
     this.#sendImageButton.addEventListener("click", () => void this.#sendImage());
+    this.#imageDialog.addEventListener("cancel", (event) => {
+      if (this.#imageUploadBusy) event.preventDefault();
+    });
+    this.#imageDialog.addEventListener("close", () => {
+      if (!this.#imageUploadBusy) this.#resetLocalImage();
+    });
     this.#imageDialog.append(
       header,
       body,
@@ -2327,7 +2523,7 @@ export class LinkChatView {
           className: "kl-text-button",
           type: "button",
           text: "Cancel",
-          onClick: () => this.#imageDialog.close(),
+          onClick: () => this.#requestCloseImageDialog(),
         }),
         this.#sendImageButton,
       ),
@@ -2495,6 +2691,7 @@ export class LinkChatView {
   async #confirmRemoveChat(): Promise<void> {
     const target = this.#removeChatTarget;
     if (!target) return;
+    if (target.memberNumber === this.#activePeer) this.#saveDraft.cancel();
     await this.service.removeConversation(target.memberNumber);
     if (target.memberNumber === this.#activePeer) this.#resetActiveConversation();
     this.#removeChatDialog.close();
@@ -2507,15 +2704,43 @@ export class LinkChatView {
       this.#toast("Choose a conversation first.", "error");
       return;
     }
+    this.#resetLocalImage();
     this.#imageUrlInput.value = "";
     this.#renderImageComposePreview();
+    this.#setImageSourceMode("link");
     if (!this.#imageDialog.open) this.#imageDialog.showModal();
     this.#imageUrlInput.focus();
   }
 
+  #setImageSourceMode(mode: "link" | "file"): void {
+    this.#imageSourceMode = mode;
+    const linkActive = mode === "link";
+    this.#imageLinkPanel.hidden = !linkActive;
+    this.#imageFilePanel.hidden = linkActive;
+    this.#imageLinkTab.dataset.active = String(linkActive);
+    this.#imageFileTab.dataset.active = String(!linkActive);
+    this.#imageLinkTab.setAttribute("aria-selected", String(linkActive));
+    this.#imageFileTab.setAttribute("aria-selected", String(!linkActive));
+    this.#imageLinkTab.tabIndex = linkActive ? 0 : -1;
+    this.#imageFileTab.tabIndex = linkActive ? -1 : 0;
+    if (linkActive) this.#renderImageComposePreview();
+    else this.#renderLocalImageComposeState();
+  }
+
+  #handleImageSourceTabKey(event: KeyboardEvent): void {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const mode = event.key === "ArrowLeft" || event.key === "Home" ? "link" : "file";
+    this.#setImageSourceMode(mode);
+    (mode === "link" ? this.#imageLinkTab : this.#imageFileTab).focus();
+  }
+
   #renderImageComposePreview(): void {
     const url = normalizeImageUrl(this.#imageUrlInput.value);
-    this.#sendImageButton.disabled = !url;
+    if (this.#imageSourceMode === "link") {
+      this.#sendImageButton.textContent = "Send image";
+      this.#sendImageButton.disabled = !url;
+    }
     if (!this.#imageUrlInput.value.trim()) {
       this.#imagePreview.replaceChildren(
         element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
@@ -2545,7 +2770,157 @@ export class LinkChatView {
     this.#imagePreview.dataset.state = "ready";
   }
 
+  #renderLocalImageComposeState(): void {
+    const settings = this.settings.get().linkChat.imageUploads;
+    const config = settings.enabled ? normalizeCloudinaryUploadConfig(settings) : null;
+    const setupButton = this.#imageFilePanel.querySelector<HTMLButtonElement>(
+      ".kl-image-upload-setup",
+    );
+    setupButton?.toggleAttribute("hidden", config !== null);
+    this.#chooseImageFileButton.hidden = config === null;
+    this.#chooseImageFileButton.disabled = this.#imageUploadBusy;
+    this.#chooseImageFileButton.textContent = this.#preparedLocalImage
+      ? "Choose another"
+      : "Choose image";
+    this.#sendImageButton.textContent = "Upload & send";
+    this.#sendImageButton.disabled =
+      this.#imageUploadBusy || config === null || this.#preparedLocalImage === undefined;
+
+    if (this.#imageUploadBusy) {
+      this.#localImageStatus.replaceChildren(
+        element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
+        element(
+          "span",
+          {},
+          element("strong", { text: "Uploading prepared image…" }),
+          element("small", { text: "The original local file is not being sent." }),
+        ),
+      );
+      this.#localImageStatus.dataset.state = "loading";
+      return;
+    }
+
+    if (!config) {
+      this.#localImageStatus.replaceChildren(
+        element("span", { className: "kl-image-compose-icon" }, kikiIcon("lock")),
+        element(
+          "span",
+          {},
+          element("strong", { text: "Local upload is off" }),
+          element("small", { text: "Connect your own Cloudinary account once in Chat settings." }),
+        ),
+      );
+      this.#localImageStatus.dataset.state = "empty";
+      return;
+    }
+
+    if (this.#localImageError) {
+      this.#localImageStatus.replaceChildren(
+        element("span", { className: "kl-image-compose-icon" }, kikiIcon("warning")),
+        element(
+          "span",
+          {},
+          element("strong", { text: "Image not ready" }),
+          element("small", { text: this.#localImageError }),
+        ),
+      );
+      this.#localImageStatus.dataset.state = "error";
+      return;
+    }
+
+    const prepared = this.#preparedLocalImage;
+    if (!prepared) {
+      this.#localImageStatus.replaceChildren(
+        element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
+        element(
+          "span",
+          {},
+          element("strong", { text: "Choose a local image" }),
+          element("small", { text: "JPG, PNG, or WebP · up to 10 MB" }),
+        ),
+      );
+      this.#localImageStatus.dataset.state = "empty";
+      return;
+    }
+
+    const thumbnail = this.#localImageObjectUrl
+      ? element("img", { className: "kl-local-image-thumbnail", ariaLabel: "Prepared image preview" })
+      : element("span", { className: "kl-image-compose-icon" }, kikiIcon("check"));
+    if (thumbnail instanceof HTMLImageElement && this.#localImageObjectUrl) {
+      thumbnail.src = this.#localImageObjectUrl;
+      thumbnail.alt = "Prepared local image";
+    }
+    this.#localImageStatus.replaceChildren(
+      thumbnail,
+      element(
+        "span",
+        {},
+        element("strong", { text: "Prepared locally" }),
+        element("small", {
+          text: `${prepared.width} × ${prepared.height} · ${formatBytes(prepared.blob.size)} · metadata removed`,
+        }),
+      ),
+    );
+    this.#localImageStatus.dataset.state = "ready";
+  }
+
+  async #prepareLocalImage(file: File): Promise<void> {
+    this.#resetLocalImage();
+    const token = this.#imagePrepareToken;
+    this.#chooseImageFileButton.disabled = true;
+    this.#sendImageButton.disabled = true;
+    this.#localImageStatus.replaceChildren(
+      element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
+      element(
+        "span",
+        {},
+        element("strong", { text: "Preparing safely…" }),
+        element("small", { text: "Removing metadata and the original filename locally." }),
+      ),
+    );
+    this.#localImageStatus.dataset.state = "loading";
+    try {
+      const prepared = await this.imageUploader.prepare(file);
+      if (token !== this.#imagePrepareToken) return;
+      this.#preparedLocalImage = prepared;
+      if (typeof URL.createObjectURL === "function") {
+        this.#localImageObjectUrl = URL.createObjectURL(prepared.blob);
+      }
+    } catch (error) {
+      if (token !== this.#imagePrepareToken) return;
+      this.#localImageError = imageUploadErrorMessage(error);
+    } finally {
+      if (token === this.#imagePrepareToken) {
+        this.#imageFileInput.value = "";
+        this.#renderLocalImageComposeState();
+      }
+    }
+  }
+
+  #resetLocalImage(): void {
+    this.#imagePrepareToken += 1;
+    this.#preparedLocalImage = undefined;
+    this.#localImageError = undefined;
+    this.#imageFileInput.value = "";
+    if (this.#localImageObjectUrl && typeof URL.revokeObjectURL === "function") {
+      URL.revokeObjectURL(this.#localImageObjectUrl);
+    }
+    this.#localImageObjectUrl = undefined;
+  }
+
+  #requestCloseImageDialog(): void {
+    if (this.#imageUploadBusy) {
+      this.#toast("Wait for the image upload to finish.", "error");
+      return;
+    }
+    this.#imageDialog.close();
+  }
+
   async #sendImage(): Promise<void> {
+    if (this.#imageSourceMode === "file") {
+      await this.#uploadAndSendLocalImage();
+      return;
+    }
     const url = normalizeImageUrl(this.#imageUrlInput.value);
     if (!url) {
       this.#renderImageComposePreview();
@@ -2555,6 +2930,44 @@ export class LinkChatView {
     if (!sent) return;
     this.#imageDialog.close();
     this.#toast("Image link sent.");
+  }
+
+  async #uploadAndSendLocalImage(): Promise<void> {
+    const image = this.#preparedLocalImage;
+    const uploadSettings = this.settings.get().linkChat.imageUploads;
+    const config = uploadSettings.enabled
+      ? normalizeCloudinaryUploadConfig(uploadSettings)
+      : null;
+    if (!image || !config || this.#imageUploadBusy) {
+      this.#renderLocalImageComposeState();
+      return;
+    }
+
+    this.#imageUploadBusy = true;
+    const token = ++this.#imageUploadToken;
+    this.#localImageError = undefined;
+    this.#renderLocalImageComposeState();
+    try {
+      const url = await this.imageUploader.upload(image, config);
+      if (token !== this.#imageUploadToken) return;
+      this.#imageUrlInput.value = url;
+      const sent = await this.#sendContent(url, false);
+      if (token !== this.#imageUploadToken) return;
+      this.#imageUploadBusy = false;
+      if (!sent) {
+        this.#setImageSourceMode("link");
+        this.#toast("Upload finished. The direct link is kept here so it is not lost.", "error");
+        return;
+      }
+      this.#toast("Private details removed; image uploaded and sent.");
+      this.#imageDialog.close();
+    } catch (error) {
+      if (token !== this.#imageUploadToken) return;
+      this.#imageUploadBusy = false;
+      this.#localImageError = imageUploadErrorMessage(error);
+      this.#renderLocalImageComposeState();
+      this.#toast(this.#localImageError, "error");
+    }
   }
 
   async #openFinder(): Promise<void> {
@@ -5194,6 +5607,10 @@ export class LinkChatView {
     this.#enterToSendToggle.checked = settings.linkChat.enterToSend;
     this.#typingIndicatorsToggle.checked = settings.linkChat.typingIndicators;
     this.#imagePreviewSelect.value = settings.linkChat.imagePreviews;
+    this.#imageUploadsToggle.checked = settings.linkChat.imageUploads.enabled;
+    this.#cloudinaryCloudNameInput.value = settings.linkChat.imageUploads.cloudName;
+    this.#cloudinaryPresetInput.value = settings.linkChat.imageUploads.uploadPreset;
+    this.#renderImageUploadSettingsOptions();
     this.#retentionInput.value = settings.linkChat.retentionDays.toString();
     this.#renderQuickActionEditor(settings.linkChat.quickActions);
     this.#rosterEnabledToggle.checked = settings.linkRoster.enabled;
@@ -5235,6 +5652,13 @@ export class LinkChatView {
     }
   }
 
+  #renderImageUploadSettingsOptions(): void {
+    const enabled = this.#imageUploadsToggle.checked;
+    this.#imageUploadSettingsOptions.hidden = !enabled;
+    this.#cloudinaryCloudNameInput.disabled = !enabled;
+    this.#cloudinaryPresetInput.disabled = !enabled;
+  }
+
   #updateAccentPresets(): void {
     for (const swatch of this.#settingsPage.querySelectorAll<HTMLButtonElement>(".kl-color-swatch")) {
       const selected = swatch.dataset.color === this.#accentInput.value.toLocaleLowerCase();
@@ -5251,6 +5675,17 @@ export class LinkChatView {
     const retentionDays = Number(this.#retentionInput.value);
     const reactionRules = this.#readReactionRuleEditor();
     if (!reactionRules) return;
+    const imageUploadConfig = normalizeCloudinaryUploadConfig({
+      cloudName: this.#cloudinaryCloudNameInput.value,
+      uploadPreset: this.#cloudinaryPresetInput.value,
+    });
+    if (this.#imageUploadsToggle.checked && !imageUploadConfig) {
+      this.#showSettingsSection("chat", true);
+      if (!this.#cloudinaryCloudNameInput.value.trim()) this.#cloudinaryCloudNameInput.focus();
+      else this.#cloudinaryPresetInput.focus();
+      this.#toast("Enter a valid Cloudinary cloud name and unsigned preset.", "error");
+      return;
+    }
     const currentSettings = this.settings.get();
     const launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
     const settings = this.settings.update((draft) => {
@@ -5285,6 +5720,11 @@ export class LinkChatView {
         this.#imagePreviewSelect.value === "always" || this.#imagePreviewSelect.value === "never"
           ? this.#imagePreviewSelect.value
           : "ask";
+      draft.linkChat.imageUploads = {
+        enabled: this.#imageUploadsToggle.checked && imageUploadConfig !== null,
+        cloudName: imageUploadConfig?.cloudName ?? "",
+        uploadPreset: imageUploadConfig?.uploadPreset ?? "",
+      };
       draft.linkChat.quickActions = this.#readQuickActionEditor();
       draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
       draft.linkRoster.trackEncounters = this.#rosterTrackingToggle.checked;
@@ -5788,8 +6228,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "chat",
       title: "Chat & history",
-      detail: "Typing, images, Enter-to-send, history, retention, and Quick Actions",
-      keywords: "beep messages typing indicator realtime image picture preview privacy enter send newline save storage days clear wave hug boop template",
+      detail: "Typing, image links and uploads, history, retention, and Quick Actions",
+      keywords: "beep messages typing indicator realtime image picture preview upload local cloudinary preset privacy enter send newline save storage days clear wave hug boop template",
     },
     {
       section: "players",
@@ -5965,6 +6405,17 @@ function formatFullSeenTime(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(timestamp));
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function imageUploadErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message.trim() : "Unable to prepare this image";
+  return (message || "Unable to prepare this image").slice(0, 180);
 }
 
 async function copyText(value: string): Promise<void> {

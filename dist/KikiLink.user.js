@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.16.0
+// @version      0.17.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -243,6 +243,32 @@ One of mods you are using is using an old version of SDK. It will work for now b
       console[method](`[KikiLink:${this.scope}] ${message}`, ...details);
     }
   };
+
+  // src/bc/message-content.ts
+  var MAX_BEEP_MESSAGE_LENGTH = 1e3;
+  var MESSAGE_METADATA_MARKER = "\uF124";
+  var MAX_METADATA_LENGTH = 128;
+  function cleanBeepMessageContent(value) {
+    if (typeof value !== "string") return "";
+    const fallback = value.slice(0, MAX_BEEP_MESSAGE_LENGTH);
+    const markerIndex = value.lastIndexOf(MESSAGE_METADATA_MARKER);
+    if (markerIndex < 0) return fallback;
+    const encodedMetadata = value.slice(markerIndex + MESSAGE_METADATA_MARKER.length).trim();
+    if (!encodedMetadata || encodedMetadata.length > MAX_METADATA_LENGTH) return fallback;
+    try {
+      const metadata = JSON.parse(encodedMetadata);
+      if (!isMessageMetadata(metadata)) return fallback;
+    } catch {
+      return fallback;
+    }
+    return value.slice(0, markerIndex).trimEnd().slice(0, MAX_BEEP_MESSAGE_LENGTH);
+  }
+  function isMessageMetadata(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const metadata = value;
+    const keys = Object.keys(metadata);
+    return keys.length === 2 && keys.includes("messageType") && keys.includes("messageColor") && metadata.messageType === "Message" && typeof metadata.messageColor === "string" && /^#[0-9a-f]{6}$/iu.test(metadata.messageColor);
+  }
 
   // src/bc/adapter.ts
   var READY_POLL_MS = 400;
@@ -661,7 +687,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         direction: entry.Sent ? "outgoing" : "incoming",
         peerNumber: entry.MemberNumber,
         peerName: this.getMemberNickname(entry.MemberNumber) ?? cleanName(entry.MemberName) ?? `Member ${entry.MemberNumber}`,
-        content: typeof entry.Message === "string" ? entry.Message.slice(0, 1e3) : "",
+        content: cleanBeepMessageContent(entry.Message),
         sentAt,
         includeRoom: roomName !== void 0,
         ...roomName !== void 0 ? { roomName } : {}
@@ -698,7 +724,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         direction: "incoming",
         peerNumber: data.MemberNumber,
         peerName: this.getMemberNickname(data.MemberNumber) ?? data.MemberName,
-        content: typeof data.Message === "string" ? data.Message.slice(0, 1e3) : "",
+        content: cleanBeepMessageContent(data.Message),
         sentAt: Date.now(),
         includeRoom: roomName !== void 0,
         ...roomName !== void 0 ? { roomName } : {}
@@ -763,7 +789,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         direction: "outgoing",
         peerNumber: target,
         peerName: this.getMemberName(target),
-        content: message ?? "",
+        content: cleanBeepMessageContent(message),
         sentAt: Date.now(),
         includeRoom,
         ...roomName !== void 0 ? { roomName } : {}
@@ -1358,9 +1384,238 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
+  // src/modules/link-chat/media.ts
+  var URL_PATTERN = /https:\/\/[^\s<>"'[\]]+/giu;
+  var IMAGE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/iu;
+  var TRAILING_PUNCTUATION = /[),.;!?\]}]+$/u;
+  function parseMessageLinks(message) {
+    const links = [];
+    for (const match of message.matchAll(URL_PATTERN)) {
+      if (match.index === void 0) continue;
+      const candidate = trimTrailingPunctuation(match[0]);
+      const url = normalizeHttpsUrl(candidate);
+      if (!url) continue;
+      links.push({
+        start: match.index,
+        end: match.index + candidate.length,
+        url,
+        image: isDirectImageUrl(url)
+      });
+    }
+    return links;
+  }
+  function normalizeImageUrl(value) {
+    const direct = normalizeHttpsUrl(value.trim());
+    if (direct && isDirectImageUrl(direct)) return direct;
+    for (const match of value.matchAll(URL_PATTERN)) {
+      const url = normalizeHttpsUrl(trimTrailingPunctuation(match[0]));
+      if (url && isDirectImageUrl(url)) return url;
+    }
+    return null;
+  }
+  function isDirectImageUrl(value) {
+    const url = normalizeHttpsUrl(value);
+    if (!url) return false;
+    return IMAGE_EXTENSION.test(new URL(url).pathname);
+  }
+  function normalizeHttpsUrl(value) {
+    if (!value || value.length > 900) return null;
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.username || url.password || !url.hostname) return null;
+      return url.href;
+    } catch {
+      return null;
+    }
+  }
+  function trimTrailingPunctuation(value) {
+    let candidate = value;
+    while (TRAILING_PUNCTUATION.test(candidate)) {
+      const final = candidate.at(-1);
+      if (final === ")" && count(candidate, "(") >= count(candidate, ")")) break;
+      if (final === "]" && count(candidate, "[") >= count(candidate, "]")) break;
+      if (final === "}" && count(candidate, "{") >= count(candidate, "}")) break;
+      candidate = candidate.slice(0, -1);
+    }
+    return candidate;
+  }
+  function count(value, character) {
+    return [...value].filter((candidate) => candidate === character).length;
+  }
+
+  // src/modules/link-chat/image-upload.ts
+  var MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
+  var MAX_LOCAL_IMAGE_EDGE = 2560;
+  var MAX_LOCAL_IMAGE_PIXELS = 32e6;
+  var MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
+  var CLOUDINARY_UPLOAD_TIMEOUT_MS = 6e4;
+  var CLOUD_NAME_PATTERN = /^[a-z0-9_-]{1,64}$/iu;
+  var UPLOAD_PRESET_PATTERN = /^[a-z0-9_-]{1,128}$/iu;
+  var CloudinaryImageUploader = class {
+    constructor(request = globalThis.fetch.bind(globalThis)) {
+      this.request = request;
+    }
+    request;
+    async prepare(file) {
+      await validateLocalImageFile(file);
+      const decoded = await decodeLocalImage(file);
+      try {
+        if (decoded.width <= 0 || decoded.height <= 0 || decoded.width * decoded.height > MAX_LOCAL_IMAGE_PIXELS) {
+          throw new Error("This image has too many pixels to prepare safely");
+        }
+        const scale = Math.min(1, MAX_LOCAL_IMAGE_EDGE / Math.max(decoded.width, decoded.height));
+        const width = Math.max(1, Math.round(decoded.width * scale));
+        const height = Math.max(1, Math.round(decoded.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d", { alpha: true });
+        if (!context) throw new Error("Your browser could not prepare this image");
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = "high";
+        context.drawImage(decoded.source, 0, 0, width, height);
+        const blob = await canvasToWebp(canvas);
+        if (blob.size > MAX_PREPARED_IMAGE_BYTES) {
+          throw new Error("The privacy-prepared image is still larger than 8 MB");
+        }
+        return { blob, width, height, sourceBytes: file.size };
+      } finally {
+        decoded.dispose();
+      }
+    }
+    async upload(image, config) {
+      const normalizedConfig = normalizeCloudinaryUploadConfig(config);
+      if (!normalizedConfig) throw new Error("Complete the local image upload setup first");
+      if (image.blob.type !== "image/webp" || image.blob.size <= 0) {
+        throw new Error("The prepared image is invalid");
+      }
+      const form = new FormData();
+      form.append(
+        "file",
+        new File([image.blob], "kikilink-image.webp", {
+          type: "image/webp",
+          lastModified: 0
+        })
+      );
+      form.append("upload_preset", normalizedConfig.uploadPreset);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), CLOUDINARY_UPLOAD_TIMEOUT_MS);
+      try {
+        const response = await this.request(
+          `https://api.cloudinary.com/v1_1/${encodeURIComponent(normalizedConfig.cloudName)}/image/upload`,
+          {
+            method: "POST",
+            body: form,
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            signal: controller.signal
+          }
+        );
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const providerMessage = typeof payload.error?.message === "string" ? payload.error.message : void 0;
+          throw new Error(providerMessage ?? `Image host returned HTTP ${response.status}`);
+        }
+        const directUrl = typeof payload.secure_url === "string" ? normalizeImageUrl(payload.secure_url) : null;
+        if (!directUrl || !isExpectedCloudinaryUrl(directUrl, normalizedConfig.cloudName)) {
+          throw new Error("The image host returned an unexpected link");
+        }
+        return directUrl;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          throw new Error("The image upload timed out");
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  };
+  function normalizeCloudinaryUploadConfig(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const source = value;
+    const cloudName = typeof source.cloudName === "string" ? source.cloudName.trim() : "";
+    const uploadPreset = typeof source.uploadPreset === "string" ? source.uploadPreset.trim() : "";
+    if (!CLOUD_NAME_PATTERN.test(cloudName) || !UPLOAD_PRESET_PATTERN.test(uploadPreset)) {
+      return null;
+    }
+    return { cloudName, uploadPreset };
+  }
+  async function validateLocalImageFile(file) {
+    if (file.size <= 0) throw new Error("Choose a non-empty image file");
+    if (file.size > MAX_LOCAL_IMAGE_BYTES) throw new Error("Choose an image up to 10 MB");
+    const detectedType = detectLocalImageType(await file.slice(0, 16).arrayBuffer());
+    if (!detectedType) throw new Error("Use a real JPG, PNG, or WebP image");
+    if (file.type && file.type.toLocaleLowerCase() !== detectedType) {
+      throw new Error("The file contents do not match its image type");
+    }
+  }
+  function detectLocalImageType(header) {
+    const bytes = new Uint8Array(header);
+    if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
+    if (bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71 && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10) {
+      return "image/png";
+    }
+    if (bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80) {
+      return "image/webp";
+    }
+    return null;
+  }
+  async function decodeLocalImage(file) {
+    if (typeof globalThis.createImageBitmap === "function") {
+      const bitmap = await globalThis.createImageBitmap(file, { imageOrientation: "from-image" });
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        dispose: () => bitmap.close()
+      };
+    }
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.decoding = "async";
+    try {
+      await new Promise((resolve, reject) => {
+        image.addEventListener("load", () => resolve(), { once: true });
+        image.addEventListener("error", () => reject(new Error("This image could not be decoded")), {
+          once: true
+        });
+        image.src = objectUrl;
+      });
+      return {
+        source: image,
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+        dispose: () => URL.revokeObjectURL(objectUrl)
+      };
+    } catch (error) {
+      URL.revokeObjectURL(objectUrl);
+      throw error;
+    }
+  }
+  function canvasToWebp(canvas) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob || blob.type !== "image/webp") {
+            reject(new Error("Your browser could not create a privacy-safe WebP image"));
+            return;
+          }
+          resolve(blob);
+        },
+        "image/webp",
+        0.88
+      );
+    });
+  }
+  function isExpectedCloudinaryUrl(value, cloudName) {
+    const url = new URL(value);
+    return url.hostname === "res.cloudinary.com" && url.pathname.startsWith(`/${cloudName}/image/upload/`);
+  }
+
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 11,
+    schemaVersion: 12,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -1383,6 +1638,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
       enterToSend: true,
       typingIndicators: true,
       imagePreviews: "ask",
+      imageUploads: {
+        enabled: false,
+        cloudName: "",
+        uploadPreset: ""
+      },
       quickActions: [
         { label: "Wave", template: "*waves to {name}*" },
         { label: "Hug", template: "*hugs {name} warmly*" },
@@ -1480,12 +1740,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const sourceSchema = typeof source.schemaVersion === "number" && Number.isFinite(source.schemaVersion) ? source.schemaVersion : 1;
     const ui = isRecord3(source.ui) ? source.ui : {};
     const linkChat = isRecord3(source.linkChat) ? source.linkChat : {};
+    const imageUploads = isRecord3(linkChat.imageUploads) ? linkChat.imageUploads : {};
     const linkPresence = isRecord3(source.linkPresence) ? source.linkPresence : {};
     const linkActivities = isRecord3(source.linkActivities) ? source.linkActivities : {};
     const linkRoster = isRecord3(source.linkRoster) ? source.linkRoster : {};
     const linkReactions = isRecord3(source.linkReactions) ? source.linkReactions : {};
     return {
-      schemaVersion: 11,
+      schemaVersion: 12,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -1527,6 +1788,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
           DEFAULT_SETTINGS.linkChat.typingIndicators
         ),
         imagePreviews: linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never" ? linkChat.imagePreviews : DEFAULT_SETTINGS.linkChat.imagePreviews,
+        imageUploads: sanitizeImageUploads(imageUploads),
         quickActions: sanitizeQuickActions(linkChat.quickActions)
       },
       linkPresence: {
@@ -1558,6 +1820,14 @@ One of mods you are using is using an old version of SDK. It will work for now b
         enabled: booleanOr(linkReactions.enabled, DEFAULT_SETTINGS.linkReactions.enabled),
         rules: sanitizeReactionRules(linkReactions.rules)
       }
+    };
+  }
+  function sanitizeImageUploads(value) {
+    const config = normalizeCloudinaryUploadConfig(value);
+    return {
+      enabled: value.enabled === true && config !== null,
+      cloudName: config?.cloudName ?? "",
+      uploadPreset: config?.uploadPreset ?? ""
     };
   }
   function sanitizeQuickAlerts(value) {
@@ -1699,10 +1969,18 @@ One of mods you are using is using an old version of SDK. It will work for now b
   }
   function debounce(callback, delayMs) {
     let timer;
-    return (...args) => {
+    const debounced = (...args) => {
       if (timer !== void 0) clearTimeout(timer);
-      timer = setTimeout(() => callback(...args), delayMs);
+      timer = setTimeout(() => {
+        timer = void 0;
+        callback(...args);
+      }, delayMs);
     };
+    debounced.cancel = () => {
+      if (timer !== void 0) clearTimeout(timer);
+      timer = void 0;
+    };
+    return debounced;
   }
 
   // src/modules/link-activities/link-activities-service.ts
@@ -4073,6 +4351,20 @@ button { color: inherit; }
 .kl-setting-copy { min-width: 0; }
 .kl-setting-name { font-weight: 750; }
 .kl-setting-help { margin-top: 2px; color: var(--kl-muted); font-size: var(--kl-type-sm); }
+.kl-image-upload-settings-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--kl-border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 24%);
+}
+.kl-image-upload-setting-field { min-width: 0; display: grid; gap: 5px; color: var(--kl-muted); font-size: var(--kl-type-xs); font-weight: 750; }
+.kl-image-upload-setting-input { width: 100%; min-width: 0; }
+.kl-image-upload-privacy { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 8px; margin: 1px 0 0; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-image-upload-privacy .kl-icon { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; color: var(--kl-gold); }
+.kl-inline-link { color: var(--kl-gold); text-underline-offset: 2px; }
 .kl-number-input { width: 90px; height: 44px; padding: 0 10px; border-radius: 11px; }
 .kl-select { width: 156px; height: 44px; padding: 0 10px; border-radius: 11px; }
 .kl-color-control { display: flex; align-items: center; gap: 8px; }
@@ -4737,6 +5029,8 @@ select:focus-visible {
   .kl-send-label { display: none; }
   .kl-setting-row { gap: 14px; }
   .kl-setting-help { max-width: 230px; }
+  .kl-image-upload-settings-options { grid-template-columns: minmax(0, 1fr); }
+  .kl-image-upload-privacy { grid-column: 1; }
   .kl-action-editor-row { grid-template-columns: 82px minmax(0, 1fr) 40px; }
   .kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 44px 44px; }
   .kl-activity-editor-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -5069,6 +5363,10 @@ select:focus-visible {
 .kl-profile-menu-help { overflow: hidden; color: var(--kl-muted); font-size: var(--kl-type-xxs); text-overflow: ellipsis; white-space: nowrap; }
 .kl-composer-row { grid-template-columns: auto minmax(0, 1fr) auto; }
 .kl-attach-image { width: 44px; height: 44px; border-radius: 13px; color: var(--kl-gold); }
+.kl-image-source-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid var(--kl-border); border-radius: 13px; background: var(--kl-surface); }
+.kl-image-source-tab { min-height: 38px; padding: 7px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--kl-muted); font: inherit; font-weight: 750; cursor: pointer; }
+.kl-image-source-tab[data-active="true"] { background: var(--kl-surface-2); color: var(--kl-text); box-shadow: inset 0 -2px var(--kl-accent); }
+.kl-image-source-panel { display: grid; gap: 14px; }
 .kl-image-compose-preview {
   min-height: 62px;
   display: flex;
@@ -5082,10 +5380,15 @@ select:focus-visible {
 }
 .kl-image-compose-preview[data-state="ready"] { border-style: solid; border-color: color-mix(in srgb, #39c884, transparent 36%); }
 .kl-image-compose-preview[data-state="error"] { border-style: solid; border-color: color-mix(in srgb, var(--kl-danger), transparent 38%); color: var(--kl-danger); }
+.kl-image-compose-preview[data-state="loading"] { border-style: solid; border-color: color-mix(in srgb, var(--kl-gold), transparent 42%); }
 .kl-image-compose-icon { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; background: var(--kl-surface-2); font-weight: 900; }
 .kl-image-compose-preview > span:last-child { min-width: 0; display: grid; gap: 2px; }
 .kl-image-compose-preview small { overflow: hidden; color: var(--kl-muted); text-overflow: ellipsis; white-space: nowrap; }
 .kl-image-upload-note { margin: -4px 0 0; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-image-file-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.kl-image-file-privacy { display: flex; align-items: flex-start; gap: 7px; }
+.kl-image-file-privacy .kl-icon { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; color: var(--kl-gold); }
+.kl-local-image-thumbnail { width: 54px; height: 54px; flex: 0 0 auto; object-fit: cover; border-radius: 10px; background: #09090a; }
 .kl-message-content { white-space: pre-wrap; }
 .kl-message-link { color: #efc56c; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor, transparent 48%); text-underline-offset: 2px; }
 .kl-message-row[data-direction="outgoing"] .kl-message-link { color: var(--kl-accent-foreground); }
@@ -5168,65 +5471,6 @@ select:focus-visible {
   *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
 }
 `;
-
-  // src/modules/link-chat/media.ts
-  var URL_PATTERN = /https:\/\/[^\s<>"'[\]]+/giu;
-  var IMAGE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/iu;
-  var TRAILING_PUNCTUATION = /[),.;!?\]}]+$/u;
-  function parseMessageLinks(message) {
-    const links = [];
-    for (const match of message.matchAll(URL_PATTERN)) {
-      if (match.index === void 0) continue;
-      const candidate = trimTrailingPunctuation(match[0]);
-      const url = normalizeHttpsUrl(candidate);
-      if (!url) continue;
-      links.push({
-        start: match.index,
-        end: match.index + candidate.length,
-        url,
-        image: isDirectImageUrl(url)
-      });
-    }
-    return links;
-  }
-  function normalizeImageUrl(value) {
-    const direct = normalizeHttpsUrl(value.trim());
-    if (direct && isDirectImageUrl(direct)) return direct;
-    for (const match of value.matchAll(URL_PATTERN)) {
-      const url = normalizeHttpsUrl(trimTrailingPunctuation(match[0]));
-      if (url && isDirectImageUrl(url)) return url;
-    }
-    return null;
-  }
-  function isDirectImageUrl(value) {
-    const url = normalizeHttpsUrl(value);
-    if (!url) return false;
-    return IMAGE_EXTENSION.test(new URL(url).pathname);
-  }
-  function normalizeHttpsUrl(value) {
-    if (!value || value.length > 900) return null;
-    try {
-      const url = new URL(value);
-      if (url.protocol !== "https:" || url.username || url.password || !url.hostname) return null;
-      return url.href;
-    } catch {
-      return null;
-    }
-  }
-  function trimTrailingPunctuation(value) {
-    let candidate = value;
-    while (TRAILING_PUNCTUATION.test(candidate)) {
-      const final = candidate.at(-1);
-      if (final === ")" && count(candidate, "(") >= count(candidate, ")")) break;
-      if (final === "]" && count(candidate, "[") >= count(candidate, "]")) break;
-      if (final === "}" && count(candidate, "{") >= count(candidate, "}")) break;
-      candidate = candidate.slice(0, -1);
-    }
-    return candidate;
-  }
-  function count(value, character) {
-    return [...value].filter((candidate) => candidate === character).length;
-  }
 
   // src/modules/link-chat/icons.ts
   var SVG_NAMESPACE = "http://www.w3.org/2000/svg";
@@ -5407,13 +5651,14 @@ select:focus-visible {
       adapter,
       new PeopleRepository(new MemoryKeyValueStorage()),
       settings
-    ), presence) {
+    ), presence, imageUploader = new CloudinaryImageUploader()) {
       this.adapter = adapter;
       this.service = service;
       this.settings = settings;
       this.version = version;
       this.activities = activities;
       this.roster = roster;
+      this.imageUploader = imageUploader;
       this.presence = presence ?? new LinkPresenceService(adapter, settings, new EventBus(), version);
     }
     adapter;
@@ -5422,6 +5667,7 @@ select:focus-visible {
     version;
     activities;
     roster;
+    imageUploader;
     #host = document.createElement("div");
     #shadow = this.#host.attachShadow({ mode: "open" });
     #launcher = element("button", {
@@ -5543,8 +5789,8 @@ select:focus-visible {
     #attachImageButton = element("button", {
       className: "kl-icon-button kl-attach-image",
       type: "button",
-      title: "Send an image link",
-      ariaLabel: "Send an image link"
+      title: "Send an image",
+      ariaLabel: "Send an image"
     });
     #quickActions = element("div", { className: "kl-quick-actions" });
     #includeRoom = element("input");
@@ -5559,6 +5805,16 @@ select:focus-visible {
     #enterToSendToggle = element("input");
     #typingIndicatorsToggle = element("input");
     #imagePreviewSelect = element("select", { className: "kl-select" });
+    #imageUploadsToggle = element("input");
+    #cloudinaryCloudNameInput = element("input", {
+      className: "kl-search kl-image-upload-setting-input"
+    });
+    #cloudinaryPresetInput = element("input", {
+      className: "kl-search kl-image-upload-setting-input"
+    });
+    #imageUploadSettingsOptions = element("div", {
+      className: "kl-image-upload-settings-options"
+    });
     #retentionInput = element("input", { className: "kl-number-input" });
     #saveSettingsButton = element("button", {
       className: "kl-text-button kl-text-button--primary",
@@ -5687,6 +5943,27 @@ select:focus-visible {
     #imageDialog = element("dialog", { className: "kl-dialog kl-image-dialog" });
     #imageUrlInput = element("input", { className: "kl-search kl-image-url" });
     #imagePreview = element("div", { className: "kl-image-compose-preview" });
+    #imageLinkTab = element("button", {
+      className: "kl-image-source-tab",
+      type: "button",
+      text: "Image link"
+    });
+    #imageFileTab = element("button", {
+      className: "kl-image-source-tab",
+      type: "button",
+      text: "Local file"
+    });
+    #imageLinkPanel = element("div", { className: "kl-image-source-panel" });
+    #imageFilePanel = element("div", { className: "kl-image-source-panel" });
+    #imageFileInput = element("input");
+    #chooseImageFileButton = element("button", {
+      className: "kl-text-button kl-image-file-choose",
+      type: "button",
+      text: "Choose image"
+    });
+    #localImageStatus = element("div", {
+      className: "kl-image-compose-preview kl-local-image-status"
+    });
     #sendImageButton = element("button", {
       className: "kl-text-button kl-text-button--primary",
       type: "button",
@@ -5754,6 +6031,13 @@ select:focus-visible {
     #profileMenuToken = 0;
     #aliasTarget;
     #removeChatTarget;
+    #imageSourceMode = "link";
+    #preparedLocalImage;
+    #localImageObjectUrl;
+    #imageUploadBusy = false;
+    #imageUploadToken = 0;
+    #imagePrepareToken = 0;
+    #localImageError;
     #handleOutsidePointerDown = (event) => {
       if (this.#profileMenu.hidden) return;
       if (event.composedPath().includes(this.#host)) return;
@@ -5809,6 +6093,9 @@ select:focus-visible {
       void this.refresh();
     }
     destroy() {
+      this.#saveDraft.cancel();
+      this.#imageUploadToken += 1;
+      this.#imageUploadBusy = false;
       this.#stopLocalTyping();
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
       if (this.#presenceRenderFrame !== void 0) cancelAnimationFrame(this.#presenceRenderFrame);
@@ -5817,6 +6104,7 @@ select:focus-visible {
       this.#newChatDialog.close();
       this.#presenceDialog.close();
       this.#imageDialog.close();
+      this.#resetLocalImage();
       this.#aliasDialog.close();
       this.#removeChatDialog.close();
       this.#closeProfileMenu();
@@ -6603,6 +6891,77 @@ select:focus-visible {
         "Remote hosts can see your IP when an image loads. Ask first is the privacy-friendly default.",
         this.#imagePreviewSelect
       );
+      this.#imageUploadsToggle.type = "checkbox";
+      this.#imageUploadsToggle.setAttribute("aria-label", "Enable local image uploads");
+      this.#imageUploadsToggle.addEventListener(
+        "change",
+        () => this.#renderImageUploadSettingsOptions()
+      );
+      const imageUploadsSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#imageUploadsToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      this.#cloudinaryCloudNameInput.type = "text";
+      this.#cloudinaryCloudNameInput.maxLength = 64;
+      this.#cloudinaryCloudNameInput.autocomplete = "off";
+      this.#cloudinaryCloudNameInput.spellcheck = false;
+      this.#cloudinaryCloudNameInput.placeholder = "your-cloud-name";
+      this.#cloudinaryCloudNameInput.setAttribute("aria-label", "Cloudinary cloud name");
+      this.#cloudinaryPresetInput.type = "text";
+      this.#cloudinaryPresetInput.maxLength = 128;
+      this.#cloudinaryPresetInput.autocomplete = "off";
+      this.#cloudinaryPresetInput.spellcheck = false;
+      this.#cloudinaryPresetInput.placeholder = "unsigned-upload-preset";
+      this.#cloudinaryPresetInput.setAttribute("aria-label", "Cloudinary unsigned upload preset");
+      const cloudinaryDocs = element("a", {
+        className: "kl-inline-link",
+        text: "Cloudinary setup guide"
+      });
+      cloudinaryDocs.href = "https://cloudinary.com/documentation/upload_presets";
+      cloudinaryDocs.target = "_blank";
+      cloudinaryDocs.rel = "noopener noreferrer";
+      this.#imageUploadSettingsOptions.append(
+        element(
+          "label",
+          { className: "kl-image-upload-setting-field" },
+          element("span", { text: "Cloud name" }),
+          this.#cloudinaryCloudNameInput
+        ),
+        element(
+          "label",
+          { className: "kl-image-upload-setting-field" },
+          element("span", { text: "Unsigned preset" }),
+          this.#cloudinaryPresetInput
+        ),
+        element(
+          "p",
+          { className: "kl-image-upload-privacy" },
+          kikiIcon("lock"),
+          element(
+            "span",
+            {},
+            "Selection stays local. On Upload & send, KikiLink removes the original filename and metadata, resizes to 2560 px, then uploads to your Cloudinary account. The resulting link is public. ",
+            cloudinaryDocs,
+            "."
+          )
+        )
+      );
+      const imageUploads = element(
+        "section",
+        { className: "kl-setting-section kl-image-upload-settings" },
+        element("div", {
+          className: "kl-setting-section-title",
+          text: "Local images \xB7 optional"
+        }),
+        this.#settingRow(
+          "Upload local files",
+          "Connect your own Cloudinary unsigned preset. Off by default.",
+          imageUploadsSwitch
+        ),
+        this.#imageUploadSettingsOptions
+      );
       this.#retentionInput.type = "number";
       this.#retentionInput.min = "1";
       this.#retentionInput.max = "3650";
@@ -6777,6 +7136,7 @@ select:focus-visible {
         enterToSend,
         typingIndicators,
         imagePreviews,
+        imageUploads,
         history,
         retention,
         quickActionsSection,
@@ -7424,7 +7784,7 @@ select:focus-visible {
             text: "A normal Beep link for everyone; an inline preview for KikiLink."
           })
         ),
-        this.#dialogCloseButton("Close image sender", () => this.#imageDialog.close())
+        this.#dialogCloseButton("Close image sender", () => this.#requestCloseImageDialog())
       );
       this.#imageUrlInput.type = "url";
       this.#imageUrlInput.maxLength = 900;
@@ -7437,9 +7797,26 @@ select:focus-visible {
         event.preventDefault();
         void this.#sendImage();
       });
-      const body = element(
-        "div",
-        { className: "kl-dialog-body kl-image-body" },
+      this.#imageLinkTab.id = "kikilink-image-source-link";
+      this.#imageLinkTab.setAttribute("role", "tab");
+      this.#imageLinkTab.setAttribute("aria-controls", "kikilink-image-link-panel");
+      this.#imageLinkTab.addEventListener("click", () => this.#setImageSourceMode("link"));
+      this.#imageLinkTab.addEventListener(
+        "keydown",
+        (event) => this.#handleImageSourceTabKey(event)
+      );
+      this.#imageFileTab.id = "kikilink-image-source-file";
+      this.#imageFileTab.setAttribute("role", "tab");
+      this.#imageFileTab.setAttribute("aria-controls", "kikilink-image-file-panel");
+      this.#imageFileTab.addEventListener("click", () => this.#setImageSourceMode("file"));
+      this.#imageFileTab.addEventListener(
+        "keydown",
+        (event) => this.#handleImageSourceTabKey(event)
+      );
+      this.#imageLinkPanel.id = "kikilink-image-link-panel";
+      this.#imageLinkPanel.setAttribute("role", "tabpanel");
+      this.#imageLinkPanel.setAttribute("aria-labelledby", this.#imageLinkTab.id);
+      this.#imageLinkPanel.append(
         element(
           "label",
           { className: "kl-presence-field" },
@@ -7449,10 +7826,70 @@ select:focus-visible {
         this.#imagePreview,
         element("p", {
           className: "kl-image-upload-note",
-          text: "Supported: JPG, PNG, GIF, WebP, and AVIF. Local file upload needs a privacy-reviewed media service and is not silently sent through Beeps."
+          text: "Supported links: JPG, PNG, GIF, WebP, and AVIF."
         })
       );
+      this.#imageFilePanel.id = "kikilink-image-file-panel";
+      this.#imageFilePanel.setAttribute("role", "tabpanel");
+      this.#imageFilePanel.setAttribute("aria-labelledby", this.#imageFileTab.id);
+      this.#imageFileInput.type = "file";
+      this.#imageFileInput.accept = "image/jpeg,image/png,image/webp";
+      this.#imageFileInput.hidden = true;
+      this.#imageFileInput.addEventListener("change", () => {
+        const file = this.#imageFileInput.files?.[0];
+        if (file) void this.#prepareLocalImage(file);
+      });
+      this.#chooseImageFileButton.addEventListener("click", () => this.#imageFileInput.click());
+      const setupUploads = element("button", {
+        className: "kl-text-button kl-image-upload-setup",
+        type: "button",
+        text: "Set up local uploads",
+        onClick: () => {
+          this.#imageDialog.close();
+          this.#openSettings("chat");
+          this.#imageUploadsToggle.focus();
+        }
+      });
+      this.#imageFilePanel.append(
+        this.#localImageStatus,
+        element(
+          "div",
+          { className: "kl-image-file-actions" },
+          this.#chooseImageFileButton,
+          setupUploads,
+          this.#imageFileInput
+        ),
+        element(
+          "p",
+          { className: "kl-image-upload-note kl-image-file-privacy" },
+          kikiIcon("lock"),
+          element("span", {
+            text: "Nothing uploads on selection. KikiLink first removes the filename and metadata; Upload & send is the only network action."
+          })
+        )
+      );
+      const sourceTabs = element(
+        "div",
+        { className: "kl-image-source-tabs" },
+        this.#imageLinkTab,
+        this.#imageFileTab
+      );
+      sourceTabs.setAttribute("role", "tablist");
+      sourceTabs.setAttribute("aria-label", "Image source");
+      const body = element(
+        "div",
+        { className: "kl-dialog-body kl-image-body" },
+        sourceTabs,
+        this.#imageLinkPanel,
+        this.#imageFilePanel
+      );
       this.#sendImageButton.addEventListener("click", () => void this.#sendImage());
+      this.#imageDialog.addEventListener("cancel", (event) => {
+        if (this.#imageUploadBusy) event.preventDefault();
+      });
+      this.#imageDialog.addEventListener("close", () => {
+        if (!this.#imageUploadBusy) this.#resetLocalImage();
+      });
       this.#imageDialog.append(
         header,
         body,
@@ -7463,7 +7900,7 @@ select:focus-visible {
             className: "kl-text-button",
             type: "button",
             text: "Cancel",
-            onClick: () => this.#imageDialog.close()
+            onClick: () => this.#requestCloseImageDialog()
           }),
           this.#sendImageButton
         )
@@ -7627,6 +8064,7 @@ select:focus-visible {
     async #confirmRemoveChat() {
       const target = this.#removeChatTarget;
       if (!target) return;
+      if (target.memberNumber === this.#activePeer) this.#saveDraft.cancel();
       await this.service.removeConversation(target.memberNumber);
       if (target.memberNumber === this.#activePeer) this.#resetActiveConversation();
       this.#removeChatDialog.close();
@@ -7638,14 +8076,40 @@ select:focus-visible {
         this.#toast("Choose a conversation first.", "error");
         return;
       }
+      this.#resetLocalImage();
       this.#imageUrlInput.value = "";
       this.#renderImageComposePreview();
+      this.#setImageSourceMode("link");
       if (!this.#imageDialog.open) this.#imageDialog.showModal();
       this.#imageUrlInput.focus();
     }
+    #setImageSourceMode(mode) {
+      this.#imageSourceMode = mode;
+      const linkActive = mode === "link";
+      this.#imageLinkPanel.hidden = !linkActive;
+      this.#imageFilePanel.hidden = linkActive;
+      this.#imageLinkTab.dataset.active = String(linkActive);
+      this.#imageFileTab.dataset.active = String(!linkActive);
+      this.#imageLinkTab.setAttribute("aria-selected", String(linkActive));
+      this.#imageFileTab.setAttribute("aria-selected", String(!linkActive));
+      this.#imageLinkTab.tabIndex = linkActive ? 0 : -1;
+      this.#imageFileTab.tabIndex = linkActive ? -1 : 0;
+      if (linkActive) this.#renderImageComposePreview();
+      else this.#renderLocalImageComposeState();
+    }
+    #handleImageSourceTabKey(event) {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const mode = event.key === "ArrowLeft" || event.key === "Home" ? "link" : "file";
+      this.#setImageSourceMode(mode);
+      (mode === "link" ? this.#imageLinkTab : this.#imageFileTab).focus();
+    }
     #renderImageComposePreview() {
       const url = normalizeImageUrl(this.#imageUrlInput.value);
-      this.#sendImageButton.disabled = !url;
+      if (this.#imageSourceMode === "link") {
+        this.#sendImageButton.textContent = "Send image";
+        this.#sendImageButton.disabled = !url;
+      }
       if (!this.#imageUrlInput.value.trim()) {
         this.#imagePreview.replaceChildren(
           element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
@@ -7674,7 +8138,143 @@ select:focus-visible {
       );
       this.#imagePreview.dataset.state = "ready";
     }
+    #renderLocalImageComposeState() {
+      const settings = this.settings.get().linkChat.imageUploads;
+      const config = settings.enabled ? normalizeCloudinaryUploadConfig(settings) : null;
+      const setupButton = this.#imageFilePanel.querySelector(
+        ".kl-image-upload-setup"
+      );
+      setupButton?.toggleAttribute("hidden", config !== null);
+      this.#chooseImageFileButton.hidden = config === null;
+      this.#chooseImageFileButton.disabled = this.#imageUploadBusy;
+      this.#chooseImageFileButton.textContent = this.#preparedLocalImage ? "Choose another" : "Choose image";
+      this.#sendImageButton.textContent = "Upload & send";
+      this.#sendImageButton.disabled = this.#imageUploadBusy || config === null || this.#preparedLocalImage === void 0;
+      if (this.#imageUploadBusy) {
+        this.#localImageStatus.replaceChildren(
+          element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
+          element(
+            "span",
+            {},
+            element("strong", { text: "Uploading prepared image\u2026" }),
+            element("small", { text: "The original local file is not being sent." })
+          )
+        );
+        this.#localImageStatus.dataset.state = "loading";
+        return;
+      }
+      if (!config) {
+        this.#localImageStatus.replaceChildren(
+          element("span", { className: "kl-image-compose-icon" }, kikiIcon("lock")),
+          element(
+            "span",
+            {},
+            element("strong", { text: "Local upload is off" }),
+            element("small", { text: "Connect your own Cloudinary account once in Chat settings." })
+          )
+        );
+        this.#localImageStatus.dataset.state = "empty";
+        return;
+      }
+      if (this.#localImageError) {
+        this.#localImageStatus.replaceChildren(
+          element("span", { className: "kl-image-compose-icon" }, kikiIcon("warning")),
+          element(
+            "span",
+            {},
+            element("strong", { text: "Image not ready" }),
+            element("small", { text: this.#localImageError })
+          )
+        );
+        this.#localImageStatus.dataset.state = "error";
+        return;
+      }
+      const prepared = this.#preparedLocalImage;
+      if (!prepared) {
+        this.#localImageStatus.replaceChildren(
+          element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
+          element(
+            "span",
+            {},
+            element("strong", { text: "Choose a local image" }),
+            element("small", { text: "JPG, PNG, or WebP \xB7 up to 10 MB" })
+          )
+        );
+        this.#localImageStatus.dataset.state = "empty";
+        return;
+      }
+      const thumbnail = this.#localImageObjectUrl ? element("img", { className: "kl-local-image-thumbnail", ariaLabel: "Prepared image preview" }) : element("span", { className: "kl-image-compose-icon" }, kikiIcon("check"));
+      if (thumbnail instanceof HTMLImageElement && this.#localImageObjectUrl) {
+        thumbnail.src = this.#localImageObjectUrl;
+        thumbnail.alt = "Prepared local image";
+      }
+      this.#localImageStatus.replaceChildren(
+        thumbnail,
+        element(
+          "span",
+          {},
+          element("strong", { text: "Prepared locally" }),
+          element("small", {
+            text: `${prepared.width} \xD7 ${prepared.height} \xB7 ${formatBytes(prepared.blob.size)} \xB7 metadata removed`
+          })
+        )
+      );
+      this.#localImageStatus.dataset.state = "ready";
+    }
+    async #prepareLocalImage(file) {
+      this.#resetLocalImage();
+      const token = this.#imagePrepareToken;
+      this.#chooseImageFileButton.disabled = true;
+      this.#sendImageButton.disabled = true;
+      this.#localImageStatus.replaceChildren(
+        element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
+        element(
+          "span",
+          {},
+          element("strong", { text: "Preparing safely\u2026" }),
+          element("small", { text: "Removing metadata and the original filename locally." })
+        )
+      );
+      this.#localImageStatus.dataset.state = "loading";
+      try {
+        const prepared = await this.imageUploader.prepare(file);
+        if (token !== this.#imagePrepareToken) return;
+        this.#preparedLocalImage = prepared;
+        if (typeof URL.createObjectURL === "function") {
+          this.#localImageObjectUrl = URL.createObjectURL(prepared.blob);
+        }
+      } catch (error) {
+        if (token !== this.#imagePrepareToken) return;
+        this.#localImageError = imageUploadErrorMessage(error);
+      } finally {
+        if (token === this.#imagePrepareToken) {
+          this.#imageFileInput.value = "";
+          this.#renderLocalImageComposeState();
+        }
+      }
+    }
+    #resetLocalImage() {
+      this.#imagePrepareToken += 1;
+      this.#preparedLocalImage = void 0;
+      this.#localImageError = void 0;
+      this.#imageFileInput.value = "";
+      if (this.#localImageObjectUrl && typeof URL.revokeObjectURL === "function") {
+        URL.revokeObjectURL(this.#localImageObjectUrl);
+      }
+      this.#localImageObjectUrl = void 0;
+    }
+    #requestCloseImageDialog() {
+      if (this.#imageUploadBusy) {
+        this.#toast("Wait for the image upload to finish.", "error");
+        return;
+      }
+      this.#imageDialog.close();
+    }
     async #sendImage() {
+      if (this.#imageSourceMode === "file") {
+        await this.#uploadAndSendLocalImage();
+        return;
+      }
       const url = normalizeImageUrl(this.#imageUrlInput.value);
       if (!url) {
         this.#renderImageComposePreview();
@@ -7684,6 +8284,40 @@ select:focus-visible {
       if (!sent) return;
       this.#imageDialog.close();
       this.#toast("Image link sent.");
+    }
+    async #uploadAndSendLocalImage() {
+      const image = this.#preparedLocalImage;
+      const uploadSettings = this.settings.get().linkChat.imageUploads;
+      const config = uploadSettings.enabled ? normalizeCloudinaryUploadConfig(uploadSettings) : null;
+      if (!image || !config || this.#imageUploadBusy) {
+        this.#renderLocalImageComposeState();
+        return;
+      }
+      this.#imageUploadBusy = true;
+      const token = ++this.#imageUploadToken;
+      this.#localImageError = void 0;
+      this.#renderLocalImageComposeState();
+      try {
+        const url = await this.imageUploader.upload(image, config);
+        if (token !== this.#imageUploadToken) return;
+        this.#imageUrlInput.value = url;
+        const sent = await this.#sendContent(url, false);
+        if (token !== this.#imageUploadToken) return;
+        this.#imageUploadBusy = false;
+        if (!sent) {
+          this.#setImageSourceMode("link");
+          this.#toast("Upload finished. The direct link is kept here so it is not lost.", "error");
+          return;
+        }
+        this.#toast("Private details removed; image uploaded and sent.");
+        this.#imageDialog.close();
+      } catch (error) {
+        if (token !== this.#imageUploadToken) return;
+        this.#imageUploadBusy = false;
+        this.#localImageError = imageUploadErrorMessage(error);
+        this.#renderLocalImageComposeState();
+        this.#toast(this.#localImageError, "error");
+      }
     }
     async #openFinder() {
       this.#finderQuery.value = "";
@@ -9975,6 +10609,10 @@ ${expanded}` : expanded;
       this.#enterToSendToggle.checked = settings.linkChat.enterToSend;
       this.#typingIndicatorsToggle.checked = settings.linkChat.typingIndicators;
       this.#imagePreviewSelect.value = settings.linkChat.imagePreviews;
+      this.#imageUploadsToggle.checked = settings.linkChat.imageUploads.enabled;
+      this.#cloudinaryCloudNameInput.value = settings.linkChat.imageUploads.cloudName;
+      this.#cloudinaryPresetInput.value = settings.linkChat.imageUploads.uploadPreset;
+      this.#renderImageUploadSettingsOptions();
       this.#retentionInput.value = settings.linkChat.retentionDays.toString();
       this.#renderQuickActionEditor(settings.linkChat.quickActions);
       this.#rosterEnabledToggle.checked = settings.linkRoster.enabled;
@@ -10012,6 +10650,12 @@ ${expanded}` : expanded;
         });
       }
     }
+    #renderImageUploadSettingsOptions() {
+      const enabled = this.#imageUploadsToggle.checked;
+      this.#imageUploadSettingsOptions.hidden = !enabled;
+      this.#cloudinaryCloudNameInput.disabled = !enabled;
+      this.#cloudinaryPresetInput.disabled = !enabled;
+    }
     #updateAccentPresets() {
       for (const swatch of this.#settingsPage.querySelectorAll(".kl-color-swatch")) {
         const selected = swatch.dataset.color === this.#accentInput.value.toLocaleLowerCase();
@@ -10026,6 +10670,17 @@ ${expanded}` : expanded;
       const retentionDays = Number(this.#retentionInput.value);
       const reactionRules = this.#readReactionRuleEditor();
       if (!reactionRules) return;
+      const imageUploadConfig = normalizeCloudinaryUploadConfig({
+        cloudName: this.#cloudinaryCloudNameInput.value,
+        uploadPreset: this.#cloudinaryPresetInput.value
+      });
+      if (this.#imageUploadsToggle.checked && !imageUploadConfig) {
+        this.#showSettingsSection("chat", true);
+        if (!this.#cloudinaryCloudNameInput.value.trim()) this.#cloudinaryCloudNameInput.focus();
+        else this.#cloudinaryPresetInput.focus();
+        this.#toast("Enter a valid Cloudinary cloud name and unsigned preset.", "error");
+        return;
+      }
       const currentSettings = this.settings.get();
       const launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
       const settings = this.settings.update((draft) => {
@@ -10043,6 +10698,11 @@ ${expanded}` : expanded;
         draft.linkChat.enterToSend = this.#enterToSendToggle.checked;
         draft.linkChat.typingIndicators = this.#typingIndicatorsToggle.checked;
         draft.linkChat.imagePreviews = this.#imagePreviewSelect.value === "always" || this.#imagePreviewSelect.value === "never" ? this.#imagePreviewSelect.value : "ask";
+        draft.linkChat.imageUploads = {
+          enabled: this.#imageUploadsToggle.checked && imageUploadConfig !== null,
+          cloudName: imageUploadConfig?.cloudName ?? "",
+          uploadPreset: imageUploadConfig?.uploadPreset ?? ""
+        };
         draft.linkChat.quickActions = this.#readQuickActionEditor();
         draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
         draft.linkRoster.trackEncounters = this.#rosterTrackingToggle.checked;
@@ -10477,8 +11137,8 @@ ${expanded}` : expanded;
       {
         section: "chat",
         title: "Chat & history",
-        detail: "Typing, images, Enter-to-send, history, retention, and Quick Actions",
-        keywords: "beep messages typing indicator realtime image picture preview privacy enter send newline save storage days clear wave hug boop template"
+        detail: "Typing, image links and uploads, history, retention, and Quick Actions",
+        keywords: "beep messages typing indicator realtime image picture preview upload local cloudinary preset privacy enter send newline save storage days clear wave hug boop template"
       },
       {
         section: "players",
@@ -10619,6 +11279,15 @@ ${expanded}` : expanded;
       hour: "2-digit",
       minute: "2-digit"
     }).format(new Date(timestamp));
+  }
+  function formatBytes(value) {
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  function imageUploadErrorMessage(error) {
+    const message = error instanceof Error ? error.message.trim() : "Unable to prepare this image";
+    return (message || "Unable to prepare this image").slice(0, 180);
   }
   async function copyText(value) {
     if (navigator.clipboard?.writeText) {
@@ -11356,7 +12025,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.16.0");
+    const app = new KikiLinkApp("0.17.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

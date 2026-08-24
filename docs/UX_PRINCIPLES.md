@@ -124,6 +124,8 @@ Before a UI release, verify:
 - Encounter retention never removes favorites or records containing notes or tags.
 - Remote images do not load without the user's chosen preview policy and always use a
   no-referrer request.
+- Choosing a local image causes no network request; upload requires a plainly labeled action,
+  strips the original filename and metadata, and explains that the resulting URL is public.
 - Long-press actions cancel when the pointer moves so they do not fight phone scrolling;
   every action also has a visible or keyboard-accessible path.
 - Presence distinguishes native facts, compatible peer state, and unavailable information.

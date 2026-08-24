@@ -33,10 +33,18 @@ export function element<K extends keyof HTMLElementTagNameMap>(
 export function debounce<Args extends unknown[]>(
   callback: (...args: Args) => void,
   delayMs: number,
-): (...args: Args) => void {
+): ((...args: Args) => void) & { cancel: () => void } {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  return (...args: Args) => {
+  const debounced = (...args: Args): void => {
     if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(() => callback(...args), delayMs);
+    timer = setTimeout(() => {
+      timer = undefined;
+      callback(...args);
+    }, delayMs);
   };
+  debounced.cancel = (): void => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+  return debounced;
 }

@@ -72,7 +72,8 @@ describe("BCAdapter", () => {
         MemberName: "AccountReina",
         Sent: false,
         Time: new Date(1000),
-        Message: "Recent hello",
+        Message:
+          'Recent hello\n\n\uf124{"messageType":"Message","messageColor":"#ffffff"}',
       },
     ];
 
@@ -226,7 +227,8 @@ describe("BCAdapter", () => {
       MemberNumber: 123,
       MemberName: "AccountReina",
       BeepType: null,
-      Message: "A live incoming Beep",
+      Message:
+        'A live incoming Beep\n\n\uf124{"messageType":"Message","messageColor":"#ffffff"}',
     });
     expect(incoming).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -396,7 +398,7 @@ describe("BCAdapter", () => {
       MemberNumber: 123,
       MemberName: "AccountReina",
       BeepType: null,
-      Message: "Only once",
+      Message: 'Only once\n\n\uf124{"messageType":"Message","messageColor":"#ffffff"}',
     };
     globalThis.ServerAccountBeep?.(duplicatePayload);
     globalThis.FriendListBeepLog.push({
@@ -404,7 +406,7 @@ describe("BCAdapter", () => {
       MemberName: "AccountReina",
       Sent: false,
       Time: new Date(),
-      Message: "Only once",
+      Message: 'Only once\n\n\uf124{"messageType":"Message","messageColor":"#ffffff"}',
     });
     vi.advanceTimersByTime(1_001);
     expect(incoming).toHaveBeenCalledTimes(2);

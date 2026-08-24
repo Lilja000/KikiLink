@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.16.0` makes notifications simple: one-switch friend and room alerts, distinct
-local sounds for chats and alerts, and the full rule editor tucked into an optional Advanced area.
+Version `0.17.0` cleans compatibility metadata out of received chat text and adds an optional,
+privacy-prepared local image flow through the user's own Cloudinary account.
 
 ## Link Deck
 
@@ -81,6 +81,11 @@ browser profile. KikiLink does not upload them to a server.
 - Direct HTTPS image messages that remain ordinary usable links for players without KikiLink
 - Pasted Markdown, BBCode, and color wrappers are reduced to the direct image URL before sending
 - Privacy-aware inline image previews: ask before loading, always show, or links only
+- Optional local JPG, PNG, and WebP uploads through a user-owned Cloudinary unsigned preset,
+  disabled until explicitly configured
+- Local privacy preparation before upload: validate the real file signature, remove the original
+  filename and embedded metadata, convert to WebP, and resize the longest edge to at most 2560 px
+- Choosing a file never starts a network request; only the explicit `Upload & send` action uploads it
 - Compact `Reply` and `Copy` icons beside messages, with plain-text quotes compatible with native Beeps
 - Private local nicknames for chats that never change outgoing content or another player's view
 - Remove one conversation from KikiLink recents and local history without unfriending the player
@@ -95,6 +100,8 @@ browser profile. KikiLink does not upload them to a server.
 - Optional room information on outgoing Beeps
 - Immediate outgoing-message display independent of the compatibility hook
 - Reliable live incoming-message capture across Bondage Club's null and empty normal Beep types
+- Strict removal of the known trailing `{"messageType":"Message","messageColor":"#ffffff"}`
+  compatibility envelope without stripping ordinary JSON-like user text
 - Smooth bounded rendering: 120 recent messages at once, incremental live append, and on-demand older history
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
@@ -160,7 +167,9 @@ assets from a remote server while the game is running.
 Standard Beeps use Bondage Club's own `ServerSendBeepMessage` path. LinkRoster
 uses the game's native Whisper and profile controls, and LinkActivities uses the
 native room-emote path. Image messages are ordinary HTTPS links, so other players
-do not need KikiLink to open them. No remote KikiLink server is used; message
+do not need KikiLink to open them. Optional local-file upload sends a privacy-prepared WebP
+only to the Cloudinary account configured by that user; it never passes through a KikiLink
+server. Otherwise no remote KikiLink server is used; message
 history, player notes, settings, and custom templates remain in the current browser
 profile. Presence uses small validated compatibility packets through Bondage Club:
 one hidden room handshake when needed and a point-to-point request for an opened chat,
@@ -220,7 +229,6 @@ KikiLink.getVersion();
 
 ## Planned modules
 
-- Privacy-reviewed optional media upload service for local files
 - Per-conversation notification controls and configurable hotkeys
 - Import/export of remaining settings
 - Stable/dev release channels and FUSAM listing

@@ -7,6 +7,7 @@ import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import type { KikiLinkEvents } from "../src/core/types";
 import { LinkActivitiesService } from "../src/modules/link-activities/link-activities-service";
 import { ChatService } from "../src/modules/link-chat/chat-service";
+import type { LocalImageUploader } from "../src/modules/link-chat/image-upload";
 import { LinkChatView } from "../src/modules/link-chat/view";
 import { LinkRosterService } from "../src/modules/link-roster/link-roster-service";
 import { LinkPresenceService } from "../src/modules/link-presence/link-presence-service";
@@ -549,6 +550,104 @@ describe("LinkChatView", () => {
     expect(settings.get().linkPresence.status).toBe("dnd");
     expect(shadow?.querySelector(".kl-presence-trigger")?.textContent).toContain("Do not disturb");
 
+    view.destroy();
+  });
+
+  it("keeps a selected local image offline until Upload & send is clicked", async () => {
+    const sendBeep = vi.fn((peerNumber: number, content: string, includeRoom: boolean) => ({
+      direction: "outgoing" as const,
+      peerNumber,
+      peerName: "Reina",
+      content,
+      sentAt: Date.now(),
+      includeRoom,
+    }));
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => false,
+      getRoomCharacters: () => [],
+      getCurrentRoomName: () => undefined,
+      isInChatRoom: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep,
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.linkChat.imageUploads = {
+        enabled: true,
+        cloudName: "sakura-cloud",
+        uploadPreset: "kikilink_unsigned",
+      };
+    });
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    const preparedBlob = new Blob([Uint8Array.of(1, 2, 3)], { type: "image/webp" });
+    const imageUploader: LocalImageUploader = {
+      prepare: vi.fn(async () => ({
+        blob: preparedBlob,
+        width: 640,
+        height: 480,
+        sourceBytes: 10,
+      })),
+      upload: vi.fn(async () =>
+        "https://res.cloudinary.com/sakura-cloud/image/upload/v1/photo.webp"),
+    };
+    const view = new LinkChatView(
+      adapter,
+      service,
+      settings,
+      "0.17.0",
+      undefined,
+      undefined,
+      undefined,
+      imageUploader,
+    );
+    view.mount();
+    await view.openChat(123, "Reina");
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".kl-attach-image")?.click();
+    shadow?.querySelector<HTMLButtonElement>("#kikilink-image-source-file")?.click();
+    const fileInput = shadow?.querySelector<HTMLInputElement>(
+      "#kikilink-image-file-panel input[type=file]",
+    );
+    if (!fileInput) throw new Error("Missing local image input");
+    const selected = new File([Uint8Array.of(0xff, 0xd8, 0xff)], "personal-name.jpg", {
+      type: "image/jpeg",
+    });
+    Object.defineProperty(fileInput, "files", { configurable: true, value: [selected] });
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(imageUploader.prepare).toHaveBeenCalledWith(selected);
+      expect(shadow?.querySelector(".kl-local-image-status")?.textContent).toContain(
+        "Prepared locally",
+      );
+    });
+    expect(imageUploader.upload).not.toHaveBeenCalled();
+    expect(sendBeep).not.toHaveBeenCalled();
+
+    shadow
+      ?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(imageUploader.upload).toHaveBeenCalledWith(
+        expect.objectContaining({ blob: preparedBlob, width: 640, height: 480 }),
+        { cloudName: "sakura-cloud", uploadPreset: "kikilink_unsigned" },
+      );
+      expect(sendBeep).toHaveBeenCalledWith(
+        123,
+        "https://res.cloudinary.com/sakura-cloud/image/upload/v1/photo.webp",
+        false,
+      );
+    });
     view.destroy();
   });
 

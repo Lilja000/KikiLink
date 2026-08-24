@@ -173,7 +173,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 11;
+  schemaVersion: 12;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -196,6 +196,11 @@ export interface KikiLinkSettings {
     enterToSend: boolean;
     typingIndicators: boolean;
     imagePreviews: ImagePreviewPreference;
+    imageUploads: {
+      enabled: boolean;
+      cloudName: string;
+      uploadPreset: string;
+    };
     quickActions: QuickAction[];
   };
   linkPresence: {
