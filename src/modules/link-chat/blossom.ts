@@ -8,6 +8,12 @@ const BADGE_SIZE = 32;
 
 export { BLOSSOM_ICON_DATA_URL };
 
+export function resolveMainDrawingContext(
+  canvas: CanvasRenderingContext2D | HTMLCanvasElement,
+): CanvasRenderingContext2D | null {
+  return "drawImage" in canvas ? canvas : canvas.getContext("2d");
+}
+
 /**
  * Draws KikiLink's quiet room badge in the open slot between common WCE and BCX
  * character indicators. The decoded SVG is cached by the browser and each frame
@@ -16,7 +22,7 @@ export { BLOSSOM_ICON_DATA_URL };
 export class RoomBlossomBadge {
   readonly #image = new Image();
   #ready = false;
-  #canvas: HTMLCanvasElement | undefined;
+  #canvas: CanvasRenderingContext2D | HTMLCanvasElement | undefined;
   #context: CanvasRenderingContext2D | null = null;
 
   constructor(
@@ -56,7 +62,7 @@ export class RoomBlossomBadge {
     if (typeof MainCanvas === "undefined") return;
     if (this.#canvas !== MainCanvas) {
       this.#canvas = MainCanvas;
-      this.#context = MainCanvas.getContext("2d");
+      this.#context = resolveMainDrawingContext(MainCanvas);
     }
     if (!this.#context) return;
 

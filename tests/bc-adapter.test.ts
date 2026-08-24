@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BCAdapter } from "../src/bc/adapter";
+import { BCAdapter, type BCCustomActivityIntegration } from "../src/bc/adapter";
 import { EventBus } from "../src/core/event-bus";
 import type { KikiLinkEvents } from "../src/core/types";
 
@@ -18,6 +18,10 @@ afterEach(() => {
     "ServerSocket",
     "ServerSendBeepMessage",
     "ChatRoomSendEmote",
+    "ChatRoomMessage",
+    "ActivityDictionaryText",
+    "ActivityRun",
+    "ElementButton",
     "ChatRoomDrawCharacterStatusIcons",
     "ChatRoomCharacterViewDrawOverlay",
     "ChatRoomHideIconState",
@@ -439,6 +443,91 @@ describe("BCAdapter", () => {
 
     expect(nativeOverlay).toHaveBeenCalledWith(character, 120, 30, 0.75);
     expect(renderer).toHaveBeenCalledWith(character, 120, 30, 0.75);
+    adapter.stop();
+  });
+
+  it("shares native activity hooks and handles only registered custom actions", async () => {
+    const nativeMessage = vi.fn();
+    const nativeDictionary = vi.fn((keyword: string) => `native:${keyword}`);
+    const nativeRun = vi.fn();
+    const nativeCreateButton = vi.fn(
+      (
+        _idPrefix: string | null,
+        _activity: BCItemActivity,
+        _character: BCCharacter,
+        _onClick: () => void,
+        options?: { image?: string },
+      ) => {
+        const button = document.createElement("button");
+        button.dataset.image = options?.image ?? "native";
+        return button;
+      },
+    );
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ServerSendBeepMessage = vi.fn();
+    globalThis.ChatRoomMessage = nativeMessage;
+    globalThis.ActivityDictionaryText = nativeDictionary;
+    globalThis.ActivityRun = nativeRun;
+    Object.assign(globalThis, {
+      ElementButton: { CreateForActivity: nativeCreateButton },
+    });
+
+    const customName = "KikiLinkCustom_test";
+    const integration: BCCustomActivityIntegration = {
+      resolveText: vi.fn((keyword) =>
+        keyword === `Activity${customName}` ? "Elbow touch" : undefined,
+      ),
+      resolveImage: vi.fn((activityName) =>
+        activityName === customName ? "Assets/Female3DCG/Activity/Caress.png" : undefined,
+      ),
+      run: vi.fn((_actor, _acted, _group, itemActivity) =>
+        itemActivity.Activity.Name === customName,
+      ),
+      decorateButton: vi.fn((button, itemActivity) => {
+        if (itemActivity.Activity.Name === customName) button.dataset.blossom = "true";
+      }),
+      onRoomMessage: vi.fn(),
+    };
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.19.0");
+    adapter.registerCustomActivityIntegration(integration);
+    await adapter.start();
+
+    expect(globalThis.ActivityDictionaryText(`Activity${customName}`)).toBe("Elbow touch");
+    expect(globalThis.ActivityDictionaryText("ActivityCaress")).toBe("native:ActivityCaress");
+
+    const actor = globalThis.Player;
+    const acted = { MemberNumber: 123, Name: "Reina" };
+    const group = { Name: "ItemArms", Description: "Arms", Category: "Item" as const };
+    const custom = {
+      Activity: { Name: customName, MaxProgress: 0, Prerequisite: [], Target: ["ItemArms"] },
+      Group: "ItemArms",
+    };
+    const vanilla = {
+      Activity: { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
+      Group: "ItemArms",
+    };
+    globalThis.ActivityRun(actor, acted, group, custom);
+    globalThis.ActivityRun(actor, acted, group, vanilla);
+    expect(integration.run).toHaveBeenCalledTimes(2);
+    expect(nativeRun).toHaveBeenCalledOnce();
+
+    const customButton = globalThis.ElementButton.CreateForActivity(
+      null,
+      custom,
+      acted,
+      () => undefined,
+    );
+    expect(customButton.dataset.image).toBe("Assets/Female3DCG/Activity/Caress.png");
+    expect(customButton.dataset.blossom).toBe("true");
+
+    const message = { Type: "Action", Content: "KikiLinkCustomActivity", Sender: 123 };
+    globalThis.ChatRoomMessage(message);
+    expect(integration.onRoomMessage).toHaveBeenCalledWith(message);
+    expect(nativeMessage).toHaveBeenCalledWith(message);
     adapter.stop();
   });
 });

@@ -11,21 +11,21 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.18.0` introduces KikiLink's translucent red blossom identity, calms chat scrolling,
-refreshes message styling, and reduces rendering and bundle overhead.
+Version `0.19.0` adds native Custom Activities: choose a body slot and vanilla picture, write
+your own action, optionally add bounded arousal, and find it beside normal activities with a Blossom.
 
 ## Link Deck
 
 - The floating emblem opens a clear feature home instead of dropping straight into chat
 - Guided Home surfaces one useful next step: read unread Beeps, begin a first chat, view
   the current room, or continue the most recent conversation
-- Four action-first cards use familiar names and visible verbs: Chat, Players, Activities,
+- Four action-first cards use familiar names and visible verbs: Chat, Players, Custom Activities,
   and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
 - Your KikiLink presence is always one quiet top-bar control away
-- Four clear primary destinations: Home, Chat, Players, and Activities
+- Four clear primary destinations: Home, Chat, Players, and Custom Activities
 - Persistent feature rail on desktop and a focused four-item bottom bar on phones
-- Players and Activities now stay inside the workspace instead of opening blocking dialogs
+- Players and Custom Activities stay inside the workspace instead of opening blocking dialogs
 - Settings is a full workspace with Appearance, Navigation, Chat, Players, Activities, and Alerts categories
 - Configurable launcher behavior: open Home, the last section, or LinkChat directly
 - Dark lacquer, light paper, and system themes with five accent presets or any custom color
@@ -109,22 +109,27 @@ browser profile. KikiLink does not upload them to a server.
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
 
-## LinkActivities
+## Custom Activities
 
-- Optional Activities destination, disabled by default
-- Current-room target picker with nickname and member-number search
-- Five original starter activities with categories, pack metadata, and live room preview
-- Two additional built-in packs that can be added without duplicating existing activities
-- Search by label, template, category, or pack, with Favorites, Category, and Pack filters
-- One-click favorites that rise to the top of the activity library
-- Editable activity library with up to 100 custom actions
-- Versioned local JSON export and merge-safe import for moving the complete library between browsers
-- `{target}`, `{member}`, and `{source}` template variables
-- Standard Bondage Club room emotes that remain visible to players without KikiLink
-- Safe target revalidation immediately before an action is sent
+- A dedicated Custom Activities destination, visible by default and optional in Settings
+- An intentionally empty starting library: KikiLink does not make choices for the player
+- A focused creator that renders the current character and lets the player tap a body slot
+- An accessible body-slot selector remains available alongside the character view
+- Vanilla Bondage Club activity pictures can be searched and reused without remote assets
+- Quick `{me}`, `{target}`, `{target's}`, and `{target's gender}` variables with a live preview
+- Other-character targeting by default; self-only and both modes live inside `Advanced`
+- Optional arousal is off by default and exposes a bounded `1–20` base-amount slider only when enabled
+- Saved actions are registered beside vanilla activities on the selected body slot
+- Every native custom-activity button carries KikiLink's translucent Blossom marker
+- Other players receive one ordinary finished action sentence, including players without KikiLink
+- Compatible KikiLink recipients validate sender, target, body group, amount, and nonce before handing
+  optional arousal to Bondage Club's own preference-aware activity system
+- Up to 100 local actions; invalid names, paths, amounts, duplicate IDs, and oversized fields are sanitized
+- Schema-13 migration preserves user-written legacy actions while removing the old bundled starter pack
 
-LinkActivities sends descriptive roleplay emotes only. It does not alter another
-character's items, pose, permissions, or game state.
+Custom Activities never change items, poses, or permissions. Optional arousal is the only gameplay
+effect and must be enabled per activity; a recipient without KikiLink still sees the action text but
+does not process the KikiLink arousal metadata.
 
 ## LinkReactions
 
@@ -142,7 +147,7 @@ character's items, pose, permissions, or game state.
 
 Alert choices and rules stay in the current browser profile. Sounds are synthesized locally with
 the browser audio API, so KikiLink downloads no audio files. Advanced room-emote rules use the
-same native Bondage Club emote path as LinkActivities and are visible to everyone in the room.
+same native Bondage Club emote path and are visible to everyone in the room.
 
 ## Interface
 
@@ -171,8 +176,8 @@ assets from a remote server while the game is running. Replacing the old embedde
 the public userscript roughly 27% smaller.
 
 Standard Beeps use Bondage Club's own `ServerSendBeepMessage` path. LinkRoster
-uses the game's native Whisper and profile controls, and LinkActivities uses the
-native room-emote path. Image messages are ordinary HTTPS links, so other players
+uses the game's native Whisper and profile controls, and Custom Activities extend
+the game's native activity registry and action path. Image messages are ordinary HTTPS links, so other players
 do not need KikiLink to open them. Optional local-file upload sends a privacy-prepared WebP
 only to the Cloudinary account configured by that user; it never passes through a KikiLink
 server. Otherwise no remote KikiLink server is used; message
@@ -187,7 +192,7 @@ never a background Beep broadcast to every friend.
 src/
   bc/                 Bondage Club compatibility adapter
   core/               Event bus, settings, lifecycle, module registry
-  modules/link-activities/  Activity templates and native room action service
+  modules/link-activities/  Native custom-activity registry, editor, migration, and safety
   modules/link-chat/  LinkChat service and Shadow DOM interface
   modules/link-presence/ Presence state, native-online merge, and compatibility protocol
   modules/link-reactions/ Local event rules and guarded reaction execution

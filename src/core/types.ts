@@ -67,6 +67,21 @@ export interface RoomActivity {
   favorite: boolean;
 }
 
+export type CustomActivityTargetMode = "other" | "self" | "both";
+
+/** A user-created activity registered beside Bondage Club's native activities. */
+export interface CustomActivityDefinition {
+  id: string;
+  name: string;
+  targetGroup: string;
+  targetMode: CustomActivityTargetMode;
+  template: string;
+  /** Name of a vanilla activity whose icon should be reused. */
+  image: string;
+  /** Base arousal amount handed to Bondage Club's preference-aware effect. Zero disables it. */
+  arousal: number;
+}
+
 export interface ReactionRule {
   id: string;
   label: string;
@@ -173,7 +188,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 12;
+  schemaVersion: 13;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -211,7 +226,7 @@ export interface KikiLinkSettings {
   };
   linkActivities: {
     enabled: boolean;
-    activities: RoomActivity[];
+    customActivities: CustomActivityDefinition[];
   };
   linkRoster: {
     enabled: boolean;

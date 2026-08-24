@@ -14,6 +14,7 @@ export class LinkChatModule implements KikiLinkModule {
   readonly #unsubscribers: Array<() => void> = [];
   #context: KikiLinkContext | undefined;
   #service: ChatService | undefined;
+  #activities: LinkActivitiesService | undefined;
   #roster: LinkRosterService | undefined;
   #presence: LinkPresenceService | undefined;
   #roomBadge: RoomBlossomBadge | undefined;
@@ -28,7 +29,8 @@ export class LinkChatModule implements KikiLinkModule {
   start(context: KikiLinkContext): void {
     this.#context = context;
     this.#service = new ChatService(context.repository, context.settings);
-    const activities = new LinkActivitiesService(context.adapter);
+    this.#activities = new LinkActivitiesService(context.adapter, context.settings);
+    this.#activities.start();
     this.#roster = new LinkRosterService(
       context.adapter,
       new PeopleRepository(),
@@ -52,7 +54,7 @@ export class LinkChatModule implements KikiLinkModule {
       this.#service,
       context.settings,
       context.version,
-      activities,
+      this.#activities,
       this.#roster,
       this.#presence,
     );
@@ -63,6 +65,7 @@ export class LinkChatModule implements KikiLinkModule {
         this.#view?.setConnectionState(state, message),
       ),
       context.bus.on("bc:ready", () => {
+        this.#activities?.syncFromSettings();
         void this.#importRecentBeeps();
         this.#syncRoster();
       }),
@@ -85,6 +88,8 @@ export class LinkChatModule implements KikiLinkModule {
     for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
     this.#view?.destroy();
     this.#view = undefined;
+    this.#activities?.stop();
+    this.#activities = undefined;
     this.#roomBadgeUnsubscribe?.();
     this.#roomBadgeUnsubscribe = undefined;
     this.#roomBadge = undefined;

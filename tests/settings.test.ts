@@ -13,6 +13,10 @@ describe("SettingsStore", () => {
     settings.ui.accent = "#000000";
 
     expect(store.get()).toEqual(DEFAULT_SETTINGS);
+    expect(store.get().linkActivities).toEqual({
+      enabled: true,
+      customActivities: [],
+    });
   });
 
   it("persists validated updates", () => {
@@ -128,23 +132,25 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(12);
+    expect(settings.schemaVersion).toBe(13);
     expect(settings.linkActivities).toEqual({
-      enabled: false,
-      activities: [
+      enabled: true,
+      customActivities: [
         {
-          label: "Sakura greeting",
+          id: "legacy-sakura-greeting",
+          name: "Sakura greeting",
+          targetGroup: "ItemArms",
+          targetMode: "other",
           template: "bows to {target}.",
-          category: "Uncategorized",
-          pack: "My Activities",
-          favorite: false,
+          image: "Caress",
+          arousal: 0,
         },
       ],
     });
     expect(settings.linkRoster).toEqual(DEFAULT_SETTINGS.linkRoster);
   });
 
-  it("recognizes the original starter activities while migrating schema 8", () => {
+  it("drops the old bundled starter pack so the new custom library starts empty", () => {
     const settings = sanitizeSettings({
       schemaVersion: 8,
       linkActivities: {
@@ -158,25 +164,101 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.linkActivities.activities).toEqual([
+    expect(settings.linkActivities.customActivities).toEqual([]);
+  });
+
+  it("sanitizes schema-13 custom activities and keeps duplicate IDs unique", () => {
+    const longId = "a".repeat(64);
+    const settings = sanitizeSettings({
+      schemaVersion: 13,
+      linkActivities: {
+        enabled: true,
+        customActivities: [
+          {
+            id: "  elbow touch  ",
+            name: "  Elbow\u0000 touch  ",
+            targetGroup: "ItemArms",
+            targetMode: "both",
+            template: "  {me} touches {target}.  ",
+            image: "Caress",
+            arousal: 7,
+          },
+          {
+            id: "elbow-touch",
+            name: "Second",
+            targetGroup: "../../bad",
+            targetMode: "everyone",
+            template: "waves to {target}",
+            image: "bad/path",
+            arousal: 99,
+          },
+          {
+            id: longId,
+            name: "Long ID one",
+            targetGroup: "ItemHands",
+            template: "waves",
+            image: "Nod",
+          },
+          {
+            id: longId,
+            name: "Long ID two",
+            targetGroup: "ItemHands",
+            template: "nods",
+            image: "Nod",
+          },
+        ],
+      },
+    });
+
+    expect(settings.linkActivities.customActivities).toEqual([
       {
-        label: "Sakura bow",
-        template: "bows gracefully to {target}, as if sakura petals drifted between them.",
-        category: "Greetings",
-        pack: "KikiLink Starter",
-        favorite: true,
+        id: "elbow-touch",
+        name: "Elbow touch",
+        targetGroup: "ItemArms",
+        targetMode: "both",
+        template: "{me} touches {target}.",
+        image: "Caress",
+        arousal: 7,
+      },
+      {
+        id: "elbow-touch-2",
+        name: "Second",
+        targetGroup: "ItemArms",
+        targetMode: "other",
+        template: "waves to {target}",
+        image: "Caress",
+        arousal: 0,
+      },
+      {
+        id: longId,
+        name: "Long ID one",
+        targetGroup: "ItemHands",
+        targetMode: "other",
+        template: "waves",
+        image: "Nod",
+        arousal: 0,
+      },
+      {
+        id: `${"a".repeat(62)}-2`,
+        name: "Long ID two",
+        targetGroup: "ItemHands",
+        targetMode: "other",
+        template: "nods",
+        image: "Nod",
+        arousal: 0,
       },
     ]);
   });
 
-  it("demotes the 0.4 Activity shortcut while adding LinkRoster", () => {
+  it("promotes the new empty Custom Activities tab while adding LinkRoster", () => {
     const settings = sanitizeSettings({
       schemaVersion: 2,
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(12);
-    expect(settings.linkActivities.enabled).toBe(false);
+    expect(settings.schemaVersion).toBe(13);
+    expect(settings.linkActivities.enabled).toBe(true);
+    expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
       enabled: true,
       trackEncounters: true,
@@ -198,7 +280,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(12);
+    expect(settings.schemaVersion).toBe(13);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -262,7 +344,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(12);
+    expect(settings.schemaVersion).toBe(13);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,

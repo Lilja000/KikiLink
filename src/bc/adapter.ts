@@ -29,6 +29,19 @@ export type BCCharacterOverlayRenderer = (
   zoom: number,
 ) => void;
 
+export interface BCCustomActivityIntegration {
+  resolveText(keyword: string): string | undefined;
+  resolveImage(activityName: string): string | undefined;
+  run(
+    actor: BCCharacter,
+    acted: BCCharacter,
+    targetGroup: BCAssetGroup,
+    itemActivity: BCItemActivity,
+  ): boolean;
+  decorateButton(button: HTMLButtonElement, itemActivity: BCItemActivity): void;
+  onRoomMessage(message: BCChatRoomMessage): void;
+}
+
 export class BCAdapter {
   readonly #logger = new Logger("bc");
   readonly #unhooks: Array<() => void> = [];
@@ -36,6 +49,7 @@ export class BCAdapter {
   readonly #onlineFriends = new Map<number, OnlineFriend>();
   readonly #recentIncoming: RecentIncoming[] = [];
   readonly #characterOverlayRenderers = new Set<BCCharacterOverlayRenderer>();
+  readonly #customActivityIntegrations = new Set<BCCustomActivityIntegration>();
   #modApi: ModSDKModAPI | undefined;
   #socket: BCServerSocket | undefined;
   #socketRebindTimer: ReturnType<typeof setInterval> | undefined;
@@ -115,6 +129,11 @@ export class BCAdapter {
   registerCharacterOverlay(renderer: BCCharacterOverlayRenderer): () => void {
     this.#characterOverlayRenderers.add(renderer);
     return () => this.#characterOverlayRenderers.delete(renderer);
+  }
+
+  registerCustomActivityIntegration(integration: BCCustomActivityIntegration): () => void {
+    this.#customActivityIntegrations.add(integration);
+    return () => this.#customActivityIntegrations.delete(integration);
   }
 
   refreshOnlineFriends(): boolean {
@@ -418,7 +437,61 @@ export class BCAdapter {
         modApi.hookFunction("ChatRoomMessage", 0, (args, next) => {
           const protocol = this.#normalizeRoomProtocol(args[0]);
           if (protocol) this.bus.emit("bc:protocol", protocol);
+          this.#notifyCustomActivityMessage(args[0]);
           return next(args);
+        }),
+      );
+    }
+    if (typeof ActivityDictionaryText === "function") {
+      this.#tryInstallHook("ActivityDictionaryText", () =>
+        modApi.hookFunction("ActivityDictionaryText", 10, (args, next) => {
+          const keyword = typeof args[0] === "string" ? args[0] : "";
+          for (const integration of [...this.#customActivityIntegrations]) {
+            const text = this.#callActivityIntegration(integration, () =>
+              integration.resolveText(keyword),
+            );
+            if (text !== undefined) return text;
+          }
+          return next(args);
+        }),
+      );
+    }
+    if (typeof ActivityRun === "function") {
+      this.#tryInstallHook("ActivityRun", () =>
+        modApi.hookFunction("ActivityRun", 10, (args, next) => {
+          for (const integration of [...this.#customActivityIntegrations]) {
+            const handled = this.#callActivityIntegration(integration, () =>
+              integration.run(args[0], args[1], args[2], args[3]),
+            );
+            if (handled) return undefined;
+          }
+          return next(args);
+        }),
+      );
+    }
+    if (typeof ElementButton === "object" && typeof ElementButton.CreateForActivity === "function") {
+      this.#tryInstallHook("ElementButton.CreateForActivity", () =>
+        modApi.hookFunction("ElementButton.CreateForActivity", 10, (args, next) => {
+          const itemActivity = args[1];
+          const activityName = itemActivity?.Activity?.Name;
+          if (typeof activityName === "string") {
+            for (const integration of [...this.#customActivityIntegrations]) {
+              const image = this.#callActivityIntegration(integration, () =>
+                integration.resolveImage(activityName),
+              );
+              if (image !== undefined) {
+                args[4] = { ...(args[4] ?? {}), image };
+                break;
+              }
+            }
+          }
+          const button = next(args);
+          for (const integration of [...this.#customActivityIntegrations]) {
+            this.#callActivityIntegration(integration, () => {
+              integration.decorateButton(button, itemActivity);
+            });
+          }
+          return button;
         }),
       );
     }
@@ -464,6 +537,25 @@ export class BCAdapter {
         this.#characterOverlayRenderers.delete(renderer);
         this.#logger.warn("Disabled a failing character overlay renderer", error);
       }
+    }
+  }
+
+  #notifyCustomActivityMessage(message: BCChatRoomMessage): void {
+    for (const integration of [...this.#customActivityIntegrations]) {
+      this.#callActivityIntegration(integration, () => integration.onRoomMessage(message));
+    }
+  }
+
+  #callActivityIntegration<T>(
+    integration: BCCustomActivityIntegration,
+    call: () => T,
+  ): T | undefined {
+    try {
+      return call();
+    } catch (error) {
+      this.#customActivityIntegrations.delete(integration);
+      this.#logger.warn("Disabled a failing custom activity integration", error);
+      return undefined;
     }
   }
 

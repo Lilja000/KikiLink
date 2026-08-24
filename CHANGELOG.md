@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.19.0 - 2026-08-24
+
+- Replaced the old target-first Activity Studio with a dedicated Custom Activities workspace that
+  starts empty and keeps the first screen to one clear `New activity` action.
+- Added a character body-slot editor using Bondage Club's current player render and native zone data,
+  with a normal select fallback for touch, keyboard, and unusual game layouts.
+- Added a searchable gallery that reuses vanilla activity pictures, quick `{me}`, `{target}`,
+  `{target's}`, and pronoun variables, and a finished-sentence live preview.
+- Put self/other targeting in a collapsed `Advanced` section and made arousal an off-by-default,
+  bounded `1–20` control that is shown only after its switch is enabled.
+- Register saved actions directly beside vanilla activities on their chosen body slot, remove stale
+  registrations before every sync, and mark each native button with the translucent Blossom.
+- Send one ordinary human-readable action to the room while carrying validated KikiLink metadata;
+  players without KikiLink see the sentence, never a raw configuration envelope.
+- Apply optional arousal through Bondage Club's native preference-aware flat activity effect only after
+  validating the server sender, intended recipient, group, amount, and replay nonce.
+- Migrated settings to schema version 13, preserved user-written legacy actions, intentionally removed
+  the former bundled starter activities, and kept the library bound to 100 sanitized entries.
+- Removed the retired Activity Studio renderer, editor, import UI, and unused responsive styles from
+  the runtime bundle instead of carrying two activity interfaces at once.
+- Fixed the room Blossom overlay for Bondage Club builds where `MainCanvas` is already a drawing context,
+  retained native and other-addon hook chains, and expanded the suite to 102 tests.
+
 ## 0.18.0 - 2026-08-24
 
 - Added KikiLink's original translucent red five-petal blossom and applied it consistently to the

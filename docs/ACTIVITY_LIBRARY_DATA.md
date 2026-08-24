@@ -1,32 +1,58 @@
-# Activity library data
+# Custom Activities data and compatibility
 
-KikiLink 0.14.0 makes LinkActivities portable without adding an account, cloud service,
-or remote activity index.
+KikiLink 0.19.0 stores user-created activities locally and registers them beside Bondage Club's
+vanilla activities at runtime. No account, cloud library, or remote activity index is involved.
 
-## Library model
+## Local model
 
-Every activity has a label, room-emote template, category, pack name, and local favorite flag.
-The editor keeps at most 100 complete activities. Existing activities from older KikiLink
-versions are migrated safely; the five original defaults are recognized as the `KikiLink Starter`
-pack, while other legacy entries become `Uncategorized` activities in `My Activities`.
+Each complete activity contains:
 
-Built-in packs are merged into the current editor and are not saved until the user chooses
-`Save changes`. Installing the same pack again does not duplicate its activities.
+- a stable local ID and display name;
+- one native target body group;
+- an `other`, `self`, or `both` target mode;
+- a text template of at most 500 characters;
+- the name of a vanilla activity picture to reuse; and
+- an optional arousal base amount from `0` (off) through `20`.
 
-## Backup format
+The library starts empty and is limited to 100 complete entries. Text controls are normalized,
+asset and image names must be simple Bondage Club identifiers, duplicate IDs are made unique, and
+invalid target modes or amounts fall back to safe defaults.
 
-- Export creates readable JSON with format `kikilink-activity-library` and version `1`.
-- The backup contains an export timestamp and the sanitized activity fields only.
-- Import accepts only that versioned KikiLink format and rejects files larger than 1 MB in the UI.
-- At most 100 sanitized activities are retained, matching the editor and settings bound.
+## Runtime registration
 
-## Merge rules
+KikiLink derives a private runtime name from each local ID, then appends an activity definition to
+Bondage Club's `ActivityFemale3DCG` registry and ordering list. Before every sync and during unload,
+all names under KikiLink's prefix are removed first. This makes updates idempotent and prevents
+duplicates after editing, reconnecting, or reloading the addon.
 
-- Label and template, compared without surrounding whitespace or letter case, identify duplicates.
-- A matching local activity remains in place, so its category and pack are not silently overwritten.
-- A favorite is preserved when either the local or imported copy is favorite.
-- New valid activities are appended until the 100-activity bound is reached.
-- Invalid, excess, and duplicate entries are counted and reported after import.
+The activity uses `MaxProgress: 0`; optional arousal is not delegated to the vanilla activity cap.
+KikiLink intercepts only its own runtime names, reuses the chosen vanilla picture, and appends the
+Blossom marker after Bondage Club creates the native button. Other activities and hook handlers keep
+their normal chain.
 
-All processing happens in the browser. Export writes only to the file the user chooses;
-KikiLink does not upload activity templates, categories, packs, or favorites.
+## Visible action and optional effect
+
+The sender expands the template into one finished sentence before publishing it as a normal custom
+Bondage Club action. A missing-interface dictionary entry contains that human-readable sentence, so
+players without KikiLink can still read it. Variables and configuration objects are never used as
+the visible chat text.
+
+When arousal is enabled, a second dictionary entry carries a compact metadata object containing the
+protocol version, server sender, intended recipient, body group, base amount, and one-time nonce. A
+receiving KikiLink instance checks all fields, confirms the sender is in the current room, enforces
+the `0–20` bound, and rejects replayed nonces before calling Bondage Club's preference-aware
+`ActivityEffectFlat` API. Players without KikiLink simply ignore this metadata.
+
+## Schema-13 migration
+
+The former KikiLink Starter pack is intentionally discarded so the new library honors the empty
+default. Legacy user-written room actions are preserved and converted with:
+
+- their label as the new name;
+- `ItemArms` as an editable initial body group;
+- other-character targeting;
+- the vanilla `Caress` picture;
+- arousal off; and
+- legacy `{source}` changed to `{me}`.
+
+All processing and persistence remain in the current browser profile.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.18.0
+// @version      0.19.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -291,6 +291,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #onlineFriends = /* @__PURE__ */ new Map();
     #recentIncoming = [];
     #characterOverlayRenderers = /* @__PURE__ */ new Set();
+    #customActivityIntegrations = /* @__PURE__ */ new Set();
     #modApi;
     #socket;
     #socketRebindTimer;
@@ -355,6 +356,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
     registerCharacterOverlay(renderer) {
       this.#characterOverlayRenderers.add(renderer);
       return () => this.#characterOverlayRenderers.delete(renderer);
+    }
+    registerCustomActivityIntegration(integration) {
+      this.#customActivityIntegrations.add(integration);
+      return () => this.#customActivityIntegrations.delete(integration);
     }
     refreshOnlineFriends() {
       if (typeof ServerSend !== "function" || !this.#ready) return false;
@@ -606,7 +611,67 @@ One of mods you are using is using an old version of SDK. It will work for now b
           () => modApi.hookFunction("ChatRoomMessage", 0, (args, next) => {
             const protocol = this.#normalizeRoomProtocol(args[0]);
             if (protocol) this.bus.emit("bc:protocol", protocol);
+            this.#notifyCustomActivityMessage(args[0]);
             return next(args);
+          })
+        );
+      }
+      if (typeof ActivityDictionaryText === "function") {
+        this.#tryInstallHook(
+          "ActivityDictionaryText",
+          () => modApi.hookFunction("ActivityDictionaryText", 10, (args, next) => {
+            const keyword = typeof args[0] === "string" ? args[0] : "";
+            for (const integration of [...this.#customActivityIntegrations]) {
+              const text = this.#callActivityIntegration(
+                integration,
+                () => integration.resolveText(keyword)
+              );
+              if (text !== void 0) return text;
+            }
+            return next(args);
+          })
+        );
+      }
+      if (typeof ActivityRun === "function") {
+        this.#tryInstallHook(
+          "ActivityRun",
+          () => modApi.hookFunction("ActivityRun", 10, (args, next) => {
+            for (const integration of [...this.#customActivityIntegrations]) {
+              const handled = this.#callActivityIntegration(
+                integration,
+                () => integration.run(args[0], args[1], args[2], args[3])
+              );
+              if (handled) return void 0;
+            }
+            return next(args);
+          })
+        );
+      }
+      if (typeof ElementButton === "object" && typeof ElementButton.CreateForActivity === "function") {
+        this.#tryInstallHook(
+          "ElementButton.CreateForActivity",
+          () => modApi.hookFunction("ElementButton.CreateForActivity", 10, (args, next) => {
+            const itemActivity = args[1];
+            const activityName = itemActivity?.Activity?.Name;
+            if (typeof activityName === "string") {
+              for (const integration of [...this.#customActivityIntegrations]) {
+                const image = this.#callActivityIntegration(
+                  integration,
+                  () => integration.resolveImage(activityName)
+                );
+                if (image !== void 0) {
+                  args[4] = { ...args[4] ?? {}, image };
+                  break;
+                }
+              }
+            }
+            const button = next(args);
+            for (const integration of [...this.#customActivityIntegrations]) {
+              this.#callActivityIntegration(integration, () => {
+                integration.decorateButton(button, itemActivity);
+              });
+            }
+            return button;
           })
         );
       }
@@ -649,6 +714,20 @@ One of mods you are using is using an old version of SDK. It will work for now b
           this.#characterOverlayRenderers.delete(renderer);
           this.#logger.warn("Disabled a failing character overlay renderer", error);
         }
+      }
+    }
+    #notifyCustomActivityMessage(message) {
+      for (const integration of [...this.#customActivityIntegrations]) {
+        this.#callActivityIntegration(integration, () => integration.onRoomMessage(message));
+      }
+    }
+    #callActivityIntegration(integration, call) {
+      try {
+        return call();
+      } catch (error) {
+        this.#customActivityIntegrations.delete(integration);
+        this.#logger.warn("Disabled a failing custom activity integration", error);
+        return void 0;
       }
     }
     #tryInstallHook(name, install) {
@@ -1108,227 +1187,122 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return alias || void 0;
   }
 
-  // src/modules/link-activities/activity-library.ts
-  var MAX_ROOM_ACTIVITIES = 100;
-  var ACTIVITY_LIBRARY_FORMAT = "kikilink-activity-library";
-  var ACTIVITY_LIBRARY_VERSION = 1;
-  var ACTIVITY_PACK_PRESETS = [
-    {
-      id: "kikilink-starter",
-      name: "KikiLink Starter",
-      description: "The five original KikiLink room activities.",
-      activities: [
-        roomActivity(
-          "Sakura bow",
-          "bows gracefully to {target}, as if sakura petals drifted between them.",
-          "Greetings",
-          "KikiLink Starter",
-          true
-        ),
-        roomActivity(
-          "Wolf greeting",
-          "greets {target} with a warm, playful wolfish grin.",
-          "Greetings",
-          "KikiLink Starter",
-          true
-        ),
-        roomActivity(
-          "Inspect knots",
-          "circles {target}, carefully inspecting every knot.",
-          "Scene",
-          "KikiLink Starter"
-        ),
-        roomActivity(
-          "Offer hand",
-          "offers {target} a hand with an inviting smile.",
-          "Care",
-          "KikiLink Starter"
-        ),
-        roomActivity(
-          "Moonlit promise",
-          "touches two fingers to their heart, then gestures solemnly toward {target}.",
-          "Roleplay",
-          "KikiLink Starter"
-        )
-      ]
-    },
-    {
-      id: "social-gestures",
-      name: "Social Gestures",
-      description: "Warm greetings and small social flourishes for a busy room.",
-      activities: [
-        roomActivity("Friendly wave", "waves warmly to {target}.", "Greetings", "Social Gestures"),
-        roomActivity(
-          "Playful wink",
-          "gives {target} a quick, playful wink.",
-          "Greetings",
-          "Social Gestures"
-        ),
-        roomActivity(
-          "Formal curtsey",
-          "offers {target} a graceful, carefully measured curtsey.",
-          "Greetings",
-          "Social Gestures"
-        ),
-        roomActivity(
-          "Welcome smile",
-          "welcomes {target} with a bright, reassuring smile.",
-          "Care",
-          "Social Gestures"
-        ),
-        roomActivity(
-          "Quiet toast",
-          "raises an imaginary glass toward {target} in a quiet toast.",
-          "Roleplay",
-          "Social Gestures"
-        )
-      ]
-    },
-    {
-      id: "scene-flourishes",
-      name: "Scene Flourishes",
-      description: "Reusable movements for adding atmosphere without changing game state.",
-      activities: [
-        roomActivity(
-          "Check comfort",
-          "pauses beside {target}, carefully checking that everything still looks comfortable.",
-          "Care",
-          "Scene Flourishes"
-        ),
-        roomActivity(
-          "Stand guard",
-          "takes position beside {target}, watching the room attentively.",
-          "Scene",
-          "Scene Flourishes"
-        ),
-        roomActivity(
-          "Slow circle",
-          "walks a slow circle around {target}, studying their expression.",
-          "Scene",
-          "Scene Flourishes"
-        ),
-        roomActivity(
-          "Measured nod",
-          "meets {target}'s gaze and gives a slow, deliberate nod.",
-          "Roleplay",
-          "Scene Flourishes"
-        ),
-        roomActivity(
-          "Quiet reassurance",
-          "leans closer to {target} and offers a few quiet words of reassurance.",
-          "Care",
-          "Scene Flourishes"
-        )
-      ]
+  // src/modules/link-activities/custom-activity-library.ts
+  var MAX_CUSTOM_ACTIVITIES = 100;
+  var DEFAULT_CUSTOM_ACTIVITY_GROUP = "ItemArms";
+  var DEFAULT_CUSTOM_ACTIVITY_IMAGE = "Caress";
+  var SAFE_ASSET_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
+  var OLD_STARTER_FINGERPRINTS = /* @__PURE__ */ new Set([
+    "sakura bow\0bows gracefully to {target}, as if sakura petals drifted between them.",
+    "wolf greeting\0greets {target} with a warm, playful wolfish grin.",
+    "inspect knots\0circles {target}, carefully inspecting every knot.",
+    "offer hand\0offers {target} a hand with an inviting smile.",
+    "moonlit promise\0touches two fingers to their heart, then gestures solemnly toward {target}."
+  ]);
+  function createCustomActivityId(now = Date.now()) {
+    const random = Math.random().toString(36).slice(2, 8);
+    return `activity-${now.toString(36)}-${random}`;
+  }
+  function createBlankCustomActivity(id = createCustomActivityId()) {
+    return {
+      id,
+      name: "",
+      targetGroup: DEFAULT_CUSTOM_ACTIVITY_GROUP,
+      targetMode: "other",
+      template: "{me} touches {target's} arm.",
+      image: DEFAULT_CUSTOM_ACTIVITY_IMAGE,
+      arousal: 0
+    };
+  }
+  function sanitizeCustomActivities(value) {
+    if (!Array.isArray(value)) return [];
+    const result = [];
+    const usedIds = /* @__PURE__ */ new Set();
+    for (const entry of value.slice(0, MAX_CUSTOM_ACTIVITIES)) {
+      const activity = sanitizeCustomActivity(entry, result.length);
+      if (!activity) continue;
+      let id = activity.id;
+      let suffix = 2;
+      while (usedIds.has(id)) {
+        const ending = `-${suffix++}`;
+        id = `${activity.id.slice(0, 64 - ending.length)}${ending}`;
+      }
+      usedIds.add(id);
+      result.push({ ...activity, id });
     }
-  ];
-  function sanitizeRoomActivities(value) {
+    return result;
+  }
+  function migrateLegacyCustomActivities(value) {
+    const legacy = sanitizeLegacyRoomActivities(value).filter(
+      (activity) => activity.pack !== "KikiLink Starter" && !OLD_STARTER_FINGERPRINTS.has(roomActivityFingerprint(activity))
+    );
+    return sanitizeCustomActivities(
+      legacy.map((activity, index) => ({
+        id: legacyActivityId(activity, index),
+        name: activity.label,
+        targetGroup: DEFAULT_CUSTOM_ACTIVITY_GROUP,
+        targetMode: "other",
+        template: activity.template.replaceAll("{source}", "{me}").replaceAll("{target}", "{target}"),
+        image: DEFAULT_CUSTOM_ACTIVITY_IMAGE,
+        arousal: 0
+      }))
+    );
+  }
+  function sanitizeCustomActivity(value, index) {
+    if (!isRecord(value)) return void 0;
+    const name = cleanText(value.name, 40);
+    const template = cleanText(value.template, 500);
+    if (!name || !template) return void 0;
+    const sourceId = cleanId(value.id) || `activity-${index + 1}`;
+    const targetGroup = safeAssetName(value.targetGroup, DEFAULT_CUSTOM_ACTIVITY_GROUP);
+    const image = safeAssetName(value.image, DEFAULT_CUSTOM_ACTIVITY_IMAGE);
+    return {
+      id: sourceId,
+      name,
+      targetGroup,
+      targetMode: value.targetMode === "self" || value.targetMode === "both" ? value.targetMode : "other",
+      template,
+      image,
+      arousal: integerInRange(value.arousal, 0, 20, 0)
+    };
+  }
+  function roomActivityFingerprint(activity) {
+    return `${activity.label.trim().toLocaleLowerCase()}\0${activity.template.trim().toLocaleLowerCase()}`;
+  }
+  function sanitizeLegacyRoomActivities(value) {
     if (!Array.isArray(value)) return [];
     const activities = [];
-    for (const entry of value.slice(0, MAX_ROOM_ACTIVITIES)) {
-      const activity = sanitizeRoomActivity(entry);
-      if (activity) activities.push(activity);
+    for (const entry of value.slice(0, MAX_CUSTOM_ACTIVITIES)) {
+      if (!isRecord(entry)) continue;
+      const label = cleanText(entry.label, 32);
+      const template = cleanText(entry.template, 500);
+      if (!label || !template) continue;
+      activities.push({
+        label,
+        template,
+        category: cleanText(entry.category, 24) || "Uncategorized",
+        pack: cleanText(entry.pack, 32) || "My Activities",
+        favorite: entry.favorite === true
+      });
     }
     return activities;
   }
-  function migrateLegacyRoomActivities(value) {
-    const starterActivities = ACTIVITY_PACK_PRESETS[0]?.activities ?? [];
-    return sanitizeRoomActivities(value).map((activity) => {
-      const starter = starterActivities.find(
-        (candidate) => activityFingerprint(candidate) === activityFingerprint(activity)
-      );
-      return starter ? {
-        ...activity,
-        category: starter.category,
-        pack: starter.pack,
-        favorite: activity.favorite || starter.favorite
-      } : activity;
-    });
+  function legacyActivityId(activity, index) {
+    const slug = activity.label.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 36);
+    return `legacy-${slug || index + 1}`;
   }
-  function exportActivityLibrary(activities, exportedAt = Date.now()) {
-    return {
-      format: ACTIVITY_LIBRARY_FORMAT,
-      version: ACTIVITY_LIBRARY_VERSION,
-      exportedAt,
-      activities: sanitizeRoomActivities(activities)
-    };
+  function cleanText(value, limit) {
+    return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit) : "";
   }
-  function importActivityLibrary(value, existing) {
-    const parsed = parseActivityLibrary(value);
-    return mergeActivities(existing, parsed.activities);
+  function cleanId(value) {
+    if (typeof value !== "string") return "";
+    return value.trim().replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").slice(0, 64);
   }
-  function installActivityPack(existing, packId) {
-    const pack = ACTIVITY_PACK_PRESETS.find((candidate) => candidate.id === packId);
-    if (!pack) throw new Error("That KikiLink activity pack is not available.");
-    return mergeActivities(existing, pack.activities);
+  function safeAssetName(value, fallback) {
+    return typeof value === "string" && SAFE_ASSET_NAME.test(value) ? value : fallback;
   }
-  function mergeActivities(existing, candidates) {
-    const activities = sanitizeRoomActivities(existing);
-    const fingerprints = new Map(
-      activities.map((activity, index) => [activityFingerprint(activity), index])
-    );
-    let imported = 0;
-    let duplicates = 0;
-    let skipped = Math.max(0, candidates.length - MAX_ROOM_ACTIVITIES);
-    for (const candidate of candidates.slice(0, MAX_ROOM_ACTIVITIES)) {
-      const activity = sanitizeRoomActivity(candidate);
-      if (!activity) {
-        skipped += 1;
-        continue;
-      }
-      const fingerprint = activityFingerprint(activity);
-      const existingIndex = fingerprints.get(fingerprint);
-      if (existingIndex !== void 0) {
-        const current = activities[existingIndex];
-        if (current) current.favorite ||= activity.favorite;
-        duplicates += 1;
-        continue;
-      }
-      if (activities.length >= MAX_ROOM_ACTIVITIES) {
-        skipped += 1;
-        continue;
-      }
-      fingerprints.set(fingerprint, activities.length);
-      activities.push(activity);
-      imported += 1;
-    }
-    return { activities, imported, duplicates, skipped };
-  }
-  function parseActivityLibrary(value) {
-    let parsed = value;
-    if (typeof value === "string") {
-      try {
-        parsed = JSON.parse(value);
-      } catch {
-        throw new Error("This file is not valid JSON.");
-      }
-    }
-    if (!isRecord(parsed) || parsed.format !== ACTIVITY_LIBRARY_FORMAT || parsed.version !== ACTIVITY_LIBRARY_VERSION || !Array.isArray(parsed.activities)) {
-      throw new Error("This is not a KikiLink activity library backup.");
-    }
-    return { activities: parsed.activities };
-  }
-  function sanitizeRoomActivity(value) {
-    if (!isRecord(value)) return void 0;
-    const label = cleanText(value.label, 32);
-    const template = cleanText(value.template, 500);
-    if (!label || !template) return void 0;
-    return {
-      label,
-      template,
-      category: cleanText(value.category, 24) || "Uncategorized",
-      pack: cleanText(value.pack, 32) || "My Activities",
-      favorite: value.favorite === true
-    };
-  }
-  function activityFingerprint(activity) {
-    return `${activity.label.trim().toLocaleLowerCase()}\0${activity.template.trim().toLocaleLowerCase()}`;
-  }
-  function roomActivity(label, template, category, pack, favorite = false) {
-    return { label, template, category, pack, favorite };
-  }
-  function cleanText(value, maxLength) {
-    return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, maxLength) : "";
+  function integerInRange(value, min, max, fallback) {
+    return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
   }
   function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1377,7 +1351,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         textMatch: cleanText2(entry.textMatch, 80),
         action: entry.action === "room-emote" ? "room-emote" : "notice",
         template,
-        cooldownSeconds: integerInRange(
+        cooldownSeconds: integerInRange2(
           entry.cooldownSeconds,
           0,
           MAX_REACTION_COOLDOWN_SECONDS,
@@ -1411,7 +1385,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function cleanText2(value, maxLength) {
     return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, maxLength) : "";
   }
-  function integerInRange(value, min, max, fallback) {
+  function integerInRange2(value, min, max, fallback) {
     return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
   }
   function isRecord2(value) {
@@ -1649,7 +1623,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 12,
+    schemaVersion: 13,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -1690,8 +1664,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
       autoIdleMinutes: 10
     },
     linkActivities: {
-      enabled: false,
-      activities: structuredClone(ACTIVITY_PACK_PRESETS[0]?.activities ?? [])
+      enabled: true,
+      customActivities: []
     },
     linkRoster: {
       enabled: true,
@@ -1780,7 +1754,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkRoster = isRecord3(source.linkRoster) ? source.linkRoster : {};
     const linkReactions = isRecord3(source.linkReactions) ? source.linkReactions : {};
     return {
-      schemaVersion: 12,
+      schemaVersion: 13,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -1800,13 +1774,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
           linkChat.includeRoomByDefault,
           DEFAULT_SETTINGS.linkChat.includeRoomByDefault
         ),
-        retentionDays: integerInRange2(
+        retentionDays: integerInRange3(
           linkChat.retentionDays,
           1,
           3650,
           DEFAULT_SETTINGS.linkChat.retentionDays
         ),
-        maxMessagesPerConversation: integerInRange2(
+        maxMessagesPerConversation: integerInRange3(
           linkChat.maxMessagesPerConversation,
           50,
           5e3,
@@ -1829,7 +1803,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         enabled: booleanOr(linkPresence.enabled, DEFAULT_SETTINGS.linkPresence.enabled),
         status: linkPresence.status === "idle" || linkPresence.status === "dnd" || linkPresence.status === "offline" ? linkPresence.status : DEFAULT_SETTINGS.linkPresence.status,
         statusMessage: typeof linkPresence.statusMessage === "string" ? linkPresence.statusMessage.trim().slice(0, 80) : DEFAULT_SETTINGS.linkPresence.statusMessage,
-        autoIdleMinutes: integerInRange2(
+        autoIdleMinutes: integerInRange3(
           linkPresence.autoIdleMinutes,
           0,
           120,
@@ -1837,8 +1811,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
         )
       },
       linkActivities: {
-        enabled: sourceSchema === 2 ? false : booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
-        activities: linkActivities.activities === void 0 ? structuredClone(DEFAULT_SETTINGS.linkActivities.activities) : Array.isArray(linkActivities.activities) ? sourceSchema < 9 ? migrateLegacyRoomActivities(linkActivities.activities) : sanitizeRoomActivities(linkActivities.activities) : structuredClone(DEFAULT_SETTINGS.linkActivities.activities)
+        enabled: sourceSchema < 13 ? true : booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
+        customActivities: sourceSchema < 13 ? migrateLegacyCustomActivities(linkActivities.activities) : sanitizeCustomActivities(linkActivities.customActivities)
       },
       linkRoster: {
         enabled: booleanOr(linkRoster.enabled, DEFAULT_SETTINGS.linkRoster.enabled),
@@ -1918,7 +1892,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function booleanOr(value, fallback) {
     return typeof value === "boolean" ? value : fallback;
   }
-  function integerInRange2(value, min, max, fallback) {
+  function integerInRange3(value, min, max, fallback) {
     return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
   }
   function rosterRetentionDaysOr(value) {
@@ -1990,6 +1964,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     if (options.className) node.className = options.className;
     if (options.text !== void 0) node.textContent = options.text;
     if (options.title !== void 0) node.title = options.title;
+    if (options.src !== void 0 && node instanceof HTMLImageElement) node.src = options.src;
+    if (options.alt !== void 0 && node instanceof HTMLImageElement) node.alt = options.alt;
+    if (options.tabIndex !== void 0) node.tabIndex = options.tabIndex;
     if (options.type !== void 0 && node instanceof HTMLButtonElement) node.type = options.type;
     if (options.ariaLabel !== void 0) node.setAttribute("aria-label", options.ariaLabel);
     if (options.onClick) {
@@ -2017,12 +1994,123 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return debounced;
   }
 
-  // src/modules/link-activities/link-activities-service.ts
-  var LinkActivitiesService = class {
-    constructor(adapter) {
+  // design/branding/kikilink-blossom.svg
+  var kikilink_blossom_default = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KikiLink blossom">%0A  <g transform="rotate(-18 32 32)" fill="%23e82142" fill-opacity=".62" stroke="%23ff93a3" stroke-opacity=".52" stroke-width="1">%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(72 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(144 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(216 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(288 32 32)"/>%0A  </g>%0A  <g transform="rotate(-18 32 32)" fill="none" stroke="%23ffd9df" stroke-linecap="round" stroke-opacity=".24" stroke-width="1.1">%0A    <path d="M32 31V10"/>%0A    <path d="M32 31V10" transform="rotate(72 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(144 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(216 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(288 32 32)"/>%0A  </g>%0A  <circle cx="32" cy="32" r="6.2" fill="%238d0921" fill-opacity=".92" stroke="%23ff8b9c" stroke-opacity=".48" stroke-width="1"/>%0A  <circle cx="32" cy="32" r="3.1" fill="%23efb34e" fill-opacity=".9"/>%0A</svg>%0A';
+
+  // src/modules/link-chat/blossom.ts
+  var BADGE_X_OFFSET = 332;
+  var BADGE_Y_OFFSET = 5;
+  var BADGE_SIZE = 32;
+  function resolveMainDrawingContext(canvas) {
+    return "drawImage" in canvas ? canvas : canvas.getContext("2d");
+  }
+  var RoomBlossomBadge = class {
+    constructor(adapter, presence) {
       this.adapter = adapter;
+      this.presence = presence;
+      this.#image.alt = "";
+      this.#image.decoding = "async";
+      this.#image.addEventListener("load", () => {
+        this.#ready = this.#image.naturalWidth > 0;
+      });
+      this.#image.src = kikilink_blossom_default;
+      this.#ready = this.#image.complete && this.#image.naturalWidth > 0;
     }
     adapter;
+    presence;
+    #image = new Image();
+    #ready = false;
+    #canvas;
+    #context = null;
+    draw(character, characterX, characterY, zoom) {
+      if (!this.#ready || !Number.isFinite(characterX) || !Number.isFinite(characterY) || !Number.isFinite(zoom) || zoom <= 0 || typeof ChatRoomHideIconState === "number" && ChatRoomHideIconState !== 0) {
+        return;
+      }
+      const memberNumber = character.MemberNumber;
+      if (!Number.isSafeInteger(memberNumber)) return;
+      if (memberNumber !== this.adapter.getOwnMemberNumber() && !this.presence.hasCompatiblePeer(memberNumber)) {
+        return;
+      }
+      if (typeof MainCanvas === "undefined") return;
+      if (this.#canvas !== MainCanvas) {
+        this.#canvas = MainCanvas;
+        this.#context = resolveMainDrawingContext(MainCanvas);
+      }
+      if (!this.#context) return;
+      const size = BADGE_SIZE * zoom;
+      this.#context.drawImage(
+        this.#image,
+        characterX + BADGE_X_OFFSET * zoom,
+        characterY + BADGE_Y_OFFSET * zoom,
+        size,
+        size
+      );
+    }
+  };
+
+  // src/modules/link-activities/link-activities-service.ts
+  var ACTIVITY_PREFIX = "KikiLinkCustom_";
+  var ACTION_CONTENT = "KikiLinkCustomActivity";
+  var META_TAG = "KikiLinkActivityMeta";
+  var MAX_SEEN_NONCES = 120;
+  var SAFE_ASSET_NAME2 = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
+  var FALLBACK_IMAGES = [
+    "Caress",
+    "Cuddle",
+    "Kiss",
+    "FrenchKiss",
+    "PoliteKiss",
+    "Nod",
+    "TakeCare",
+    "Pet",
+    "Tickle",
+    "MassageHands",
+    "MassageFeet",
+    "RestHead"
+  ];
+  var LinkActivitiesService = class {
+    constructor(adapter, settings) {
+      this.adapter = adapter;
+      this.settings = settings;
+    }
+    adapter;
+    settings;
+    #runtimeActivities = /* @__PURE__ */ new Map();
+    #seenNonces = [];
+    #unregister;
+    start() {
+      if (!this.#unregister) {
+        this.#unregister = this.adapter.registerCustomActivityIntegration(this);
+      }
+      this.syncFromSettings();
+    }
+    stop() {
+      this.#unregister?.();
+      this.#unregister = void 0;
+      this.#removeRegisteredActivities();
+      this.#runtimeActivities.clear();
+      this.#seenNonces.splice(0);
+    }
+    syncFromSettings() {
+      this.#removeRegisteredActivities();
+      this.#runtimeActivities.clear();
+      const settings = this.settings?.get();
+      if (!settings?.linkActivities.enabled || !hasNativeActivityRegistry()) return;
+      for (const definition of settings.linkActivities.customActivities) {
+        const runtimeName = runtimeActivityName(definition.id);
+        const activity = {
+          Name: runtimeName,
+          MaxProgress: 0,
+          MaxProgressSelf: 0,
+          Prerequisite: [],
+          Target: definition.targetMode === "self" ? [] : [definition.targetGroup],
+          ...definition.targetMode === "self" ? { TargetSelf: [definition.targetGroup] } : definition.targetMode === "both" ? { TargetSelf: [definition.targetGroup] } : {}
+        };
+        this.#runtimeActivities.set(runtimeName, definition);
+        ActivityFemale3DCG.push(activity);
+        ActivityFemale3DCGOrdering.push(runtimeName);
+      }
+    }
     isAvailable() {
       return this.adapter.canSendRoomEmote();
     }
@@ -2044,9 +2132,812 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.adapter.sendRoomEmote(content);
       return content;
     }
+    getBodySlots() {
+      if (typeof AssetGroup === "undefined" || !Array.isArray(AssetGroup)) {
+        return fallbackBodySlots();
+      }
+      const nativeTargets = /* @__PURE__ */ new Set();
+      if (typeof ActivityFemale3DCG !== "undefined" && Array.isArray(ActivityFemale3DCG)) {
+        for (const activity of ActivityFemale3DCG) {
+          if (!activity.Name.startsWith(ACTIVITY_PREFIX)) {
+            for (const target of activity.Target) nativeTargets.add(target);
+          }
+        }
+      }
+      const slots = AssetGroup.filter(
+        (group) => group.Category === "Item" && Array.isArray(group.Zone) && group.Zone.length > 0 && (nativeTargets.size === 0 || nativeTargets.has(group.Name))
+      ).map((group) => ({
+        name: group.Name,
+        label: group.Description || humanizeGroupName(group.Name),
+        zones: group.Zone ?? []
+      })).sort((left, right) => left.label.localeCompare(right.label));
+      return slots.length > 0 ? slots : fallbackBodySlots();
+    }
+    getVanillaImages() {
+      const images = new Set(FALLBACK_IMAGES);
+      if (typeof ActivityFemale3DCGOrdering !== "undefined" && Array.isArray(ActivityFemale3DCGOrdering)) {
+        for (const name of ActivityFemale3DCGOrdering) {
+          if (SAFE_ASSET_NAME2.test(name) && !name.startsWith(ACTIVITY_PREFIX)) images.add(name);
+        }
+      }
+      return [...images].sort((left, right) => left.localeCompare(right));
+    }
+    drawPlayer(canvas, selectedGroup, hoveredGroup) {
+      const context = canvas.getContext("2d");
+      if (!context) return false;
+      canvas.width = 250;
+      canvas.height = 500;
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      if (typeof Player !== "object" || Player === null || typeof DrawCharacter !== "function") {
+        return false;
+      }
+      DrawCharacter(Player, 0, 0, 0.5, false, context);
+      for (const slot of this.getBodySlots()) {
+        if (slot.name !== selectedGroup && slot.name !== hoveredGroup) continue;
+        const selected = slot.name === selectedGroup;
+        context.fillStyle = selected ? "rgba(215, 25, 50, 0.25)" : "rgba(214, 162, 75, 0.18)";
+        context.strokeStyle = selected ? "rgba(255, 106, 126, 0.95)" : "rgba(224, 185, 112, 0.88)";
+        context.lineWidth = selected ? 2 : 1.5;
+        for (const [x, y, width, height] of slot.zones) {
+          context.fillRect(x * 0.5, y * 0.5, width * 0.5, height * 0.5);
+          context.strokeRect(x * 0.5, y * 0.5, width * 0.5, height * 0.5);
+        }
+      }
+      return true;
+    }
+    bodySlotAt(x, y) {
+      const sourceX = x * 2;
+      const sourceY = y * 2;
+      return this.getBodySlots().find(
+        (slot) => slot.zones.some(
+          ([zoneX, zoneY, width, height]) => sourceX >= zoneX && sourceX <= zoneX + width && sourceY >= zoneY && sourceY <= zoneY + height
+        )
+      );
+    }
+    resolveText(keyword) {
+      if (keyword.startsWith("Activity")) {
+        return this.#runtimeActivities.get(keyword.slice("Activity".length))?.name;
+      }
+      const runtimeName = [...this.#runtimeActivities.keys()].find((name) => keyword.endsWith(`-${name}`));
+      if (!runtimeName) return void 0;
+      const definition = this.#runtimeActivities.get(runtimeName);
+      if (!definition) return void 0;
+      return keyword.startsWith("Label-") ? definition.name : definition.template;
+    }
+    resolveImage(activityName) {
+      const definition = this.#runtimeActivities.get(activityName);
+      return definition ? activityImageUrl(definition.image) : void 0;
+    }
+    run(actor, acted, targetGroup, itemActivity) {
+      const activityName = itemActivity?.Activity?.Name;
+      if (typeof activityName !== "string") return false;
+      const definition = this.#runtimeActivities.get(activityName);
+      if (!definition) return false;
+      if (!actor || !acted || !targetGroup || !Number.isSafeInteger(actor.MemberNumber) || !Number.isSafeInteger(acted.MemberNumber) || !SAFE_ASSET_NAME2.test(targetGroup.Name) || targetGroup.Name !== definition.targetGroup) {
+        return false;
+      }
+      const text = expandCustomActivityTemplate(definition.template, {
+        sourceName: characterName(actor),
+        targetName: characterName(acted),
+        targetMemberNumber: acted.MemberNumber,
+        pronouns: characterPronouns(acted)
+      }).slice(0, 1e3);
+      if (!text) return true;
+      if (typeof ChatRoomPublishCustomAction === "function") {
+        const meta = {
+          v: 1,
+          source: actor.MemberNumber,
+          target: acted.MemberNumber,
+          group: targetGroup.Name,
+          arousal: definition.arousal,
+          nonce: createNonce()
+        };
+        ChatRoomPublishCustomAction(ACTION_CONTENT, false, [
+          { Tag: "SourceCharacter", Text: characterName(actor), MemberNumber: actor.MemberNumber },
+          { Tag: "TargetCharacter", Text: characterName(acted), MemberNumber: acted.MemberNumber },
+          { Tag: "FocusAssetGroup", AssetGroupName: targetGroup.Name },
+          { Tag: `MISSING TEXT IN "Interface.csv": ${ACTION_CONTENT}`, Text: text },
+          { Tag: META_TAG, Text: JSON.stringify(meta) }
+        ]);
+      } else {
+        this.adapter.sendRoomEmote(text);
+      }
+      return true;
+    }
+    decorateButton(button, itemActivity) {
+      if (!this.#runtimeActivities.has(itemActivity?.Activity?.Name)) return;
+      if (button.querySelector("[data-kikilink-activity-mark]")) return;
+      const mark = document.createElement("img");
+      mark.src = kikilink_blossom_default;
+      mark.alt = "KikiLink custom activity";
+      mark.title = "KikiLink custom activity";
+      mark.dataset.kikilinkActivityMark = "true";
+      Object.assign(mark.style, {
+        position: "absolute",
+        top: "4px",
+        right: "4px",
+        width: "24px",
+        height: "24px",
+        opacity: "0.88",
+        pointerEvents: "none",
+        filter: "drop-shadow(0 1px 3px rgba(0,0,0,.75))",
+        zIndex: "2"
+      });
+      if (!button.style.position) button.style.position = "relative";
+      button.append(mark);
+    }
+    onRoomMessage(message) {
+      const meta = parseActivityMeta(message);
+      if (!meta || meta.arousal <= 0 || meta.target !== this.adapter.getOwnMemberNumber()) return;
+      if (message.Sender !== meta.source || !this.adapter.isMemberInCurrentRoom(meta.source)) return;
+      if (!dictionaryIdentifies(message.Dictionary, "SourceCharacter", meta.source) || !dictionaryIdentifies(message.Dictionary, "TargetCharacter", meta.target) || !this.getBodySlots().some((slot) => slot.name === meta.group)) {
+        return;
+      }
+      const fingerprint = `${meta.source}:${meta.nonce}`;
+      if (this.#seenNonces.includes(fingerprint)) return;
+      this.#seenNonces.push(fingerprint);
+      if (this.#seenNonces.length > MAX_SEEN_NONCES) this.#seenNonces.shift();
+      if (typeof ActivityEffectFlat !== "function") return;
+      const source = typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter) ? ChatRoomCharacter.find((character) => character.MemberNumber === meta.source) : void 0;
+      if (!source || typeof Player !== "object" || Player === null) return;
+      ActivityEffectFlat(source, Player, meta.arousal, meta.group, 1);
+    }
+    #removeRegisteredActivities() {
+      if (!hasNativeActivityRegistry()) return;
+      for (let index = ActivityFemale3DCG.length - 1; index >= 0; index -= 1) {
+        if (ActivityFemale3DCG[index]?.Name.startsWith(ACTIVITY_PREFIX)) {
+          ActivityFemale3DCG.splice(index, 1);
+        }
+      }
+      for (let index = ActivityFemale3DCGOrdering.length - 1; index >= 0; index -= 1) {
+        if (ActivityFemale3DCGOrdering[index]?.startsWith(ACTIVITY_PREFIX)) {
+          ActivityFemale3DCGOrdering.splice(index, 1);
+        }
+      }
+    }
   };
+  function activityImageUrl(image) {
+    const safeImage = SAFE_ASSET_NAME2.test(image) ? image : "Caress";
+    return `Assets/Female3DCG/Activity/${safeImage}.png`;
+  }
+  function expandCustomActivityTemplate(template, context) {
+    const pronouns = context.pronouns ?? { subject: "they", object: "them", possessive: "their" };
+    const values = {
+      "{target's gender}": pronouns.possessive,
+      "{target's}": possessiveName(context.targetName),
+      "{their}": pronouns.possessive,
+      "{they}": pronouns.subject,
+      "{them}": pronouns.object,
+      "{source}": context.sourceName,
+      "{me}": context.sourceName,
+      "{target}": context.targetName,
+      "{member}": context.targetMemberNumber?.toString() ?? "member"
+    };
+    return template.trim().replace(
+      /\{target's gender\}|\{target's\}|\{their\}|\{they\}|\{them\}|\{source\}|\{me\}|\{target\}|\{member\}/g,
+      (token) => values[token] ?? token
+    );
+  }
   function expandActivityTemplate(template, context) {
     return template.trim().replaceAll("{source}", context.sourceName).replaceAll("{target}", context.target.memberName).replaceAll("{member}", context.target.memberNumber.toString());
+  }
+  function parseActivityMeta(message) {
+    if (message.Type !== "Action" || message.Content !== ACTION_CONTENT || !Array.isArray(message.Dictionary)) {
+      return void 0;
+    }
+    const entry = message.Dictionary.find(
+      (candidate) => isRecord4(candidate) && candidate.Tag === META_TAG && typeof candidate.Text === "string"
+    );
+    if (!isRecord4(entry) || typeof entry.Text !== "string" || entry.Text.length > 500) return void 0;
+    try {
+      const parsed = JSON.parse(entry.Text);
+      if (!isRecord4(parsed) || parsed.v !== 1 || !validMemberNumber(parsed.source) || !validMemberNumber(parsed.target) || !SAFE_ASSET_NAME2.test(typeof parsed.group === "string" ? parsed.group : "") || typeof parsed.arousal !== "number" || !Number.isInteger(parsed.arousal) || parsed.arousal < 0 || parsed.arousal > 20 || typeof parsed.nonce !== "string" || !/^[a-z0-9-]{8,48}$/i.test(parsed.nonce)) {
+        return void 0;
+      }
+      return parsed;
+    } catch {
+      return void 0;
+    }
+  }
+  function dictionaryIdentifies(dictionary, tag, memberNumber) {
+    return Array.isArray(dictionary) && dictionary.some(
+      (entry) => isRecord4(entry) && entry.Tag === tag && entry.MemberNumber === memberNumber
+    );
+  }
+  function runtimeActivityName(id) {
+    const safe = id.replace(/[^A-Za-z0-9_]/g, "_").slice(0, 36) || "Activity";
+    return `${ACTIVITY_PREFIX}${hashString(id)}_${safe}`;
+  }
+  function hashString(value) {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+  function characterName(character) {
+    if (typeof CharacterNickname === "function") {
+      try {
+        const nickname = CharacterNickname(character).trim();
+        if (nickname) return nickname;
+      } catch {
+      }
+    }
+    return character.Nickname?.trim() || character.Name?.trim() || `Member ${character.MemberNumber}`;
+  }
+  function characterPronouns(character) {
+    const set = character.GetPronouns?.();
+    if (set === "SheHer") return { subject: "she", object: "her", possessive: "her" };
+    if (set === "HeHim") return { subject: "he", object: "him", possessive: "his" };
+    if (set === "ItIt") return { subject: "it", object: "it", possessive: "its" };
+    return { subject: "they", object: "them", possessive: "their" };
+  }
+  function possessiveName(name) {
+    return /s$/i.test(name) ? `${name}'` : `${name}'s`;
+  }
+  function createNonce() {
+    const random = Math.random().toString(36).slice(2, 12);
+    return `${Date.now().toString(36)}-${random}`;
+  }
+  function hasNativeActivityRegistry() {
+    return typeof ActivityFemale3DCG !== "undefined" && Array.isArray(ActivityFemale3DCG) && typeof ActivityFemale3DCGOrdering !== "undefined" && Array.isArray(ActivityFemale3DCGOrdering);
+  }
+  function fallbackBodySlots() {
+    return [
+      { name: "ItemHead", label: "Head", zones: [[170, 40, 160, 150]] },
+      { name: "ItemMouth", label: "Mouth", zones: [[205, 115, 90, 60]] },
+      { name: "ItemNeck", label: "Neck", zones: [[190, 190, 120, 70]] },
+      { name: "ItemBreast", label: "Breasts", zones: [[145, 245, 210, 150]] },
+      { name: "ItemArms", label: "Arms", zones: [[70, 245, 360, 260]] },
+      { name: "ItemHands", label: "Hands", zones: [[70, 460, 360, 150]] },
+      { name: "ItemTorso", label: "Torso", zones: [[145, 340, 210, 180]] },
+      { name: "ItemPelvis", label: "Pelvis", zones: [[145, 500, 210, 130]] },
+      { name: "ItemLegs", label: "Legs", zones: [[130, 610, 240, 250]] },
+      { name: "ItemFeet", label: "Feet", zones: [[115, 850, 270, 130]] }
+    ];
+  }
+  function humanizeGroupName(value) {
+    return value.replace(/^Item/, "").replace(/([a-z])([A-Z])/g, "$1 $2");
+  }
+  function validMemberNumber(value) {
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  }
+  function isRecord4(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  // src/modules/link-activities/custom-activities-view.ts
+  var TEMPLATE_TOKENS = [
+    { token: "{me}", label: "Me" },
+    { token: "{target}", label: "Target" },
+    { token: "{target's}", label: "Target's" },
+    { token: "{target's gender}", label: "Their" }
+  ];
+  var CustomActivitiesView = class {
+    constructor(root, adapter, settings, service, onChanged, showToast) {
+      this.root = root;
+      this.adapter = adapter;
+      this.settings = settings;
+      this.service = service;
+      this.onChanged = onChanged;
+      this.showToast = showToast;
+    }
+    root;
+    adapter;
+    settings;
+    service;
+    onChanged;
+    showToast;
+    #editingId;
+    #hoveredGroup;
+    open(activityId) {
+      if (activityId) {
+        this.#openEditor(activityId);
+        return;
+      }
+      this.#editingId = void 0;
+      this.#renderLibrary();
+    }
+    refresh() {
+      if (!this.#editingId) this.#renderLibrary();
+    }
+    #renderLibrary() {
+      this.#editingId = void 0;
+      const activities = this.settings.get().linkActivities.customActivities;
+      const create = element("button", {
+        className: "kl-text-button kl-text-button--primary kl-custom-activity-create",
+        type: "button",
+        text: "New activity",
+        onClick: () => this.#openEditor()
+      });
+      if (activities.length >= MAX_CUSTOM_ACTIVITIES) create.disabled = true;
+      const header = this.#header(
+        "Custom Activities",
+        "Build personal actions that sit beside Bondage Club's vanilla Activities.",
+        create
+      );
+      const body = element("div", { className: "kl-custom-activities-body" });
+      if (activities.length === 0) {
+        const blossom = element("img", {
+          className: "kl-custom-empty-blossom",
+          src: kikilink_blossom_default,
+          alt: ""
+        });
+        body.append(
+          element(
+            "section",
+            { className: "kl-custom-activity-empty" },
+            blossom,
+            element("h2", { text: "Make an activity your own" }),
+            element("p", {
+              text: "Choose a body slot, reuse a vanilla picture, and write the action in your words."
+            }),
+            element("button", {
+              className: "kl-text-button kl-text-button--primary",
+              type: "button",
+              text: "Create first activity",
+              onClick: () => this.#openEditor()
+            })
+          )
+        );
+      } else {
+        const intro = element(
+          "div",
+          { className: "kl-custom-activity-intro" },
+          element("span", {
+            text: `${activities.length} custom ${activities.length === 1 ? "activity" : "activities"}`
+          }),
+          element("span", { text: "Blossom marks them in the native menu" })
+        );
+        const list = element("div", { className: "kl-custom-activity-list" });
+        for (const activity of activities) list.append(this.#activityCard(activity));
+        body.append(intro, list);
+      }
+      this.root.replaceChildren(header, body);
+    }
+    #activityCard(activity) {
+      const iconWrap = element(
+        "div",
+        { className: "kl-custom-activity-card-icon" },
+        element("img", {
+          className: "kl-custom-activity-vanilla-icon",
+          src: activityImageUrl(activity.image),
+          alt: ""
+        }),
+        element("img", {
+          className: "kl-custom-activity-blossom",
+          src: kikilink_blossom_default,
+          alt: "KikiLink"
+        })
+      );
+      const arousal = activity.arousal > 0 ? ` \xB7 Arousal +${activity.arousal}` : "";
+      const card = element(
+        "button",
+        {
+          className: "kl-custom-activity-card",
+          type: "button",
+          ariaLabel: `Edit ${activity.name}`,
+          onClick: () => this.#openEditor(activity.id)
+        },
+        iconWrap,
+        element(
+          "div",
+          { className: "kl-custom-activity-card-copy" },
+          element("div", { className: "kl-custom-activity-card-name", text: activity.name }),
+          element("div", {
+            className: "kl-custom-activity-card-meta",
+            text: `${this.#slotLabel(activity.targetGroup)}${arousal}`
+          }),
+          element("div", {
+            className: "kl-custom-activity-card-template",
+            text: activity.template
+          })
+        ),
+        element("span", { className: "kl-custom-activity-edit-label", text: "Edit" })
+      );
+      card.dataset.activityId = activity.id;
+      return card;
+    }
+    #openEditor(activityId) {
+      const existing = activityId ? this.settings.get().linkActivities.customActivities.find((activity) => activity.id === activityId) : void 0;
+      if (activityId && !existing) {
+        this.#renderLibrary();
+        return;
+      }
+      if (!existing && this.settings.get().linkActivities.customActivities.length >= MAX_CUSTOM_ACTIVITIES) {
+        this.showToast(`You can keep up to ${MAX_CUSTOM_ACTIVITIES} custom activities.`, "error");
+        return;
+      }
+      const draft = structuredClone(existing ?? createBlankCustomActivity(createCustomActivityId()));
+      this.#editingId = draft.id;
+      this.#hoveredGroup = void 0;
+      const back = element("button", {
+        className: "kl-text-button kl-custom-activity-back",
+        type: "button",
+        text: "Back",
+        onClick: () => this.#renderLibrary()
+      });
+      const header = this.#header(
+        existing ? "Edit activity" : "New custom activity",
+        "Pick where it appears, then give it a clear name and action.",
+        back
+      );
+      const editor = this.#buildEditor(draft, existing !== void 0);
+      this.root.replaceChildren(header, editor);
+      requestAnimationFrame(() => {
+        editor.querySelector('[data-field="name"]')?.focus();
+        this.#redrawCharacter(editor, draft.targetGroup);
+      });
+    }
+    #buildEditor(draft, isExisting) {
+      const slots = this.service.getBodySlots();
+      if (!slots.some((slot) => slot.name === draft.targetGroup) && slots[0]) {
+        draft.targetGroup = slots[0].name;
+      }
+      const canvas = element("canvas", {
+        className: "kl-custom-character-canvas",
+        ariaLabel: "Your character body slots",
+        tabIndex: 0
+      });
+      const canvasFallback = element("div", {
+        className: "kl-custom-character-fallback",
+        text: "Your character appears here in Bondage Club."
+      });
+      const slotSelect = element("select", {
+        className: "kl-select kl-custom-slot-select",
+        ariaLabel: "Body slot"
+      });
+      for (const slot of slots) {
+        const option = document.createElement("option");
+        option.value = slot.name;
+        option.textContent = slot.label;
+        slotSelect.append(option);
+      }
+      slotSelect.value = draft.targetGroup;
+      const name = element("input", {
+        className: "kl-search kl-custom-activity-name",
+        ariaLabel: "Activity name"
+      });
+      name.dataset.field = "name";
+      name.placeholder = "e.g. Gentle elbow touch";
+      name.maxLength = 40;
+      name.value = draft.name;
+      const template = element("textarea", {
+        className: "kl-custom-activity-template",
+        ariaLabel: "Activity text"
+      });
+      template.placeholder = "{me} touches {target's} arm and {target's gender} elbow.";
+      template.maxLength = 500;
+      template.value = draft.template;
+      const tokenRow = element("div", {
+        className: "kl-custom-token-row",
+        ariaLabel: "Insert a variable"
+      });
+      for (const item of TEMPLATE_TOKENS) {
+        tokenRow.append(
+          element("button", {
+            className: "kl-custom-token",
+            type: "button",
+            text: item.label,
+            title: item.token,
+            onClick: () => {
+              template.setRangeText(
+                item.token,
+                template.selectionStart,
+                template.selectionEnd,
+                "end"
+              );
+              template.focus();
+              updatePreview();
+            }
+          })
+        );
+      }
+      const preview = element("div", { className: "kl-custom-activity-live-preview" });
+      const updatePreview = () => {
+        preview.textContent = expandCustomActivityTemplate(template.value, {
+          sourceName: this.adapter.getOwnName(),
+          targetName: "Alex"
+        }) || "Your activity preview appears here.";
+      };
+      template.addEventListener("input", updatePreview);
+      updatePreview();
+      const imageSearch = element("input", {
+        className: "kl-search kl-custom-image-search",
+        ariaLabel: "Search vanilla activity pictures"
+      });
+      imageSearch.type = "search";
+      imageSearch.placeholder = "Search vanilla pictures";
+      const imageGallery = element("div", {
+        className: "kl-custom-image-gallery",
+        ariaLabel: "Vanilla activity pictures"
+      });
+      const renderImages = () => {
+        const query = imageSearch.value.trim().toLocaleLowerCase();
+        imageGallery.replaceChildren();
+        const images = this.service.getVanillaImages().filter((image) => !query || image.toLocaleLowerCase().includes(query));
+        for (const image of images) {
+          const button = element(
+            "button",
+            {
+              className: "kl-custom-image-choice",
+              type: "button",
+              title: image,
+              ariaLabel: `Use ${image} picture`,
+              onClick: () => {
+                draft.image = image;
+                renderImages();
+              }
+            },
+            element("img", { src: activityImageUrl(image), alt: "" }),
+            element("span", { text: humanizeActivityName(image) })
+          );
+          button.dataset.selected = String(image === draft.image);
+          button.setAttribute("aria-pressed", String(image === draft.image));
+          imageGallery.append(button);
+        }
+        if (images.length === 0) {
+          imageGallery.append(
+            element("div", { className: "kl-contact-empty", text: "No vanilla pictures match." })
+          );
+        }
+      };
+      imageSearch.addEventListener("input", renderImages);
+      renderImages();
+      const arousalToggle = element("input");
+      arousalToggle.type = "checkbox";
+      arousalToggle.checked = draft.arousal > 0;
+      arousalToggle.setAttribute("aria-label", "Trigger arousal");
+      const arousalRange = element("input", {
+        className: "kl-custom-arousal-range",
+        ariaLabel: "Arousal amount"
+      });
+      arousalRange.type = "range";
+      arousalRange.min = "1";
+      arousalRange.max = "20";
+      arousalRange.step = "1";
+      arousalRange.value = String(Math.max(1, draft.arousal || 5));
+      const arousalValue = element("output", {
+        className: "kl-custom-arousal-value",
+        text: `+${arousalRange.value}`
+      });
+      const arousalOptions = element(
+        "div",
+        { className: "kl-custom-arousal-options" },
+        arousalRange,
+        arousalValue
+      );
+      arousalOptions.hidden = !arousalToggle.checked;
+      arousalToggle.addEventListener("change", () => {
+        arousalOptions.hidden = !arousalToggle.checked;
+      });
+      arousalRange.addEventListener("input", () => {
+        arousalValue.textContent = `+${arousalRange.value}`;
+      });
+      const arousalSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        arousalToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      const targetMode = element("select", {
+        className: "kl-select kl-custom-target-mode",
+        ariaLabel: "Who can be targeted"
+      });
+      targetMode.append(
+        selectOption("other", "Other characters"),
+        selectOption("self", "My character"),
+        selectOption("both", "Others and myself")
+      );
+      targetMode.value = draft.targetMode;
+      const advanced = element(
+        "details",
+        { className: "kl-custom-activity-advanced" },
+        element("summary", { text: "Advanced" }),
+        this.#field("Who can be targeted", "Choose whether this action can appear on others, yourself, or both.", targetMode)
+      );
+      const form = element(
+        "section",
+        { className: "kl-custom-activity-form" },
+        this.#field("Activity name", "Short and recognizable in the native menu.", name),
+        this.#field(
+          "Action text",
+          "Tap a variable to insert it. Everyone in the room sees only the finished sentence.",
+          template,
+          tokenRow
+        ),
+        element(
+          "div",
+          { className: "kl-custom-preview-wrap" },
+          element("div", { className: "kl-custom-field-label", text: "Preview" }),
+          preview
+        ),
+        this.#field(
+          "Vanilla picture",
+          "This is the picture shown beside normal Bondage Club activities.",
+          imageSearch,
+          imageGallery
+        ),
+        element(
+          "div",
+          { className: "kl-custom-arousal-row" },
+          element(
+            "div",
+            { className: "kl-custom-arousal-copy" },
+            element("div", { className: "kl-custom-field-label", text: "Trigger arousal" }),
+            element("div", {
+              className: "kl-custom-field-help",
+              text: "Off by default. Bondage Club applies this base amount using the recipient's preferences."
+            })
+          ),
+          arousalSwitch,
+          arousalOptions
+        ),
+        advanced
+      );
+      const characterPane = element(
+        "aside",
+        { className: "kl-custom-character-pane" },
+        element("div", { className: "kl-custom-field-label", text: "Body slot" }),
+        element("div", {
+          className: "kl-custom-field-help",
+          text: "Tap your character or choose a slot below."
+        }),
+        element("div", { className: "kl-custom-character-stage" }, canvas, canvasFallback),
+        slotSelect,
+        element("div", {
+          className: "kl-custom-slot-note",
+          text: "The activity will appear next to vanilla actions on this slot."
+        })
+      );
+      const redraw = () => {
+        const drawn = this.service.drawPlayer(canvas, slotSelect.value, this.#hoveredGroup);
+        canvasFallback.hidden = drawn;
+      };
+      slotSelect.addEventListener("change", redraw);
+      canvas.addEventListener("pointermove", (event) => {
+        const point = canvasPoint(canvas, event);
+        this.#hoveredGroup = this.service.bodySlotAt(point.x, point.y)?.name;
+        redraw();
+      });
+      canvas.addEventListener("pointerleave", () => {
+        this.#hoveredGroup = void 0;
+        redraw();
+      });
+      canvas.addEventListener("click", (event) => {
+        const point = canvasPoint(canvas, event);
+        const slot = this.service.bodySlotAt(point.x, point.y);
+        if (!slot) return;
+        slotSelect.value = slot.name;
+        redraw();
+      });
+      const save = element("button", {
+        className: "kl-text-button kl-text-button--primary",
+        type: "button",
+        text: "Save activity",
+        onClick: () => {
+          const activityName = name.value.trim();
+          const activityTemplate = template.value.trim();
+          if (!activityName || !activityTemplate || !slotSelect.value) {
+            this.showToast("Add a name, action text, and body slot before saving.", "error");
+            return;
+          }
+          const saved = {
+            id: draft.id,
+            name: activityName,
+            targetGroup: slotSelect.value,
+            targetMode: targetMode.value,
+            template: activityTemplate,
+            image: draft.image,
+            arousal: arousalToggle.checked ? Number(arousalRange.value) : 0
+          };
+          this.settings.update((settingsDraft) => {
+            const index = settingsDraft.linkActivities.customActivities.findIndex(
+              (activity) => activity.id === saved.id
+            );
+            if (index >= 0) settingsDraft.linkActivities.customActivities[index] = saved;
+            else settingsDraft.linkActivities.customActivities.push(saved);
+          });
+          this.service.syncFromSettings();
+          this.onChanged();
+          this.showToast(isExisting ? `${saved.name} updated.` : `${saved.name} added beside vanilla activities.`);
+          this.#renderLibrary();
+        }
+      });
+      const cancel = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Cancel",
+        onClick: () => this.#renderLibrary()
+      });
+      const footerChildren = [];
+      if (isExisting) {
+        footerChildren.push(
+          element("button", {
+            className: "kl-text-button kl-text-button--danger kl-custom-activity-delete",
+            type: "button",
+            text: "Delete",
+            onClick: () => {
+              if (!window.confirm(`Delete ${draft.name}?`)) return;
+              this.settings.update((settingsDraft) => {
+                settingsDraft.linkActivities.customActivities = settingsDraft.linkActivities.customActivities.filter(
+                  (activity) => activity.id !== draft.id
+                );
+              });
+              this.service.syncFromSettings();
+              this.onChanged();
+              this.showToast(`${draft.name} deleted.`);
+              this.#renderLibrary();
+            }
+          })
+        );
+      }
+      footerChildren.push(element("span", { className: "kl-custom-editor-spacer" }), cancel, save);
+      const footer = element(
+        "footer",
+        { className: "kl-feature-page-footer kl-custom-activity-footer" },
+        ...footerChildren
+      );
+      return element(
+        "div",
+        { className: "kl-custom-activity-editor" },
+        element("div", { className: "kl-custom-editor-body" }, characterPane, form),
+        footer
+      );
+    }
+    #redrawCharacter(editor, selectedGroup) {
+      const canvas = editor.querySelector(".kl-custom-character-canvas");
+      const fallback = editor.querySelector(".kl-custom-character-fallback");
+      if (!canvas) return;
+      const drawn = this.service.drawPlayer(canvas, selectedGroup);
+      if (fallback) fallback.hidden = drawn;
+    }
+    #header(title, subtitle, action) {
+      return element(
+        "header",
+        { className: "kl-feature-page-header kl-custom-activity-header" },
+        element(
+          "div",
+          { className: "kl-feature-page-heading" },
+          element("div", { className: "kl-feature-page-eyebrow", text: "BLOSSOM STUDIO" }),
+          element("h1", { className: "kl-feature-page-title", text: title }),
+          element("p", { className: "kl-feature-page-subtitle", text: subtitle })
+        ),
+        action
+      );
+    }
+    #field(name, help, control, extra) {
+      return element(
+        "div",
+        { className: "kl-custom-field" },
+        element("span", { className: "kl-custom-field-label", text: name }),
+        element("span", { className: "kl-custom-field-help", text: help }),
+        control,
+        extra
+      );
+    }
+    #slotLabel(groupName) {
+      return this.service.getBodySlots().find((slot) => slot.name === groupName)?.label ?? groupName.replace(/^Item/, "");
+    }
+  };
+  function canvasPoint(canvas, event) {
+    const bounds = canvas.getBoundingClientRect();
+    const width = bounds.width || canvas.width || 250;
+    const height = bounds.height || canvas.height || 500;
+    return {
+      x: (event.clientX - bounds.left) / width * canvas.width,
+      y: (event.clientY - bounds.top) / height * canvas.height
+    };
+  }
+  function selectOption(value, label) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    return option;
+  }
+  function humanizeActivityName(value) {
+    return value.replace(/([a-z])([A-Z])/g, "$1 $2");
   }
 
   // src/modules/link-roster/link-roster-service.ts
@@ -2343,7 +3234,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
   };
   function sanitizePerson(value) {
-    if (!isRecord4(value) || !validMemberNumber(value.memberNumber)) return void 0;
+    if (!isRecord5(value) || !validMemberNumber2(value.memberNumber)) return void 0;
     const now = Date.now();
     const lastSeenAt = validTime(value.lastSeenAt) ? value.lastSeenAt : 0;
     const firstSeenAt = validTime(value.firstSeenAt) ? Math.min(value.firstSeenAt, lastSeenAt || now) : lastSeenAt;
@@ -2384,7 +3275,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         throw new Error("This file is not valid JSON.");
       }
     }
-    if (!isRecord4(parsed) || parsed.format !== NOTEBOOK_FORMAT || parsed.version !== NOTEBOOK_VERSION || !Array.isArray(parsed.records)) {
+    if (!isRecord5(parsed) || parsed.format !== NOTEBOOK_FORMAT || parsed.version !== NOTEBOOK_VERSION || !Array.isArray(parsed.records)) {
       throw new Error("This is not a KikiLink player notebook backup.");
     }
     return { records: parsed.records };
@@ -2430,10 +3321,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     return new MemoryKeyValueStorage();
   }
-  function isRecord4(value) {
+  function isRecord5(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
-  function validMemberNumber(value) {
+  function validMemberNumber2(value) {
     return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
   }
   function validTime(value) {
@@ -3581,8 +4472,6 @@ button { color: inherit; }
 .kl-data-tools-count { display: block; margin-top: 5px; color: var(--kl-meta); font-size: var(--kl-type-xs); }
 .kl-data-tools-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
 .kl-data-tools-actions .kl-text-button { min-width: 76px; }
-.kl-activity-data-actions { max-width: 520px; flex-wrap: wrap; justify-content: flex-end; }
-.kl-activity-pack-select { width: 170px; }
 
 .kl-home {
   position: relative;
@@ -4033,8 +4922,7 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-switch { height: 36px; }
 :host([data-density="super-compact"]) .kl-switch-track { inset-block: 5px; }
 :host([data-density="super-compact"]) .kl-action-label,
-:host([data-density="super-compact"]) .kl-action-template,
-:host([data-density="super-compact"]) .kl-activity-meta { height: 35px; }
+:host([data-density="super-compact"]) .kl-action-template { height: 35px; }
 :host([data-density="super-compact"]) .kl-data-tools { gap: 12px; padding: 10px 11px 10px 14px; border-radius: 11px; }
 :host([data-density="super-compact"]) .kl-roster-body { gap: 9px; padding: 10px; }
 :host([data-density="super-compact"]) .kl-roster-list-pane { gap: 6px; }
@@ -4046,11 +4934,6 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-roster-stats { margin-top: 9px; }
 :host([data-density="super-compact"]) .kl-roster-notebook { gap: 7px; margin-top: 9px; padding-top: 9px; }
 :host([data-density="super-compact"]) .kl-roster-note { min-height: 86px; }
-:host([data-density="super-compact"]) .kl-activities-body { gap: 8px; padding: 10px 14px; }
-:host([data-density="super-compact"]) .kl-activity-studio { gap: 9px; }
-:host([data-density="super-compact"]) .kl-activity-target { padding: 5px; }
-:host([data-density="super-compact"]) .kl-activity-card-main { padding: 7px 9px; border-radius: 9px; }
-:host([data-density="super-compact"]) .kl-activity-preview { min-height: 40px; padding: 9px 11px; }
 
 .kl-layout {
   position: relative;
@@ -4106,7 +4989,6 @@ button { color: inherit; }
 .kl-select,
 .kl-action-label,
 .kl-action-template,
-.kl-activity-meta,
 .kl-reaction-input,
 .kl-reaction-name,
 .kl-reaction-template,
@@ -4134,7 +5016,6 @@ button { color: inherit; }
 .kl-select:focus,
 .kl-action-label:focus,
 .kl-action-template:focus,
-.kl-activity-meta:focus,
 .kl-reaction-input:focus,
 .kl-reaction-name:focus,
 .kl-reaction-template:focus,
@@ -4486,17 +5367,9 @@ button { color: inherit; }
 .kl-action-editor { display: grid; gap: 8px; }
 .kl-action-editor-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) 40px; gap: 7px; align-items: center; }
 .kl-action-label,
-.kl-action-template,
-.kl-activity-meta { width: 100%; height: 40px; min-width: 0; padding: 0 9px; border-radius: 10px; }
+.kl-action-template { width: 100%; height: 40px; min-width: 0; padding: 0 9px; border-radius: 10px; }
 .kl-remove-action { width: 40px; height: 40px; color: var(--kl-danger); }
 .kl-add-action { justify-self: start; }
-.kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 42px 40px; align-items: start; padding: 8px; border: 1px solid var(--kl-border); border-radius: 12px; background: color-mix(in srgb, var(--kl-surface-2), transparent 28%); }
-.kl-activity-editor-fields { min-width: 0; display: grid; grid-template-columns: minmax(120px, 1fr) minmax(100px, 0.7fr) minmax(120px, 0.85fr); gap: 7px; }
-.kl-activity-editor-fields .kl-action-template { grid-column: 1 / -1; }
-.kl-activity-editor-favorite { width: 40px; height: 40px; position: relative; display: grid; place-items: center; border: 1px solid var(--kl-border); border-radius: 10px; background: var(--kl-input-bg); color: var(--kl-muted); cursor: pointer; }
-.kl-activity-editor-favorite input { position: absolute; opacity: 0; pointer-events: none; }
-.kl-activity-editor-favorite:has(input:checked) { border-color: color-mix(in srgb, var(--kl-gold), transparent 25%); background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
-.kl-activity-editor-favorite:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-accent), transparent 78%); }
 .kl-settings-disclosure { overflow: clip; border: 1px solid var(--kl-border); border-radius: 13px; background: color-mix(in srgb, var(--kl-surface-2), transparent 30%); }
 .kl-settings-disclosure > summary { min-height: 48px; display: flex; align-items: center; gap: 10px; padding: 9px 12px; color: var(--kl-text); font-weight: 780; cursor: pointer; list-style: none; }
 .kl-settings-disclosure > summary::-webkit-details-marker { display: none; }
@@ -4851,128 +5724,283 @@ button { color: inherit; }
 .kl-roster-note-actions .kl-setting-help { margin-right: auto; }
 .kl-roster-privacy { align-self: center; margin-right: auto; color: var(--kl-muted); font-size: var(--kl-type-xs); }
 
-.kl-activities-body {
+/* Custom Activities: simple library first, focused body-slot editor second. */
+.kl-custom-activity-header .kl-text-button { flex: 0 0 auto; }
+.kl-custom-activities-body {
   min-width: 0;
   min-height: 0;
-  display: grid;
-  align-content: start;
-  gap: 13px;
-  padding: 18px 22px;
+  padding: 18px 22px 24px;
   overflow-y: auto;
   scrollbar-color: var(--kl-border-strong) transparent;
   scrollbar-width: thin;
 }
-.kl-activity-status {
-  padding: 9px 11px;
-  border: 1px solid var(--kl-border);
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--kl-surface-2), transparent 20%);
-  color: var(--kl-muted);
-  font-size: var(--kl-type-sm);
-}
-.kl-activity-status[data-kind="ready"] { color: #68d391; }
-.kl-activity-status[data-kind="error"] { color: var(--kl-danger); }
-.kl-activity-studio {
-  min-height: 0;
+.kl-custom-activity-empty {
+  min-height: 330px;
   display: grid;
-  grid-template-columns: minmax(220px, 0.82fr) minmax(260px, 1.18fr);
-  gap: 14px;
+  align-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 34px;
+  border: 1px dashed var(--kl-border-strong);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 50% 28%, color-mix(in srgb, var(--kl-accent), transparent 88%), transparent 38%),
+    color-mix(in srgb, var(--kl-surface), transparent 22%);
+  text-align: center;
 }
-.kl-activity-pane { min-width: 0; display: grid; align-content: start; gap: 9px; }
-.kl-activity-pane-title {
-  color: var(--kl-gold);
+.kl-custom-activity-empty h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 22px; }
+.kl-custom-activity-empty p { max-width: 430px; margin: 0 0 7px; color: var(--kl-muted); font-size: var(--kl-type-body); }
+.kl-custom-empty-blossom {
+  width: 72px;
+  height: 72px;
+  opacity: 0.88;
+  filter: drop-shadow(0 10px 24px color-mix(in srgb, var(--kl-accent), transparent 62%));
+}
+.kl-custom-activity-intro {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 11px;
+  color: var(--kl-muted);
   font-size: var(--kl-type-xs);
-  font-weight: 850;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
 }
-.kl-activity-library-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(145px, 0.65fr); gap: 7px; }
-.kl-activity-filter { width: 100%; }
-.kl-activity-targets,
-.kl-activity-library {
-  min-height: 180px;
-  max-height: min(330px, calc(100vh - 390px));
-  overflow-y: auto;
-  padding: 4px;
+.kl-custom-activity-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.kl-custom-activity-card {
+  min-width: 0;
+  min-height: 100px;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px 10px 10px;
+  border: 1px solid var(--kl-border);
+  border-radius: 16px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--kl-surface-2), transparent 4%), var(--kl-surface));
+  color: var(--kl-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, transform 140ms ease, background 140ms ease;
+}
+.kl-custom-activity-card:hover {
+  border-color: var(--kl-border-strong);
+  background: var(--kl-surface-hover);
+  transform: translateY(-1px);
+}
+.kl-custom-activity-card-icon {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  overflow: hidden;
   border: 1px solid var(--kl-border);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--kl-input-bg), transparent 20%);
+  background: var(--kl-input-bg);
+}
+.kl-custom-activity-vanilla-icon { width: 100%; height: 100%; display: block; object-fit: cover; }
+.kl-custom-activity-blossom {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 23px;
+  height: 23px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.75));
+}
+.kl-custom-activity-card-copy { min-width: 0; }
+.kl-custom-activity-card-name { overflow: hidden; font-size: var(--kl-type-md); font-weight: 850; text-overflow: ellipsis; white-space: nowrap; }
+.kl-custom-activity-card-meta { margin-top: 2px; color: var(--kl-gold); font-size: var(--kl-type-xs); }
+.kl-custom-activity-card-template { margin-top: 6px; overflow: hidden; color: var(--kl-muted); font-size: var(--kl-type-sm); text-overflow: ellipsis; white-space: nowrap; }
+.kl-custom-activity-edit-label { color: var(--kl-meta); font-size: var(--kl-type-xs); font-weight: 800; }
+
+.kl-custom-activity-editor {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-row: 2 / -1;
+}
+.kl-custom-editor-body {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(230px, 0.72fr) minmax(390px, 1.28fr);
+  gap: 16px;
+  padding: 16px 20px;
+  overflow: hidden;
+}
+.kl-custom-character-pane,
+.kl-custom-activity-form {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--kl-border);
+  border-radius: 17px;
+  background: color-mix(in srgb, var(--kl-surface), transparent 12%);
+}
+.kl-custom-character-pane {
+  display: grid;
+  grid-template-rows: auto auto minmax(190px, 1fr) auto auto;
+  gap: 7px;
+  padding: 14px;
+}
+.kl-custom-character-stage {
+  position: relative;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--kl-border);
+  border-radius: 14px;
+  background:
+    radial-gradient(ellipse at 50% 42%, color-mix(in srgb, var(--kl-gold), transparent 93%), transparent 62%),
+    var(--kl-input-bg);
+}
+.kl-custom-character-canvas {
+  width: auto;
+  height: min(100%, 390px);
+  max-width: 100%;
+  display: block;
+  cursor: crosshair;
+  touch-action: manipulation;
+}
+.kl-custom-character-canvas:focus-visible { outline: 2px solid var(--kl-accent); outline-offset: -2px; }
+.kl-custom-character-fallback {
+  position: absolute;
+  inset: auto 16px 16px;
+  padding: 8px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #eee5d9;
+  font-size: var(--kl-type-xs);
+  text-align: center;
+  pointer-events: none;
+}
+.kl-custom-slot-select { width: 100%; }
+.kl-custom-slot-note { color: var(--kl-meta); font-size: var(--kl-type-xxs); text-align: center; }
+.kl-custom-activity-form {
+  display: grid;
+  align-content: start;
+  gap: 15px;
+  padding: 16px;
+  overflow-y: auto;
   scrollbar-color: var(--kl-border-strong) transparent;
   scrollbar-width: thin;
 }
-.kl-activity-target {
+.kl-custom-field { min-width: 0; display: grid; gap: 6px; }
+.kl-custom-field-label { color: var(--kl-text); font-size: var(--kl-type-sm); font-weight: 850; }
+.kl-custom-field-help { color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-custom-activity-name,
+.kl-custom-image-search { width: 100%; }
+.kl-custom-activity-template {
   width: 100%;
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  gap: 9px;
-  align-items: center;
-  padding: 7px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.kl-activity-target:hover { background: var(--kl-surface-hover); }
-.kl-activity-target[data-selected="true"] {
-  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 28%);
-  background: color-mix(in srgb, var(--kl-accent), transparent 87%);
-}
-.kl-activity-target .kl-avatar { width: 40px; height: 40px; border-radius: 12px; }
-.kl-activity-library { display: grid; align-content: start; gap: 7px; }
-.kl-activity-card {
-  position: relative;
-  width: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
-  gap: 4px;
+  min-height: 86px;
+  padding: 10px 12px;
   border: 1px solid var(--kl-border);
   border-radius: 12px;
-  background: var(--kl-surface-2);
-  overflow: hidden;
+  background: var(--kl-input-bg);
+  color: var(--kl-text);
+  resize: vertical;
+  line-height: 1.45;
 }
-.kl-activity-card-main {
-  min-width: 0;
-  padding: 10px 11px;
-  border: 0;
-  border-radius: 11px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
+.kl-custom-activity-template:focus { border-color: var(--kl-accent); outline: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-accent), transparent 80%); }
+.kl-custom-token-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.kl-custom-token {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--kl-border);
+  border-radius: 999px;
+  background: var(--kl-surface-2);
+  color: var(--kl-gold);
+  font-size: var(--kl-type-xs);
+  font-weight: 800;
   cursor: pointer;
 }
-.kl-activity-card:hover { border-color: var(--kl-border-strong); }
-.kl-activity-card-main:hover { background: var(--kl-surface-hover); }
-.kl-activity-card-main[data-selected="true"] {
-  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 32%);
-  background: color-mix(in srgb, var(--kl-accent), transparent 84%);
-  box-shadow: inset 3px 0 var(--kl-accent);
-}
-.kl-activity-card-heading { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.kl-activity-card-label { font-weight: 800; }
-.kl-activity-card-meta { min-width: 0; overflow: hidden; color: var(--kl-meta); font-size: var(--kl-type-xs); text-overflow: ellipsis; white-space: nowrap; }
-.kl-activity-card-template {
-  margin-top: 3px;
-  overflow: hidden;
-  color: var(--kl-muted);
-  font-size: var(--kl-type-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.kl-activity-favorite { width: 34px; height: 34px; align-self: center; color: var(--kl-muted); }
-.kl-activity-favorite[data-active="true"] { color: var(--kl-gold); }
-.kl-activity-preview-wrap { display: grid; gap: 7px; }
-.kl-activity-preview {
-  min-height: 48px;
-  padding: 12px 14px;
-  border: 1px solid var(--kl-border-strong);
-  border-radius: 13px;
-  background: linear-gradient(145deg, color-mix(in srgb, var(--kl-accent), transparent 91%), var(--kl-surface));
+.kl-custom-token:hover { border-color: var(--kl-border-strong); background: var(--kl-surface-hover); }
+.kl-custom-preview-wrap { display: grid; gap: 6px; }
+.kl-custom-activity-live-preview {
+  min-height: 46px;
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--kl-accent), var(--kl-border) 60%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--kl-accent), transparent 91%);
   overflow-wrap: anywhere;
+  color: var(--kl-text);
   font-style: italic;
 }
-.kl-activity-actions .kl-feature-page-footnote { margin-right: auto; }
+.kl-custom-image-gallery {
+  max-height: 210px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(74px, 1fr));
+  gap: 7px;
+  padding: 5px;
+  overflow-y: auto;
+  border: 1px solid var(--kl-border);
+  border-radius: 13px;
+  background: var(--kl-input-bg);
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
+}
+.kl-custom-image-choice {
+  min-width: 0;
+  padding: 5px;
+  display: grid;
+  gap: 4px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-xxs);
+  cursor: pointer;
+}
+.kl-custom-image-choice:hover { background: var(--kl-surface-hover); color: var(--kl-text); }
+.kl-custom-image-choice[data-selected="true"] {
+  border-color: var(--kl-accent);
+  background: color-mix(in srgb, var(--kl-accent), transparent 86%);
+  color: var(--kl-text);
+}
+.kl-custom-image-choice img { width: 100%; aspect-ratio: 1; display: block; border-radius: 7px; object-fit: cover; }
+.kl-custom-image-choice span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-custom-arousal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--kl-border);
+  border-radius: 13px;
+  background: var(--kl-surface-2);
+}
+.kl-custom-arousal-copy { min-width: 0; display: grid; gap: 3px; }
+.kl-custom-arousal-options { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: 10px; align-items: center; }
+.kl-custom-arousal-range { width: 100%; accent-color: var(--kl-accent); }
+.kl-custom-arousal-value { color: var(--kl-gold); font-size: var(--kl-type-sm); font-weight: 850; text-align: right; }
+.kl-custom-activity-advanced {
+  padding: 0 12px;
+  border: 1px solid var(--kl-border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 20%);
+}
+.kl-custom-activity-advanced summary { padding: 11px 0; color: var(--kl-muted); font-size: var(--kl-type-sm); font-weight: 800; cursor: pointer; }
+.kl-custom-activity-advanced[open] { padding-bottom: 12px; }
+.kl-custom-target-mode { width: 100%; }
+.kl-custom-activity-footer { min-height: 62px; }
+.kl-custom-editor-spacer { margin-right: auto; }
+
+@media (max-width: 720px) {
+  .kl-custom-activity-list { grid-template-columns: minmax(0, 1fr); }
+  .kl-custom-activity-intro span:last-child { display: none; }
+  .kl-custom-editor-body { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+  .kl-custom-character-pane { grid-template-rows: auto auto 300px auto auto; }
+  .kl-custom-activity-form { overflow: visible; }
+  .kl-custom-image-gallery { grid-template-columns: repeat(3, minmax(70px, 1fr)); }
+}
+
+@media (max-width: 420px) {
+  .kl-custom-activity-header { align-items: flex-start; }
+  .kl-custom-activities-body { padding: 12px; }
+  .kl-custom-activity-card { grid-template-columns: 62px minmax(0, 1fr); }
+  .kl-custom-activity-card-icon { width: 62px; height: 62px; }
+  .kl-custom-activity-edit-label { display: none; }
+  .kl-custom-editor-body { padding: 10px; }
+  .kl-custom-image-gallery { grid-template-columns: repeat(2, minmax(70px, 1fr)); }
+}
 
 .kl-toast {
   position: absolute;
@@ -5114,18 +6142,11 @@ select:focus-visible {
   .kl-image-upload-settings-options { grid-template-columns: minmax(0, 1fr); }
   .kl-image-upload-privacy { grid-column: 1; }
   .kl-action-editor-row { grid-template-columns: 82px minmax(0, 1fr) 40px; }
-  .kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 44px 44px; }
-  .kl-activity-editor-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .kl-activity-editor-fields .kl-action-template { grid-column: 1 / -1; }
   .kl-reaction-rule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kl-reaction-template-field { grid-column: 1 / -1; }
   .kl-sound-choices { grid-template-columns: minmax(0, 1fr); }
   .kl-feature-page-header { padding: 14px 16px 13px; }
   .kl-feature-page-footer { min-height: 60px; padding: 8px 12px; }
-  .kl-activities-body { padding: 14px; }
-  .kl-activity-studio { grid-template-columns: minmax(0, 1fr); }
-  .kl-activity-targets,
-  .kl-activity-library { min-height: 130px; max-height: 190px; }
   .kl-roster-body {
     min-height: 0;
     grid-template-columns: minmax(0, 1fr);
@@ -5198,20 +6219,11 @@ select:focus-visible {
   .kl-setting-action-row { align-items: flex-start; }
   .kl-select { width: 136px; }
   .kl-action-editor-row { grid-template-columns: 72px minmax(0, 1fr) 40px; }
-  .kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 44px 44px; }
-  .kl-activity-editor-fields { grid-template-columns: minmax(0, 1fr); }
-  .kl-activity-editor-fields .kl-action-template { grid-column: auto; }
-  .kl-activity-library-controls { grid-template-columns: minmax(0, 1fr); }
-  .kl-activity-library-controls .kl-activity-filter { width: 100%; }
-  .kl-activity-card { grid-template-columns: minmax(0, 1fr) 44px; }
-  .kl-activity-favorite { width: 44px; height: 44px; }
   .kl-reaction-rule-header { grid-template-columns: auto minmax(0, 1fr); }
   .kl-reaction-rule-order { grid-column: 1 / -1; justify-content: flex-end; }
   .kl-reaction-rule-grid { grid-template-columns: minmax(0, 1fr); }
   .kl-reaction-template-field { grid-column: auto; }
   .kl-sound-choice-controls { grid-template-columns: minmax(0, 1fr) 64px; }
-  .kl-activity-actions { flex-wrap: wrap; }
-  .kl-activity-actions .kl-feature-page-footnote { width: 100%; margin-right: 0; }
   .kl-settings-local-note { display: none; }
   .kl-settings-panel { padding-inline: 12px; }
   .kl-settings-panel-description { margin-bottom: 16px; }
@@ -5219,7 +6231,6 @@ select:focus-visible {
   .kl-data-tools { align-items: stretch; flex-direction: column; gap: 10px; }
   .kl-data-tools-actions { width: 100%; }
   .kl-data-tools-actions .kl-text-button { min-width: 0; flex: 1; }
-  .kl-activity-data-actions .kl-activity-pack-select { width: 100%; flex: 1 0 100%; }
   .kl-feature-page-subtitle { max-width: 260px; }
   .kl-roster-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kl-roster-stats { grid-template-columns: minmax(0, 1fr); }
@@ -5265,7 +6276,6 @@ select:focus-visible {
   :host([data-density="super-compact"]) .kl-settings-panel-body { gap: 10px; }
   :host([data-density="super-compact"]) .kl-settings-tab { min-height: 44px; }
   :host([data-density="super-compact"]) .kl-roster-body { padding: 9px; }
-  :host([data-density="super-compact"]) .kl-activities-body { padding: 9px; }
   :host([data-density="super-compact"]) .kl-icon-button { width: 44px; height: 44px; }
   :host([data-density="super-compact"]) .kl-text-button { min-height: 44px; }
   :host([data-density="super-compact"]) .kl-search,
@@ -5724,60 +6734,9 @@ select:focus-visible {
     return svg;
   }
 
-  // design/branding/kikilink-blossom.svg
-  var kikilink_blossom_default = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KikiLink blossom">%0A  <g transform="rotate(-18 32 32)" fill="%23e82142" fill-opacity=".62" stroke="%23ff93a3" stroke-opacity=".52" stroke-width="1">%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(72 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(144 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(216 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(288 32 32)"/>%0A  </g>%0A  <g transform="rotate(-18 32 32)" fill="none" stroke="%23ffd9df" stroke-linecap="round" stroke-opacity=".24" stroke-width="1.1">%0A    <path d="M32 31V10"/>%0A    <path d="M32 31V10" transform="rotate(72 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(144 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(216 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(288 32 32)"/>%0A  </g>%0A  <circle cx="32" cy="32" r="6.2" fill="%238d0921" fill-opacity=".92" stroke="%23ff8b9c" stroke-opacity=".48" stroke-width="1"/>%0A  <circle cx="32" cy="32" r="3.1" fill="%23efb34e" fill-opacity=".9"/>%0A</svg>%0A';
-
-  // src/modules/link-chat/blossom.ts
-  var BADGE_X_OFFSET = 332;
-  var BADGE_Y_OFFSET = 5;
-  var BADGE_SIZE = 32;
-  var RoomBlossomBadge = class {
-    constructor(adapter, presence) {
-      this.adapter = adapter;
-      this.presence = presence;
-      this.#image.alt = "";
-      this.#image.decoding = "async";
-      this.#image.addEventListener("load", () => {
-        this.#ready = this.#image.naturalWidth > 0;
-      });
-      this.#image.src = kikilink_blossom_default;
-      this.#ready = this.#image.complete && this.#image.naturalWidth > 0;
-    }
-    adapter;
-    presence;
-    #image = new Image();
-    #ready = false;
-    #canvas;
-    #context = null;
-    draw(character, characterX, characterY, zoom) {
-      if (!this.#ready || !Number.isFinite(characterX) || !Number.isFinite(characterY) || !Number.isFinite(zoom) || zoom <= 0 || typeof ChatRoomHideIconState === "number" && ChatRoomHideIconState !== 0) {
-        return;
-      }
-      const memberNumber = character.MemberNumber;
-      if (!Number.isSafeInteger(memberNumber)) return;
-      if (memberNumber !== this.adapter.getOwnMemberNumber() && !this.presence.hasCompatiblePeer(memberNumber)) {
-        return;
-      }
-      if (typeof MainCanvas === "undefined") return;
-      if (this.#canvas !== MainCanvas) {
-        this.#canvas = MainCanvas;
-        this.#context = MainCanvas.getContext("2d");
-      }
-      if (!this.#context) return;
-      const size = BADGE_SIZE * zoom;
-      this.#context.drawImage(
-        this.#image,
-        characterX + BADGE_X_OFFSET * zoom,
-        characterY + BADGE_Y_OFFSET * zoom,
-        size,
-        size
-      );
-    }
-  };
-
   // src/modules/link-chat/view.ts
   var LinkChatView = class {
-    constructor(adapter, service, settings, version, activities = new LinkActivitiesService(adapter), roster = new LinkRosterService(
+    constructor(adapter, service, settings, version, activities = new LinkActivitiesService(adapter, settings), roster = new LinkRosterService(
       adapter,
       new PeopleRepository(new MemoryKeyValueStorage()),
       settings
@@ -5882,7 +6841,7 @@ select:focus-visible {
     #homeActivitiesCard = element("button", {
       className: "kl-feature-card",
       type: "button",
-      title: "Open LinkActivities"
+      title: "Open Custom Activities"
     });
     #conversationList = element("div", { className: "kl-conversations" });
     #search = element("input", { className: "kl-search" });
@@ -6001,14 +6960,6 @@ select:focus-visible {
       text: "Save note"
     });
     #activitiesToggle = element("input");
-    #activitiesEditor = element("div", {
-      className: "kl-action-editor kl-activities-editor"
-    });
-    #activityFileInput = element("input");
-    #activityPackSelect = element("select", {
-      className: "kl-select kl-activity-pack-select"
-    });
-    #activityCount = element("span", { className: "kl-data-tools-count" });
     #friendOnlineAlertToggle = element("input");
     #roomJoinAlertToggle = element("input");
     #notificationSoundsToggle = element("input");
@@ -6025,30 +6976,12 @@ select:focus-visible {
     #activitiesButton = element("button", {
       className: "kl-nav-item kl-activities-button",
       type: "button",
-      title: "LinkActivities",
-      ariaLabel: "Open LinkActivities"
+      title: "Custom Activities",
+      ariaLabel: "Open Custom Activities"
     });
     #activitiesPage = element("section", {
       className: "kl-feature-page kl-activities-page",
-      ariaLabel: "LinkActivities"
-    });
-    #activityTargetQuery = element("input", {
-      className: "kl-search kl-activity-target-query"
-    });
-    #activityTargetResults = element("div", { className: "kl-activity-targets" });
-    #activityQuery = element("input", {
-      className: "kl-search kl-activity-query"
-    });
-    #activityFilter = element("select", {
-      className: "kl-select kl-activity-filter"
-    });
-    #activityLibrary = element("div", { className: "kl-activity-library" });
-    #activityStatus = element("div", { className: "kl-activity-status" });
-    #activityPreview = element("div", { className: "kl-activity-preview" });
-    #performActivityButton = element("button", {
-      className: "kl-text-button kl-text-button--primary kl-perform-activity",
-      type: "button",
-      text: "Perform"
+      ariaLabel: "Custom Activities"
     });
     #newChatDialog = element("dialog", { className: "kl-dialog kl-new-chat-dialog" });
     #newChatQuery = element("input", { className: "kl-search kl-new-chat-query" });
@@ -6129,7 +7062,7 @@ select:focus-visible {
     #activeName = "";
     #activeNativeName = "";
     #selectedActivityIndex = 0;
-    #selectedActivityTarget;
+    #customActivitiesView;
     #selectedRosterMember;
     #rosterScope = "current";
     #workspaceView = "home";
@@ -6503,7 +7436,7 @@ select:focus-visible {
       this.#configureNavButton(this.#homeNavButton, "home", "Home", "home");
       this.#configureNavButton(this.#chatNavButton, "chat", "Chat", "chat");
       this.#configureNavButton(this.#rosterButton, "users", "Players", "roster");
-      this.#configureNavButton(this.#activitiesButton, "activities", "Activities", "activities");
+      this.#configureNavButton(this.#activitiesButton, "activities", "Custom", "activities");
       this.#configureNavButton(this.#settingsNavButton, "settings", "Settings", "settings");
       this.#rosterCount.hidden = true;
       this.#rosterButton.append(this.#rosterCount);
@@ -6621,8 +7554,8 @@ select:focus-visible {
         this.#homeActivitiesCard,
         "activities",
         "EXPRESS YOURSELF",
-        "Activities",
-        "Choose a reusable room emote and preview it before sending.",
+        "Custom Activities",
+        "Create personal actions that appear beside vanilla Activities.",
         this.#homeActivitiesMetric,
         this.#homeActivitiesAction
       );
@@ -6726,7 +7659,7 @@ select:focus-visible {
       if (view === "chat" && this.#activePeer === void 0) {
         this.#panel.dataset.mobileView = "list";
       }
-      this.#contextTitle.textContent = view === "home" ? "Home" : view === "chat" ? "Chat" : view === "roster" ? "Players" : view === "activities" ? "Activities" : "Settings";
+      this.#contextTitle.textContent = view === "home" ? "Home" : view === "chat" ? "Chat" : view === "roster" ? "Players" : view === "activities" ? "Custom Activities" : "Settings";
       this.#updateNavigation();
     }
     #updateNavigation() {
@@ -6862,9 +7795,9 @@ select:focus-visible {
         )
       );
       this.#themeSelect.replaceChildren(
-        selectOption("dark", "Dark lacquer"),
-        selectOption("light", "Light paper"),
-        selectOption("system", "Follow system")
+        selectOption2("dark", "Dark lacquer"),
+        selectOption2("light", "Light paper"),
+        selectOption2("system", "Follow system")
       );
       this.#themeSelect.dataset.setting = "theme";
       this.#themeSelect.setAttribute("aria-label", "Theme");
@@ -6906,9 +7839,9 @@ select:focus-visible {
         element("div", { className: "kl-color-control" }, accentPresets, this.#accentInput)
       );
       this.#densitySelect.replaceChildren(
-        selectOption("comfortable", "Comfortable"),
-        selectOption("compact", "Compact"),
-        selectOption("super-compact", "Super compact")
+        selectOption2("comfortable", "Comfortable"),
+        selectOption2("compact", "Compact"),
+        selectOption2("super-compact", "Super compact")
       );
       this.#densitySelect.dataset.setting = "density";
       this.#densitySelect.setAttribute("aria-label", "Interface spacing");
@@ -6918,9 +7851,9 @@ select:focus-visible {
         this.#densitySelect
       );
       this.#textScaleSelect.replaceChildren(
-        selectOption("normal", "Default"),
-        selectOption("large", "Large"),
-        selectOption("extra-large", "Extra large")
+        selectOption2("normal", "Default"),
+        selectOption2("large", "Large"),
+        selectOption2("extra-large", "Extra large")
       );
       this.#textScaleSelect.dataset.setting = "text-scale";
       this.#textScaleSelect.setAttribute("aria-label", "Text size");
@@ -6930,8 +7863,8 @@ select:focus-visible {
         this.#textScaleSelect
       );
       this.#homeLayoutSelect.replaceChildren(
-        selectOption("showcase", "Guided"),
-        selectOption("compact", "Focused")
+        selectOption2("showcase", "Guided"),
+        selectOption2("compact", "Focused")
       );
       this.#homeLayoutSelect.dataset.setting = "home-layout";
       this.#homeLayoutSelect.setAttribute("aria-label", "Home style");
@@ -6941,8 +7874,8 @@ select:focus-visible {
         this.#homeLayoutSelect
       );
       this.#launcherSideSelect.replaceChildren(
-        selectOption("right", "Right"),
-        selectOption("left", "Left")
+        selectOption2("right", "Right"),
+        selectOption2("left", "Left")
       );
       this.#launcherSideSelect.dataset.setting = "launcher-side";
       this.#launcherSideSelect.setAttribute("aria-label", "Launcher side");
@@ -6952,9 +7885,9 @@ select:focus-visible {
         this.#launcherSideSelect
       );
       this.#launcherOpenSelect.replaceChildren(
-        selectOption("home", "Link Deck home"),
-        selectOption("last", "Last section"),
-        selectOption("chat", "LinkChat directly")
+        selectOption2("home", "Link Deck home"),
+        selectOption2("last", "Last section"),
+        selectOption2("chat", "LinkChat directly")
       );
       this.#launcherOpenSelect.dataset.setting = "launcher-open";
       this.#launcherOpenSelect.setAttribute("aria-label", "Launcher opens");
@@ -7016,9 +7949,9 @@ select:focus-visible {
         typingIndicatorsSwitch
       );
       this.#imagePreviewSelect.replaceChildren(
-        selectOption("ask", "Ask before loading"),
-        selectOption("always", "Always show"),
-        selectOption("never", "Links only")
+        selectOption2("ask", "Ask before loading"),
+        selectOption2("always", "Always show"),
+        selectOption2("never", "Links only")
       );
       this.#imagePreviewSelect.setAttribute("aria-label", "Remote image previews");
       const imagePreviews = this.#settingRow(
@@ -7178,12 +8111,12 @@ select:focus-visible {
         rosterTrackingSwitch
       );
       this.#rosterRetentionSelect.replaceChildren(
-        selectOption("30", "30 days"),
-        selectOption("90", "90 days"),
-        selectOption("180", "180 days"),
-        selectOption("365", "1 year"),
-        selectOption("730", "2 years"),
-        selectOption("0", "Keep forever")
+        selectOption2("30", "30 days"),
+        selectOption2("90", "90 days"),
+        selectOption2("180", "180 days"),
+        selectOption2("365", "1 year"),
+        selectOption2("730", "2 years"),
+        selectOption2("0", "Keep forever")
       );
       this.#rosterRetentionSelect.dataset.setting = "roster-retention";
       this.#rosterRetentionSelect.setAttribute("aria-label", "Player encounter retention");
@@ -7284,82 +8217,28 @@ select:focus-visible {
         this.#activitiesToggle,
         element("span", { className: "kl-switch-track" })
       );
-      this.#activitiesToggle.setAttribute("aria-label", "Enable LinkActivities");
+      this.#activitiesToggle.setAttribute("aria-label", "Show Custom Activities tab");
       const activitiesEnabled = this.#settingRow(
-        "Show Activity Studio shortcut",
-        "Optional room-emote studio. Disabled by default to keep the toolbar focused.",
+        "Show Custom Activities tab",
+        "Keep your personal activity builder in the KikiLink toolbar.",
         activitiesSwitch
       );
-      const addActivity = element("button", {
-        className: "kl-text-button kl-add-action",
+      const openCustomActivities = element("button", {
+        className: "kl-text-button kl-text-button--primary",
         type: "button",
-        text: "+ Add room activity",
-        onClick: () => this.#addActivityEditorRow()
+        text: "Open Custom Activities",
+        onClick: () => this.#openActivities()
       });
-      this.#activityFileInput.type = "file";
-      this.#activityFileInput.accept = ".json,application/json";
-      this.#activityFileInput.hidden = true;
-      this.#activityFileInput.addEventListener("change", () => void this.#importActivityFile());
-      this.#activityPackSelect.replaceChildren(
-        ...ACTIVITY_PACK_PRESETS.map((pack) => selectOption(pack.id, pack.name))
-      );
-      this.#activityPackSelect.setAttribute("aria-label", "Built-in activity pack");
-      const installPack = element("button", {
-        className: "kl-text-button",
-        type: "button",
-        text: "Add pack",
-        ariaLabel: "Add selected built-in activity pack",
-        onClick: () => this.#installActivityPack()
-      });
-      const exportActivities = element("button", {
-        className: "kl-text-button",
-        type: "button",
-        text: "Export",
-        ariaLabel: "Export activity library",
-        onClick: () => this.#exportActivities()
-      });
-      const importActivities = element("button", {
-        className: "kl-text-button",
-        type: "button",
-        text: "Import",
-        ariaLabel: "Import activity library",
-        onClick: () => this.#activityFileInput.click()
-      });
-      const activityTools = element(
-        "section",
-        { className: "kl-data-tools kl-activity-data-tools" },
-        element(
-          "div",
-          { className: "kl-data-tools-copy" },
-          element("div", { className: "kl-data-tools-title", text: "Activity packs & backup" }),
-          element("div", {
-            className: "kl-setting-help",
-            text: "Add a built-in pack or move categories, favorites, and custom activities between browsers."
-          }),
-          this.#activityCount
-        ),
-        element(
-          "div",
-          { className: "kl-data-tools-actions kl-activity-data-actions" },
-          this.#activityPackSelect,
-          installPack,
-          exportActivities,
-          importActivities,
-          this.#activityFileInput
-        )
-      );
       const activitiesSection = this.#createSettingsPanel(
         "activities",
-        "Activities library",
-        "Keep reusable room emotes close without crowding the deck when you do not need them.",
+        "Custom Activities",
+        "Create personal actions without replacing or cluttering Bondage Club's vanilla Activities.",
         activitiesEnabled,
         element("div", {
-          className: "kl-setting-help",
-          text: "Create room emotes visible to everyone. Variables: {target}, {member}, {source}."
+          className: "kl-presence-caveat",
+          text: "Your list starts empty and stays in this browser. Blossom marks every custom action in the native menu."
         }),
-        activityTools,
-        this.#activitiesEditor,
-        addActivity
+        openCustomActivities
       );
       this.#friendOnlineAlertToggle.type = "checkbox";
       const friendOnlineSwitch = element(
@@ -7410,7 +8289,7 @@ select:focus-visible {
         this.#roomJoinSoundSelect
       ]) {
         select.replaceChildren(
-          ...soundEntries.map(([value, label]) => selectOption(value, label))
+          ...soundEntries.map(([value, label]) => selectOption2(value, label))
         );
       }
       this.#chatSoundSelect.setAttribute("aria-label", "Chat notification sound");
@@ -7812,12 +8691,12 @@ select:focus-visible {
       this.#presenceMessage.placeholder = "Optional: roleplaying, busy, open to chat\u2026";
       this.#presenceMessage.autocomplete = "off";
       this.#autoIdleSelect.replaceChildren(
-        selectOption("0", "Never"),
-        selectOption("5", "After 5 minutes"),
-        selectOption("10", "After 10 minutes"),
-        selectOption("15", "After 15 minutes"),
-        selectOption("30", "After 30 minutes"),
-        selectOption("60", "After 1 hour")
+        selectOption2("0", "Never"),
+        selectOption2("5", "After 5 minutes"),
+        selectOption2("10", "After 10 minutes"),
+        selectOption2("15", "After 15 minutes"),
+        selectOption2("30", "After 30 minutes"),
+        selectOption2("60", "After 1 hour")
       );
       this.#autoIdleSelect.setAttribute("aria-label", "Automatic idle delay");
       const body = element(
@@ -8537,9 +9416,9 @@ select:focus-visible {
           kind: "destination",
           icon: "activities",
           category: "Destination",
-          title: "Activities",
-          detail: settings.linkActivities.enabled ? `${settings.linkActivities.activities.length} saved activities` : "Optional room actions \xB7 currently off",
-          keywords: "activity activities emote room roleplay studio linkactivities",
+          title: "Custom Activities",
+          detail: settings.linkActivities.enabled ? `${settings.linkActivities.customActivities.length} custom activities` : "Custom activity builder \xB7 currently off",
+          keywords: "custom activity activities vanilla body slot arousal blossom",
           priority: 68,
           action: { kind: "workspace", target: "activities" }
         },
@@ -8618,16 +9497,16 @@ select:focus-visible {
           }
         });
       }
-      settings.linkActivities.activities.forEach((activity, index) => {
+      settings.linkActivities.customActivities.forEach((activity, index) => {
         results.push({
           id: `activity-${index}`,
           kind: "activity",
-          icon: activity.favorite ? "star" : "activities",
-          category: `Activity \xB7 ${activity.category}`,
-          title: activity.label,
-          detail: `${activity.pack} \xB7 ${activity.template}`,
-          keywords: `activity emote room action ${activity.category} ${activity.pack} ${activity.favorite ? "favorite starred" : ""} ${activity.template}`,
-          priority: 72 + (activity.favorite ? 18 : 0),
+          icon: "activities",
+          category: "Custom Activity",
+          title: activity.name,
+          detail: `${activity.targetGroup} \xB7 ${activity.template}`,
+          keywords: `custom activity vanilla body slot ${activity.targetGroup} ${activity.image} arousal ${activity.template}`,
+          priority: 72,
           action: { kind: "activity", index }
         });
       });
@@ -9125,293 +10004,35 @@ select:focus-visible {
       }
     }
     #buildActivitiesPage() {
-      const header = element(
-        "header",
-        { className: "kl-feature-page-header" },
-        element(
-          "div",
-          { className: "kl-feature-page-heading" },
-          element("div", { className: "kl-feature-page-eyebrow", text: "ROOM TOOLS" }),
-          element("h1", { className: "kl-feature-page-title", text: "Activities" }),
-          element("p", {
-            className: "kl-feature-page-subtitle",
-            text: "Choose a person, preview your emote, then send it through the native room chat."
-          })
-        )
+      this.#customActivitiesView = new CustomActivitiesView(
+        this.#activitiesPage,
+        this.adapter,
+        this.settings,
+        this.activities,
+        () => {
+          this.#renderHomeStatus();
+          void this.#renderHome();
+        },
+        (message, kind) => this.#toast(message, kind)
       );
-      this.#activityTargetQuery.type = "search";
-      this.#activityTargetQuery.placeholder = "Search room characters";
-      this.#activityTargetQuery.autocomplete = "off";
-      this.#activityTargetQuery.setAttribute("aria-label", "Search room characters");
-      this.#activityTargetQuery.addEventListener("input", () => this.#renderActivitiesPage());
-      this.#activityQuery.type = "search";
-      this.#activityQuery.placeholder = "Search activities";
-      this.#activityQuery.autocomplete = "off";
-      this.#activityQuery.setAttribute("aria-label", "Search activity library");
-      this.#activityQuery.addEventListener("input", () => this.#renderActivitiesPage());
-      this.#activityFilter.setAttribute("aria-label", "Filter activity library");
-      this.#activityFilter.addEventListener("change", () => this.#renderActivitiesPage());
-      this.#activityStatus.setAttribute("role", "status");
-      this.#activityStatus.setAttribute("aria-live", "polite");
-      const targetPane = element(
-        "section",
-        { className: "kl-activity-pane" },
-        element("div", { className: "kl-activity-pane-title", text: "Choose target" }),
-        this.#activityTargetQuery,
-        this.#activityTargetResults
-      );
-      const libraryPane = element(
-        "section",
-        { className: "kl-activity-pane" },
-        element("div", { className: "kl-activity-pane-title", text: "Choose activity" }),
-        element(
-          "div",
-          { className: "kl-activity-library-controls" },
-          this.#activityQuery,
-          this.#activityFilter
-        ),
-        this.#activityLibrary
-      );
-      const studio = element("div", { className: "kl-activity-studio" }, targetPane, libraryPane);
-      const preview = element(
-        "section",
-        { className: "kl-activity-preview-wrap" },
-        element("div", { className: "kl-activity-pane-title", text: "Room preview" }),
-        this.#activityPreview
-      );
-      const body = element(
-        "div",
-        { className: "kl-activities-body" },
-        this.#activityStatus,
-        studio,
-        preview
-      );
-      const edit = element("button", {
-        className: "kl-text-button kl-edit-activities",
-        type: "button",
-        text: "Edit activities",
-        onClick: () => this.#openSettings("activities")
-      });
-      this.#performActivityButton.addEventListener("click", () => this.#performActivity());
-      const actions = element(
-        "footer",
-        { className: "kl-feature-page-footer kl-activity-actions" },
-        element("span", {
-          className: "kl-feature-page-footnote",
-          text: "Other players see a standard Bondage Club emote."
-        }),
-        edit,
-        this.#performActivityButton
-      );
-      this.#activitiesPage.append(header, body, actions);
+      this.#customActivitiesView.open();
     }
     #openActivities(activityIndex) {
       if (!this.settings.get().linkActivities.enabled) {
         this.#openSettings("activities");
         this.#activitiesToggle.focus();
-        this.#toast("Activity Studio is optional. Enable its shortcut here when you want it.");
+        this.#toast("Turn on the Custom Activities tab to open your activity builder.");
         return;
       }
       this.#showWorkspace("activities");
-      if (activityIndex !== void 0 && Number.isInteger(activityIndex) && activityIndex >= 0) {
-        this.#selectedActivityIndex = activityIndex;
-      }
-      this.#activityTargetQuery.value = "";
-      this.#activityQuery.value = "";
-      this.#activityFilter.value = "all";
-      const targets = this.activities.getTargets();
-      const preferredTarget = targets.find(
-        (target) => target.memberNumber === this.#selectedActivityTarget?.memberNumber
-      ) ?? targets.find((target) => target.memberNumber === this.#activePeer);
-      this.#selectedActivityTarget = preferredTarget ?? targets[0];
-      const activityCount = this.settings.get().linkActivities.activities.length;
-      if (this.#selectedActivityIndex >= activityCount) this.#selectedActivityIndex = 0;
-      this.#renderActivitiesPage();
-      if (activityIndex !== void 0) {
-        this.#activityLibrary.querySelector(`[data-activity-index="${this.#selectedActivityIndex}"]`)?.focus();
-      } else {
-        this.#activityTargetQuery.focus();
-      }
+      const activities = this.settings.get().linkActivities.customActivities;
+      this.#selectedActivityIndex = activityIndex !== void 0 && Number.isInteger(activityIndex) && activityIndex >= 0 ? activityIndex : 0;
+      this.#customActivitiesView?.open(
+        activityIndex === void 0 ? void 0 : activities[this.#selectedActivityIndex]?.id
+      );
     }
     #renderActivitiesPage() {
-      const targets = this.activities.getTargets();
-      const currentTarget = targets.find(
-        (target2) => target2.memberNumber === this.#selectedActivityTarget?.memberNumber
-      );
-      this.#selectedActivityTarget = currentTarget;
-      const query = this.#activityTargetQuery.value.trim().toLocaleLowerCase();
-      const visibleTargets = targets.filter(
-        (target2) => !query || target2.memberName.toLocaleLowerCase().includes(query) || target2.memberNumber.toString().includes(query)
-      );
-      this.#activityTargetResults.replaceChildren();
-      if (visibleTargets.length === 0) {
-        this.#activityTargetResults.append(
-          element("div", {
-            className: "kl-contact-empty",
-            text: targets.length === 0 ? "No other characters are available." : "No matching characters."
-          })
-        );
-      } else {
-        for (const target2 of visibleTargets) {
-          const button = element(
-            "button",
-            { className: "kl-activity-target", type: "button" },
-            element("div", { className: "kl-avatar", text: avatarText(target2.memberName) }),
-            element(
-              "div",
-              { className: "kl-contact-copy" },
-              element("div", { className: "kl-contact-name", text: target2.memberName }),
-              element("div", {
-                className: "kl-contact-number",
-                text: `Member ${target2.memberNumber}`
-              })
-            )
-          );
-          button.dataset.selected = String(
-            target2.memberNumber === this.#selectedActivityTarget?.memberNumber
-          );
-          button.addEventListener("click", () => {
-            this.#selectedActivityTarget = target2;
-            this.#renderActivitiesPage();
-          });
-          this.#activityTargetResults.append(button);
-        }
-      }
-      const roomActivities = this.settings.get().linkActivities.activities;
-      this.#syncActivityFilter(roomActivities);
-      const activityQuery = normalizeFinderText(this.#activityQuery.value);
-      const activityFilter = this.#activityFilter.value || "all";
-      const visibleActivities = roomActivities.map((activity2, index) => ({ activity: activity2, index })).filter(({ activity: activity2 }) => {
-        if (activityQuery && !normalizeFinderText(
-          `${activity2.label} ${activity2.template} ${activity2.category} ${activity2.pack}`
-        ).includes(activityQuery)) {
-          return false;
-        }
-        if (activityFilter === "favorites") return activity2.favorite;
-        if (activityFilter.startsWith("category:")) {
-          return activity2.category === activityFilter.slice("category:".length);
-        }
-        if (activityFilter.startsWith("pack:")) {
-          return activity2.pack === activityFilter.slice("pack:".length);
-        }
-        return true;
-      }).sort(
-        (left, right) => Number(right.activity.favorite) - Number(left.activity.favorite) || left.activity.label.localeCompare(right.activity.label)
-      );
-      if (!visibleActivities.some(({ index }) => index === this.#selectedActivityIndex)) {
-        this.#selectedActivityIndex = visibleActivities[0]?.index ?? 0;
-      }
-      this.#activityLibrary.replaceChildren();
-      if (roomActivities.length === 0) {
-        this.#activityLibrary.append(
-          element("div", {
-            className: "kl-contact-empty",
-            text: "Your activity library is empty. Choose Edit activities to create one."
-          })
-        );
-      } else if (visibleActivities.length === 0) {
-        this.#activityLibrary.append(
-          element("div", {
-            className: "kl-contact-empty",
-            text: "No activities match this search or filter."
-          })
-        );
-      } else {
-        for (const { activity: activity2, index } of visibleActivities) {
-          const select = element(
-            "button",
-            { className: "kl-activity-card-main", type: "button" },
-            element(
-              "div",
-              { className: "kl-activity-card-heading" },
-              element("div", { className: "kl-activity-card-label", text: activity2.label }),
-              element("div", {
-                className: "kl-activity-card-meta",
-                text: `${activity2.category} \xB7 ${activity2.pack}`
-              })
-            ),
-            element("div", { className: "kl-activity-card-template", text: activity2.template })
-          );
-          select.dataset.selected = String(index === this.#selectedActivityIndex);
-          select.setAttribute("aria-pressed", String(index === this.#selectedActivityIndex));
-          select.dataset.activityIndex = index.toString();
-          select.addEventListener("click", () => {
-            this.#selectedActivityIndex = index;
-            this.#renderActivitiesPage();
-          });
-          const favorite = element("button", {
-            className: "kl-icon-button kl-activity-favorite",
-            type: "button",
-            title: activity2.favorite ? "Remove from favorite activities" : "Add to favorite activities",
-            ariaLabel: activity2.favorite ? `Remove ${activity2.label} from favorites` : `Add ${activity2.label} to favorites`
-          });
-          favorite.dataset.active = String(activity2.favorite);
-          favorite.setAttribute("aria-pressed", String(activity2.favorite));
-          favorite.append(kikiIcon("star", "kl-icon", activity2.favorite));
-          favorite.addEventListener("click", () => this.#toggleActivityFavorite(index));
-          const card = element("div", { className: "kl-activity-card" }, select, favorite);
-          card.dataset.favorite = String(activity2.favorite);
-          this.#activityLibrary.append(card);
-        }
-      }
-      const activity = roomActivities[this.#selectedActivityIndex];
-      const target = this.#selectedActivityTarget;
-      if (!this.adapter.isInChatRoom()) {
-        this.#activityStatus.textContent = "Open Activity Studio while you are inside a chat room.";
-        this.#activityStatus.dataset.kind = "error";
-      } else if (!this.activities.isAvailable()) {
-        this.#activityStatus.textContent = "The native room chat is still loading.";
-        this.#activityStatus.dataset.kind = "error";
-      } else {
-        this.#activityStatus.textContent = `${targets.length} ${targets.length === 1 ? "target" : "targets"} available in this room.`;
-        this.#activityStatus.dataset.kind = "ready";
-      }
-      if (activity && target) {
-        this.#activityPreview.textContent = `${this.adapter.getOwnName()} ${this.activities.preview(activity, target)}`;
-      } else {
-        this.#activityPreview.textContent = activity ? "Choose a character to preview this activity." : "Create an activity in KikiLink settings first.";
-      }
-      this.#performActivityButton.disabled = !activity || !target || !this.activities.isAvailable();
-    }
-    #syncActivityFilter(activities) {
-      const current = this.#activityFilter.value || "all";
-      const categories = [...new Set(activities.map((activity) => activity.category))].sort(
-        (left, right) => left.localeCompare(right)
-      );
-      const packs = [...new Set(activities.map((activity) => activity.pack))].sort(
-        (left, right) => left.localeCompare(right)
-      );
-      this.#activityFilter.replaceChildren(
-        selectOption("all", "All activities"),
-        selectOption("favorites", "Favorites"),
-        ...categories.map((category) => selectOption(`category:${category}`, `Category: ${category}`)),
-        ...packs.map((pack) => selectOption(`pack:${pack}`, `Pack: ${pack}`))
-      );
-      this.#activityFilter.value = [...this.#activityFilter.options].some(
-        (option) => option.value === current
-      ) ? current : "all";
-    }
-    #toggleActivityFavorite(index) {
-      const settings = this.settings.update((draft) => {
-        const activity2 = draft.linkActivities.activities[index];
-        if (activity2) activity2.favorite = !activity2.favorite;
-      });
-      const activity = settings.linkActivities.activities[index];
-      if (!activity) return;
-      this.#renderActivitiesPage();
-      this.#toast(activity.favorite ? `${activity.label} added to favorites.` : `${activity.label} removed from favorites.`);
-    }
-    #performActivity() {
-      const activity = this.settings.get().linkActivities.activities[this.#selectedActivityIndex];
-      const target = this.#selectedActivityTarget;
-      if (!activity || !target) return;
-      try {
-        this.activities.perform(activity, target);
-        this.#toast(`${activity.label} sent to the room.`);
-      } catch (error) {
-        this.#renderActivitiesPage();
-        this.#toast(error instanceof Error ? error.message : "Unable to perform this activity", "error");
-      }
+      this.#customActivitiesView?.refresh();
     }
     #settingRow(name, help, control) {
       return element(
@@ -9529,9 +10150,10 @@ select:focus-visible {
       this.#homeRosterMetric.textContent = settings.linkRoster.enabled ? this.#presentCount > 0 ? `${this.#presentCount} ${this.#presentCount === 1 ? "person" : "people"} here now` : inRoom ? "No other players in this room" : "Open while you are in a room" : "Disabled \xB7 tap to enable";
       this.#homeRosterAction.textContent = settings.linkRoster.enabled ? "View players" : "Turn on Players";
       this.#activitiesButton.dataset.available = String(settings.linkActivities.enabled);
+      this.#activitiesButton.hidden = !settings.linkActivities.enabled;
       this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
-      this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled ? `${settings.linkActivities.activities.length} saved ${settings.linkActivities.activities.length === 1 ? "activity" : "activities"}` : "Optional \xB7 tap to enable";
-      this.#homeActivitiesAction.textContent = settings.linkActivities.enabled ? "Choose activity" : "Turn on Activities";
+      this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled ? settings.linkActivities.customActivities.length > 0 ? `${settings.linkActivities.customActivities.length} custom ${settings.linkActivities.customActivities.length === 1 ? "activity" : "activities"}` : "No custom activities yet" : "Hidden \xB7 tap to enable";
+      this.#homeActivitiesAction.textContent = settings.linkActivities.enabled ? "Manage activities" : "Show Custom tab";
       const themeLabel = settings.ui.theme === "light" ? "Light paper" : settings.ui.theme === "system" ? "System theme" : "Dark lacquer";
       const comfortLabel = settings.ui.density === "super-compact" ? "Super compact" : settings.ui.density === "compact" ? "Compact" : "Comfortable";
       this.#homeSettingsMetric.textContent = `${themeLabel} \xB7 ${comfortLabel} \xB7 ${settings.ui.accent.toUpperCase()}`;
@@ -10471,98 +11093,6 @@ ${expanded}` : expanded;
         template: row.querySelector('[data-field="template"]')?.value.trim() ?? ""
       })).filter((action) => action.label && action.template);
     }
-    #renderActivityEditor(activities) {
-      this.#activitiesEditor.replaceChildren();
-      for (const activity of activities) this.#addActivityEditorRow(activity);
-      this.#updateActivityEditorCount();
-    }
-    #addActivityEditorRow(activity = {
-      label: "",
-      template: "",
-      category: "Custom",
-      pack: "My Activities",
-      favorite: false
-    }) {
-      if (this.#activitiesEditor.childElementCount >= MAX_ROOM_ACTIVITIES) {
-        this.#toast(`You can keep up to ${MAX_ROOM_ACTIVITIES} room activities.`, "error");
-        return;
-      }
-      const label = element("input", { className: "kl-action-label" });
-      label.placeholder = "Label";
-      label.maxLength = 32;
-      label.value = activity.label;
-      label.dataset.field = "label";
-      const category = element("input", { className: "kl-activity-meta" });
-      category.placeholder = "Category";
-      category.maxLength = 24;
-      category.value = activity.category;
-      category.dataset.field = "category";
-      const pack = element("input", { className: "kl-activity-meta" });
-      pack.placeholder = "Pack";
-      pack.maxLength = 32;
-      pack.value = activity.pack;
-      pack.dataset.field = "pack";
-      const template = element("input", { className: "kl-action-template" });
-      template.placeholder = "Room emote text";
-      template.maxLength = 500;
-      template.value = activity.template;
-      template.dataset.field = "template";
-      const favorite = element("input");
-      favorite.type = "checkbox";
-      favorite.checked = activity.favorite;
-      favorite.dataset.field = "favorite";
-      const favoriteLabel = element(
-        "label",
-        {
-          className: "kl-activity-editor-favorite",
-          title: "Favorite activity",
-          ariaLabel: `Favorite ${activity.label || "new activity"}`
-        },
-        favorite,
-        kikiIcon("star")
-      );
-      const remove = element("button", {
-        className: "kl-icon-button kl-remove-action",
-        type: "button",
-        title: "Remove activity",
-        ariaLabel: "Remove room activity"
-      });
-      remove.append(kikiIcon("trash"));
-      const row = element(
-        "div",
-        { className: "kl-action-editor-row kl-activity-editor-row" },
-        element(
-          "div",
-          { className: "kl-activity-editor-fields" },
-          label,
-          category,
-          pack,
-          template
-        ),
-        favoriteLabel,
-        remove
-      );
-      remove.addEventListener("click", () => {
-        row.remove();
-        this.#updateActivityEditorCount();
-      });
-      this.#activitiesEditor.append(row);
-      this.#updateActivityEditorCount();
-      if (!activity.label && !activity.template) label.focus();
-    }
-    #readActivityEditor() {
-      return [...this.#activitiesEditor.querySelectorAll(".kl-activity-editor-row")].map((row) => ({
-        label: row.querySelector('[data-field="label"]')?.value.trim() ?? "",
-        template: row.querySelector('[data-field="template"]')?.value.trim() ?? "",
-        category: row.querySelector('[data-field="category"]')?.value.trim() || "Uncategorized",
-        pack: row.querySelector('[data-field="pack"]')?.value.trim() || "My Activities",
-        favorite: row.querySelector('[data-field="favorite"]')?.checked === true
-      })).filter((activity) => activity.label && activity.template);
-    }
-    #updateActivityEditorCount() {
-      const count2 = this.#activitiesEditor.childElementCount;
-      this.#activityCount.textContent = `${count2}/${MAX_ROOM_ACTIVITIES} activities \xB7 JSON stays local`;
-    }
     #renderReactionRuleEditor(rules) {
       this.#reactionRulesEditor.replaceChildren();
       for (const rule of rules) this.#addReactionRuleEditorRow(rule);
@@ -10592,18 +11122,18 @@ ${expanded}` : expanded;
       name.setAttribute("aria-label", "Reaction rule name");
       const trigger = element("select", { className: "kl-select" });
       trigger.replaceChildren(
-        selectOption("beep-received", "Incoming Beep"),
-        selectOption("room-join", "Player joins room"),
-        selectOption("room-leave", "Player leaves room"),
-        selectOption("friend-online", "Friend comes online")
+        selectOption2("beep-received", "Incoming Beep"),
+        selectOption2("room-join", "Player joins room"),
+        selectOption2("room-leave", "Player leaves room"),
+        selectOption2("friend-online", "Friend comes online")
       );
       trigger.value = rule.trigger;
       trigger.dataset.field = "trigger";
       const scope = element("select", { className: "kl-select" });
       scope.replaceChildren(
-        selectOption("anyone", "Anyone"),
-        selectOption("friends", "Friends only"),
-        selectOption("members", "Specific members")
+        selectOption2("anyone", "Anyone"),
+        selectOption2("friends", "Friends only"),
+        selectOption2("members", "Specific members")
       );
       scope.value = rule.scope;
       scope.dataset.field = "scope";
@@ -10619,8 +11149,8 @@ ${expanded}` : expanded;
       textMatch.dataset.field = "text-match";
       const action = element("select", { className: "kl-select" });
       action.replaceChildren(
-        selectOption("notice", "Local notice"),
-        selectOption("room-emote", "Send room emote")
+        selectOption2("notice", "Local notice"),
+        selectOption2("room-emote", "Send room emote")
       );
       action.value = rule.action;
       action.dataset.field = "action";
@@ -10816,7 +11346,6 @@ ${expanded}` : expanded;
       this.#rosterRetentionSelect.value = settings.linkRoster.retentionDays.toString();
       this.#updateNotebookCount();
       this.#activitiesToggle.checked = settings.linkActivities.enabled;
-      this.#renderActivityEditor(settings.linkActivities.activities);
       this.#friendOnlineAlertToggle.checked = settings.linkReactions.quickAlerts.friendOnline;
       this.#roomJoinAlertToggle.checked = settings.linkReactions.quickAlerts.roomJoin;
       this.#notificationSoundsToggle.checked = settings.linkReactions.sounds.enabled;
@@ -10907,7 +11436,6 @@ ${expanded}` : expanded;
           draft.linkRoster.retentionDays = rosterRetentionDays;
         }
         draft.linkActivities.enabled = this.#activitiesToggle.checked;
-        draft.linkActivities.activities = this.#readActivityEditor();
         draft.linkReactions.quickAlerts.friendOnline = this.#friendOnlineAlertToggle.checked;
         draft.linkReactions.quickAlerts.roomJoin = this.#roomJoinAlertToggle.checked;
         draft.linkReactions.sounds.enabled = this.#notificationSoundsToggle.checked;
@@ -10925,6 +11453,7 @@ ${expanded}` : expanded;
         if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
       });
       this.#applyTheme(settings);
+      this.activities.syncFromSettings();
       if (settings.linkReactions.sounds.enabled) void this.#notificationSounds.unlock();
       if (!settings.linkChat.typingIndicators) this.#stopLocalTyping();
       const removedPlayers = this.roster.prune();
@@ -10968,90 +11497,6 @@ ${expanded}` : expanded;
       this.#chat.hidden = true;
       this.#empty.hidden = false;
       this.#panel.dataset.mobileView = "list";
-    }
-    #installActivityPack() {
-      try {
-        const currentActivities = this.#readCompleteActivityEditor();
-        if (!currentActivities) return;
-        const pack = ACTIVITY_PACK_PRESETS.find(
-          (candidate) => candidate.id === this.#activityPackSelect.value
-        );
-        const result = installActivityPack(currentActivities, this.#activityPackSelect.value);
-        this.#renderActivityEditor(result.activities);
-        if (result.imported === 0) {
-          this.#toast(`${pack?.name ?? "That pack"} is already in your activity library.`);
-          return;
-        }
-        const duplicateNote = result.duplicates > 0 ? ` ${result.duplicates} existing activities were kept.` : "";
-        this.#toast(
-          `Added ${result.imported} ${result.imported === 1 ? "activity" : "activities"} from ${pack?.name ?? "the pack"}.${duplicateNote} Choose Save changes to keep them.`
-        );
-      } catch (error) {
-        this.#toast(error instanceof Error ? error.message : "Could not add that activity pack.", "error");
-      }
-    }
-    #exportActivities() {
-      if (typeof URL.createObjectURL !== "function") {
-        this.#toast("This browser cannot create an activity library download.", "error");
-        return;
-      }
-      const activities = this.#readCompleteActivityEditor();
-      if (!activities) return;
-      const backup = exportActivityLibrary(activities);
-      if (backup.activities.length === 0) {
-        this.#toast("Add at least one complete activity before exporting.", "error");
-        return;
-      }
-      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `KikiLink-activity-library-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`;
-      anchor.hidden = true;
-      this.#shadow.append(anchor);
-      anchor.click();
-      anchor.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
-      this.#toast(
-        `Exported ${backup.activities.length} ${backup.activities.length === 1 ? "activity" : "activities"} with packs and favorites.`
-      );
-    }
-    async #importActivityFile() {
-      const file = this.#activityFileInput.files?.[0];
-      this.#activityFileInput.value = "";
-      if (!file) return;
-      if (file.size > 1e6) {
-        this.#toast("That activity library is larger than the 1 MB safety limit.", "error");
-        return;
-      }
-      if (!window.confirm(
-        "Merge this KikiLink activity library with the current editor? Existing activities and favorites will be preserved."
-      )) {
-        return;
-      }
-      try {
-        const currentActivities = this.#readCompleteActivityEditor();
-        if (!currentActivities) return;
-        const result = importActivityLibrary(await file.text(), currentActivities);
-        this.#renderActivityEditor(result.activities);
-        const details = [
-          result.duplicates > 0 ? `${result.duplicates} duplicate${result.duplicates === 1 ? "" : "s"} kept` : "",
-          result.skipped > 0 ? `${result.skipped} invalid or excess entr${result.skipped === 1 ? "y" : "ies"} skipped` : ""
-        ].filter(Boolean);
-        this.#toast(
-          `Imported ${result.imported} ${result.imported === 1 ? "activity" : "activities"}.${details.length > 0 ? ` ${details.join(" \xB7 ")}.` : ""} Choose Save changes to keep them.`
-        );
-      } catch (error) {
-        this.#toast(error instanceof Error ? error.message : "Could not import that activity library.", "error");
-      }
-    }
-    #readCompleteActivityEditor() {
-      const activities = this.#readActivityEditor();
-      if (activities.length !== this.#activitiesEditor.childElementCount) {
-        this.#toast("Finish or remove incomplete activities before using packs or backups.", "error");
-        return void 0;
-      }
-      return activities;
     }
     #exportNotebook() {
       if (typeof URL.createObjectURL !== "function") {
@@ -11345,9 +11790,9 @@ ${expanded}` : expanded;
       },
       {
         section: "activities",
-        title: "Activities & templates",
-        detail: "Activity Studio, packs, categories, favorites, and backup",
-        keywords: "linkactivities action roleplay target source member edit enable pack category favorite starred export import backup json"
+        title: "Custom Activities",
+        detail: "Body slots, vanilla pictures, action text, and optional arousal",
+        keywords: "custom activities blossom body slot image target me gender pronoun arousal advanced"
       },
       {
         section: "reactions",
@@ -11394,7 +11839,7 @@ ${expanded}` : expanded;
       (left, right) => right.score - left.score || left.result.title.localeCompare(right.result.title)
     ).map((entry) => entry.result);
   }
-  function selectOption(value, label) {
+  function selectOption2(value, label) {
     const option = element("option", { text: label });
     option.value = value;
     return option;
@@ -11534,6 +11979,7 @@ ${expanded}` : expanded;
     #unsubscribers = [];
     #context;
     #service;
+    #activities;
     #roster;
     #presence;
     #roomBadge;
@@ -11546,7 +11992,8 @@ ${expanded}` : expanded;
     start(context) {
       this.#context = context;
       this.#service = new ChatService(context.repository, context.settings);
-      const activities = new LinkActivitiesService(context.adapter);
+      this.#activities = new LinkActivitiesService(context.adapter, context.settings);
+      this.#activities.start();
       this.#roster = new LinkRosterService(
         context.adapter,
         new PeopleRepository(),
@@ -11569,7 +12016,7 @@ ${expanded}` : expanded;
         this.#service,
         context.settings,
         context.version,
-        activities,
+        this.#activities,
         this.#roster,
         this.#presence
       );
@@ -11580,6 +12027,7 @@ ${expanded}` : expanded;
           ({ state, message }) => this.#view?.setConnectionState(state, message)
         ),
         context.bus.on("bc:ready", () => {
+          this.#activities?.syncFromSettings();
           void this.#importRecentBeeps();
           this.#syncRoster();
         }),
@@ -11602,6 +12050,8 @@ ${expanded}` : expanded;
       for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
       this.#view?.destroy();
       this.#view = void 0;
+      this.#activities?.stop();
+      this.#activities = void 0;
       this.#roomBadgeUnsubscribe?.();
       this.#roomBadgeUnsubscribe = void 0;
       this.#roomBadge = void 0;
@@ -12239,7 +12689,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.18.0");
+    const app = new KikiLinkApp("0.19.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

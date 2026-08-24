@@ -152,12 +152,12 @@ describe("LinkChatView", () => {
       [...(shadow?.querySelectorAll(".kl-feature-card-title") ?? [])].map(
         (title) => title.textContent,
       ),
-    ).toEqual(["Chat", "Players", "Activities", "Settings"]);
+    ).toEqual(["Chat", "Players", "Custom Activities", "Settings"]);
     expect(
       [...(shadow?.querySelectorAll(".kl-feature-card-action") ?? [])].map(
         (action) => action.textContent,
       ),
-    ).toEqual(["Open Chat", "View players", "Turn on Activities", "Customize"]);
+    ).toEqual(["Open Chat", "View players", "Manage activities", "Customize"]);
     expect(shadow?.querySelector('.kl-nav-item[data-target="home"]')?.getAttribute("data-active")).toBe(
       "true",
     );
@@ -286,7 +286,7 @@ describe("LinkChatView", () => {
     view.destroy();
   });
 
-  it("adds a built-in activity pack without duplicating the starter library", () => {
+  it("starts Custom Activities empty and creates a body-slot action with optional arousal", () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
@@ -310,29 +310,53 @@ describe("LinkChatView", () => {
     view.mount();
 
     const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
-    shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
-    shadow?.querySelector<HTMLButtonElement>('[data-section="activities"]')?.click();
-    expect(shadow?.querySelector(".kl-activity-data-tools")?.textContent).toContain("5/100");
-    expect(shadow?.querySelectorAll(".kl-activity-editor-row")).toHaveLength(5);
+    shadow?.querySelector<HTMLButtonElement>('button[title="Custom Activities"]')?.click();
+    expect(shadow?.querySelector(".kl-custom-activity-empty")?.textContent).toContain(
+      "Make an activity your own",
+    );
+    expect(settings.get().linkActivities.customActivities).toEqual([]);
 
-    const packSelect = shadow?.querySelector<HTMLSelectElement>(".kl-activity-pack-select");
-    if (!packSelect) throw new Error("Missing activity pack selector");
-    packSelect.value = "social-gestures";
-    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-activity-data-actions button") ?? [])]
-      .find((button) => button.textContent === "Add pack")
-      ?.click();
+    shadow?.querySelector<HTMLButtonElement>(".kl-custom-activity-empty button")?.click();
+    const name = shadow?.querySelector<HTMLInputElement>('[data-field="name"]');
+    const template = shadow?.querySelector<HTMLTextAreaElement>(".kl-custom-activity-template");
+    const slot = shadow?.querySelector<HTMLSelectElement>(".kl-custom-slot-select");
+    const arousal = shadow?.querySelector<HTMLInputElement>('input[aria-label="Trigger arousal"]');
+    const amount = shadow?.querySelector<HTMLInputElement>('input[aria-label="Arousal amount"]');
+    if (!name || !template || !slot || !arousal || !amount) {
+      throw new Error("Missing custom activity editor controls");
+    }
+    name.value = "Elbow touch";
+    template.value = "{me} touches {target's} arm and {target's gender} elbow.";
+    template.dispatchEvent(new Event("input", { bubbles: true }));
+    slot.value = "ItemArms";
+    slot.dispatchEvent(new Event("change", { bubbles: true }));
+    arousal.checked = true;
+    arousal.dispatchEvent(new Event("change", { bubbles: true }));
+    amount.value = "7";
+    amount.dispatchEvent(new Event("input", { bubbles: true }));
 
-    expect(shadow?.querySelectorAll(".kl-activity-editor-row")).toHaveLength(10);
-    expect(shadow?.querySelector(".kl-toast")?.textContent).toContain("Added 5 activities");
+    expect(shadow?.querySelector(".kl-custom-activity-live-preview")?.textContent).toBe(
+      "Kiki touches Alex's arm and their elbow.",
+    );
+    expect(shadow?.querySelector(".kl-custom-activity-advanced")?.hasAttribute("open")).toBe(
+      false,
+    );
     shadow
-      ?.querySelector<HTMLButtonElement>(".kl-settings-actions .kl-text-button--primary")
+      ?.querySelector<HTMLButtonElement>(".kl-custom-activity-footer .kl-text-button--primary")
       ?.click();
-    expect(settings.get().linkActivities.activities).toHaveLength(10);
-    expect(
-      settings
-        .get()
-        .linkActivities.activities.some((activity) => activity.pack === "Social Gestures"),
-    ).toBe(true);
+
+    expect(settings.get().linkActivities.customActivities).toMatchObject([
+      {
+        name: "Elbow touch",
+        targetGroup: "ItemArms",
+        targetMode: "other",
+        template: "{me} touches {target's} arm and {target's gender} elbow.",
+        image: "Caress",
+        arousal: 7,
+      },
+    ]);
+    expect(shadow?.querySelector(".kl-custom-activity-card")?.textContent).toContain("Elbow touch");
+    expect(shadow?.querySelector(".kl-custom-activity-blossom")).not.toBeNull();
     view.destroy();
   });
 
@@ -905,7 +929,7 @@ describe("LinkChatView", () => {
     view.destroy();
   });
 
-  it("finds a saved activity and opens it selected in Activity Studio", async () => {
+  it("finds a saved custom activity and opens it in the editor", async () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: (memberNumber: number) =>
@@ -925,6 +949,15 @@ describe("LinkChatView", () => {
     const settings = new SettingsStore(new MemoryKeyValueStorage());
     settings.update((draft) => {
       draft.linkActivities.enabled = true;
+      draft.linkActivities.customActivities.push({
+        id: "wolf-greeting",
+        name: "Wolf greeting",
+        targetGroup: "ItemHead",
+        targetMode: "other",
+        template: "{me} greets {target} with a wolfish grin.",
+        image: "Pet",
+        arousal: 0,
+      });
     });
     const view = new LinkChatView(
       adapter,
@@ -949,11 +982,9 @@ describe("LinkChatView", () => {
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
       "activities",
     );
-    expect(
-      shadow
-        ?.querySelector('[data-activity-index="1"]')
-        ?.getAttribute("data-selected"),
-    ).toBe("true");
+    expect(shadow?.querySelector<HTMLInputElement>('[data-field="name"]')?.value).toBe(
+      "Wolf greeting",
+    );
     view.destroy();
   });
 
@@ -1083,8 +1114,7 @@ describe("LinkChatView", () => {
     view.destroy();
   });
 
-  it("opens Activity Studio and performs a custom action toward a room nickname", () => {
-    const sendRoomEmote = vi.fn();
+  it("edits an existing custom activity and keeps advanced targeting out of the way", () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: (memberNumber: number) =>
@@ -1094,15 +1124,21 @@ describe("LinkChatView", () => {
       getKnownContacts: () => [],
       getRoomCharacters: () => [{ memberNumber: 123, memberName: "Reina" }],
       isInChatRoom: () => true,
-      canSendRoomEmote: () => true,
-      sendRoomEmote,
       canSendBeep: () => true,
       isReady: () => true,
       sendBeep: vi.fn(),
     } as unknown as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());
     settings.update((draft) => {
-      draft.linkActivities.enabled = true;
+      draft.linkActivities.customActivities.push({
+        id: "gentle-pat",
+        name: "Gentle pat",
+        targetGroup: "ItemHead",
+        targetMode: "other",
+        template: "{me} gently pats {target}.",
+        image: "Pet",
+        arousal: 0,
+      });
     });
     const view = new LinkChatView(
       adapter,
@@ -1113,30 +1149,24 @@ describe("LinkChatView", () => {
     view.mount();
 
     const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
-    shadow?.querySelector<HTMLButtonElement>('button[title="LinkActivities"]')?.click();
+    shadow?.querySelector<HTMLButtonElement>('button[title="Custom Activities"]')?.click();
 
     expect(shadow?.querySelector<HTMLElement>(".kl-activities-page")?.hidden).toBe(false);
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
       "activities",
     );
-    expect(shadow?.querySelector('.kl-activity-target[data-selected="true"]')?.textContent).toContain(
-      "Reina",
-    );
-    expect(shadow?.querySelector(".kl-activity-preview")?.textContent).toContain(
-      "Kiki bows gracefully to Reina",
-    );
-    expect(shadow?.querySelector(".kl-activity-card-meta")?.textContent).toContain("Greetings");
-
-    const filter = shadow?.querySelector<HTMLSelectElement>(".kl-activity-filter");
-    if (!filter) throw new Error("Missing activity filter");
-    filter.value = "favorites";
-    filter.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(shadow?.querySelectorAll(".kl-activity-card")).toHaveLength(2);
-
-    shadow?.querySelector<HTMLButtonElement>(".kl-perform-activity")?.click();
-    expect(sendRoomEmote).toHaveBeenCalledWith(
-      "bows gracefully to Reina, as if sakura petals drifted between them.",
-    );
+    expect(shadow?.querySelectorAll(".kl-custom-activity-card")).toHaveLength(1);
+    shadow?.querySelector<HTMLButtonElement>('[data-activity-id="gentle-pat"]')?.click();
+    const advanced = shadow?.querySelector<HTMLDetailsElement>(".kl-custom-activity-advanced");
+    expect(advanced?.open).toBe(false);
+    advanced?.setAttribute("open", "");
+    const mode = advanced?.querySelector<HTMLSelectElement>(".kl-custom-target-mode");
+    if (!mode) throw new Error("Missing advanced target selector");
+    mode.value = "both";
+    shadow
+      ?.querySelector<HTMLButtonElement>(".kl-custom-activity-footer .kl-text-button--primary")
+      ?.click();
+    expect(settings.get().linkActivities.customActivities[0]?.targetMode).toBe("both");
     view.destroy();
   });
 

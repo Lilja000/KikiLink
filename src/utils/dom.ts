@@ -6,6 +6,9 @@ export function element<K extends keyof HTMLElementTagNameMap>(
     className?: string;
     text?: string;
     title?: string;
+    src?: string;
+    alt?: string;
+    tabIndex?: number;
     type?: HTMLButtonElement["type"];
     ariaLabel?: string;
     onClick?: (event: MouseEvent) => void;
@@ -16,6 +19,9 @@ export function element<K extends keyof HTMLElementTagNameMap>(
   if (options.className) node.className = options.className;
   if (options.text !== undefined) node.textContent = options.text;
   if (options.title !== undefined) node.title = options.title;
+  if (options.src !== undefined && node instanceof HTMLImageElement) node.src = options.src;
+  if (options.alt !== undefined && node instanceof HTMLImageElement) node.alt = options.alt;
+  if (options.tabIndex !== undefined) node.tabIndex = options.tabIndex;
   if (options.type !== undefined && node instanceof HTMLButtonElement) node.type = options.type;
   if (options.ariaLabel !== undefined) node.setAttribute("aria-label", options.ariaLabel);
   if (options.onClick) {

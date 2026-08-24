@@ -11,8 +11,6 @@ import type {
   PresenceStatus,
   QuickAction,
   ReactionRule,
-  RoomActivity,
-  RoomCharacter,
   RosterEntry,
   SettingsSection,
 } from "../../core/types";
@@ -20,13 +18,7 @@ import { MemoryKeyValueStorage, type SettingsStore } from "../../core/settings";
 import { EventBus } from "../../core/event-bus";
 import { debounce, element } from "../../utils/dom";
 import { LinkActivitiesService } from "../link-activities/link-activities-service";
-import {
-  ACTIVITY_PACK_PRESETS,
-  exportActivityLibrary,
-  importActivityLibrary,
-  installActivityPack,
-  MAX_ROOM_ACTIVITIES,
-} from "../link-activities/activity-library";
+import { CustomActivitiesView } from "../link-activities/custom-activities-view";
 import {
   LinkRosterService,
   type RosterScope,
@@ -178,7 +170,7 @@ export class LinkChatView {
   readonly #homeActivitiesCard = element("button", {
     className: "kl-feature-card",
     type: "button",
-    title: "Open LinkActivities",
+    title: "Open Custom Activities",
   });
   readonly #conversationList = element("div", { className: "kl-conversations" });
   readonly #search = element("input", { className: "kl-search" });
@@ -297,14 +289,6 @@ export class LinkChatView {
     text: "Save note",
   });
   readonly #activitiesToggle = element("input") as HTMLInputElement;
-  readonly #activitiesEditor = element("div", {
-    className: "kl-action-editor kl-activities-editor",
-  });
-  readonly #activityFileInput = element("input") as HTMLInputElement;
-  readonly #activityPackSelect = element("select", {
-    className: "kl-select kl-activity-pack-select",
-  }) as HTMLSelectElement;
-  readonly #activityCount = element("span", { className: "kl-data-tools-count" });
   readonly #friendOnlineAlertToggle = element("input") as HTMLInputElement;
   readonly #roomJoinAlertToggle = element("input") as HTMLInputElement;
   readonly #notificationSoundsToggle = element("input") as HTMLInputElement;
@@ -321,30 +305,12 @@ export class LinkChatView {
   readonly #activitiesButton = element("button", {
     className: "kl-nav-item kl-activities-button",
     type: "button",
-    title: "LinkActivities",
-    ariaLabel: "Open LinkActivities",
+    title: "Custom Activities",
+    ariaLabel: "Open Custom Activities",
   });
   readonly #activitiesPage = element("section", {
     className: "kl-feature-page kl-activities-page",
-    ariaLabel: "LinkActivities",
-  });
-  readonly #activityTargetQuery = element("input", {
-    className: "kl-search kl-activity-target-query",
-  }) as HTMLInputElement;
-  readonly #activityTargetResults = element("div", { className: "kl-activity-targets" });
-  readonly #activityQuery = element("input", {
-    className: "kl-search kl-activity-query",
-  }) as HTMLInputElement;
-  readonly #activityFilter = element("select", {
-    className: "kl-select kl-activity-filter",
-  }) as HTMLSelectElement;
-  readonly #activityLibrary = element("div", { className: "kl-activity-library" });
-  readonly #activityStatus = element("div", { className: "kl-activity-status" });
-  readonly #activityPreview = element("div", { className: "kl-activity-preview" });
-  readonly #performActivityButton = element("button", {
-    className: "kl-text-button kl-text-button--primary kl-perform-activity",
-    type: "button",
-    text: "Perform",
+    ariaLabel: "Custom Activities",
   });
   readonly #newChatDialog = element("dialog", { className: "kl-dialog kl-new-chat-dialog" });
   readonly #newChatQuery = element("input", { className: "kl-search kl-new-chat-query" }) as HTMLInputElement;
@@ -425,7 +391,7 @@ export class LinkChatView {
   #activeName = "";
   #activeNativeName = "";
   #selectedActivityIndex = 0;
-  #selectedActivityTarget: RoomCharacter | undefined;
+  #customActivitiesView: CustomActivitiesView | undefined;
   #selectedRosterMember: number | undefined;
   #rosterScope: RosterScope = "current";
   #workspaceView: WorkspaceView = "home";
@@ -496,7 +462,7 @@ export class LinkChatView {
     private readonly service: ChatService,
     private readonly settings: SettingsStore,
     private readonly version: string,
-    private readonly activities = new LinkActivitiesService(adapter),
+    private readonly activities = new LinkActivitiesService(adapter, settings),
     private readonly roster = new LinkRosterService(
       adapter,
       new PeopleRepository(new MemoryKeyValueStorage()),
@@ -899,7 +865,7 @@ export class LinkChatView {
     this.#configureNavButton(this.#homeNavButton, "home", "Home", "home");
     this.#configureNavButton(this.#chatNavButton, "chat", "Chat", "chat");
     this.#configureNavButton(this.#rosterButton, "users", "Players", "roster");
-    this.#configureNavButton(this.#activitiesButton, "activities", "Activities", "activities");
+    this.#configureNavButton(this.#activitiesButton, "activities", "Custom", "activities");
     this.#configureNavButton(this.#settingsNavButton, "settings", "Settings", "settings");
     this.#rosterCount.hidden = true;
     this.#rosterButton.append(this.#rosterCount);
@@ -1027,8 +993,8 @@ export class LinkChatView {
       this.#homeActivitiesCard,
       "activities",
       "EXPRESS YOURSELF",
-      "Activities",
-      "Choose a reusable room emote and preview it before sending.",
+      "Custom Activities",
+      "Create personal actions that appear beside vanilla Activities.",
       this.#homeActivitiesMetric,
       this.#homeActivitiesAction,
     );
@@ -1152,7 +1118,7 @@ export class LinkChatView {
           : view === "roster"
             ? "Players"
             : view === "activities"
-              ? "Activities"
+              ? "Custom Activities"
               : "Settings";
     this.#updateNavigation();
   }
@@ -1739,82 +1705,28 @@ export class LinkChatView {
       this.#activitiesToggle,
       element("span", { className: "kl-switch-track" }),
     );
-    this.#activitiesToggle.setAttribute("aria-label", "Enable LinkActivities");
+    this.#activitiesToggle.setAttribute("aria-label", "Show Custom Activities tab");
     const activitiesEnabled = this.#settingRow(
-      "Show Activity Studio shortcut",
-      "Optional room-emote studio. Disabled by default to keep the toolbar focused.",
+      "Show Custom Activities tab",
+      "Keep your personal activity builder in the KikiLink toolbar.",
       activitiesSwitch,
     );
-    const addActivity = element("button", {
-      className: "kl-text-button kl-add-action",
+    const openCustomActivities = element("button", {
+      className: "kl-text-button kl-text-button--primary",
       type: "button",
-      text: "+ Add room activity",
-      onClick: () => this.#addActivityEditorRow(),
+      text: "Open Custom Activities",
+      onClick: () => this.#openActivities(),
     });
-    this.#activityFileInput.type = "file";
-    this.#activityFileInput.accept = ".json,application/json";
-    this.#activityFileInput.hidden = true;
-    this.#activityFileInput.addEventListener("change", () => void this.#importActivityFile());
-    this.#activityPackSelect.replaceChildren(
-      ...ACTIVITY_PACK_PRESETS.map((pack) => selectOption(pack.id, pack.name)),
-    );
-    this.#activityPackSelect.setAttribute("aria-label", "Built-in activity pack");
-    const installPack = element("button", {
-      className: "kl-text-button",
-      type: "button",
-      text: "Add pack",
-      ariaLabel: "Add selected built-in activity pack",
-      onClick: () => this.#installActivityPack(),
-    });
-    const exportActivities = element("button", {
-      className: "kl-text-button",
-      type: "button",
-      text: "Export",
-      ariaLabel: "Export activity library",
-      onClick: () => this.#exportActivities(),
-    });
-    const importActivities = element("button", {
-      className: "kl-text-button",
-      type: "button",
-      text: "Import",
-      ariaLabel: "Import activity library",
-      onClick: () => this.#activityFileInput.click(),
-    });
-    const activityTools = element(
-      "section",
-      { className: "kl-data-tools kl-activity-data-tools" },
-      element(
-        "div",
-        { className: "kl-data-tools-copy" },
-        element("div", { className: "kl-data-tools-title", text: "Activity packs & backup" }),
-        element("div", {
-          className: "kl-setting-help",
-          text: "Add a built-in pack or move categories, favorites, and custom activities between browsers.",
-        }),
-        this.#activityCount,
-      ),
-      element(
-        "div",
-        { className: "kl-data-tools-actions kl-activity-data-actions" },
-        this.#activityPackSelect,
-        installPack,
-        exportActivities,
-        importActivities,
-        this.#activityFileInput,
-      ),
-    );
     const activitiesSection = this.#createSettingsPanel(
       "activities",
-      "Activities library",
-      "Keep reusable room emotes close without crowding the deck when you do not need them.",
+      "Custom Activities",
+      "Create personal actions without replacing or cluttering Bondage Club's vanilla Activities.",
       activitiesEnabled,
       element("div", {
-        className: "kl-setting-help",
-        text: "Create room emotes visible to everyone. Variables: {target}, {member}, {source}.",
+        className: "kl-presence-caveat",
+        text: "Your list starts empty and stays in this browser. Blossom marks every custom action in the native menu.",
       }),
-      activityTools,
-      this.#activitiesEditor,
-      addActivity,
+      openCustomActivities,
     );
 
     this.#friendOnlineAlertToggle.type = "checkbox";
@@ -3065,11 +2977,11 @@ export class LinkChatView {
         kind: "destination",
         icon: "activities",
         category: "Destination",
-        title: "Activities",
+        title: "Custom Activities",
         detail: settings.linkActivities.enabled
-          ? `${settings.linkActivities.activities.length} saved activities`
-          : "Optional room actions · currently off",
-        keywords: "activity activities emote room roleplay studio linkactivities",
+          ? `${settings.linkActivities.customActivities.length} custom activities`
+          : "Custom activity builder · currently off",
+        keywords: "custom activity activities vanilla body slot arousal blossom",
         priority: 68,
         action: { kind: "workspace", target: "activities" },
       },
@@ -3152,16 +3064,16 @@ export class LinkChatView {
       });
     }
 
-    settings.linkActivities.activities.forEach((activity, index) => {
+    settings.linkActivities.customActivities.forEach((activity, index) => {
       results.push({
         id: `activity-${index}`,
         kind: "activity",
-        icon: activity.favorite ? "star" : "activities",
-        category: `Activity · ${activity.category}`,
-        title: activity.label,
-        detail: `${activity.pack} · ${activity.template}`,
-        keywords: `activity emote room action ${activity.category} ${activity.pack} ${activity.favorite ? "favorite starred" : ""} ${activity.template}`,
-        priority: 72 + (activity.favorite ? 18 : 0),
+        icon: "activities",
+        category: "Custom Activity",
+        title: activity.name,
+        detail: `${activity.targetGroup} · ${activity.template}`,
+        keywords: `custom activity vanilla body slot ${activity.targetGroup} ${activity.image} arousal ${activity.template}`,
+        priority: 72,
         action: { kind: "activity", index },
       });
     });
@@ -3733,326 +3645,41 @@ export class LinkChatView {
   }
 
   #buildActivitiesPage(): void {
-    const header = element(
-      "header",
-      { className: "kl-feature-page-header" },
-      element(
-        "div",
-        { className: "kl-feature-page-heading" },
-        element("div", { className: "kl-feature-page-eyebrow", text: "ROOM TOOLS" }),
-        element("h1", { className: "kl-feature-page-title", text: "Activities" }),
-        element("p", {
-          className: "kl-feature-page-subtitle",
-          text: "Choose a person, preview your emote, then send it through the native room chat.",
-        }),
-      ),
+    this.#customActivitiesView = new CustomActivitiesView(
+      this.#activitiesPage,
+      this.adapter,
+      this.settings,
+      this.activities,
+      () => {
+        this.#renderHomeStatus();
+        void this.#renderHome();
+      },
+      (message, kind) => this.#toast(message, kind),
     );
-
-    this.#activityTargetQuery.type = "search";
-    this.#activityTargetQuery.placeholder = "Search room characters";
-    this.#activityTargetQuery.autocomplete = "off";
-    this.#activityTargetQuery.setAttribute("aria-label", "Search room characters");
-    this.#activityTargetQuery.addEventListener("input", () => this.#renderActivitiesPage());
-    this.#activityQuery.type = "search";
-    this.#activityQuery.placeholder = "Search activities";
-    this.#activityQuery.autocomplete = "off";
-    this.#activityQuery.setAttribute("aria-label", "Search activity library");
-    this.#activityQuery.addEventListener("input", () => this.#renderActivitiesPage());
-    this.#activityFilter.setAttribute("aria-label", "Filter activity library");
-    this.#activityFilter.addEventListener("change", () => this.#renderActivitiesPage());
-    this.#activityStatus.setAttribute("role", "status");
-    this.#activityStatus.setAttribute("aria-live", "polite");
-
-    const targetPane = element(
-      "section",
-      { className: "kl-activity-pane" },
-      element("div", { className: "kl-activity-pane-title", text: "Choose target" }),
-      this.#activityTargetQuery,
-      this.#activityTargetResults,
-    );
-    const libraryPane = element(
-      "section",
-      { className: "kl-activity-pane" },
-      element("div", { className: "kl-activity-pane-title", text: "Choose activity" }),
-      element(
-        "div",
-        { className: "kl-activity-library-controls" },
-        this.#activityQuery,
-        this.#activityFilter,
-      ),
-      this.#activityLibrary,
-    );
-    const studio = element("div", { className: "kl-activity-studio" }, targetPane, libraryPane);
-    const preview = element(
-      "section",
-      { className: "kl-activity-preview-wrap" },
-      element("div", { className: "kl-activity-pane-title", text: "Room preview" }),
-      this.#activityPreview,
-    );
-    const body = element(
-      "div",
-      { className: "kl-activities-body" },
-      this.#activityStatus,
-      studio,
-      preview,
-    );
-
-    const edit = element("button", {
-      className: "kl-text-button kl-edit-activities",
-      type: "button",
-      text: "Edit activities",
-      onClick: () => this.#openSettings("activities"),
-    });
-    this.#performActivityButton.addEventListener("click", () => this.#performActivity());
-    const actions = element(
-      "footer",
-      { className: "kl-feature-page-footer kl-activity-actions" },
-      element("span", {
-        className: "kl-feature-page-footnote",
-        text: "Other players see a standard Bondage Club emote.",
-      }),
-      edit,
-      this.#performActivityButton,
-    );
-    this.#activitiesPage.append(header, body, actions);
+    this.#customActivitiesView.open();
   }
 
   #openActivities(activityIndex?: number): void {
     if (!this.settings.get().linkActivities.enabled) {
       this.#openSettings("activities");
       this.#activitiesToggle.focus();
-      this.#toast("Activity Studio is optional. Enable its shortcut here when you want it.");
+      this.#toast("Turn on the Custom Activities tab to open your activity builder.");
       return;
     }
 
     this.#showWorkspace("activities");
-    if (activityIndex !== undefined && Number.isInteger(activityIndex) && activityIndex >= 0) {
-      this.#selectedActivityIndex = activityIndex;
-    }
-    this.#activityTargetQuery.value = "";
-    this.#activityQuery.value = "";
-    this.#activityFilter.value = "all";
-    const targets = this.activities.getTargets();
-    const preferredTarget = targets.find(
-      (target) => target.memberNumber === this.#selectedActivityTarget?.memberNumber,
-    ) ?? targets.find((target) => target.memberNumber === this.#activePeer);
-    this.#selectedActivityTarget = preferredTarget ?? targets[0];
-    const activityCount = this.settings.get().linkActivities.activities.length;
-    if (this.#selectedActivityIndex >= activityCount) this.#selectedActivityIndex = 0;
-    this.#renderActivitiesPage();
-    if (activityIndex !== undefined) {
-      this.#activityLibrary
-        .querySelector<HTMLButtonElement>(`[data-activity-index="${this.#selectedActivityIndex}"]`)
-        ?.focus();
-    } else {
-      this.#activityTargetQuery.focus();
-    }
+    const activities = this.settings.get().linkActivities.customActivities;
+    this.#selectedActivityIndex =
+      activityIndex !== undefined && Number.isInteger(activityIndex) && activityIndex >= 0
+        ? activityIndex
+        : 0;
+    this.#customActivitiesView?.open(
+      activityIndex === undefined ? undefined : activities[this.#selectedActivityIndex]?.id,
+    );
   }
 
   #renderActivitiesPage(): void {
-    const targets = this.activities.getTargets();
-    const currentTarget = targets.find(
-      (target) => target.memberNumber === this.#selectedActivityTarget?.memberNumber,
-    );
-    this.#selectedActivityTarget = currentTarget;
-
-    const query = this.#activityTargetQuery.value.trim().toLocaleLowerCase();
-    const visibleTargets = targets.filter(
-      (target) =>
-        !query ||
-        target.memberName.toLocaleLowerCase().includes(query) ||
-        target.memberNumber.toString().includes(query),
-    );
-    this.#activityTargetResults.replaceChildren();
-    if (visibleTargets.length === 0) {
-      this.#activityTargetResults.append(
-        element("div", {
-          className: "kl-contact-empty",
-          text: targets.length === 0 ? "No other characters are available." : "No matching characters.",
-        }),
-      );
-    } else {
-      for (const target of visibleTargets) {
-        const button = element(
-          "button",
-          { className: "kl-activity-target", type: "button" },
-          element("div", { className: "kl-avatar", text: avatarText(target.memberName) }),
-          element(
-            "div",
-            { className: "kl-contact-copy" },
-            element("div", { className: "kl-contact-name", text: target.memberName }),
-            element("div", {
-              className: "kl-contact-number",
-              text: `Member ${target.memberNumber}`,
-            }),
-          ),
-        );
-        button.dataset.selected = String(
-          target.memberNumber === this.#selectedActivityTarget?.memberNumber,
-        );
-        button.addEventListener("click", () => {
-          this.#selectedActivityTarget = target;
-          this.#renderActivitiesPage();
-        });
-        this.#activityTargetResults.append(button);
-      }
-    }
-
-    const roomActivities = this.settings.get().linkActivities.activities;
-    this.#syncActivityFilter(roomActivities);
-    const activityQuery = normalizeFinderText(this.#activityQuery.value);
-    const activityFilter = this.#activityFilter.value || "all";
-    const visibleActivities = roomActivities
-      .map((activity, index) => ({ activity, index }))
-      .filter(({ activity }) => {
-        if (
-          activityQuery &&
-          !normalizeFinderText(
-            `${activity.label} ${activity.template} ${activity.category} ${activity.pack}`,
-          ).includes(activityQuery)
-        ) {
-          return false;
-        }
-        if (activityFilter === "favorites") return activity.favorite;
-        if (activityFilter.startsWith("category:")) {
-          return activity.category === activityFilter.slice("category:".length);
-        }
-        if (activityFilter.startsWith("pack:")) {
-          return activity.pack === activityFilter.slice("pack:".length);
-        }
-        return true;
-      })
-      .sort(
-        (left, right) =>
-          Number(right.activity.favorite) - Number(left.activity.favorite) ||
-          left.activity.label.localeCompare(right.activity.label),
-      );
-    if (!visibleActivities.some(({ index }) => index === this.#selectedActivityIndex)) {
-      this.#selectedActivityIndex = visibleActivities[0]?.index ?? 0;
-    }
-    this.#activityLibrary.replaceChildren();
-    if (roomActivities.length === 0) {
-      this.#activityLibrary.append(
-        element("div", {
-          className: "kl-contact-empty",
-          text: "Your activity library is empty. Choose Edit activities to create one.",
-        }),
-      );
-    } else if (visibleActivities.length === 0) {
-      this.#activityLibrary.append(
-        element("div", {
-          className: "kl-contact-empty",
-          text: "No activities match this search or filter.",
-        }),
-      );
-    } else {
-      for (const { activity, index } of visibleActivities) {
-        const select = element(
-          "button",
-          { className: "kl-activity-card-main", type: "button" },
-          element(
-            "div",
-            { className: "kl-activity-card-heading" },
-            element("div", { className: "kl-activity-card-label", text: activity.label }),
-            element("div", {
-              className: "kl-activity-card-meta",
-              text: `${activity.category} · ${activity.pack}`,
-            }),
-          ),
-          element("div", { className: "kl-activity-card-template", text: activity.template }),
-        );
-        select.dataset.selected = String(index === this.#selectedActivityIndex);
-        select.setAttribute("aria-pressed", String(index === this.#selectedActivityIndex));
-        select.dataset.activityIndex = index.toString();
-        select.addEventListener("click", () => {
-          this.#selectedActivityIndex = index;
-          this.#renderActivitiesPage();
-        });
-        const favorite = element("button", {
-          className: "kl-icon-button kl-activity-favorite",
-          type: "button",
-          title: activity.favorite ? "Remove from favorite activities" : "Add to favorite activities",
-          ariaLabel: activity.favorite
-            ? `Remove ${activity.label} from favorites`
-            : `Add ${activity.label} to favorites`,
-        });
-        favorite.dataset.active = String(activity.favorite);
-        favorite.setAttribute("aria-pressed", String(activity.favorite));
-        favorite.append(kikiIcon("star", "kl-icon", activity.favorite));
-        favorite.addEventListener("click", () => this.#toggleActivityFavorite(index));
-        const card = element("div", { className: "kl-activity-card" }, select, favorite);
-        card.dataset.favorite = String(activity.favorite);
-        this.#activityLibrary.append(card);
-      }
-    }
-
-    const activity = roomActivities[this.#selectedActivityIndex];
-    const target = this.#selectedActivityTarget;
-    if (!this.adapter.isInChatRoom()) {
-      this.#activityStatus.textContent = "Open Activity Studio while you are inside a chat room.";
-      this.#activityStatus.dataset.kind = "error";
-    } else if (!this.activities.isAvailable()) {
-      this.#activityStatus.textContent = "The native room chat is still loading.";
-      this.#activityStatus.dataset.kind = "error";
-    } else {
-      this.#activityStatus.textContent = `${targets.length} ${targets.length === 1 ? "target" : "targets"} available in this room.`;
-      this.#activityStatus.dataset.kind = "ready";
-    }
-
-    if (activity && target) {
-      this.#activityPreview.textContent = `${this.adapter.getOwnName()} ${this.activities.preview(activity, target)}`;
-    } else {
-      this.#activityPreview.textContent = activity
-        ? "Choose a character to preview this activity."
-        : "Create an activity in KikiLink settings first.";
-    }
-    this.#performActivityButton.disabled = !activity || !target || !this.activities.isAvailable();
-  }
-
-  #syncActivityFilter(activities: RoomActivity[]): void {
-    const current = this.#activityFilter.value || "all";
-    const categories = [...new Set(activities.map((activity) => activity.category))].sort((left, right) =>
-      left.localeCompare(right),
-    );
-    const packs = [...new Set(activities.map((activity) => activity.pack))].sort((left, right) =>
-      left.localeCompare(right),
-    );
-    this.#activityFilter.replaceChildren(
-      selectOption("all", "All activities"),
-      selectOption("favorites", "Favorites"),
-      ...categories.map((category) => selectOption(`category:${category}`, `Category: ${category}`)),
-      ...packs.map((pack) => selectOption(`pack:${pack}`, `Pack: ${pack}`)),
-    );
-    this.#activityFilter.value = [...this.#activityFilter.options].some(
-      (option) => option.value === current,
-    )
-      ? current
-      : "all";
-  }
-
-  #toggleActivityFavorite(index: number): void {
-    const settings = this.settings.update((draft) => {
-      const activity = draft.linkActivities.activities[index];
-      if (activity) activity.favorite = !activity.favorite;
-    });
-    const activity = settings.linkActivities.activities[index];
-    if (!activity) return;
-    this.#renderActivitiesPage();
-    this.#toast(activity.favorite ? `${activity.label} added to favorites.` : `${activity.label} removed from favorites.`);
-  }
-
-  #performActivity(): void {
-    const activity = this.settings.get().linkActivities.activities[this.#selectedActivityIndex];
-    const target = this.#selectedActivityTarget;
-    if (!activity || !target) return;
-
-    try {
-      this.activities.perform(activity, target);
-      this.#toast(`${activity.label} sent to the room.`);
-    } catch (error) {
-      this.#renderActivitiesPage();
-      this.#toast(error instanceof Error ? error.message : "Unable to perform this activity", "error");
-    }
+    this.#customActivitiesView?.refresh();
   }
 
   #settingRow(name: string, help: string, control: Node): HTMLDivElement {
@@ -4209,13 +3836,16 @@ export class LinkChatView {
     this.#homeRosterAction.textContent = settings.linkRoster.enabled ? "View players" : "Turn on Players";
 
     this.#activitiesButton.dataset.available = String(settings.linkActivities.enabled);
+    this.#activitiesButton.hidden = !settings.linkActivities.enabled;
     this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
     this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled
-      ? `${settings.linkActivities.activities.length} saved ${settings.linkActivities.activities.length === 1 ? "activity" : "activities"}`
-      : "Optional · tap to enable";
+      ? settings.linkActivities.customActivities.length > 0
+        ? `${settings.linkActivities.customActivities.length} custom ${settings.linkActivities.customActivities.length === 1 ? "activity" : "activities"}`
+        : "No custom activities yet"
+      : "Hidden · tap to enable";
     this.#homeActivitiesAction.textContent = settings.linkActivities.enabled
-      ? "Choose activity"
-      : "Turn on Activities";
+      ? "Manage activities"
+      : "Show Custom tab";
 
     const themeLabel =
       settings.ui.theme === "light"
@@ -5299,113 +4929,6 @@ export class LinkChatView {
       .filter((action) => action.label && action.template);
   }
 
-  #renderActivityEditor(activities: RoomActivity[]): void {
-    this.#activitiesEditor.replaceChildren();
-    for (const activity of activities) this.#addActivityEditorRow(activity);
-    this.#updateActivityEditorCount();
-  }
-
-  #addActivityEditorRow(
-    activity: RoomActivity = {
-      label: "",
-      template: "",
-      category: "Custom",
-      pack: "My Activities",
-      favorite: false,
-    },
-  ): void {
-    if (this.#activitiesEditor.childElementCount >= MAX_ROOM_ACTIVITIES) {
-      this.#toast(`You can keep up to ${MAX_ROOM_ACTIVITIES} room activities.`, "error");
-      return;
-    }
-
-    const label = element("input", { className: "kl-action-label" }) as HTMLInputElement;
-    label.placeholder = "Label";
-    label.maxLength = 32;
-    label.value = activity.label;
-    label.dataset.field = "label";
-    const category = element("input", { className: "kl-activity-meta" }) as HTMLInputElement;
-    category.placeholder = "Category";
-    category.maxLength = 24;
-    category.value = activity.category;
-    category.dataset.field = "category";
-    const pack = element("input", { className: "kl-activity-meta" }) as HTMLInputElement;
-    pack.placeholder = "Pack";
-    pack.maxLength = 32;
-    pack.value = activity.pack;
-    pack.dataset.field = "pack";
-    const template = element("input", { className: "kl-action-template" }) as HTMLInputElement;
-    template.placeholder = "Room emote text";
-    template.maxLength = 500;
-    template.value = activity.template;
-    template.dataset.field = "template";
-    const favorite = element("input") as HTMLInputElement;
-    favorite.type = "checkbox";
-    favorite.checked = activity.favorite;
-    favorite.dataset.field = "favorite";
-    const favoriteLabel = element(
-      "label",
-      {
-        className: "kl-activity-editor-favorite",
-        title: "Favorite activity",
-        ariaLabel: `Favorite ${activity.label || "new activity"}`,
-      },
-      favorite,
-      kikiIcon("star"),
-    );
-    const remove = element("button", {
-      className: "kl-icon-button kl-remove-action",
-      type: "button",
-      title: "Remove activity",
-      ariaLabel: "Remove room activity",
-    });
-    remove.append(kikiIcon("trash"));
-    const row = element(
-      "div",
-      { className: "kl-action-editor-row kl-activity-editor-row" },
-      element(
-        "div",
-        { className: "kl-activity-editor-fields" },
-        label,
-        category,
-        pack,
-        template,
-      ),
-      favoriteLabel,
-      remove,
-    );
-    remove.addEventListener("click", () => {
-      row.remove();
-      this.#updateActivityEditorCount();
-    });
-    this.#activitiesEditor.append(row);
-    this.#updateActivityEditorCount();
-    if (!activity.label && !activity.template) label.focus();
-  }
-
-  #readActivityEditor(): RoomActivity[] {
-    return [...this.#activitiesEditor.querySelectorAll<HTMLElement>(".kl-activity-editor-row")]
-      .map((row) => ({
-        label: row.querySelector<HTMLInputElement>('[data-field="label"]')?.value.trim() ?? "",
-        template:
-          row.querySelector<HTMLInputElement>('[data-field="template"]')?.value.trim() ?? "",
-        category:
-          row.querySelector<HTMLInputElement>('[data-field="category"]')?.value.trim() ||
-          "Uncategorized",
-        pack:
-          row.querySelector<HTMLInputElement>('[data-field="pack"]')?.value.trim() ||
-          "My Activities",
-        favorite:
-          row.querySelector<HTMLInputElement>('[data-field="favorite"]')?.checked === true,
-      }))
-      .filter((activity) => activity.label && activity.template);
-  }
-
-  #updateActivityEditorCount(): void {
-    const count = this.#activitiesEditor.childElementCount;
-    this.#activityCount.textContent = `${count}/${MAX_ROOM_ACTIVITIES} activities · JSON stays local`;
-  }
-
   #renderReactionRuleEditor(rules: ReactionRule[]): void {
     this.#reactionRulesEditor.replaceChildren();
     for (const rule of rules) this.#addReactionRuleEditorRow(rule);
@@ -5695,7 +5218,6 @@ export class LinkChatView {
     this.#rosterRetentionSelect.value = settings.linkRoster.retentionDays.toString();
     this.#updateNotebookCount();
     this.#activitiesToggle.checked = settings.linkActivities.enabled;
-    this.#renderActivityEditor(settings.linkActivities.activities);
     this.#friendOnlineAlertToggle.checked = settings.linkReactions.quickAlerts.friendOnline;
     this.#roomJoinAlertToggle.checked = settings.linkReactions.quickAlerts.roomJoin;
     this.#notificationSoundsToggle.checked = settings.linkReactions.sounds.enabled;
@@ -5810,7 +5332,6 @@ export class LinkChatView {
         draft.linkRoster.retentionDays = rosterRetentionDays;
       }
       draft.linkActivities.enabled = this.#activitiesToggle.checked;
-      draft.linkActivities.activities = this.#readActivityEditor();
       draft.linkReactions.quickAlerts.friendOnline = this.#friendOnlineAlertToggle.checked;
       draft.linkReactions.quickAlerts.roomJoin = this.#roomJoinAlertToggle.checked;
       draft.linkReactions.sounds.enabled = this.#notificationSoundsToggle.checked;
@@ -5828,6 +5349,7 @@ export class LinkChatView {
       if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
     });
     this.#applyTheme(settings);
+    this.activities.syncFromSettings();
     if (settings.linkReactions.sounds.enabled) void this.#notificationSounds.unlock();
     if (!settings.linkChat.typingIndicators) this.#stopLocalTyping();
     const removedPlayers = this.roster.prune();
@@ -5876,101 +5398,6 @@ export class LinkChatView {
     this.#chat.hidden = true;
     this.#empty.hidden = false;
     this.#panel.dataset.mobileView = "list";
-  }
-
-  #installActivityPack(): void {
-    try {
-      const currentActivities = this.#readCompleteActivityEditor();
-      if (!currentActivities) return;
-      const pack = ACTIVITY_PACK_PRESETS.find(
-        (candidate) => candidate.id === this.#activityPackSelect.value,
-      );
-      const result = installActivityPack(currentActivities, this.#activityPackSelect.value);
-      this.#renderActivityEditor(result.activities);
-      if (result.imported === 0) {
-        this.#toast(`${pack?.name ?? "That pack"} is already in your activity library.`);
-        return;
-      }
-      const duplicateNote = result.duplicates > 0 ? ` ${result.duplicates} existing activities were kept.` : "";
-      this.#toast(
-        `Added ${result.imported} ${result.imported === 1 ? "activity" : "activities"} from ${pack?.name ?? "the pack"}.${duplicateNote} Choose Save changes to keep them.`,
-      );
-    } catch (error) {
-      this.#toast(error instanceof Error ? error.message : "Could not add that activity pack.", "error");
-    }
-  }
-
-  #exportActivities(): void {
-    if (typeof URL.createObjectURL !== "function") {
-      this.#toast("This browser cannot create an activity library download.", "error");
-      return;
-    }
-    const activities = this.#readCompleteActivityEditor();
-    if (!activities) return;
-    const backup = exportActivityLibrary(activities);
-    if (backup.activities.length === 0) {
-      this.#toast("Add at least one complete activity before exporting.", "error");
-      return;
-    }
-    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `KikiLink-activity-library-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.hidden = true;
-    this.#shadow.append(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-    this.#toast(
-      `Exported ${backup.activities.length} ${backup.activities.length === 1 ? "activity" : "activities"} with packs and favorites.`,
-    );
-  }
-
-  async #importActivityFile(): Promise<void> {
-    const file = this.#activityFileInput.files?.[0];
-    this.#activityFileInput.value = "";
-    if (!file) return;
-    if (file.size > 1_000_000) {
-      this.#toast("That activity library is larger than the 1 MB safety limit.", "error");
-      return;
-    }
-    if (
-      !window.confirm(
-        "Merge this KikiLink activity library with the current editor? Existing activities and favorites will be preserved.",
-      )
-    ) {
-      return;
-    }
-
-    try {
-      const currentActivities = this.#readCompleteActivityEditor();
-      if (!currentActivities) return;
-      const result = importActivityLibrary(await file.text(), currentActivities);
-      this.#renderActivityEditor(result.activities);
-      const details = [
-        result.duplicates > 0
-          ? `${result.duplicates} duplicate${result.duplicates === 1 ? "" : "s"} kept`
-          : "",
-        result.skipped > 0
-          ? `${result.skipped} invalid or excess entr${result.skipped === 1 ? "y" : "ies"} skipped`
-          : "",
-      ].filter(Boolean);
-      this.#toast(
-        `Imported ${result.imported} ${result.imported === 1 ? "activity" : "activities"}.${details.length > 0 ? ` ${details.join(" · ")}.` : ""} Choose Save changes to keep them.`,
-      );
-    } catch (error) {
-      this.#toast(error instanceof Error ? error.message : "Could not import that activity library.", "error");
-    }
-  }
-
-  #readCompleteActivityEditor(): RoomActivity[] | undefined {
-    const activities = this.#readActivityEditor();
-    if (activities.length !== this.#activitiesEditor.childElementCount) {
-      this.#toast("Finish or remove incomplete activities before using packs or backups.", "error");
-      return undefined;
-    }
-    return activities;
   }
 
   #exportNotebook(): void {
@@ -6317,9 +5744,9 @@ function finderSettingResults(): FinderResult[] {
     },
     {
       section: "activities",
-      title: "Activities & templates",
-      detail: "Activity Studio, packs, categories, favorites, and backup",
-      keywords: "linkactivities action roleplay target source member edit enable pack category favorite starred export import backup json",
+      title: "Custom Activities",
+      detail: "Body slots, vanilla pictures, action text, and optional arousal",
+      keywords: "custom activities blossom body slot image target me gender pronoun arousal advanced",
     },
     {
       section: "reactions",

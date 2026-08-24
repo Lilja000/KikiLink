@@ -1,9 +1,8 @@
 import type { KikiLinkSettings, QuickAction } from "./types";
 import {
-  ACTIVITY_PACK_PRESETS,
-  migrateLegacyRoomActivities,
-  sanitizeRoomActivities,
-} from "../modules/link-activities/activity-library";
+  migrateLegacyCustomActivities,
+  sanitizeCustomActivities,
+} from "../modules/link-activities/custom-activity-library";
 import { sanitizeReactionRules } from "../modules/link-reactions/reaction-rules";
 import { normalizeCloudinaryUploadConfig } from "../modules/link-chat/image-upload";
 
@@ -14,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 12,
+  schemaVersion: 13,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -55,8 +54,8 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     autoIdleMinutes: 10,
   },
   linkActivities: {
-    enabled: false,
-    activities: structuredClone(ACTIVITY_PACK_PRESETS[0]?.activities ?? []),
+    enabled: true,
+    customActivities: [],
   },
   linkRoster: {
     enabled: true,
@@ -164,7 +163,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
 
   return {
-    schemaVersion: 12,
+    schemaVersion: 13,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -248,17 +247,13 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
     },
     linkActivities: {
       enabled:
-        sourceSchema === 2
-          ? false
+        sourceSchema < 13
+          ? true
           : booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
-      activities:
-        linkActivities.activities === undefined
-          ? structuredClone(DEFAULT_SETTINGS.linkActivities.activities)
-          : Array.isArray(linkActivities.activities)
-            ? sourceSchema < 9
-              ? migrateLegacyRoomActivities(linkActivities.activities)
-              : sanitizeRoomActivities(linkActivities.activities)
-            : structuredClone(DEFAULT_SETTINGS.linkActivities.activities),
+      customActivities:
+        sourceSchema < 13
+          ? migrateLegacyCustomActivities(linkActivities.activities)
+          : sanitizeCustomActivities(linkActivities.customActivities),
     },
     linkRoster: {
       enabled: booleanOr(linkRoster.enabled, DEFAULT_SETTINGS.linkRoster.enabled),

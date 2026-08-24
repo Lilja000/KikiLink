@@ -28,6 +28,30 @@ declare global {
     MemberNumber: number;
     Name: string;
     Nickname?: string;
+    GetPronouns?(): "SheHer" | "HeHim" | "TheyThem" | "ItIt";
+  }
+
+  interface BCActivity {
+    Name: string;
+    ActivityID?: number;
+    MaxProgress: number;
+    MaxProgressSelf?: number;
+    Prerequisite: string[];
+    Target: string[];
+    TargetSelf?: string[] | true;
+  }
+
+  interface BCItemActivity {
+    Activity: BCActivity;
+    Group: string;
+    Item?: unknown;
+  }
+
+  interface BCAssetGroup {
+    Name: string;
+    Description: string;
+    Category: "Appearance" | "Item" | "Script";
+    Zone?: ReadonlyArray<readonly [number, number, number, number]>;
   }
 
   interface BCChatRoomData {
@@ -86,8 +110,11 @@ declare global {
   var ChatRoomCharacter: BCCharacter[];
   var FriendListBeepLog: BCFriendListBeepLogMessage[];
   var ServerSocket: BCServerSocket | null;
-  var MainCanvas: HTMLCanvasElement;
+  var MainCanvas: CanvasRenderingContext2D | HTMLCanvasElement;
   var ChatRoomHideIconState: number;
+  var ActivityFemale3DCG: BCActivity[];
+  var ActivityFemale3DCGOrdering: string[];
+  var AssetGroup: BCAssetGroup[];
 
   function ServerAccountBeep(data: BCServerAccountBeepResponse): void;
   function ServerAccountQueryResult(data: BCAccountQueryResponse): void;
@@ -100,6 +127,34 @@ declare global {
     options?: { includeRoom?: boolean },
   ): void;
   function ChatRoomSendEmote(message: string): void;
+  function ChatRoomPublishCustomAction(
+    message: string,
+    leaveDialog: boolean,
+    dictionary: unknown[],
+  ): void;
+  function ActivityDictionaryText(keyword: string): string;
+  function ActivityRun(
+    actor: BCCharacter,
+    acted: BCCharacter,
+    targetGroup: BCAssetGroup,
+    itemActivity: BCItemActivity,
+    sendMessage?: boolean,
+  ): void;
+  function ActivityEffectFlat(
+    source: BCCharacter,
+    target: BCCharacter,
+    amount: number,
+    zone: string,
+    count?: number,
+  ): void;
+  function DrawCharacter(
+    character: BCCharacter,
+    x: number,
+    y: number,
+    zoom: number,
+    isHeightResizeAllowed?: boolean,
+    drawCanvas?: CanvasRenderingContext2D,
+  ): void;
   function ChatRoomSetTarget(memberNumber: number): void;
   function InformationSheetLoadCharacter(character: BCCharacter): void;
   function ServerIsLoggedIn(): boolean;
@@ -117,6 +172,17 @@ declare global {
     characterY: number,
     zoom: number,
   ): void;
+
+  namespace ElementButton {
+    function CreateForActivity(
+      idPrefix: string | null,
+      activity: BCItemActivity,
+      character: BCCharacter,
+      onClick: (this: HTMLButtonElement, event: PointerEvent) => unknown,
+      options?: null | { image?: string },
+      htmlOptions?: unknown,
+    ): HTMLButtonElement;
+  }
 }
 
 export {};
