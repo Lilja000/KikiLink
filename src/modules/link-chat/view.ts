@@ -17,6 +17,13 @@ import { EventBus } from "../../core/event-bus";
 import { debounce, element } from "../../utils/dom";
 import { LinkActivitiesService } from "../link-activities/link-activities-service";
 import {
+  ACTIVITY_PACK_PRESETS,
+  exportActivityLibrary,
+  importActivityLibrary,
+  installActivityPack,
+  MAX_ROOM_ACTIVITIES,
+} from "../link-activities/activity-library";
+import {
   LinkRosterService,
   type RosterScope,
   type RosterSyncResult,
@@ -262,6 +269,11 @@ export class LinkChatView {
   readonly #activitiesEditor = element("div", {
     className: "kl-action-editor kl-activities-editor",
   });
+  readonly #activityFileInput = element("input") as HTMLInputElement;
+  readonly #activityPackSelect = element("select", {
+    className: "kl-select kl-activity-pack-select",
+  }) as HTMLSelectElement;
+  readonly #activityCount = element("span", { className: "kl-data-tools-count" });
   readonly #activitiesButton = element("button", {
     className: "kl-nav-item kl-activities-button",
     type: "button",
@@ -276,6 +288,12 @@ export class LinkChatView {
     className: "kl-search kl-activity-target-query",
   }) as HTMLInputElement;
   readonly #activityTargetResults = element("div", { className: "kl-activity-targets" });
+  readonly #activityQuery = element("input", {
+    className: "kl-search kl-activity-query",
+  }) as HTMLInputElement;
+  readonly #activityFilter = element("select", {
+    className: "kl-select kl-activity-filter",
+  }) as HTMLSelectElement;
   readonly #activityLibrary = element("div", { className: "kl-activity-library" });
   readonly #activityStatus = element("div", { className: "kl-activity-status" });
   readonly #activityPreview = element("div", { className: "kl-activity-preview" });
@@ -1556,6 +1574,58 @@ export class LinkChatView {
       text: "+ Add room activity",
       onClick: () => this.#addActivityEditorRow(),
     });
+    this.#activityFileInput.type = "file";
+    this.#activityFileInput.accept = ".json,application/json";
+    this.#activityFileInput.hidden = true;
+    this.#activityFileInput.addEventListener("change", () => void this.#importActivityFile());
+    this.#activityPackSelect.replaceChildren(
+      ...ACTIVITY_PACK_PRESETS.map((pack) => selectOption(pack.id, pack.name)),
+    );
+    this.#activityPackSelect.setAttribute("aria-label", "Built-in activity pack");
+    const installPack = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Add pack",
+      ariaLabel: "Add selected built-in activity pack",
+      onClick: () => this.#installActivityPack(),
+    });
+    const exportActivities = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Export",
+      ariaLabel: "Export activity library",
+      onClick: () => this.#exportActivities(),
+    });
+    const importActivities = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Import",
+      ariaLabel: "Import activity library",
+      onClick: () => this.#activityFileInput.click(),
+    });
+    const activityTools = element(
+      "section",
+      { className: "kl-data-tools kl-activity-data-tools" },
+      element(
+        "div",
+        { className: "kl-data-tools-copy" },
+        element("div", { className: "kl-data-tools-title", text: "Activity packs & backup" }),
+        element("div", {
+          className: "kl-setting-help",
+          text: "Add a built-in pack or move categories, favorites, and custom activities between browsers.",
+        }),
+        this.#activityCount,
+      ),
+      element(
+        "div",
+        { className: "kl-data-tools-actions kl-activity-data-actions" },
+        this.#activityPackSelect,
+        installPack,
+        exportActivities,
+        importActivities,
+        this.#activityFileInput,
+      ),
+    );
     const activitiesSection = this.#createSettingsPanel(
       "activities",
       "Activities library",
@@ -1565,6 +1635,7 @@ export class LinkChatView {
         className: "kl-setting-help",
         text: "Create room emotes visible to everyone. Variables: {target}, {member}, {source}.",
       }),
+      activityTools,
       this.#activitiesEditor,
       addActivity,
     );
@@ -2445,12 +2516,12 @@ export class LinkChatView {
       results.push({
         id: `activity-${index}`,
         kind: "activity",
-        icon: "activities",
-        category: "Activity",
+        icon: activity.favorite ? "star" : "activities",
+        category: `Activity · ${activity.category}`,
         title: activity.label,
-        detail: activity.template,
-        keywords: `activity emote room action ${activity.template}`,
-        priority: 72,
+        detail: `${activity.pack} · ${activity.template}`,
+        keywords: `activity emote room action ${activity.category} ${activity.pack} ${activity.favorite ? "favorite starred" : ""} ${activity.template}`,
+        priority: 72 + (activity.favorite ? 18 : 0),
         action: { kind: "activity", index },
       });
     });
@@ -3040,7 +3111,15 @@ export class LinkChatView {
     this.#activityTargetQuery.type = "search";
     this.#activityTargetQuery.placeholder = "Search room characters";
     this.#activityTargetQuery.autocomplete = "off";
+    this.#activityTargetQuery.setAttribute("aria-label", "Search room characters");
     this.#activityTargetQuery.addEventListener("input", () => this.#renderActivitiesPage());
+    this.#activityQuery.type = "search";
+    this.#activityQuery.placeholder = "Search activities";
+    this.#activityQuery.autocomplete = "off";
+    this.#activityQuery.setAttribute("aria-label", "Search activity library");
+    this.#activityQuery.addEventListener("input", () => this.#renderActivitiesPage());
+    this.#activityFilter.setAttribute("aria-label", "Filter activity library");
+    this.#activityFilter.addEventListener("change", () => this.#renderActivitiesPage());
     this.#activityStatus.setAttribute("role", "status");
     this.#activityStatus.setAttribute("aria-live", "polite");
 
@@ -3055,6 +3134,12 @@ export class LinkChatView {
       "section",
       { className: "kl-activity-pane" },
       element("div", { className: "kl-activity-pane-title", text: "Choose activity" }),
+      element(
+        "div",
+        { className: "kl-activity-library-controls" },
+        this.#activityQuery,
+        this.#activityFilter,
+      ),
       this.#activityLibrary,
     );
     const studio = element("div", { className: "kl-activity-studio" }, targetPane, libraryPane);
@@ -3105,6 +3190,8 @@ export class LinkChatView {
       this.#selectedActivityIndex = activityIndex;
     }
     this.#activityTargetQuery.value = "";
+    this.#activityQuery.value = "";
+    this.#activityFilter.value = "all";
     const targets = this.activities.getTargets();
     const preferredTarget = targets.find(
       (target) => target.memberNumber === this.#selectedActivityTarget?.memberNumber,
@@ -3172,7 +3259,37 @@ export class LinkChatView {
     }
 
     const roomActivities = this.settings.get().linkActivities.activities;
-    if (this.#selectedActivityIndex >= roomActivities.length) this.#selectedActivityIndex = 0;
+    this.#syncActivityFilter(roomActivities);
+    const activityQuery = normalizeFinderText(this.#activityQuery.value);
+    const activityFilter = this.#activityFilter.value || "all";
+    const visibleActivities = roomActivities
+      .map((activity, index) => ({ activity, index }))
+      .filter(({ activity }) => {
+        if (
+          activityQuery &&
+          !normalizeFinderText(
+            `${activity.label} ${activity.template} ${activity.category} ${activity.pack}`,
+          ).includes(activityQuery)
+        ) {
+          return false;
+        }
+        if (activityFilter === "favorites") return activity.favorite;
+        if (activityFilter.startsWith("category:")) {
+          return activity.category === activityFilter.slice("category:".length);
+        }
+        if (activityFilter.startsWith("pack:")) {
+          return activity.pack === activityFilter.slice("pack:".length);
+        }
+        return true;
+      })
+      .sort(
+        (left, right) =>
+          Number(right.activity.favorite) - Number(left.activity.favorite) ||
+          left.activity.label.localeCompare(right.activity.label),
+      );
+    if (!visibleActivities.some(({ index }) => index === this.#selectedActivityIndex)) {
+      this.#selectedActivityIndex = visibleActivities[0]?.index ?? 0;
+    }
     this.#activityLibrary.replaceChildren();
     if (roomActivities.length === 0) {
       this.#activityLibrary.append(
@@ -3181,22 +3298,52 @@ export class LinkChatView {
           text: "Your activity library is empty. Choose Edit activities to create one.",
         }),
       );
+    } else if (visibleActivities.length === 0) {
+      this.#activityLibrary.append(
+        element("div", {
+          className: "kl-contact-empty",
+          text: "No activities match this search or filter.",
+        }),
+      );
     } else {
-      roomActivities.forEach((activity, index) => {
-        const button = element(
+      for (const { activity, index } of visibleActivities) {
+        const select = element(
           "button",
-          { className: "kl-activity-card", type: "button" },
-          element("div", { className: "kl-activity-card-label", text: activity.label }),
+          { className: "kl-activity-card-main", type: "button" },
+          element(
+            "div",
+            { className: "kl-activity-card-heading" },
+            element("div", { className: "kl-activity-card-label", text: activity.label }),
+            element("div", {
+              className: "kl-activity-card-meta",
+              text: `${activity.category} · ${activity.pack}`,
+            }),
+          ),
           element("div", { className: "kl-activity-card-template", text: activity.template }),
         );
-        button.dataset.selected = String(index === this.#selectedActivityIndex);
-        button.dataset.activityIndex = index.toString();
-        button.addEventListener("click", () => {
+        select.dataset.selected = String(index === this.#selectedActivityIndex);
+        select.setAttribute("aria-pressed", String(index === this.#selectedActivityIndex));
+        select.dataset.activityIndex = index.toString();
+        select.addEventListener("click", () => {
           this.#selectedActivityIndex = index;
           this.#renderActivitiesPage();
         });
-        this.#activityLibrary.append(button);
-      });
+        const favorite = element("button", {
+          className: "kl-icon-button kl-activity-favorite",
+          type: "button",
+          title: activity.favorite ? "Remove from favorite activities" : "Add to favorite activities",
+          ariaLabel: activity.favorite
+            ? `Remove ${activity.label} from favorites`
+            : `Add ${activity.label} to favorites`,
+        });
+        favorite.dataset.active = String(activity.favorite);
+        favorite.setAttribute("aria-pressed", String(activity.favorite));
+        favorite.append(kikiIcon("star", "kl-icon", activity.favorite));
+        favorite.addEventListener("click", () => this.#toggleActivityFavorite(index));
+        const card = element("div", { className: "kl-activity-card" }, select, favorite);
+        card.dataset.favorite = String(activity.favorite);
+        this.#activityLibrary.append(card);
+      }
     }
 
     const activity = roomActivities[this.#selectedActivityIndex];
@@ -3220,6 +3367,38 @@ export class LinkChatView {
         : "Create an activity in KikiLink settings first.";
     }
     this.#performActivityButton.disabled = !activity || !target || !this.activities.isAvailable();
+  }
+
+  #syncActivityFilter(activities: RoomActivity[]): void {
+    const current = this.#activityFilter.value || "all";
+    const categories = [...new Set(activities.map((activity) => activity.category))].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    const packs = [...new Set(activities.map((activity) => activity.pack))].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    this.#activityFilter.replaceChildren(
+      selectOption("all", "All activities"),
+      selectOption("favorites", "Favorites"),
+      ...categories.map((category) => selectOption(`category:${category}`, `Category: ${category}`)),
+      ...packs.map((pack) => selectOption(`pack:${pack}`, `Pack: ${pack}`)),
+    );
+    this.#activityFilter.value = [...this.#activityFilter.options].some(
+      (option) => option.value === current,
+    )
+      ? current
+      : "all";
+  }
+
+  #toggleActivityFavorite(index: number): void {
+    const settings = this.settings.update((draft) => {
+      const activity = draft.linkActivities.activities[index];
+      if (activity) activity.favorite = !activity.favorite;
+    });
+    const activity = settings.linkActivities.activities[index];
+    if (!activity) return;
+    this.#renderActivitiesPage();
+    this.#toast(activity.favorite ? `${activity.label} added to favorites.` : `${activity.label} removed from favorites.`);
   }
 
   #performActivity(): void {
@@ -4412,11 +4591,20 @@ export class LinkChatView {
   #renderActivityEditor(activities: RoomActivity[]): void {
     this.#activitiesEditor.replaceChildren();
     for (const activity of activities) this.#addActivityEditorRow(activity);
+    this.#updateActivityEditorCount();
   }
 
-  #addActivityEditorRow(activity: RoomActivity = { label: "", template: "" }): void {
-    if (this.#activitiesEditor.childElementCount >= 20) {
-      this.#toast("You can keep up to 20 room activities.", "error");
+  #addActivityEditorRow(
+    activity: RoomActivity = {
+      label: "",
+      template: "",
+      category: "Custom",
+      pack: "My Activities",
+      favorite: false,
+    },
+  ): void {
+    if (this.#activitiesEditor.childElementCount >= MAX_ROOM_ACTIVITIES) {
+      this.#toast(`You can keep up to ${MAX_ROOM_ACTIVITIES} room activities.`, "error");
       return;
     }
 
@@ -4425,11 +4613,35 @@ export class LinkChatView {
     label.maxLength = 32;
     label.value = activity.label;
     label.dataset.field = "label";
+    const category = element("input", { className: "kl-activity-meta" }) as HTMLInputElement;
+    category.placeholder = "Category";
+    category.maxLength = 24;
+    category.value = activity.category;
+    category.dataset.field = "category";
+    const pack = element("input", { className: "kl-activity-meta" }) as HTMLInputElement;
+    pack.placeholder = "Pack";
+    pack.maxLength = 32;
+    pack.value = activity.pack;
+    pack.dataset.field = "pack";
     const template = element("input", { className: "kl-action-template" }) as HTMLInputElement;
     template.placeholder = "Room emote text";
     template.maxLength = 500;
     template.value = activity.template;
     template.dataset.field = "template";
+    const favorite = element("input") as HTMLInputElement;
+    favorite.type = "checkbox";
+    favorite.checked = activity.favorite;
+    favorite.dataset.field = "favorite";
+    const favoriteLabel = element(
+      "label",
+      {
+        className: "kl-activity-editor-favorite",
+        title: "Favorite activity",
+        ariaLabel: `Favorite ${activity.label || "new activity"}`,
+      },
+      favorite,
+      kikiIcon("star"),
+    );
     const remove = element("button", {
       className: "kl-icon-button kl-remove-action",
       type: "button",
@@ -4440,12 +4652,23 @@ export class LinkChatView {
     const row = element(
       "div",
       { className: "kl-action-editor-row kl-activity-editor-row" },
-      label,
-      template,
+      element(
+        "div",
+        { className: "kl-activity-editor-fields" },
+        label,
+        category,
+        pack,
+        template,
+      ),
+      favoriteLabel,
       remove,
     );
-    remove.addEventListener("click", () => row.remove());
+    remove.addEventListener("click", () => {
+      row.remove();
+      this.#updateActivityEditorCount();
+    });
     this.#activitiesEditor.append(row);
+    this.#updateActivityEditorCount();
     if (!activity.label && !activity.template) label.focus();
   }
 
@@ -4455,8 +4678,21 @@ export class LinkChatView {
         label: row.querySelector<HTMLInputElement>('[data-field="label"]')?.value.trim() ?? "",
         template:
           row.querySelector<HTMLInputElement>('[data-field="template"]')?.value.trim() ?? "",
+        category:
+          row.querySelector<HTMLInputElement>('[data-field="category"]')?.value.trim() ||
+          "Uncategorized",
+        pack:
+          row.querySelector<HTMLInputElement>('[data-field="pack"]')?.value.trim() ||
+          "My Activities",
+        favorite:
+          row.querySelector<HTMLInputElement>('[data-field="favorite"]')?.checked === true,
       }))
       .filter((activity) => activity.label && activity.template);
+  }
+
+  #updateActivityEditorCount(): void {
+    const count = this.#activitiesEditor.childElementCount;
+    this.#activityCount.textContent = `${count}/${MAX_ROOM_ACTIVITIES} activities · JSON stays local`;
   }
 
   #openSettings(section?: SettingsSection): void {
@@ -4614,6 +4850,101 @@ export class LinkChatView {
     this.#chat.hidden = true;
     this.#empty.hidden = false;
     this.#panel.dataset.mobileView = "list";
+  }
+
+  #installActivityPack(): void {
+    try {
+      const currentActivities = this.#readCompleteActivityEditor();
+      if (!currentActivities) return;
+      const pack = ACTIVITY_PACK_PRESETS.find(
+        (candidate) => candidate.id === this.#activityPackSelect.value,
+      );
+      const result = installActivityPack(currentActivities, this.#activityPackSelect.value);
+      this.#renderActivityEditor(result.activities);
+      if (result.imported === 0) {
+        this.#toast(`${pack?.name ?? "That pack"} is already in your activity library.`);
+        return;
+      }
+      const duplicateNote = result.duplicates > 0 ? ` ${result.duplicates} existing activities were kept.` : "";
+      this.#toast(
+        `Added ${result.imported} ${result.imported === 1 ? "activity" : "activities"} from ${pack?.name ?? "the pack"}.${duplicateNote} Choose Save changes to keep them.`,
+      );
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "Could not add that activity pack.", "error");
+    }
+  }
+
+  #exportActivities(): void {
+    if (typeof URL.createObjectURL !== "function") {
+      this.#toast("This browser cannot create an activity library download.", "error");
+      return;
+    }
+    const activities = this.#readCompleteActivityEditor();
+    if (!activities) return;
+    const backup = exportActivityLibrary(activities);
+    if (backup.activities.length === 0) {
+      this.#toast("Add at least one complete activity before exporting.", "error");
+      return;
+    }
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `KikiLink-activity-library-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.hidden = true;
+    this.#shadow.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    this.#toast(
+      `Exported ${backup.activities.length} ${backup.activities.length === 1 ? "activity" : "activities"} with packs and favorites.`,
+    );
+  }
+
+  async #importActivityFile(): Promise<void> {
+    const file = this.#activityFileInput.files?.[0];
+    this.#activityFileInput.value = "";
+    if (!file) return;
+    if (file.size > 1_000_000) {
+      this.#toast("That activity library is larger than the 1 MB safety limit.", "error");
+      return;
+    }
+    if (
+      !window.confirm(
+        "Merge this KikiLink activity library with the current editor? Existing activities and favorites will be preserved.",
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const currentActivities = this.#readCompleteActivityEditor();
+      if (!currentActivities) return;
+      const result = importActivityLibrary(await file.text(), currentActivities);
+      this.#renderActivityEditor(result.activities);
+      const details = [
+        result.duplicates > 0
+          ? `${result.duplicates} duplicate${result.duplicates === 1 ? "" : "s"} kept`
+          : "",
+        result.skipped > 0
+          ? `${result.skipped} invalid or excess entr${result.skipped === 1 ? "y" : "ies"} skipped`
+          : "",
+      ].filter(Boolean);
+      this.#toast(
+        `Imported ${result.imported} ${result.imported === 1 ? "activity" : "activities"}.${details.length > 0 ? ` ${details.join(" · ")}.` : ""} Choose Save changes to keep them.`,
+      );
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "Could not import that activity library.", "error");
+    }
+  }
+
+  #readCompleteActivityEditor(): RoomActivity[] | undefined {
+    const activities = this.#readActivityEditor();
+    if (activities.length !== this.#activitiesEditor.childElementCount) {
+      this.#toast("Finish or remove incomplete activities before using packs or backups.", "error");
+      return undefined;
+    }
+    return activities;
   }
 
   #exportNotebook(): void {
@@ -4910,8 +5241,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "activities",
       title: "Activities & templates",
-      detail: "Activity Studio and reusable room emotes",
-      keywords: "linkactivities action roleplay target source member edit enable",
+      detail: "Activity Studio, packs, categories, favorites, and backup",
+      keywords: "linkactivities action roleplay target source member edit enable pack category favorite starred export import backup json",
     },
   ];
   return definitions.map((definition, index) => ({

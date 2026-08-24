@@ -47,6 +47,9 @@ export interface QuickAction {
 export interface RoomActivity {
   label: string;
   template: string;
+  category: string;
+  pack: string;
+  favorite: boolean;
 }
 
 export interface RoomCharacter {
@@ -113,7 +116,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 8;
+  schemaVersion: 9;
   ui: {
     accent: string;
     theme: ThemePreference;

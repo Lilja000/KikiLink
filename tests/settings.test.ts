@@ -128,12 +128,45 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(8);
+    expect(settings.schemaVersion).toBe(9);
     expect(settings.linkActivities).toEqual({
       enabled: false,
-      activities: [{ label: "Sakura greeting", template: "bows to {target}." }],
+      activities: [
+        {
+          label: "Sakura greeting",
+          template: "bows to {target}.",
+          category: "Uncategorized",
+          pack: "My Activities",
+          favorite: false,
+        },
+      ],
     });
     expect(settings.linkRoster).toEqual(DEFAULT_SETTINGS.linkRoster);
+  });
+
+  it("recognizes the original starter activities while migrating schema 8", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 8,
+      linkActivities: {
+        enabled: true,
+        activities: [
+          {
+            label: "Sakura bow",
+            template: "bows gracefully to {target}, as if sakura petals drifted between them.",
+          },
+        ],
+      },
+    });
+
+    expect(settings.linkActivities.activities).toEqual([
+      {
+        label: "Sakura bow",
+        template: "bows gracefully to {target}, as if sakura petals drifted between them.",
+        category: "Greetings",
+        pack: "KikiLink Starter",
+        favorite: true,
+      },
+    ]);
   });
 
   it("demotes the 0.4 Activity shortcut while adding LinkRoster", () => {
@@ -142,7 +175,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(8);
+    expect(settings.schemaVersion).toBe(9);
     expect(settings.linkActivities.enabled).toBe(false);
     expect(settings.linkRoster).toEqual({
       enabled: true,
@@ -165,7 +198,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(8);
+    expect(settings.schemaVersion).toBe(9);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",

@@ -1,4 +1,9 @@
-import type { KikiLinkSettings, QuickAction, RoomActivity } from "./types";
+import type { KikiLinkSettings, QuickAction } from "./types";
+import {
+  ACTIVITY_PACK_PRESETS,
+  migrateLegacyRoomActivities,
+  sanitizeRoomActivities,
+} from "../modules/link-activities/activity-library";
 
 export interface KeyValueStorage {
   getItem(key: string): string | null;
@@ -7,7 +12,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 8,
+  schemaVersion: 9,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -44,28 +49,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
   },
   linkActivities: {
     enabled: false,
-    activities: [
-      {
-        label: "Sakura bow",
-        template: "bows gracefully to {target}, as if sakura petals drifted between them.",
-      },
-      {
-        label: "Wolf greeting",
-        template: "greets {target} with a warm, playful wolfish grin.",
-      },
-      {
-        label: "Inspect knots",
-        template: "circles {target}, carefully inspecting every knot.",
-      },
-      {
-        label: "Offer hand",
-        template: "offers {target} a hand with an inviting smile.",
-      },
-      {
-        label: "Moonlit promise",
-        template: "touches two fingers to their heart, then gestures solemnly toward {target}.",
-      },
-    ],
+    activities: structuredClone(ACTIVITY_PACK_PRESETS[0]?.activities ?? []),
   },
   linkRoster: {
     enabled: true,
@@ -146,7 +130,10 @@ export class MemoryKeyValueStorage implements KeyValueStorage {
 
 export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const source = isRecord(input) ? input : {};
-  const sourceSchema = source.schemaVersion;
+  const sourceSchema =
+    typeof source.schemaVersion === "number" && Number.isFinite(source.schemaVersion)
+      ? source.schemaVersion
+      : 1;
   const ui = isRecord(source.ui) ? source.ui : {};
   const linkChat = isRecord(source.linkChat) ? source.linkChat : {};
   const linkPresence = isRecord(source.linkPresence) ? source.linkPresence : {};
@@ -154,7 +141,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
 
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -240,7 +227,14 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         sourceSchema === 2
           ? false
           : booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
-      activities: sanitizeRoomActivities(linkActivities.activities),
+      activities:
+        linkActivities.activities === undefined
+          ? structuredClone(DEFAULT_SETTINGS.linkActivities.activities)
+          : Array.isArray(linkActivities.activities)
+            ? sourceSchema < 9
+              ? migrateLegacyRoomActivities(linkActivities.activities)
+              : sanitizeRoomActivities(linkActivities.activities)
+            : structuredClone(DEFAULT_SETTINGS.linkActivities.activities),
     },
     linkRoster: {
       enabled: booleanOr(linkRoster.enabled, DEFAULT_SETTINGS.linkRoster.enabled),
@@ -266,21 +260,6 @@ function sanitizeQuickActions(value: unknown): QuickAction[] {
     if (label && template) actions.push({ label, template });
   }
   return actions;
-}
-
-function sanitizeRoomActivities(value: unknown): RoomActivity[] {
-  if (value === undefined) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
-  if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
-
-  const activities: RoomActivity[] = [];
-  for (const entry of value.slice(0, 20)) {
-    if (!isRecord(entry)) continue;
-    const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 32) : "";
-    const template =
-      typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
-    if (label && template) activities.push({ label, template });
-  }
-  return activities;
 }
 
 function sanitizeLauncherPosition(value: unknown): { x: number; y: number } | null {

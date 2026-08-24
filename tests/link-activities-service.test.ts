@@ -18,6 +18,9 @@ describe("LinkActivitiesService", () => {
     const activity = {
       label: "Greeting",
       template: "{source} offers {target} (#{member}) a sakura blossom.",
+      category: "Greetings",
+      pack: "Test pack",
+      favorite: false,
     };
     const target = { memberNumber: 123, memberName: "Reina" };
 

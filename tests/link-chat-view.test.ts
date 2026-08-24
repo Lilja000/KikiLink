@@ -265,9 +265,11 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLButtonElement>('[data-section="players"]')?.click();
     expect(shadow?.querySelector(".kl-data-tools")?.textContent).toContain("1 saved player");
     expect(
-      [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-data-tools-actions button") ?? [])].map(
-        (button) => button.textContent,
-      ),
+      [
+        ...(shadow?.querySelectorAll<HTMLButtonElement>(
+          "#kikilink-settings-panel-players .kl-data-tools-actions button",
+        ) ?? []),
+      ].map((button) => button.textContent),
     ).toEqual(["Export", "Import"]);
 
     const retention = shadow?.querySelector<HTMLSelectElement>(
@@ -279,6 +281,56 @@ describe("LinkChatView", () => {
       ?.querySelector<HTMLButtonElement>(".kl-settings-actions .kl-text-button--primary")
       ?.click();
     expect(settings.get().linkRoster.retentionDays).toBe(90);
+    view.destroy();
+  });
+
+  it("adds a built-in activity pack without duplicating the starter library", () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getCurrentRoomName: () => "Moon Garden",
+      getRoomCharacters: () => [],
+      isInChatRoom: () => true,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.14.0",
+    );
+    view.mount();
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
+    shadow?.querySelector<HTMLButtonElement>('[data-section="activities"]')?.click();
+    expect(shadow?.querySelector(".kl-activity-data-tools")?.textContent).toContain("5/100");
+    expect(shadow?.querySelectorAll(".kl-activity-editor-row")).toHaveLength(5);
+
+    const packSelect = shadow?.querySelector<HTMLSelectElement>(".kl-activity-pack-select");
+    if (!packSelect) throw new Error("Missing activity pack selector");
+    packSelect.value = "social-gestures";
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-activity-data-actions button") ?? [])]
+      .find((button) => button.textContent === "Add pack")
+      ?.click();
+
+    expect(shadow?.querySelectorAll(".kl-activity-editor-row")).toHaveLength(10);
+    expect(shadow?.querySelector(".kl-toast")?.textContent).toContain("Added 5 activities");
+    shadow
+      ?.querySelector<HTMLButtonElement>(".kl-settings-actions .kl-text-button--primary")
+      ?.click();
+    expect(settings.get().linkActivities.activities).toHaveLength(10);
+    expect(
+      settings
+        .get()
+        .linkActivities.activities.some((activity) => activity.pack === "Social Gestures"),
+    ).toBe(true);
     view.destroy();
   });
 
@@ -840,6 +892,13 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-activity-preview")?.textContent).toContain(
       "Kiki bows gracefully to Reina",
     );
+    expect(shadow?.querySelector(".kl-activity-card-meta")?.textContent).toContain("Greetings");
+
+    const filter = shadow?.querySelector<HTMLSelectElement>(".kl-activity-filter");
+    if (!filter) throw new Error("Missing activity filter");
+    filter.value = "favorites";
+    filter.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(shadow?.querySelectorAll(".kl-activity-card")).toHaveLength(2);
 
     shadow?.querySelector<HTMLButtonElement>(".kl-perform-activity")?.click();
     expect(sendRoomEmote).toHaveBeenCalledWith(

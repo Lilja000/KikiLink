@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.13.0
+// @version      0.14.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -1048,9 +1048,235 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return alias || void 0;
   }
 
+  // src/modules/link-activities/activity-library.ts
+  var MAX_ROOM_ACTIVITIES = 100;
+  var ACTIVITY_LIBRARY_FORMAT = "kikilink-activity-library";
+  var ACTIVITY_LIBRARY_VERSION = 1;
+  var ACTIVITY_PACK_PRESETS = [
+    {
+      id: "kikilink-starter",
+      name: "KikiLink Starter",
+      description: "The five original KikiLink room activities.",
+      activities: [
+        roomActivity(
+          "Sakura bow",
+          "bows gracefully to {target}, as if sakura petals drifted between them.",
+          "Greetings",
+          "KikiLink Starter",
+          true
+        ),
+        roomActivity(
+          "Wolf greeting",
+          "greets {target} with a warm, playful wolfish grin.",
+          "Greetings",
+          "KikiLink Starter",
+          true
+        ),
+        roomActivity(
+          "Inspect knots",
+          "circles {target}, carefully inspecting every knot.",
+          "Scene",
+          "KikiLink Starter"
+        ),
+        roomActivity(
+          "Offer hand",
+          "offers {target} a hand with an inviting smile.",
+          "Care",
+          "KikiLink Starter"
+        ),
+        roomActivity(
+          "Moonlit promise",
+          "touches two fingers to their heart, then gestures solemnly toward {target}.",
+          "Roleplay",
+          "KikiLink Starter"
+        )
+      ]
+    },
+    {
+      id: "social-gestures",
+      name: "Social Gestures",
+      description: "Warm greetings and small social flourishes for a busy room.",
+      activities: [
+        roomActivity("Friendly wave", "waves warmly to {target}.", "Greetings", "Social Gestures"),
+        roomActivity(
+          "Playful wink",
+          "gives {target} a quick, playful wink.",
+          "Greetings",
+          "Social Gestures"
+        ),
+        roomActivity(
+          "Formal curtsey",
+          "offers {target} a graceful, carefully measured curtsey.",
+          "Greetings",
+          "Social Gestures"
+        ),
+        roomActivity(
+          "Welcome smile",
+          "welcomes {target} with a bright, reassuring smile.",
+          "Care",
+          "Social Gestures"
+        ),
+        roomActivity(
+          "Quiet toast",
+          "raises an imaginary glass toward {target} in a quiet toast.",
+          "Roleplay",
+          "Social Gestures"
+        )
+      ]
+    },
+    {
+      id: "scene-flourishes",
+      name: "Scene Flourishes",
+      description: "Reusable movements for adding atmosphere without changing game state.",
+      activities: [
+        roomActivity(
+          "Check comfort",
+          "pauses beside {target}, carefully checking that everything still looks comfortable.",
+          "Care",
+          "Scene Flourishes"
+        ),
+        roomActivity(
+          "Stand guard",
+          "takes position beside {target}, watching the room attentively.",
+          "Scene",
+          "Scene Flourishes"
+        ),
+        roomActivity(
+          "Slow circle",
+          "walks a slow circle around {target}, studying their expression.",
+          "Scene",
+          "Scene Flourishes"
+        ),
+        roomActivity(
+          "Measured nod",
+          "meets {target}'s gaze and gives a slow, deliberate nod.",
+          "Roleplay",
+          "Scene Flourishes"
+        ),
+        roomActivity(
+          "Quiet reassurance",
+          "leans closer to {target} and offers a few quiet words of reassurance.",
+          "Care",
+          "Scene Flourishes"
+        )
+      ]
+    }
+  ];
+  function sanitizeRoomActivities(value) {
+    if (!Array.isArray(value)) return [];
+    const activities = [];
+    for (const entry of value.slice(0, MAX_ROOM_ACTIVITIES)) {
+      const activity = sanitizeRoomActivity(entry);
+      if (activity) activities.push(activity);
+    }
+    return activities;
+  }
+  function migrateLegacyRoomActivities(value) {
+    const starterActivities = ACTIVITY_PACK_PRESETS[0]?.activities ?? [];
+    return sanitizeRoomActivities(value).map((activity) => {
+      const starter = starterActivities.find(
+        (candidate) => activityFingerprint(candidate) === activityFingerprint(activity)
+      );
+      return starter ? {
+        ...activity,
+        category: starter.category,
+        pack: starter.pack,
+        favorite: activity.favorite || starter.favorite
+      } : activity;
+    });
+  }
+  function exportActivityLibrary(activities, exportedAt = Date.now()) {
+    return {
+      format: ACTIVITY_LIBRARY_FORMAT,
+      version: ACTIVITY_LIBRARY_VERSION,
+      exportedAt,
+      activities: sanitizeRoomActivities(activities)
+    };
+  }
+  function importActivityLibrary(value, existing) {
+    const parsed = parseActivityLibrary(value);
+    return mergeActivities(existing, parsed.activities);
+  }
+  function installActivityPack(existing, packId) {
+    const pack = ACTIVITY_PACK_PRESETS.find((candidate) => candidate.id === packId);
+    if (!pack) throw new Error("That KikiLink activity pack is not available.");
+    return mergeActivities(existing, pack.activities);
+  }
+  function mergeActivities(existing, candidates) {
+    const activities = sanitizeRoomActivities(existing);
+    const fingerprints = new Map(
+      activities.map((activity, index) => [activityFingerprint(activity), index])
+    );
+    let imported = 0;
+    let duplicates = 0;
+    let skipped = Math.max(0, candidates.length - MAX_ROOM_ACTIVITIES);
+    for (const candidate of candidates.slice(0, MAX_ROOM_ACTIVITIES)) {
+      const activity = sanitizeRoomActivity(candidate);
+      if (!activity) {
+        skipped += 1;
+        continue;
+      }
+      const fingerprint = activityFingerprint(activity);
+      const existingIndex = fingerprints.get(fingerprint);
+      if (existingIndex !== void 0) {
+        const current = activities[existingIndex];
+        if (current) current.favorite ||= activity.favorite;
+        duplicates += 1;
+        continue;
+      }
+      if (activities.length >= MAX_ROOM_ACTIVITIES) {
+        skipped += 1;
+        continue;
+      }
+      fingerprints.set(fingerprint, activities.length);
+      activities.push(activity);
+      imported += 1;
+    }
+    return { activities, imported, duplicates, skipped };
+  }
+  function parseActivityLibrary(value) {
+    let parsed = value;
+    if (typeof value === "string") {
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        throw new Error("This file is not valid JSON.");
+      }
+    }
+    if (!isRecord(parsed) || parsed.format !== ACTIVITY_LIBRARY_FORMAT || parsed.version !== ACTIVITY_LIBRARY_VERSION || !Array.isArray(parsed.activities)) {
+      throw new Error("This is not a KikiLink activity library backup.");
+    }
+    return { activities: parsed.activities };
+  }
+  function sanitizeRoomActivity(value) {
+    if (!isRecord(value)) return void 0;
+    const label = cleanText(value.label, 32);
+    const template = cleanText(value.template, 500);
+    if (!label || !template) return void 0;
+    return {
+      label,
+      template,
+      category: cleanText(value.category, 24) || "Uncategorized",
+      pack: cleanText(value.pack, 32) || "My Activities",
+      favorite: value.favorite === true
+    };
+  }
+  function activityFingerprint(activity) {
+    return `${activity.label.trim().toLocaleLowerCase()}\0${activity.template.trim().toLocaleLowerCase()}`;
+  }
+  function roomActivity(label, template, category, pack, favorite = false) {
+    return { label, template, category, pack, favorite };
+  }
+  function cleanText(value, maxLength) {
+    return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, maxLength) : "";
+  }
+  function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 8,
+    schemaVersion: 9,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -1087,28 +1313,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     },
     linkActivities: {
       enabled: false,
-      activities: [
-        {
-          label: "Sakura bow",
-          template: "bows gracefully to {target}, as if sakura petals drifted between them."
-        },
-        {
-          label: "Wolf greeting",
-          template: "greets {target} with a warm, playful wolfish grin."
-        },
-        {
-          label: "Inspect knots",
-          template: "circles {target}, carefully inspecting every knot."
-        },
-        {
-          label: "Offer hand",
-          template: "offers {target} a hand with an inviting smile."
-        },
-        {
-          label: "Moonlit promise",
-          template: "touches two fingers to their heart, then gestures solemnly toward {target}."
-        }
-      ]
+      activities: structuredClone(ACTIVITY_PACK_PRESETS[0]?.activities ?? [])
     },
     linkRoster: {
       enabled: true,
@@ -1173,15 +1378,15 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
   };
   function sanitizeSettings(input) {
-    const source = isRecord(input) ? input : {};
-    const sourceSchema = source.schemaVersion;
-    const ui = isRecord(source.ui) ? source.ui : {};
-    const linkChat = isRecord(source.linkChat) ? source.linkChat : {};
-    const linkPresence = isRecord(source.linkPresence) ? source.linkPresence : {};
-    const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
-    const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
+    const source = isRecord2(input) ? input : {};
+    const sourceSchema = typeof source.schemaVersion === "number" && Number.isFinite(source.schemaVersion) ? source.schemaVersion : 1;
+    const ui = isRecord2(source.ui) ? source.ui : {};
+    const linkChat = isRecord2(source.linkChat) ? source.linkChat : {};
+    const linkPresence = isRecord2(source.linkPresence) ? source.linkPresence : {};
+    const linkActivities = isRecord2(source.linkActivities) ? source.linkActivities : {};
+    const linkRoster = isRecord2(source.linkRoster) ? source.linkRoster : {};
     return {
-      schemaVersion: 8,
+      schemaVersion: 9,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -1238,7 +1443,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       },
       linkActivities: {
         enabled: sourceSchema === 2 ? false : booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
-        activities: sanitizeRoomActivities(linkActivities.activities)
+        activities: linkActivities.activities === void 0 ? structuredClone(DEFAULT_SETTINGS.linkActivities.activities) : Array.isArray(linkActivities.activities) ? sourceSchema < 9 ? migrateLegacyRoomActivities(linkActivities.activities) : sanitizeRoomActivities(linkActivities.activities) : structuredClone(DEFAULT_SETTINGS.linkActivities.activities)
       },
       linkRoster: {
         enabled: booleanOr(linkRoster.enabled, DEFAULT_SETTINGS.linkRoster.enabled),
@@ -1255,31 +1460,19 @@ One of mods you are using is using an old version of SDK. It will work for now b
     if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
     const actions = [];
     for (const entry of value.slice(0, 12)) {
-      if (!isRecord(entry)) continue;
+      if (!isRecord2(entry)) continue;
       const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 24) : "";
       const template = typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
       if (label && template) actions.push({ label, template });
     }
     return actions;
   }
-  function sanitizeRoomActivities(value) {
-    if (value === void 0) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
-    if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkActivities.activities);
-    const activities = [];
-    for (const entry of value.slice(0, 20)) {
-      if (!isRecord(entry)) continue;
-      const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 32) : "";
-      const template = typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
-      if (label && template) activities.push({ label, template });
-    }
-    return activities;
-  }
   function sanitizeLauncherPosition(value) {
-    if (!isRecord(value)) return null;
+    if (!isRecord2(value)) return null;
     if (!finiteNumberInRange(value.x, 0, 1) || !finiteNumberInRange(value.y, 0, 1)) return null;
     return { x: value.x, y: value.y };
   }
-  function isRecord(value) {
+  function isRecord2(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
   function booleanOr(value, fallback) {
@@ -1702,19 +1895,19 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
   };
   function sanitizePerson(value) {
-    if (!isRecord2(value) || !validMemberNumber(value.memberNumber)) return void 0;
+    if (!isRecord3(value) || !validMemberNumber(value.memberNumber)) return void 0;
     const now = Date.now();
     const lastSeenAt = validTime(value.lastSeenAt) ? value.lastSeenAt : 0;
     const firstSeenAt = validTime(value.firstSeenAt) ? Math.min(value.firstSeenAt, lastSeenAt || now) : lastSeenAt;
-    const displayName = cleanText(value.displayName, 80) || `Member ${value.memberNumber}`;
-    const note = cleanText(value.note, 2e3);
-    const lastRoomName = cleanText(value.lastRoomName, 100);
+    const displayName = cleanText2(value.displayName, 80) || `Member ${value.memberNumber}`;
+    const note = cleanText2(value.note, 2e3);
+    const lastRoomName = cleanText2(value.lastRoomName, 100);
     const encounterCount = typeof value.encounterCount === "number" && Number.isInteger(value.encounterCount) && value.encounterCount >= 0 ? Math.min(value.encounterCount, 1e6) : 0;
     const tags = [];
     if (Array.isArray(value.tags)) {
       const seen = /* @__PURE__ */ new Set();
       for (const rawTag of value.tags.slice(0, 16)) {
-        const tag = cleanText(rawTag, 24);
+        const tag = cleanText2(rawTag, 24);
         const key = tag.toLocaleLowerCase();
         if (!tag || seen.has(key)) continue;
         seen.add(key);
@@ -1743,7 +1936,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         throw new Error("This file is not valid JSON.");
       }
     }
-    if (!isRecord2(parsed) || parsed.format !== NOTEBOOK_FORMAT || parsed.version !== NOTEBOOK_VERSION || !Array.isArray(parsed.records)) {
+    if (!isRecord3(parsed) || parsed.format !== NOTEBOOK_FORMAT || parsed.version !== NOTEBOOK_VERSION || !Array.isArray(parsed.records)) {
       throw new Error("This is not a KikiLink player notebook backup.");
     }
     return { records: parsed.records };
@@ -1789,7 +1982,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     return new MemoryKeyValueStorage();
   }
-  function isRecord2(value) {
+  function isRecord3(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
   function validMemberNumber(value) {
@@ -1798,7 +1991,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function validTime(value) {
     return typeof value === "number" && Number.isFinite(value) && value >= 0;
   }
-  function cleanText(value, maxLength) {
+  function cleanText2(value, maxLength) {
     return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
   }
 
@@ -2824,6 +3017,8 @@ button { color: inherit; }
 .kl-data-tools-count { display: block; margin-top: 5px; color: var(--kl-meta); font-size: var(--kl-type-xs); }
 .kl-data-tools-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
 .kl-data-tools-actions .kl-text-button { min-width: 76px; }
+.kl-activity-data-actions { max-width: 520px; flex-wrap: wrap; justify-content: flex-end; }
+.kl-activity-pack-select { width: 170px; }
 
 .kl-home {
   position: relative;
@@ -3264,7 +3459,8 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-switch { height: 36px; }
 :host([data-density="super-compact"]) .kl-switch-track { inset-block: 5px; }
 :host([data-density="super-compact"]) .kl-action-label,
-:host([data-density="super-compact"]) .kl-action-template { height: 35px; }
+:host([data-density="super-compact"]) .kl-action-template,
+:host([data-density="super-compact"]) .kl-activity-meta { height: 35px; }
 :host([data-density="super-compact"]) .kl-data-tools { gap: 12px; padding: 10px 11px 10px 14px; border-radius: 11px; }
 :host([data-density="super-compact"]) .kl-roster-body { gap: 9px; padding: 10px; }
 :host([data-density="super-compact"]) .kl-roster-list-pane { gap: 6px; }
@@ -3279,7 +3475,7 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-activities-body { gap: 8px; padding: 10px 14px; }
 :host([data-density="super-compact"]) .kl-activity-studio { gap: 9px; }
 :host([data-density="super-compact"]) .kl-activity-target { padding: 5px; }
-:host([data-density="super-compact"]) .kl-activity-card { padding: 7px 9px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-activity-card-main { padding: 7px 9px; border-radius: 9px; }
 :host([data-density="super-compact"]) .kl-activity-preview { min-height: 40px; padding: 9px 11px; }
 
 .kl-layout {
@@ -3336,6 +3532,7 @@ button { color: inherit; }
 .kl-select,
 .kl-action-label,
 .kl-action-template,
+.kl-activity-meta,
 .kl-roster-note,
 .kl-roster-tags {
   border: 1px solid var(--kl-border);
@@ -3360,6 +3557,7 @@ button { color: inherit; }
 .kl-select:focus,
 .kl-action-label:focus,
 .kl-action-template:focus,
+.kl-activity-meta:focus,
 .kl-roster-note:focus,
 .kl-roster-tags:focus {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 30%);
@@ -3665,9 +3863,17 @@ button { color: inherit; }
 .kl-action-editor { display: grid; gap: 8px; }
 .kl-action-editor-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) 40px; gap: 7px; align-items: center; }
 .kl-action-label,
-.kl-action-template { width: 100%; height: 40px; min-width: 0; padding: 0 9px; border-radius: 10px; }
+.kl-action-template,
+.kl-activity-meta { width: 100%; height: 40px; min-width: 0; padding: 0 9px; border-radius: 10px; }
 .kl-remove-action { width: 40px; height: 40px; color: var(--kl-danger); }
 .kl-add-action { justify-self: start; }
+.kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 42px 40px; align-items: start; padding: 8px; border: 1px solid var(--kl-border); border-radius: 12px; background: color-mix(in srgb, var(--kl-surface-2), transparent 28%); }
+.kl-activity-editor-fields { min-width: 0; display: grid; grid-template-columns: minmax(120px, 1fr) minmax(100px, 0.7fr) minmax(120px, 0.85fr); gap: 7px; }
+.kl-activity-editor-fields .kl-action-template { grid-column: 1 / -1; }
+.kl-activity-editor-favorite { width: 40px; height: 40px; position: relative; display: grid; place-items: center; border: 1px solid var(--kl-border); border-radius: 10px; background: var(--kl-input-bg); color: var(--kl-muted); cursor: pointer; }
+.kl-activity-editor-favorite input { position: absolute; opacity: 0; pointer-events: none; }
+.kl-activity-editor-favorite:has(input:checked) { border-color: color-mix(in srgb, var(--kl-gold), transparent 25%); background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
+.kl-activity-editor-favorite:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-accent), transparent 78%); }
 
 .kl-new-chat-dialog { width: min(480px, calc(100vw - 32px)); }
 .kl-new-chat-body { gap: 12px; }
@@ -4016,6 +4222,8 @@ button { color: inherit; }
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
+.kl-activity-library-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(145px, 0.65fr); gap: 7px; }
+.kl-activity-filter { width: 100%; }
 .kl-activity-targets,
 .kl-activity-library {
   min-height: 180px;
@@ -4050,22 +4258,36 @@ button { color: inherit; }
 .kl-activity-target .kl-avatar { width: 40px; height: 40px; border-radius: 12px; }
 .kl-activity-library { display: grid; align-content: start; gap: 7px; }
 .kl-activity-card {
+  position: relative;
   width: 100%;
-  padding: 10px 11px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 4px;
   border: 1px solid var(--kl-border);
   border-radius: 12px;
   background: var(--kl-surface-2);
+  overflow: hidden;
+}
+.kl-activity-card-main {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
-.kl-activity-card:hover { border-color: var(--kl-border-strong); background: var(--kl-surface-hover); }
-.kl-activity-card[data-selected="true"] {
+.kl-activity-card:hover { border-color: var(--kl-border-strong); }
+.kl-activity-card-main:hover { background: var(--kl-surface-hover); }
+.kl-activity-card-main[data-selected="true"] {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 32%);
   background: color-mix(in srgb, var(--kl-accent), transparent 84%);
   box-shadow: inset 3px 0 var(--kl-accent);
 }
+.kl-activity-card-heading { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .kl-activity-card-label { font-weight: 800; }
+.kl-activity-card-meta { min-width: 0; overflow: hidden; color: var(--kl-meta); font-size: var(--kl-type-xs); text-overflow: ellipsis; white-space: nowrap; }
 .kl-activity-card-template {
   margin-top: 3px;
   overflow: hidden;
@@ -4074,6 +4296,8 @@ button { color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.kl-activity-favorite { width: 34px; height: 34px; align-self: center; color: var(--kl-muted); }
+.kl-activity-favorite[data-active="true"] { color: var(--kl-gold); }
 .kl-activity-preview-wrap { display: grid; gap: 7px; }
 .kl-activity-preview {
   min-height: 48px;
@@ -4217,6 +4441,9 @@ select:focus-visible {
   .kl-setting-row { gap: 14px; }
   .kl-setting-help { max-width: 230px; }
   .kl-action-editor-row { grid-template-columns: 82px minmax(0, 1fr) 40px; }
+  .kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 44px 44px; }
+  .kl-activity-editor-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kl-activity-editor-fields .kl-action-template { grid-column: 1 / -1; }
   .kl-feature-page-header { padding: 14px 16px 13px; }
   .kl-feature-page-footer { min-height: 60px; padding: 8px 12px; }
   .kl-activities-body { padding: 14px; }
@@ -4295,6 +4522,13 @@ select:focus-visible {
   .kl-setting-action-row { align-items: flex-start; }
   .kl-select { width: 136px; }
   .kl-action-editor-row { grid-template-columns: 72px minmax(0, 1fr) 40px; }
+  .kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 44px 44px; }
+  .kl-activity-editor-fields { grid-template-columns: minmax(0, 1fr); }
+  .kl-activity-editor-fields .kl-action-template { grid-column: auto; }
+  .kl-activity-library-controls { grid-template-columns: minmax(0, 1fr); }
+  .kl-activity-library-controls .kl-activity-filter { width: 100%; }
+  .kl-activity-card { grid-template-columns: minmax(0, 1fr) 44px; }
+  .kl-activity-favorite { width: 44px; height: 44px; }
   .kl-activity-actions { flex-wrap: wrap; }
   .kl-activity-actions .kl-feature-page-footnote { width: 100%; margin-right: 0; }
   .kl-settings-local-note { display: none; }
@@ -4304,6 +4538,7 @@ select:focus-visible {
   .kl-data-tools { align-items: stretch; flex-direction: column; gap: 10px; }
   .kl-data-tools-actions { width: 100%; }
   .kl-data-tools-actions .kl-text-button { min-width: 0; flex: 1; }
+  .kl-activity-data-actions .kl-activity-pack-select { width: 100%; flex: 1 0 100%; }
   .kl-feature-page-subtitle { max-width: 260px; }
   .kl-roster-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kl-roster-stats { grid-template-columns: minmax(0, 1fr); }
@@ -5073,6 +5308,11 @@ select:focus-visible {
     #activitiesEditor = element("div", {
       className: "kl-action-editor kl-activities-editor"
     });
+    #activityFileInput = element("input");
+    #activityPackSelect = element("select", {
+      className: "kl-select kl-activity-pack-select"
+    });
+    #activityCount = element("span", { className: "kl-data-tools-count" });
     #activitiesButton = element("button", {
       className: "kl-nav-item kl-activities-button",
       type: "button",
@@ -5087,6 +5327,12 @@ select:focus-visible {
       className: "kl-search kl-activity-target-query"
     });
     #activityTargetResults = element("div", { className: "kl-activity-targets" });
+    #activityQuery = element("input", {
+      className: "kl-search kl-activity-query"
+    });
+    #activityFilter = element("select", {
+      className: "kl-select kl-activity-filter"
+    });
     #activityLibrary = element("div", { className: "kl-activity-library" });
     #activityStatus = element("div", { className: "kl-activity-status" });
     #activityPreview = element("div", { className: "kl-activity-preview" });
@@ -6218,6 +6464,58 @@ select:focus-visible {
         text: "+ Add room activity",
         onClick: () => this.#addActivityEditorRow()
       });
+      this.#activityFileInput.type = "file";
+      this.#activityFileInput.accept = ".json,application/json";
+      this.#activityFileInput.hidden = true;
+      this.#activityFileInput.addEventListener("change", () => void this.#importActivityFile());
+      this.#activityPackSelect.replaceChildren(
+        ...ACTIVITY_PACK_PRESETS.map((pack) => selectOption(pack.id, pack.name))
+      );
+      this.#activityPackSelect.setAttribute("aria-label", "Built-in activity pack");
+      const installPack = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Add pack",
+        ariaLabel: "Add selected built-in activity pack",
+        onClick: () => this.#installActivityPack()
+      });
+      const exportActivities = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Export",
+        ariaLabel: "Export activity library",
+        onClick: () => this.#exportActivities()
+      });
+      const importActivities = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Import",
+        ariaLabel: "Import activity library",
+        onClick: () => this.#activityFileInput.click()
+      });
+      const activityTools = element(
+        "section",
+        { className: "kl-data-tools kl-activity-data-tools" },
+        element(
+          "div",
+          { className: "kl-data-tools-copy" },
+          element("div", { className: "kl-data-tools-title", text: "Activity packs & backup" }),
+          element("div", {
+            className: "kl-setting-help",
+            text: "Add a built-in pack or move categories, favorites, and custom activities between browsers."
+          }),
+          this.#activityCount
+        ),
+        element(
+          "div",
+          { className: "kl-data-tools-actions kl-activity-data-actions" },
+          this.#activityPackSelect,
+          installPack,
+          exportActivities,
+          importActivities,
+          this.#activityFileInput
+        )
+      );
       const activitiesSection = this.#createSettingsPanel(
         "activities",
         "Activities library",
@@ -6227,6 +6525,7 @@ select:focus-visible {
           className: "kl-setting-help",
           text: "Create room emotes visible to everyone. Variables: {target}, {member}, {source}."
         }),
+        activityTools,
         this.#activitiesEditor,
         addActivity
       );
@@ -7055,12 +7354,12 @@ select:focus-visible {
         results.push({
           id: `activity-${index}`,
           kind: "activity",
-          icon: "activities",
-          category: "Activity",
+          icon: activity.favorite ? "star" : "activities",
+          category: `Activity \xB7 ${activity.category}`,
           title: activity.label,
-          detail: activity.template,
-          keywords: `activity emote room action ${activity.template}`,
-          priority: 72,
+          detail: `${activity.pack} \xB7 ${activity.template}`,
+          keywords: `activity emote room action ${activity.category} ${activity.pack} ${activity.favorite ? "favorite starred" : ""} ${activity.template}`,
+          priority: 72 + (activity.favorite ? 18 : 0),
           action: { kind: "activity", index }
         });
       });
@@ -7575,7 +7874,15 @@ select:focus-visible {
       this.#activityTargetQuery.type = "search";
       this.#activityTargetQuery.placeholder = "Search room characters";
       this.#activityTargetQuery.autocomplete = "off";
+      this.#activityTargetQuery.setAttribute("aria-label", "Search room characters");
       this.#activityTargetQuery.addEventListener("input", () => this.#renderActivitiesPage());
+      this.#activityQuery.type = "search";
+      this.#activityQuery.placeholder = "Search activities";
+      this.#activityQuery.autocomplete = "off";
+      this.#activityQuery.setAttribute("aria-label", "Search activity library");
+      this.#activityQuery.addEventListener("input", () => this.#renderActivitiesPage());
+      this.#activityFilter.setAttribute("aria-label", "Filter activity library");
+      this.#activityFilter.addEventListener("change", () => this.#renderActivitiesPage());
       this.#activityStatus.setAttribute("role", "status");
       this.#activityStatus.setAttribute("aria-live", "polite");
       const targetPane = element(
@@ -7589,6 +7896,12 @@ select:focus-visible {
         "section",
         { className: "kl-activity-pane" },
         element("div", { className: "kl-activity-pane-title", text: "Choose activity" }),
+        element(
+          "div",
+          { className: "kl-activity-library-controls" },
+          this.#activityQuery,
+          this.#activityFilter
+        ),
         this.#activityLibrary
       );
       const studio = element("div", { className: "kl-activity-studio" }, targetPane, libraryPane);
@@ -7636,6 +7949,8 @@ select:focus-visible {
         this.#selectedActivityIndex = activityIndex;
       }
       this.#activityTargetQuery.value = "";
+      this.#activityQuery.value = "";
+      this.#activityFilter.value = "all";
       const targets = this.activities.getTargets();
       const preferredTarget = targets.find(
         (target) => target.memberNumber === this.#selectedActivityTarget?.memberNumber
@@ -7695,7 +8010,29 @@ select:focus-visible {
         }
       }
       const roomActivities = this.settings.get().linkActivities.activities;
-      if (this.#selectedActivityIndex >= roomActivities.length) this.#selectedActivityIndex = 0;
+      this.#syncActivityFilter(roomActivities);
+      const activityQuery = normalizeFinderText(this.#activityQuery.value);
+      const activityFilter = this.#activityFilter.value || "all";
+      const visibleActivities = roomActivities.map((activity2, index) => ({ activity: activity2, index })).filter(({ activity: activity2 }) => {
+        if (activityQuery && !normalizeFinderText(
+          `${activity2.label} ${activity2.template} ${activity2.category} ${activity2.pack}`
+        ).includes(activityQuery)) {
+          return false;
+        }
+        if (activityFilter === "favorites") return activity2.favorite;
+        if (activityFilter.startsWith("category:")) {
+          return activity2.category === activityFilter.slice("category:".length);
+        }
+        if (activityFilter.startsWith("pack:")) {
+          return activity2.pack === activityFilter.slice("pack:".length);
+        }
+        return true;
+      }).sort(
+        (left, right) => Number(right.activity.favorite) - Number(left.activity.favorite) || left.activity.label.localeCompare(right.activity.label)
+      );
+      if (!visibleActivities.some(({ index }) => index === this.#selectedActivityIndex)) {
+        this.#selectedActivityIndex = visibleActivities[0]?.index ?? 0;
+      }
       this.#activityLibrary.replaceChildren();
       if (roomActivities.length === 0) {
         this.#activityLibrary.append(
@@ -7704,22 +8041,50 @@ select:focus-visible {
             text: "Your activity library is empty. Choose Edit activities to create one."
           })
         );
+      } else if (visibleActivities.length === 0) {
+        this.#activityLibrary.append(
+          element("div", {
+            className: "kl-contact-empty",
+            text: "No activities match this search or filter."
+          })
+        );
       } else {
-        roomActivities.forEach((activity2, index) => {
-          const button = element(
+        for (const { activity: activity2, index } of visibleActivities) {
+          const select = element(
             "button",
-            { className: "kl-activity-card", type: "button" },
-            element("div", { className: "kl-activity-card-label", text: activity2.label }),
+            { className: "kl-activity-card-main", type: "button" },
+            element(
+              "div",
+              { className: "kl-activity-card-heading" },
+              element("div", { className: "kl-activity-card-label", text: activity2.label }),
+              element("div", {
+                className: "kl-activity-card-meta",
+                text: `${activity2.category} \xB7 ${activity2.pack}`
+              })
+            ),
             element("div", { className: "kl-activity-card-template", text: activity2.template })
           );
-          button.dataset.selected = String(index === this.#selectedActivityIndex);
-          button.dataset.activityIndex = index.toString();
-          button.addEventListener("click", () => {
+          select.dataset.selected = String(index === this.#selectedActivityIndex);
+          select.setAttribute("aria-pressed", String(index === this.#selectedActivityIndex));
+          select.dataset.activityIndex = index.toString();
+          select.addEventListener("click", () => {
             this.#selectedActivityIndex = index;
             this.#renderActivitiesPage();
           });
-          this.#activityLibrary.append(button);
-        });
+          const favorite = element("button", {
+            className: "kl-icon-button kl-activity-favorite",
+            type: "button",
+            title: activity2.favorite ? "Remove from favorite activities" : "Add to favorite activities",
+            ariaLabel: activity2.favorite ? `Remove ${activity2.label} from favorites` : `Add ${activity2.label} to favorites`
+          });
+          favorite.dataset.active = String(activity2.favorite);
+          favorite.setAttribute("aria-pressed", String(activity2.favorite));
+          favorite.append(kikiIcon("star", "kl-icon", activity2.favorite));
+          favorite.addEventListener("click", () => this.#toggleActivityFavorite(index));
+          const card = element("div", { className: "kl-activity-card" }, select, favorite);
+          card.dataset.favorite = String(activity2.favorite);
+          this.#activityLibrary.append(card);
+        }
       }
       const activity = roomActivities[this.#selectedActivityIndex];
       const target = this.#selectedActivityTarget;
@@ -7739,6 +8104,34 @@ select:focus-visible {
         this.#activityPreview.textContent = activity ? "Choose a character to preview this activity." : "Create an activity in KikiLink settings first.";
       }
       this.#performActivityButton.disabled = !activity || !target || !this.activities.isAvailable();
+    }
+    #syncActivityFilter(activities) {
+      const current = this.#activityFilter.value || "all";
+      const categories = [...new Set(activities.map((activity) => activity.category))].sort(
+        (left, right) => left.localeCompare(right)
+      );
+      const packs = [...new Set(activities.map((activity) => activity.pack))].sort(
+        (left, right) => left.localeCompare(right)
+      );
+      this.#activityFilter.replaceChildren(
+        selectOption("all", "All activities"),
+        selectOption("favorites", "Favorites"),
+        ...categories.map((category) => selectOption(`category:${category}`, `Category: ${category}`)),
+        ...packs.map((pack) => selectOption(`pack:${pack}`, `Pack: ${pack}`))
+      );
+      this.#activityFilter.value = [...this.#activityFilter.options].some(
+        (option) => option.value === current
+      ) ? current : "all";
+    }
+    #toggleActivityFavorite(index) {
+      const settings = this.settings.update((draft) => {
+        const activity2 = draft.linkActivities.activities[index];
+        if (activity2) activity2.favorite = !activity2.favorite;
+      });
+      const activity = settings.linkActivities.activities[index];
+      if (!activity) return;
+      this.#renderActivitiesPage();
+      this.#toast(activity.favorite ? `${activity.label} added to favorites.` : `${activity.label} removed from favorites.`);
     }
     #performActivity() {
       const activity = this.settings.get().linkActivities.activities[this.#selectedActivityIndex];
@@ -8752,10 +9145,17 @@ ${expanded}` : expanded;
     #renderActivityEditor(activities) {
       this.#activitiesEditor.replaceChildren();
       for (const activity of activities) this.#addActivityEditorRow(activity);
+      this.#updateActivityEditorCount();
     }
-    #addActivityEditorRow(activity = { label: "", template: "" }) {
-      if (this.#activitiesEditor.childElementCount >= 20) {
-        this.#toast("You can keep up to 20 room activities.", "error");
+    #addActivityEditorRow(activity = {
+      label: "",
+      template: "",
+      category: "Custom",
+      pack: "My Activities",
+      favorite: false
+    }) {
+      if (this.#activitiesEditor.childElementCount >= MAX_ROOM_ACTIVITIES) {
+        this.#toast(`You can keep up to ${MAX_ROOM_ACTIVITIES} room activities.`, "error");
         return;
       }
       const label = element("input", { className: "kl-action-label" });
@@ -8763,11 +9163,35 @@ ${expanded}` : expanded;
       label.maxLength = 32;
       label.value = activity.label;
       label.dataset.field = "label";
+      const category = element("input", { className: "kl-activity-meta" });
+      category.placeholder = "Category";
+      category.maxLength = 24;
+      category.value = activity.category;
+      category.dataset.field = "category";
+      const pack = element("input", { className: "kl-activity-meta" });
+      pack.placeholder = "Pack";
+      pack.maxLength = 32;
+      pack.value = activity.pack;
+      pack.dataset.field = "pack";
       const template = element("input", { className: "kl-action-template" });
       template.placeholder = "Room emote text";
       template.maxLength = 500;
       template.value = activity.template;
       template.dataset.field = "template";
+      const favorite = element("input");
+      favorite.type = "checkbox";
+      favorite.checked = activity.favorite;
+      favorite.dataset.field = "favorite";
+      const favoriteLabel = element(
+        "label",
+        {
+          className: "kl-activity-editor-favorite",
+          title: "Favorite activity",
+          ariaLabel: `Favorite ${activity.label || "new activity"}`
+        },
+        favorite,
+        kikiIcon("star")
+      );
       const remove = element("button", {
         className: "kl-icon-button kl-remove-action",
         type: "button",
@@ -8778,19 +9202,37 @@ ${expanded}` : expanded;
       const row = element(
         "div",
         { className: "kl-action-editor-row kl-activity-editor-row" },
-        label,
-        template,
+        element(
+          "div",
+          { className: "kl-activity-editor-fields" },
+          label,
+          category,
+          pack,
+          template
+        ),
+        favoriteLabel,
         remove
       );
-      remove.addEventListener("click", () => row.remove());
+      remove.addEventListener("click", () => {
+        row.remove();
+        this.#updateActivityEditorCount();
+      });
       this.#activitiesEditor.append(row);
+      this.#updateActivityEditorCount();
       if (!activity.label && !activity.template) label.focus();
     }
     #readActivityEditor() {
       return [...this.#activitiesEditor.querySelectorAll(".kl-activity-editor-row")].map((row) => ({
         label: row.querySelector('[data-field="label"]')?.value.trim() ?? "",
-        template: row.querySelector('[data-field="template"]')?.value.trim() ?? ""
+        template: row.querySelector('[data-field="template"]')?.value.trim() ?? "",
+        category: row.querySelector('[data-field="category"]')?.value.trim() || "Uncategorized",
+        pack: row.querySelector('[data-field="pack"]')?.value.trim() || "My Activities",
+        favorite: row.querySelector('[data-field="favorite"]')?.checked === true
       })).filter((activity) => activity.label && activity.template);
+    }
+    #updateActivityEditorCount() {
+      const count2 = this.#activitiesEditor.childElementCount;
+      this.#activityCount.textContent = `${count2}/${MAX_ROOM_ACTIVITIES} activities \xB7 JSON stays local`;
     }
     #openSettings(section) {
       const settings = this.settings.get();
@@ -8919,6 +9361,90 @@ ${expanded}` : expanded;
       this.#chat.hidden = true;
       this.#empty.hidden = false;
       this.#panel.dataset.mobileView = "list";
+    }
+    #installActivityPack() {
+      try {
+        const currentActivities = this.#readCompleteActivityEditor();
+        if (!currentActivities) return;
+        const pack = ACTIVITY_PACK_PRESETS.find(
+          (candidate) => candidate.id === this.#activityPackSelect.value
+        );
+        const result = installActivityPack(currentActivities, this.#activityPackSelect.value);
+        this.#renderActivityEditor(result.activities);
+        if (result.imported === 0) {
+          this.#toast(`${pack?.name ?? "That pack"} is already in your activity library.`);
+          return;
+        }
+        const duplicateNote = result.duplicates > 0 ? ` ${result.duplicates} existing activities were kept.` : "";
+        this.#toast(
+          `Added ${result.imported} ${result.imported === 1 ? "activity" : "activities"} from ${pack?.name ?? "the pack"}.${duplicateNote} Choose Save changes to keep them.`
+        );
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "Could not add that activity pack.", "error");
+      }
+    }
+    #exportActivities() {
+      if (typeof URL.createObjectURL !== "function") {
+        this.#toast("This browser cannot create an activity library download.", "error");
+        return;
+      }
+      const activities = this.#readCompleteActivityEditor();
+      if (!activities) return;
+      const backup = exportActivityLibrary(activities);
+      if (backup.activities.length === 0) {
+        this.#toast("Add at least one complete activity before exporting.", "error");
+        return;
+      }
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `KikiLink-activity-library-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`;
+      anchor.hidden = true;
+      this.#shadow.append(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      this.#toast(
+        `Exported ${backup.activities.length} ${backup.activities.length === 1 ? "activity" : "activities"} with packs and favorites.`
+      );
+    }
+    async #importActivityFile() {
+      const file = this.#activityFileInput.files?.[0];
+      this.#activityFileInput.value = "";
+      if (!file) return;
+      if (file.size > 1e6) {
+        this.#toast("That activity library is larger than the 1 MB safety limit.", "error");
+        return;
+      }
+      if (!window.confirm(
+        "Merge this KikiLink activity library with the current editor? Existing activities and favorites will be preserved."
+      )) {
+        return;
+      }
+      try {
+        const currentActivities = this.#readCompleteActivityEditor();
+        if (!currentActivities) return;
+        const result = importActivityLibrary(await file.text(), currentActivities);
+        this.#renderActivityEditor(result.activities);
+        const details = [
+          result.duplicates > 0 ? `${result.duplicates} duplicate${result.duplicates === 1 ? "" : "s"} kept` : "",
+          result.skipped > 0 ? `${result.skipped} invalid or excess entr${result.skipped === 1 ? "y" : "ies"} skipped` : ""
+        ].filter(Boolean);
+        this.#toast(
+          `Imported ${result.imported} ${result.imported === 1 ? "activity" : "activities"}.${details.length > 0 ? ` ${details.join(" \xB7 ")}.` : ""} Choose Save changes to keep them.`
+        );
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "Could not import that activity library.", "error");
+      }
+    }
+    #readCompleteActivityEditor() {
+      const activities = this.#readActivityEditor();
+      if (activities.length !== this.#activitiesEditor.childElementCount) {
+        this.#toast("Finish or remove incomplete activities before using packs or backups.", "error");
+        return void 0;
+      }
+      return activities;
     }
     #exportNotebook() {
       if (typeof URL.createObjectURL !== "function") {
@@ -9180,8 +9706,8 @@ ${expanded}` : expanded;
       {
         section: "activities",
         title: "Activities & templates",
-        detail: "Activity Studio and reusable room emotes",
-        keywords: "linkactivities action roleplay target source member edit enable"
+        detail: "Activity Studio, packs, categories, favorites, and backup",
+        keywords: "linkactivities action roleplay target source member edit enable pack category favorite starred export import backup json"
       }
     ];
     return definitions.map((definition, index) => ({
@@ -9794,7 +10320,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.13.0");
+    const app = new KikiLinkApp("0.14.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

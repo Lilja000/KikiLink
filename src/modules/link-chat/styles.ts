@@ -651,6 +651,8 @@ button { color: inherit; }
 .kl-data-tools-count { display: block; margin-top: 5px; color: var(--kl-meta); font-size: var(--kl-type-xs); }
 .kl-data-tools-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
 .kl-data-tools-actions .kl-text-button { min-width: 76px; }
+.kl-activity-data-actions { max-width: 520px; flex-wrap: wrap; justify-content: flex-end; }
+.kl-activity-pack-select { width: 170px; }
 
 .kl-home {
   position: relative;
@@ -1091,7 +1093,8 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-switch { height: 36px; }
 :host([data-density="super-compact"]) .kl-switch-track { inset-block: 5px; }
 :host([data-density="super-compact"]) .kl-action-label,
-:host([data-density="super-compact"]) .kl-action-template { height: 35px; }
+:host([data-density="super-compact"]) .kl-action-template,
+:host([data-density="super-compact"]) .kl-activity-meta { height: 35px; }
 :host([data-density="super-compact"]) .kl-data-tools { gap: 12px; padding: 10px 11px 10px 14px; border-radius: 11px; }
 :host([data-density="super-compact"]) .kl-roster-body { gap: 9px; padding: 10px; }
 :host([data-density="super-compact"]) .kl-roster-list-pane { gap: 6px; }
@@ -1106,7 +1109,7 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-activities-body { gap: 8px; padding: 10px 14px; }
 :host([data-density="super-compact"]) .kl-activity-studio { gap: 9px; }
 :host([data-density="super-compact"]) .kl-activity-target { padding: 5px; }
-:host([data-density="super-compact"]) .kl-activity-card { padding: 7px 9px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-activity-card-main { padding: 7px 9px; border-radius: 9px; }
 :host([data-density="super-compact"]) .kl-activity-preview { min-height: 40px; padding: 9px 11px; }
 
 .kl-layout {
@@ -1163,6 +1166,7 @@ button { color: inherit; }
 .kl-select,
 .kl-action-label,
 .kl-action-template,
+.kl-activity-meta,
 .kl-roster-note,
 .kl-roster-tags {
   border: 1px solid var(--kl-border);
@@ -1187,6 +1191,7 @@ button { color: inherit; }
 .kl-select:focus,
 .kl-action-label:focus,
 .kl-action-template:focus,
+.kl-activity-meta:focus,
 .kl-roster-note:focus,
 .kl-roster-tags:focus {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 30%);
@@ -1492,9 +1497,17 @@ button { color: inherit; }
 .kl-action-editor { display: grid; gap: 8px; }
 .kl-action-editor-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) 40px; gap: 7px; align-items: center; }
 .kl-action-label,
-.kl-action-template { width: 100%; height: 40px; min-width: 0; padding: 0 9px; border-radius: 10px; }
+.kl-action-template,
+.kl-activity-meta { width: 100%; height: 40px; min-width: 0; padding: 0 9px; border-radius: 10px; }
 .kl-remove-action { width: 40px; height: 40px; color: var(--kl-danger); }
 .kl-add-action { justify-self: start; }
+.kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 42px 40px; align-items: start; padding: 8px; border: 1px solid var(--kl-border); border-radius: 12px; background: color-mix(in srgb, var(--kl-surface-2), transparent 28%); }
+.kl-activity-editor-fields { min-width: 0; display: grid; grid-template-columns: minmax(120px, 1fr) minmax(100px, 0.7fr) minmax(120px, 0.85fr); gap: 7px; }
+.kl-activity-editor-fields .kl-action-template { grid-column: 1 / -1; }
+.kl-activity-editor-favorite { width: 40px; height: 40px; position: relative; display: grid; place-items: center; border: 1px solid var(--kl-border); border-radius: 10px; background: var(--kl-input-bg); color: var(--kl-muted); cursor: pointer; }
+.kl-activity-editor-favorite input { position: absolute; opacity: 0; pointer-events: none; }
+.kl-activity-editor-favorite:has(input:checked) { border-color: color-mix(in srgb, var(--kl-gold), transparent 25%); background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
+.kl-activity-editor-favorite:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-accent), transparent 78%); }
 
 .kl-new-chat-dialog { width: min(480px, calc(100vw - 32px)); }
 .kl-new-chat-body { gap: 12px; }
@@ -1843,6 +1856,8 @@ button { color: inherit; }
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
+.kl-activity-library-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(145px, 0.65fr); gap: 7px; }
+.kl-activity-filter { width: 100%; }
 .kl-activity-targets,
 .kl-activity-library {
   min-height: 180px;
@@ -1877,22 +1892,36 @@ button { color: inherit; }
 .kl-activity-target .kl-avatar { width: 40px; height: 40px; border-radius: 12px; }
 .kl-activity-library { display: grid; align-content: start; gap: 7px; }
 .kl-activity-card {
+  position: relative;
   width: 100%;
-  padding: 10px 11px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 4px;
   border: 1px solid var(--kl-border);
   border-radius: 12px;
   background: var(--kl-surface-2);
+  overflow: hidden;
+}
+.kl-activity-card-main {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
-.kl-activity-card:hover { border-color: var(--kl-border-strong); background: var(--kl-surface-hover); }
-.kl-activity-card[data-selected="true"] {
+.kl-activity-card:hover { border-color: var(--kl-border-strong); }
+.kl-activity-card-main:hover { background: var(--kl-surface-hover); }
+.kl-activity-card-main[data-selected="true"] {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 32%);
   background: color-mix(in srgb, var(--kl-accent), transparent 84%);
   box-shadow: inset 3px 0 var(--kl-accent);
 }
+.kl-activity-card-heading { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .kl-activity-card-label { font-weight: 800; }
+.kl-activity-card-meta { min-width: 0; overflow: hidden; color: var(--kl-meta); font-size: var(--kl-type-xs); text-overflow: ellipsis; white-space: nowrap; }
 .kl-activity-card-template {
   margin-top: 3px;
   overflow: hidden;
@@ -1901,6 +1930,8 @@ button { color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.kl-activity-favorite { width: 34px; height: 34px; align-self: center; color: var(--kl-muted); }
+.kl-activity-favorite[data-active="true"] { color: var(--kl-gold); }
 .kl-activity-preview-wrap { display: grid; gap: 7px; }
 .kl-activity-preview {
   min-height: 48px;
@@ -2044,6 +2075,9 @@ select:focus-visible {
   .kl-setting-row { gap: 14px; }
   .kl-setting-help { max-width: 230px; }
   .kl-action-editor-row { grid-template-columns: 82px minmax(0, 1fr) 40px; }
+  .kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 44px 44px; }
+  .kl-activity-editor-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kl-activity-editor-fields .kl-action-template { grid-column: 1 / -1; }
   .kl-feature-page-header { padding: 14px 16px 13px; }
   .kl-feature-page-footer { min-height: 60px; padding: 8px 12px; }
   .kl-activities-body { padding: 14px; }
@@ -2122,6 +2156,13 @@ select:focus-visible {
   .kl-setting-action-row { align-items: flex-start; }
   .kl-select { width: 136px; }
   .kl-action-editor-row { grid-template-columns: 72px minmax(0, 1fr) 40px; }
+  .kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 44px 44px; }
+  .kl-activity-editor-fields { grid-template-columns: minmax(0, 1fr); }
+  .kl-activity-editor-fields .kl-action-template { grid-column: auto; }
+  .kl-activity-library-controls { grid-template-columns: minmax(0, 1fr); }
+  .kl-activity-library-controls .kl-activity-filter { width: 100%; }
+  .kl-activity-card { grid-template-columns: minmax(0, 1fr) 44px; }
+  .kl-activity-favorite { width: 44px; height: 44px; }
   .kl-activity-actions { flex-wrap: wrap; }
   .kl-activity-actions .kl-feature-page-footnote { width: 100%; margin-right: 0; }
   .kl-settings-local-note { display: none; }
@@ -2131,6 +2172,7 @@ select:focus-visible {
   .kl-data-tools { align-items: stretch; flex-direction: column; gap: 10px; }
   .kl-data-tools-actions { width: 100%; }
   .kl-data-tools-actions .kl-text-button { min-width: 0; flex: 1; }
+  .kl-activity-data-actions .kl-activity-pack-select { width: 100%; flex: 1 0 100%; }
   .kl-feature-page-subtitle { max-width: 260px; }
   .kl-roster-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kl-roster-stats { grid-template-columns: minmax(0, 1fr); }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.0 - 2026-08-24
+
+- Expanded LinkActivities into a searchable library with category and pack metadata, one-click
+  favorites, and dynamic Favorites, Category, and Pack filters.
+- Added the merge-safe `Social Gestures` and `Scene Flourishes` built-in packs alongside the five
+  original KikiLink Starter activities.
+- Raised the editable activity limit from 20 to 100 and added a responsive metadata editor with
+  an explicit local-library count.
+- Added versioned local JSON export and import with a 1 MB UI safety limit, strict format checks,
+  duplicate suppression, bounded records, and favorite preservation.
+- Migrated settings to schema version 9 while recognizing and enriching the original schema-8
+  starter activities without changing user-created templates.
+- Added activity-library, migration, pack-installation, filtering, and favorite coverage, bringing
+  the suite to 71 tests.
+
 ## 0.13.0 - 2026-08-24
 
 - Keep the current room and roster available while a native Bondage Club profile or another

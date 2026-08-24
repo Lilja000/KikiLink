@@ -11,9 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.13.0` keeps room context while native profiles and other room subscreens are open,
-adds private local chat nicknames and per-chat removal, cleans pasted image links, and introduces
-KikiLink's own unified minimal SVG icon set.
+Version `0.14.0` turns LinkActivities into a portable activity library with built-in packs,
+categories, favorites, search and filters, plus versioned merge-safe JSON backup and restore.
 
 ## Link Deck
 
@@ -104,8 +103,12 @@ browser profile. KikiLink does not upload them to a server.
 
 - Optional Activities destination, disabled by default
 - Current-room target picker with nickname and member-number search
-- Five original starter activities with live room preview
-- Editable activity library with up to 20 custom actions
+- Five original starter activities with categories, pack metadata, and live room preview
+- Two additional built-in packs that can be added without duplicating existing activities
+- Search by label, template, category, or pack, with Favorites, Category, and Pack filters
+- One-click favorites that rise to the top of the activity library
+- Editable activity library with up to 100 custom actions
+- Versioned local JSON export and merge-safe import for moving the complete library between browsers
 - `{target}`, `{member}`, and `{source}` template variables
 - Standard Bondage Club room emotes that remain visible to players without KikiLink
 - Safe target revalidation immediately before an action is sent
@@ -197,11 +200,10 @@ KikiLink.getVersion();
 
 ## Planned modules
 
-- Activity packs, categories, favorites, and import/export
 - LinkReactions with configurable event rules
 - Privacy-reviewed optional media upload service for local files
 - Per-conversation notification controls and configurable hotkeys
-- Import/export of settings and activity packs
+- Import/export of remaining settings
 - Stable/dev release channels and FUSAM listing
 
 ## License
