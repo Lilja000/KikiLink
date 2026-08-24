@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.15.0 - 2026-08-24
+
+- Added LinkReactions with ordered, locally stored rules for incoming Beeps, room joins and
+  leaves, and friends appearing online.
+- Added anyone, friends-only, and explicit member-number scopes, optional Beep text matching,
+  per-rule enable switches, templates, ordering controls, and cooldowns.
+- Added private notices that remain visible beside the closed launcher and an explicit public
+  room-emote action with a global 10-second send guard.
+- Public reactions never substitute private `{message}` content, and LinkReactions never sends
+  automatic Beep replies or uses a remote rules service.
+- Added quiet room and online baselines so startup or entering a room does not react to everyone
+  who was already present.
+- Added an original reaction icon, a responsive sixth Settings category, LinkFinder keywords,
+  and settings schema version 10.
+- Added rule matching, privacy, cooldown, rate-limit, baseline, migration, and UI coverage,
+  bringing the suite to 78 tests.
+
 ## 0.14.0 - 2026-08-24
 
 - Expanded LinkActivities into a searchable library with category and pack metadata, one-click

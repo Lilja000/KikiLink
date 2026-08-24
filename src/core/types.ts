@@ -9,12 +9,25 @@ export type LauncherOpenPreference = "home" | "last" | "chat";
 export type InterfaceDensity = "comfortable" | "compact" | "super-compact";
 export type TextScalePreference = "normal" | "large" | "extra-large";
 export type HomeLayoutPreference = "showcase" | "compact";
-export type SettingsSection = "appearance" | "navigation" | "chat" | "players" | "activities";
+export type SettingsSection =
+  | "appearance"
+  | "navigation"
+  | "chat"
+  | "players"
+  | "activities"
+  | "reactions";
 export type BCConnectionState = "connecting" | "ready" | "error";
 export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
 export type PresenceState = PresenceStatus | "unknown";
 export type PresenceSource = "kikilink" | "room" | "friend-list" | "unknown";
 export type ImagePreviewPreference = "ask" | "always" | "never";
+export type ReactionTrigger =
+  | "beep-received"
+  | "room-join"
+  | "room-leave"
+  | "friend-online";
+export type ReactionScope = "anyone" | "friends" | "members";
+export type ReactionAction = "notice" | "room-emote";
 
 export interface OnlineFriend {
   memberNumber: number;
@@ -50,6 +63,38 @@ export interface RoomActivity {
   category: string;
   pack: string;
   favorite: boolean;
+}
+
+export interface ReactionRule {
+  id: string;
+  label: string;
+  enabled: boolean;
+  trigger: ReactionTrigger;
+  scope: ReactionScope;
+  memberNumbers: number[];
+  textMatch: string;
+  action: ReactionAction;
+  template: string;
+  cooldownSeconds: number;
+}
+
+export interface LinkReactionEvent {
+  trigger: ReactionTrigger;
+  memberNumber: number;
+  memberName: string;
+  isFriend: boolean;
+  occurredAt: number;
+  content?: string;
+  roomName?: string;
+}
+
+export interface LinkReactionFired {
+  ruleId: string;
+  ruleLabel: string;
+  action: ReactionAction;
+  message: string;
+  event: LinkReactionEvent;
+  firedAt: number;
 }
 
 export interface RoomCharacter {
@@ -112,11 +157,12 @@ export interface KikiLinkEvents {
   "bc:online-friends": { friends: OnlineFriend[]; receivedAt: number };
   "bc:protocol": KikiLinkProtocolEvent;
   "link-chat:updated": { peerNumber: number };
+  "link-reactions:fired": LinkReactionFired;
   "settings:changed": KikiLinkSettings;
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 9;
+  schemaVersion: 10;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -155,6 +201,10 @@ export interface KikiLinkSettings {
     enabled: boolean;
     trackEncounters: boolean;
     retentionDays: number;
+  };
+  linkReactions: {
+    enabled: boolean;
+    rules: ReactionRule[];
   };
 }
 

@@ -21,6 +21,7 @@ export type KikiLinkIconName =
   | "pin"
   | "plus"
   | "profile"
+  | "reactions"
   | "reply"
   | "search"
   | "send"
@@ -131,6 +132,10 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
     ["path", { d: "M5.8 16c.55-1.75 1.55-2.6 2.7-2.6s2.15.85 2.7 2.6" }],
     ["line", { x1: "14", y1: "9", x2: "18", y2: "9" }],
     ["line", { x1: "14", y1: "13", x2: "18", y2: "13" }],
+  ],
+  reactions: [
+    ["path", { d: "m13.8 2.9-8 10.2h5.1l-.8 8 8.1-11h-5.1l.7-7.2Z" }, true],
+    ["path", { d: "M4.1 5.2c1 .2 1.6.8 1.8 1.8.2-1 .8-1.6 1.8-1.8-1-.2-1.6-.8-1.8-1.8-.2 1-.8 1.6-1.8 1.8Z" }, true],
   ],
   reply: [
     ["polyline", { points: "9.5 7 4.2 11.7 9.5 16.4" }],

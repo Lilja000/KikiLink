@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.14.0
+// @version      0.15.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -1274,9 +1274,93 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
+  // src/modules/link-reactions/reaction-rules.ts
+  var MAX_REACTION_RULES = 20;
+  var MAX_REACTION_MEMBERS = 20;
+  var MAX_REACTION_COOLDOWN_SECONDS = 3600;
+  function createDefaultReactionRule(id) {
+    return {
+      id,
+      label: "Friend joined",
+      enabled: true,
+      trigger: "room-join",
+      scope: "friends",
+      memberNumbers: [],
+      textMatch: "",
+      action: "notice",
+      template: "{name} joined {room}.",
+      cooldownSeconds: 30
+    };
+  }
+  function sanitizeReactionRules(value) {
+    if (!Array.isArray(value)) return [];
+    const rules = [];
+    const ids = /* @__PURE__ */ new Set();
+    for (const [index, entry] of value.slice(0, MAX_REACTION_RULES).entries()) {
+      if (!isRecord2(entry)) continue;
+      const label = cleanText2(entry.label, 32);
+      const template = cleanText2(entry.template, 500);
+      if (!label || !template) continue;
+      const scope = entry.scope === "friends" || entry.scope === "members" ? entry.scope : "anyone";
+      const memberNumbers = sanitizeMemberNumbers(entry.memberNumbers);
+      if (scope === "members" && memberNumbers.length === 0) continue;
+      const baseId = cleanIdentifier(entry.id) || `reaction-${index + 1}`;
+      const id = uniqueId(baseId, ids);
+      ids.add(id);
+      rules.push({
+        id,
+        label,
+        enabled: entry.enabled !== false,
+        trigger: entry.trigger === "room-join" || entry.trigger === "room-leave" || entry.trigger === "friend-online" ? entry.trigger : "beep-received",
+        scope,
+        memberNumbers,
+        textMatch: cleanText2(entry.textMatch, 80),
+        action: entry.action === "room-emote" ? "room-emote" : "notice",
+        template,
+        cooldownSeconds: integerInRange(
+          entry.cooldownSeconds,
+          0,
+          MAX_REACTION_COOLDOWN_SECONDS,
+          30
+        )
+      });
+    }
+    return rules;
+  }
+  function sanitizeMemberNumbers(value) {
+    if (!Array.isArray(value)) return [];
+    return [
+      ...new Set(
+        value.filter(
+          (memberNumber) => typeof memberNumber === "number" && Number.isSafeInteger(memberNumber) && memberNumber >= 0
+        )
+      )
+    ].slice(0, MAX_REACTION_MEMBERS);
+  }
+  function uniqueId(base, ids) {
+    if (!ids.has(base)) return base;
+    for (let suffix = 2; suffix <= MAX_REACTION_RULES + 1; suffix += 1) {
+      const candidate = `${base.slice(0, Math.max(1, 47 - suffix.toString().length))}-${suffix}`;
+      if (!ids.has(candidate)) return candidate;
+    }
+    return `reaction-${ids.size + 1}`;
+  }
+  function cleanIdentifier(value) {
+    return typeof value === "string" ? value.trim().toLocaleLowerCase().replace(/[^a-z0-9_-]/gu, "-").slice(0, 48) : "";
+  }
+  function cleanText2(value, maxLength) {
+    return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, maxLength) : "";
+  }
+  function integerInRange(value, min, max, fallback) {
+    return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+  }
+  function isRecord2(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 9,
+    schemaVersion: 10,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -1319,6 +1403,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
       enabled: true,
       trackEncounters: true,
       retentionDays: 365
+    },
+    linkReactions: {
+      enabled: false,
+      rules: []
     }
   };
   var SETTINGS_KEY = "kikilink:settings:v1";
@@ -1378,15 +1466,16 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
   };
   function sanitizeSettings(input) {
-    const source = isRecord2(input) ? input : {};
+    const source = isRecord3(input) ? input : {};
     const sourceSchema = typeof source.schemaVersion === "number" && Number.isFinite(source.schemaVersion) ? source.schemaVersion : 1;
-    const ui = isRecord2(source.ui) ? source.ui : {};
-    const linkChat = isRecord2(source.linkChat) ? source.linkChat : {};
-    const linkPresence = isRecord2(source.linkPresence) ? source.linkPresence : {};
-    const linkActivities = isRecord2(source.linkActivities) ? source.linkActivities : {};
-    const linkRoster = isRecord2(source.linkRoster) ? source.linkRoster : {};
+    const ui = isRecord3(source.ui) ? source.ui : {};
+    const linkChat = isRecord3(source.linkChat) ? source.linkChat : {};
+    const linkPresence = isRecord3(source.linkPresence) ? source.linkPresence : {};
+    const linkActivities = isRecord3(source.linkActivities) ? source.linkActivities : {};
+    const linkRoster = isRecord3(source.linkRoster) ? source.linkRoster : {};
+    const linkReactions = isRecord3(source.linkReactions) ? source.linkReactions : {};
     return {
-      schemaVersion: 9,
+      schemaVersion: 10,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -1406,13 +1495,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
           linkChat.includeRoomByDefault,
           DEFAULT_SETTINGS.linkChat.includeRoomByDefault
         ),
-        retentionDays: integerInRange(
+        retentionDays: integerInRange2(
           linkChat.retentionDays,
           1,
           3650,
           DEFAULT_SETTINGS.linkChat.retentionDays
         ),
-        maxMessagesPerConversation: integerInRange(
+        maxMessagesPerConversation: integerInRange2(
           linkChat.maxMessagesPerConversation,
           50,
           5e3,
@@ -1434,7 +1523,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         enabled: booleanOr(linkPresence.enabled, DEFAULT_SETTINGS.linkPresence.enabled),
         status: linkPresence.status === "idle" || linkPresence.status === "dnd" || linkPresence.status === "offline" ? linkPresence.status : DEFAULT_SETTINGS.linkPresence.status,
         statusMessage: typeof linkPresence.statusMessage === "string" ? linkPresence.statusMessage.trim().slice(0, 80) : DEFAULT_SETTINGS.linkPresence.statusMessage,
-        autoIdleMinutes: integerInRange(
+        autoIdleMinutes: integerInRange2(
           linkPresence.autoIdleMinutes,
           0,
           120,
@@ -1452,6 +1541,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
           DEFAULT_SETTINGS.linkRoster.trackEncounters
         ),
         retentionDays: rosterRetentionDaysOr(linkRoster.retentionDays)
+      },
+      linkReactions: {
+        enabled: booleanOr(linkReactions.enabled, DEFAULT_SETTINGS.linkReactions.enabled),
+        rules: sanitizeReactionRules(linkReactions.rules)
       }
     };
   }
@@ -1460,7 +1553,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     if (!Array.isArray(value)) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
     const actions = [];
     for (const entry of value.slice(0, 12)) {
-      if (!isRecord2(entry)) continue;
+      if (!isRecord3(entry)) continue;
       const label = typeof entry.label === "string" ? entry.label.trim().slice(0, 24) : "";
       const template = typeof entry.template === "string" ? entry.template.trim().slice(0, 500) : "";
       if (label && template) actions.push({ label, template });
@@ -1468,17 +1561,17 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return actions;
   }
   function sanitizeLauncherPosition(value) {
-    if (!isRecord2(value)) return null;
+    if (!isRecord3(value)) return null;
     if (!finiteNumberInRange(value.x, 0, 1) || !finiteNumberInRange(value.y, 0, 1)) return null;
     return { x: value.x, y: value.y };
   }
-  function isRecord2(value) {
+  function isRecord3(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
   function booleanOr(value, fallback) {
     return typeof value === "boolean" ? value : fallback;
   }
-  function integerInRange(value, min, max, fallback) {
+  function integerInRange2(value, min, max, fallback) {
     return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
   }
   function rosterRetentionDaysOr(value) {
@@ -1491,7 +1584,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value);
   }
   function isSettingsSection(value) {
-    return value === "appearance" || value === "navigation" || value === "chat" || value === "players" || value === "activities";
+    return value === "appearance" || value === "navigation" || value === "chat" || value === "players" || value === "activities" || value === "reactions";
   }
   function getDefaultStorage() {
     try {
@@ -1895,19 +1988,19 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
   };
   function sanitizePerson(value) {
-    if (!isRecord3(value) || !validMemberNumber(value.memberNumber)) return void 0;
+    if (!isRecord4(value) || !validMemberNumber(value.memberNumber)) return void 0;
     const now = Date.now();
     const lastSeenAt = validTime(value.lastSeenAt) ? value.lastSeenAt : 0;
     const firstSeenAt = validTime(value.firstSeenAt) ? Math.min(value.firstSeenAt, lastSeenAt || now) : lastSeenAt;
-    const displayName = cleanText2(value.displayName, 80) || `Member ${value.memberNumber}`;
-    const note = cleanText2(value.note, 2e3);
-    const lastRoomName = cleanText2(value.lastRoomName, 100);
+    const displayName = cleanText3(value.displayName, 80) || `Member ${value.memberNumber}`;
+    const note = cleanText3(value.note, 2e3);
+    const lastRoomName = cleanText3(value.lastRoomName, 100);
     const encounterCount = typeof value.encounterCount === "number" && Number.isInteger(value.encounterCount) && value.encounterCount >= 0 ? Math.min(value.encounterCount, 1e6) : 0;
     const tags = [];
     if (Array.isArray(value.tags)) {
       const seen = /* @__PURE__ */ new Set();
       for (const rawTag of value.tags.slice(0, 16)) {
-        const tag = cleanText2(rawTag, 24);
+        const tag = cleanText3(rawTag, 24);
         const key = tag.toLocaleLowerCase();
         if (!tag || seen.has(key)) continue;
         seen.add(key);
@@ -1936,7 +2029,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         throw new Error("This file is not valid JSON.");
       }
     }
-    if (!isRecord3(parsed) || parsed.format !== NOTEBOOK_FORMAT || parsed.version !== NOTEBOOK_VERSION || !Array.isArray(parsed.records)) {
+    if (!isRecord4(parsed) || parsed.format !== NOTEBOOK_FORMAT || parsed.version !== NOTEBOOK_VERSION || !Array.isArray(parsed.records)) {
       throw new Error("This is not a KikiLink player notebook backup.");
     }
     return { records: parsed.records };
@@ -1982,7 +2075,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     return new MemoryKeyValueStorage();
   }
-  function isRecord3(value) {
+  function isRecord4(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
   function validMemberNumber(value) {
@@ -1991,7 +2084,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function validTime(value) {
     return typeof value === "number" && Number.isFinite(value) && value >= 0;
   }
-  function cleanText2(value, maxLength) {
+  function cleanText3(value, maxLength) {
     return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
   }
 
@@ -3533,6 +3626,9 @@ button { color: inherit; }
 .kl-action-label,
 .kl-action-template,
 .kl-activity-meta,
+.kl-reaction-input,
+.kl-reaction-name,
+.kl-reaction-template,
 .kl-roster-note,
 .kl-roster-tags {
   border: 1px solid var(--kl-border);
@@ -3558,6 +3654,9 @@ button { color: inherit; }
 .kl-action-label:focus,
 .kl-action-template:focus,
 .kl-activity-meta:focus,
+.kl-reaction-input:focus,
+.kl-reaction-name:focus,
+.kl-reaction-template:focus,
 .kl-roster-note:focus,
 .kl-roster-tags:focus {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 30%);
@@ -3874,6 +3973,32 @@ button { color: inherit; }
 .kl-activity-editor-favorite input { position: absolute; opacity: 0; pointer-events: none; }
 .kl-activity-editor-favorite:has(input:checked) { border-color: color-mix(in srgb, var(--kl-gold), transparent 25%); background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
 .kl-activity-editor-favorite:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-accent), transparent 78%); }
+.kl-reaction-safety { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--kl-gold), transparent 68%); border-radius: 12px; background: color-mix(in srgb, var(--kl-gold), transparent 92%); color: var(--kl-muted); font-size: var(--kl-type-sm); line-height: 1.45; }
+.kl-reaction-safety-icon { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 1px; color: var(--kl-gold); }
+.kl-reaction-rules-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.kl-reaction-rules-heading .kl-data-tools-count { margin-top: 0; }
+.kl-reaction-rules-editor { display: grid; gap: 10px; }
+.kl-reaction-rule { display: grid; gap: 10px; padding: 11px; border: 1px solid var(--kl-border); border-radius: 13px; background: color-mix(in srgb, var(--kl-surface-2), transparent 24%); }
+.kl-reaction-rule-header { min-width: 0; display: grid; grid-template-columns: auto minmax(120px, 1fr) auto; gap: 8px; align-items: center; }
+.kl-reaction-rule-enabled { min-height: 40px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--kl-border); border-radius: 10px; background: var(--kl-input-bg); color: var(--kl-muted); font-size: var(--kl-type-sm); font-weight: 750; cursor: pointer; }
+.kl-reaction-rule-enabled:has(input:checked) { border-color: color-mix(in srgb, var(--kl-accent), transparent 45%); background: color-mix(in srgb, var(--kl-accent), transparent 88%); color: var(--kl-text); }
+.kl-reaction-rule-enabled input { accent-color: var(--kl-accent); }
+.kl-reaction-name,
+.kl-reaction-input { width: 100%; min-width: 0; height: 40px; padding: 0 9px; border-radius: 10px; }
+.kl-reaction-rule-order { display: flex; gap: 4px; }
+.kl-reaction-move { width: 36px; height: 40px; font-size: 17px; font-weight: 850; }
+.kl-reaction-move--up .kl-icon { transform: rotate(90deg); }
+.kl-reaction-move--down .kl-icon { transform: rotate(-90deg); }
+.kl-reaction-rule-grid { min-width: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.kl-reaction-field { min-width: 0; display: grid; align-content: start; gap: 4px; }
+.kl-reaction-field-label { color: var(--kl-meta); font-size: var(--kl-type-xs); font-weight: 720; }
+.kl-reaction-field .kl-select,
+.kl-reaction-field .kl-number-input { width: 100%; height: 40px; }
+.kl-reaction-field[data-disabled] { opacity: 0.48; }
+.kl-reaction-template-field { grid-column: 1 / -1; }
+.kl-reaction-template { width: 100%; min-height: 58px; resize: vertical; padding: 8px 9px; border-radius: 10px; line-height: 1.35; }
+.kl-reaction-rule-note { color: var(--kl-meta); font-size: var(--kl-type-xs); line-height: 1.4; }
+.kl-reaction-rule-note[data-public="true"] { color: color-mix(in srgb, var(--kl-gold), var(--kl-text) 25%); }
 
 .kl-new-chat-dialog { width: min(480px, calc(100vw - 32px)); }
 .kl-new-chat-body { gap: 12px; }
@@ -4329,6 +4454,13 @@ button { color: inherit; }
   animation: kl-enter 140ms ease-out;
 }
 .kl-toast[data-kind="error"] { border-color: color-mix(in srgb, var(--kl-danger), transparent 44%); color: var(--kl-danger); }
+.kl-toast.kl-toast--floating {
+  position: fixed;
+  z-index: 2147483001;
+  bottom: max(90px, calc(env(safe-area-inset-bottom) + 78px));
+}
+.kl-toast--floating[data-side="right"] { right: max(20px, env(safe-area-inset-right)); }
+.kl-toast--floating[data-side="left"] { right: auto; left: max(20px, env(safe-area-inset-left)); }
 .kl-toast-message { min-width: 0; overflow-wrap: anywhere; }
 .kl-toast-dismiss {
   width: 34px;
@@ -4444,6 +4576,8 @@ select:focus-visible {
   .kl-activity-editor-row { grid-template-columns: minmax(0, 1fr) 44px 44px; }
   .kl-activity-editor-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kl-activity-editor-fields .kl-action-template { grid-column: 1 / -1; }
+  .kl-reaction-rule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kl-reaction-template-field { grid-column: 1 / -1; }
   .kl-feature-page-header { padding: 14px 16px 13px; }
   .kl-feature-page-footer { min-height: 60px; padding: 8px 12px; }
   .kl-activities-body { padding: 14px; }
@@ -4529,6 +4663,10 @@ select:focus-visible {
   .kl-activity-library-controls .kl-activity-filter { width: 100%; }
   .kl-activity-card { grid-template-columns: minmax(0, 1fr) 44px; }
   .kl-activity-favorite { width: 44px; height: 44px; }
+  .kl-reaction-rule-header { grid-template-columns: auto minmax(0, 1fr); }
+  .kl-reaction-rule-order { grid-column: 1 / -1; justify-content: flex-end; }
+  .kl-reaction-rule-grid { grid-template-columns: minmax(0, 1fr); }
+  .kl-reaction-template-field { grid-column: auto; }
   .kl-activity-actions { flex-wrap: wrap; }
   .kl-activity-actions .kl-feature-page-footnote { width: 100%; margin-right: 0; }
   .kl-settings-local-note { display: none; }
@@ -5019,6 +5157,10 @@ select:focus-visible {
       ["line", { x1: "14", y1: "9", x2: "18", y2: "9" }],
       ["line", { x1: "14", y1: "13", x2: "18", y2: "13" }]
     ],
+    reactions: [
+      ["path", { d: "m13.8 2.9-8 10.2h5.1l-.8 8 8.1-11h-5.1l.7-7.2Z" }, true],
+      ["path", { d: "M4.1 5.2c1 .2 1.6.8 1.8 1.8.2-1 .8-1.6 1.8-1.8-1-.2-1.6-.8-1.8-1.8-.2 1-.8 1.6-1.8 1.8Z" }, true]
+    ],
     reply: [
       ["polyline", { points: "9.5 7 4.2 11.7 9.5 16.4" }],
       ["path", { d: "M5 11.7h7.4c4.6 0 7.1 2.25 7.1 6.3" }]
@@ -5313,6 +5455,9 @@ select:focus-visible {
       className: "kl-select kl-activity-pack-select"
     });
     #activityCount = element("span", { className: "kl-data-tools-count" });
+    #reactionsToggle = element("input");
+    #reactionRulesEditor = element("div", { className: "kl-reaction-rules-editor" });
+    #reactionRuleCount = element("span", { className: "kl-data-tools-count" });
     #activitiesButton = element("button", {
       className: "kl-nav-item kl-activities-button",
       type: "button",
@@ -5531,6 +5676,11 @@ select:focus-visible {
         if (message && this.#messageRenderPeer === peerNumber) this.#appendMessage(message);
         else await this.#renderMessages(peerNumber);
       }
+    }
+    onReaction(reaction) {
+      this.#toast(
+        reaction.action === "room-emote" ? `Reaction \u201C${reaction.ruleLabel}\u201D sent: ${reaction.message}` : reaction.message
+      );
     }
     async open() {
       const settings = this.settings.get();
@@ -6529,6 +6679,59 @@ select:focus-visible {
         this.#activitiesEditor,
         addActivity
       );
+      this.#reactionsToggle.type = "checkbox";
+      const reactionsSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#reactionsToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      this.#reactionsToggle.setAttribute("aria-label", "Enable LinkReactions");
+      const reactionsEnabled = this.#settingRow(
+        "Enable LinkReactions",
+        "Watch selected local events and run the first eligible rule from top to bottom.",
+        reactionsSwitch
+      );
+      const addReactionRule = element("button", {
+        className: "kl-text-button kl-add-action kl-add-reaction-rule",
+        type: "button",
+        text: "+ Add event rule",
+        onClick: () => this.#addReactionRuleEditorRow()
+      });
+      const reactionRules = element(
+        "section",
+        { className: "kl-setting-section kl-setting-editor-section kl-reaction-rules" },
+        element(
+          "div",
+          { className: "kl-reaction-rules-heading" },
+          element("div", { className: "kl-setting-section-title", text: "Event rules" }),
+          this.#reactionRuleCount
+        ),
+        element("div", {
+          className: "kl-setting-help",
+          text: "Triggers: incoming Beep, room join/leave, or friend online. Variables: {name}, {member}, {message}, {room}, {me}, {event}."
+        }),
+        this.#reactionRulesEditor,
+        addReactionRule
+      );
+      const reactionSafety = element(
+        "div",
+        { className: "kl-reaction-safety" },
+        kikiIcon("lock", "kl-reaction-safety-icon"),
+        element(
+          "span",
+          {},
+          "Local notices never leave this browser. Room emotes are visible to everyone, never expose {message}, and have a global 10-second send guard."
+        )
+      );
+      const reactionsSection = this.#createSettingsPanel(
+        "reactions",
+        "Reactions & event rules",
+        "Create small automations without adding a remote service or automatic Beep replies.",
+        reactionsEnabled,
+        reactionSafety,
+        reactionRules
+      );
       const panels = element(
         "div",
         { className: "kl-settings-panels" },
@@ -6536,7 +6739,8 @@ select:focus-visible {
         navigationSection,
         chatSection,
         rosterSection,
-        activitiesSection
+        activitiesSection,
+        reactionsSection
       );
       this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
       const cancel = element("button", {
@@ -6570,7 +6774,8 @@ select:focus-visible {
         navigation: { icon: "navigation", label: "Navigation" },
         chat: { icon: "chat", label: "Chat" },
         players: { icon: "users", label: "Players" },
-        activities: { icon: "activities", label: "Activities" }
+        activities: { icon: "activities", label: "Activities" },
+        reactions: { icon: "reactions", label: "Reactions" }
       };
       const tab = element(
         "button",
@@ -9234,6 +9439,232 @@ ${expanded}` : expanded;
       const count2 = this.#activitiesEditor.childElementCount;
       this.#activityCount.textContent = `${count2}/${MAX_ROOM_ACTIVITIES} activities \xB7 JSON stays local`;
     }
+    #renderReactionRuleEditor(rules) {
+      this.#reactionRulesEditor.replaceChildren();
+      for (const rule of rules) this.#addReactionRuleEditorRow(rule);
+      this.#updateReactionRuleCount();
+    }
+    #addReactionRuleEditorRow(rule = createDefaultReactionRule(createReactionRuleId())) {
+      if (this.#reactionRulesEditor.childElementCount >= MAX_REACTION_RULES) {
+        this.#toast(`You can keep up to ${MAX_REACTION_RULES} reaction rules.`, "error");
+        return;
+      }
+      const enabled = element("input");
+      enabled.type = "checkbox";
+      enabled.checked = rule.enabled;
+      enabled.dataset.field = "enabled";
+      enabled.setAttribute("aria-label", `Enable ${rule.label}`);
+      const enabledLabel = element(
+        "label",
+        { className: "kl-reaction-rule-enabled" },
+        enabled,
+        element("span", { text: "On" })
+      );
+      const name = element("input", { className: "kl-reaction-name" });
+      name.value = rule.label;
+      name.maxLength = 32;
+      name.placeholder = "Rule name";
+      name.dataset.field = "label";
+      name.setAttribute("aria-label", "Reaction rule name");
+      const trigger = element("select", { className: "kl-select" });
+      trigger.replaceChildren(
+        selectOption("beep-received", "Incoming Beep"),
+        selectOption("room-join", "Player joins room"),
+        selectOption("room-leave", "Player leaves room"),
+        selectOption("friend-online", "Friend comes online")
+      );
+      trigger.value = rule.trigger;
+      trigger.dataset.field = "trigger";
+      const scope = element("select", { className: "kl-select" });
+      scope.replaceChildren(
+        selectOption("anyone", "Anyone"),
+        selectOption("friends", "Friends only"),
+        selectOption("members", "Specific members")
+      );
+      scope.value = rule.scope;
+      scope.dataset.field = "scope";
+      const members = element("input", { className: "kl-reaction-input" });
+      members.value = rule.memberNumbers.join(", ");
+      members.placeholder = "12345, 67890";
+      members.maxLength = 240;
+      members.dataset.field = "members";
+      const textMatch = element("input", { className: "kl-reaction-input" });
+      textMatch.value = rule.textMatch;
+      textMatch.placeholder = "Optional words";
+      textMatch.maxLength = 80;
+      textMatch.dataset.field = "text-match";
+      const action = element("select", { className: "kl-select" });
+      action.replaceChildren(
+        selectOption("notice", "Local notice"),
+        selectOption("room-emote", "Send room emote")
+      );
+      action.value = rule.action;
+      action.dataset.field = "action";
+      const cooldown = element("input", {
+        className: "kl-number-input kl-reaction-cooldown"
+      });
+      cooldown.type = "number";
+      cooldown.min = "0";
+      cooldown.max = MAX_REACTION_COOLDOWN_SECONDS.toString();
+      cooldown.value = rule.cooldownSeconds.toString();
+      cooldown.dataset.field = "cooldown";
+      const template = element("textarea", {
+        className: "kl-reaction-template"
+      });
+      template.value = rule.template;
+      template.maxLength = 500;
+      template.rows = 2;
+      template.dataset.field = "template";
+      const row = element("article", { className: "kl-reaction-rule" });
+      row.dataset.ruleId = rule.id;
+      const moveUp = element("button", {
+        className: "kl-icon-button kl-reaction-move kl-reaction-move--up",
+        type: "button",
+        title: "Move rule up",
+        ariaLabel: `Move ${rule.label} up`,
+        onClick: () => {
+          const previous = row.previousElementSibling;
+          if (previous) this.#reactionRulesEditor.insertBefore(row, previous);
+        }
+      });
+      moveUp.append(kikiIcon("back"));
+      const moveDown = element("button", {
+        className: "kl-icon-button kl-reaction-move kl-reaction-move--down",
+        type: "button",
+        title: "Move rule down",
+        ariaLabel: `Move ${rule.label} down`,
+        onClick: () => {
+          const next = row.nextElementSibling;
+          if (next) next.after(row);
+        }
+      });
+      moveDown.append(kikiIcon("back"));
+      const remove = element("button", {
+        className: "kl-icon-button kl-remove-action",
+        type: "button",
+        title: "Remove reaction rule",
+        ariaLabel: `Remove ${rule.label}`,
+        onClick: () => {
+          row.remove();
+          this.#updateReactionRuleCount();
+        }
+      });
+      remove.append(kikiIcon("trash"));
+      const note = element("div", { className: "kl-reaction-rule-note" });
+      row.append(
+        element(
+          "header",
+          { className: "kl-reaction-rule-header" },
+          enabledLabel,
+          name,
+          element("div", { className: "kl-reaction-rule-order" }, moveUp, moveDown, remove)
+        ),
+        element(
+          "div",
+          { className: "kl-reaction-rule-grid" },
+          reactionField("When", trigger),
+          reactionField("Who", scope),
+          reactionField("Member numbers", members, "kl-reaction-members-field"),
+          reactionField("Beep contains", textMatch, "kl-reaction-match-field"),
+          reactionField("Then", action),
+          reactionField("Cooldown (seconds)", cooldown),
+          reactionField("Message template", template, "kl-reaction-template-field")
+        ),
+        note
+      );
+      trigger.addEventListener("change", () => this.#syncReactionRuleEditorRow(row));
+      scope.addEventListener("change", () => this.#syncReactionRuleEditorRow(row));
+      action.addEventListener("change", () => this.#syncReactionRuleEditorRow(row));
+      this.#reactionRulesEditor.append(row);
+      this.#syncReactionRuleEditorRow(row);
+      this.#updateReactionRuleCount();
+      if (!rule.label) name.focus();
+    }
+    #syncReactionRuleEditorRow(row) {
+      const trigger = row.querySelector('[data-field="trigger"]')?.value;
+      const scope = row.querySelector('[data-field="scope"]')?.value;
+      const action = row.querySelector('[data-field="action"]')?.value;
+      const members = row.querySelector('[data-field="members"]');
+      const match = row.querySelector('[data-field="text-match"]');
+      const template = row.querySelector('[data-field="template"]');
+      if (members) members.disabled = scope !== "members";
+      if (match) match.disabled = trigger !== "beep-received";
+      row.querySelector(".kl-reaction-members-field")?.toggleAttribute(
+        "data-disabled",
+        scope !== "members"
+      );
+      row.querySelector(".kl-reaction-match-field")?.toggleAttribute(
+        "data-disabled",
+        trigger !== "beep-received"
+      );
+      if (template) {
+        template.placeholder = action === "room-emote" ? "greets {name} as they arrive." : "{name} {event}.";
+      }
+      const note = row.querySelector(".kl-reaction-rule-note");
+      if (note) {
+        note.textContent = action === "room-emote" ? "Public room action. Private {message} content is always removed before sending." : "Private KikiLink notice shown beside the launcher when the panel is closed.";
+        note.dataset.public = String(action === "room-emote");
+      }
+    }
+    #readReactionRuleEditor() {
+      const rules = [];
+      const rows = [
+        ...this.#reactionRulesEditor.querySelectorAll(".kl-reaction-rule")
+      ];
+      for (const [index, row] of rows.entries()) {
+        const label = row.querySelector('[data-field="label"]')?.value.trim() ?? "";
+        const template = row.querySelector('[data-field="template"]')?.value.trim() ?? "";
+        if (!label || !template) {
+          const control = row.querySelector(
+            !label ? '[data-field="label"]' : '[data-field="template"]'
+          );
+          control?.focus();
+          this.#toast(`Complete the name and template for reaction rule ${index + 1}.`, "error");
+          return void 0;
+        }
+        const scopeValue = row.querySelector('[data-field="scope"]')?.value;
+        const scope = scopeValue === "friends" || scopeValue === "members" ? scopeValue : "anyone";
+        const membersInput = row.querySelector('[data-field="members"]');
+        const memberNumbers = scope === "members" ? parseReactionMemberNumbers(membersInput?.value ?? "") : [];
+        if (scope === "members" && (!memberNumbers || memberNumbers.length === 0)) {
+          membersInput?.focus();
+          this.#toast(
+            `Enter up to ${MAX_REACTION_MEMBERS} valid member numbers for reaction rule ${index + 1}.`,
+            "error"
+          );
+          return void 0;
+        }
+        const cooldownInput = row.querySelector('[data-field="cooldown"]');
+        const cooldownSeconds = Number(cooldownInput?.value);
+        if (!Number.isInteger(cooldownSeconds) || cooldownSeconds < 0 || cooldownSeconds > MAX_REACTION_COOLDOWN_SECONDS) {
+          cooldownInput?.focus();
+          this.#toast(
+            `Reaction cooldown must be between 0 and ${MAX_REACTION_COOLDOWN_SECONDS} seconds.`,
+            "error"
+          );
+          return void 0;
+        }
+        const triggerValue = row.querySelector('[data-field="trigger"]')?.value;
+        const actionValue = row.querySelector('[data-field="action"]')?.value;
+        rules.push({
+          id: row.dataset.ruleId || createReactionRuleId(),
+          label,
+          enabled: row.querySelector('[data-field="enabled"]')?.checked === true,
+          trigger: triggerValue === "room-join" || triggerValue === "room-leave" || triggerValue === "friend-online" ? triggerValue : "beep-received",
+          scope,
+          memberNumbers: memberNumbers ?? [],
+          textMatch: triggerValue === "beep-received" ? row.querySelector('[data-field="text-match"]')?.value.trim() ?? "" : "",
+          action: actionValue === "room-emote" ? "room-emote" : "notice",
+          template,
+          cooldownSeconds
+        });
+      }
+      return rules;
+    }
+    #updateReactionRuleCount() {
+      const count2 = this.#reactionRulesEditor.childElementCount;
+      this.#reactionRuleCount.textContent = `${count2}/${MAX_REACTION_RULES} rules \xB7 stored locally`;
+    }
     #openSettings(section) {
       const settings = this.settings.get();
       if (this.#workspaceView !== "settings") this.#settingsReturnView = this.#workspaceView;
@@ -9258,6 +9689,8 @@ ${expanded}` : expanded;
       this.#updateNotebookCount();
       this.#activitiesToggle.checked = settings.linkActivities.enabled;
       this.#renderActivityEditor(settings.linkActivities.activities);
+      this.#reactionsToggle.checked = settings.linkReactions.enabled;
+      this.#renderReactionRuleEditor(settings.linkReactions.rules);
       this.#showWorkspace("settings", false);
       this.#showSettingsSection(section ?? settings.ui.settingsSection, false);
       this.#settingsTabs.querySelector(`[data-section="${this.#settingsSection}"]`)?.focus();
@@ -9291,6 +9724,8 @@ ${expanded}` : expanded;
     }
     #saveSettings() {
       const retentionDays = Number(this.#retentionInput.value);
+      const reactionRules = this.#readReactionRuleEditor();
+      if (!reactionRules) return;
       const currentSettings = this.settings.get();
       const launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
       const settings = this.settings.update((draft) => {
@@ -9317,6 +9752,8 @@ ${expanded}` : expanded;
         }
         draft.linkActivities.enabled = this.#activitiesToggle.checked;
         draft.linkActivities.activities = this.#readActivityEditor();
+        draft.linkReactions.enabled = this.#reactionsToggle.checked;
+        draft.linkReactions.rules = reactionRules;
         if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
       });
       this.#applyTheme(settings);
@@ -9667,7 +10104,11 @@ ${expanded}` : expanded;
       });
       dismiss.append(kikiIcon("close"));
       toast.append(dismiss);
-      const surface = this.#newChatDialog.open ? this.#newChatDialog : this.#panel;
+      const surface = this.#newChatDialog.open ? this.#newChatDialog : this.#panel.hidden ? this.#shadow : this.#panel;
+      if (surface === this.#shadow) {
+        toast.classList.add("kl-toast--floating");
+        toast.dataset.side = this.settings.get().ui.launcherSide;
+      }
       surface.append(toast);
       if (kind === "info") {
         this.#toastTimer = setTimeout(() => {
@@ -9677,6 +10118,32 @@ ${expanded}` : expanded;
       }
     }
   };
+  function reactionField(label, control, className = "") {
+    return element(
+      "label",
+      { className: `kl-reaction-field${className ? ` ${className}` : ""}` },
+      element("span", { className: "kl-reaction-field-label", text: label }),
+      control
+    );
+  }
+  function parseReactionMemberNumbers(value) {
+    const source = value.trim();
+    if (!source) return [];
+    const memberNumbers = [];
+    for (const token of source.split(/[\s,;]+/u).filter(Boolean)) {
+      const normalized = token.replace(/^#/u, "");
+      if (!/^\d+$/u.test(normalized)) return void 0;
+      const memberNumber = Number(normalized);
+      if (!Number.isSafeInteger(memberNumber) || memberNumber < 0) return void 0;
+      if (!memberNumbers.includes(memberNumber)) memberNumbers.push(memberNumber);
+      if (memberNumbers.length > MAX_REACTION_MEMBERS) return void 0;
+    }
+    return memberNumbers;
+  }
+  function createReactionRuleId() {
+    const random = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID().slice(0, 12) : Math.random().toString(36).slice(2, 14);
+    return `reaction-${Date.now().toString(36)}-${random}`;
+  }
   function finderSettingResults() {
     const definitions = [
       {
@@ -9708,6 +10175,12 @@ ${expanded}` : expanded;
         title: "Activities & templates",
         detail: "Activity Studio, packs, categories, favorites, and backup",
         keywords: "linkactivities action roleplay target source member edit enable pack category favorite starred export import backup json"
+      },
+      {
+        section: "reactions",
+        title: "Reactions & event rules",
+        detail: "Local notices, room emotes, triggers, scopes, templates, and cooldowns",
+        keywords: "linkreactions automation event rule beep join leave online friend notification notice emote scope member cooldown template"
       }
     ];
     return definitions.map((definition, index) => ({
@@ -9915,7 +10388,8 @@ ${expanded}` : expanded;
           this.#syncRoster();
         }),
         context.bus.on("beep:received", (event) => void this.#capture(event)),
-        context.bus.on("beep:sent", (event) => void this.#capture(event))
+        context.bus.on("beep:sent", (event) => void this.#capture(event)),
+        context.bus.on("link-reactions:fired", (event) => this.#view?.onReaction(event))
       );
       this.#view.setConnectionState(context.adapter.isReady() ? "ready" : "connecting");
       void this.#service.prune();
@@ -9992,6 +10466,199 @@ ${expanded}` : expanded;
       }
     }
   };
+
+  // src/modules/link-reactions/link-reactions-service.ts
+  var MIN_ROOM_REACTION_INTERVAL_MS = 1e4;
+  var LinkReactionsService = class {
+    constructor(adapter, settings) {
+      this.adapter = adapter;
+      this.settings = settings;
+    }
+    adapter;
+    settings;
+    #lastRuleFiredAt = /* @__PURE__ */ new Map();
+    #lastRoomEmoteAt = Number.NEGATIVE_INFINITY;
+    react(event, now = Date.now()) {
+      const settings = this.settings.get().linkReactions;
+      if (!settings.enabled) return void 0;
+      for (const rule of settings.rules) {
+        if (!matchesRule(rule, event)) continue;
+        const lastFiredAt = this.#lastRuleFiredAt.get(rule.id) ?? Number.NEGATIVE_INFINITY;
+        if (now - lastFiredAt < rule.cooldownSeconds * 1e3) continue;
+        const message = expandReactionTemplate(rule, event, this.adapter.getOwnName());
+        if (!message) continue;
+        if (rule.action === "room-emote") {
+          if (now - this.#lastRoomEmoteAt < MIN_ROOM_REACTION_INTERVAL_MS) continue;
+          if (!this.adapter.canSendRoomEmote()) continue;
+          this.adapter.sendRoomEmote(message);
+          this.#lastRoomEmoteAt = now;
+        }
+        this.#lastRuleFiredAt.set(rule.id, now);
+        return {
+          ruleId: rule.id,
+          ruleLabel: rule.label,
+          action: rule.action,
+          message,
+          event,
+          firedAt: now
+        };
+      }
+      return void 0;
+    }
+  };
+  function matchesRule(rule, event) {
+    if (!rule.enabled || rule.trigger !== event.trigger) return false;
+    if (rule.scope === "friends" && !event.isFriend) return false;
+    if (rule.scope === "members" && !rule.memberNumbers.includes(event.memberNumber)) return false;
+    if (rule.trigger === "beep-received" && rule.textMatch) {
+      return normalizeText(event.content ?? "").includes(normalizeText(rule.textMatch));
+    }
+    return true;
+  }
+  function expandReactionTemplate(rule, event, ownName) {
+    const eventLabel = event.trigger === "room-join" ? "joined the room" : event.trigger === "room-leave" ? "left the room" : event.trigger === "friend-online" ? "came online" : "sent a Beep";
+    const privateMessage = rule.action === "notice" ? cleanValue(event.content) : "";
+    return rule.template.replaceAll("{name}", cleanValue(event.memberName)).replaceAll("{member}", event.memberNumber.toString()).replaceAll("{message}", privateMessage).replaceAll("{room}", cleanValue(event.roomName) || "the room").replaceAll("{me}", cleanValue(ownName) || "me").replaceAll("{event}", eventLabel).replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 1e3);
+  }
+  function normalizeText(value) {
+    return value.trim().toLocaleLowerCase().normalize("NFKD").replace(/\p{M}/gu, "").replace(/\s+/gu, " ");
+  }
+  function cleanValue(value) {
+    return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 500) : "";
+  }
+
+  // src/modules/link-reactions/link-reactions-module.ts
+  var ROOM_POLL_MS = 2e3;
+  var LinkReactionsModule = class {
+    id = "link-reactions";
+    #logger = new Logger("link-reactions");
+    #unsubscribers = [];
+    #roomMembers = /* @__PURE__ */ new Map();
+    #context;
+    #service;
+    #roomTimer;
+    #roomName;
+    #onlineMembers;
+    isEnabled(_settings) {
+      return true;
+    }
+    start(context) {
+      this.#context = context;
+      this.#service = new LinkReactionsService(context.adapter, context.settings);
+      this.#unsubscribers.push(
+        context.bus.on("bc:ready", () => this.#resetBaselines()),
+        context.bus.on("beep:received", (event) => {
+          this.#run({
+            trigger: "beep-received",
+            memberNumber: event.peerNumber,
+            memberName: event.peerName,
+            isFriend: context.adapter.isKnownFriend(event.peerNumber),
+            occurredAt: event.sentAt,
+            content: event.content,
+            ...event.roomName ? { roomName: event.roomName } : {}
+          });
+        }),
+        context.bus.on(
+          "bc:online-friends",
+          ({ friends, receivedAt }) => this.#syncOnlineFriends(friends, receivedAt)
+        )
+      );
+      this.#syncRoom();
+      this.#roomTimer = setInterval(() => this.#syncRoom(), ROOM_POLL_MS);
+    }
+    stop() {
+      if (this.#roomTimer !== void 0) clearInterval(this.#roomTimer);
+      this.#roomTimer = void 0;
+      for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
+      this.#roomMembers.clear();
+      this.#roomName = void 0;
+      this.#onlineMembers = void 0;
+      this.#service = void 0;
+      this.#context = void 0;
+    }
+    #resetBaselines() {
+      this.#roomMembers.clear();
+      this.#roomName = void 0;
+      this.#onlineMembers = void 0;
+      this.#syncRoom();
+    }
+    #syncRoom() {
+      const context = this.#context;
+      if (!context) return;
+      if (!context.adapter.isInChatRoom()) {
+        this.#roomMembers.clear();
+        this.#roomName = void 0;
+        return;
+      }
+      const roomName = context.adapter.getCurrentRoomName() ?? "Unnamed room";
+      const current = new Map(
+        context.adapter.getRoomCharacters().map((character) => [character.memberNumber, character])
+      );
+      if (this.#roomName !== roomName) {
+        this.#roomName = roomName;
+        this.#replaceRoomMembers(current);
+        return;
+      }
+      const joined = [...current.values()].filter(
+        (character) => !this.#roomMembers.has(character.memberNumber)
+      );
+      const left = [...this.#roomMembers.values()].filter(
+        (character) => !current.has(character.memberNumber)
+      );
+      this.#replaceRoomMembers(current);
+      const occurredAt = Date.now();
+      for (const character of joined) {
+        this.#run(roomEvent("room-join", character, roomName, occurredAt));
+      }
+      for (const character of left) {
+        this.#run(roomEvent("room-leave", character, roomName, occurredAt));
+      }
+    }
+    #replaceRoomMembers(current) {
+      this.#roomMembers.clear();
+      for (const [memberNumber, character] of current) {
+        this.#roomMembers.set(memberNumber, character);
+      }
+    }
+    #syncOnlineFriends(friends, occurredAt) {
+      const current = new Set(friends.map((friend) => friend.memberNumber));
+      const previous = this.#onlineMembers;
+      this.#onlineMembers = current;
+      if (!previous) return;
+      for (const friend of friends) {
+        if (previous.has(friend.memberNumber)) continue;
+        this.#run({
+          trigger: "friend-online",
+          memberNumber: friend.memberNumber,
+          memberName: friend.memberName,
+          isFriend: true,
+          occurredAt,
+          ...friend.roomName ? { roomName: friend.roomName } : {}
+        });
+      }
+    }
+    #run(event) {
+      const context = this.#context;
+      const service = this.#service;
+      if (!context || !service) return;
+      try {
+        const fired = service.react(event);
+        if (fired) context.bus.emit("link-reactions:fired", fired);
+      } catch (error) {
+        this.#logger.error("Failed to run a reaction rule", error);
+      }
+    }
+  };
+  function roomEvent(trigger, character, roomName, occurredAt) {
+    return {
+      trigger,
+      memberNumber: character.memberNumber,
+      memberName: character.memberName,
+      isFriend: character.isFriend === true,
+      roomName,
+      occurredAt
+    };
+  }
 
   // src/storage/indexeddb-chat-repository.ts
   var DATABASE_NAME = "kikilink";
@@ -10258,6 +10925,7 @@ ${expanded}` : expanded;
       this.version = version;
       this.#adapter = new BCAdapter(this.#bus, version);
       this.#modules.register(this.#linkChat);
+      this.#modules.register(this.#linkReactions);
     }
     version;
     #logger = new Logger("core");
@@ -10267,6 +10935,7 @@ ${expanded}` : expanded;
     #adapter;
     #modules = new ModuleRegistry();
     #linkChat = new LinkChatModule();
+    #linkReactions = new LinkReactionsModule();
     #adapterStart;
     #started = false;
     publicApi() {
@@ -10320,7 +10989,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.14.0");
+    const app = new KikiLinkApp("0.15.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

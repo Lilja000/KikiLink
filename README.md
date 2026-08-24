@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.14.0` turns LinkActivities into a portable activity library with built-in packs,
-categories, favorites, search and filters, plus versioned merge-safe JSON backup and restore.
+Version `0.15.0` adds LinkReactions: local event rules for incoming Beeps, room joins and
+leaves, and friends coming online, with private notices or explicitly enabled room emotes.
 
 ## Link Deck
 
@@ -26,7 +26,7 @@ categories, favorites, search and filters, plus versioned merge-safe JSON backup
 - Four clear primary destinations: Home, Chat, Players, and Activities
 - Persistent feature rail on desktop and a focused four-item bottom bar on phones
 - Players and Activities now stay inside the workspace instead of opening blocking dialogs
-- Settings is a full workspace with Appearance, Navigation, Chat, Players, and Activities categories
+- Settings is a full workspace with Appearance, Navigation, Chat, Players, Activities, and Reactions categories
 - Configurable launcher behavior: open Home, the last section, or LinkChat directly
 - Dark lacquer, light paper, and system themes with five accent presets or any custom color
 - Comfortable, Compact, or Super compact spacing, three text sizes, and Guided or Focused Home styles
@@ -39,7 +39,7 @@ categories, favorites, search and filters, plus versioned merge-safe JSON backup
 
 - A visible `Find` control in the top bar, available from every KikiLink workspace
 - Local search across destinations, recent chats, current and recorded players, known contacts,
-  saved activities, and all five Settings categories
+  saved activities, and all six Settings categories
 - Useful suggestions before typing, prioritized unread/recent conversations, and immediate
   result refinement while typing
 - Direct member-number actions such as `#12345` even when no conversation exists yet
@@ -116,6 +116,24 @@ browser profile. KikiLink does not upload them to a server.
 LinkActivities sends descriptive roleplay emotes only. It does not alter another
 character's items, pose, permissions, or game state.
 
+## LinkReactions
+
+- Optional event-rule engine, disabled by default
+- Triggers for incoming Beeps, players joining or leaving the current room, and friends coming online
+- Rules checked top to bottom with per-rule enable switches and button-based ordering controls
+- Anyone, friends-only, or explicit member-number scopes
+- Optional case-insensitive text matching for incoming Beeps
+- Private KikiLink notices that remain visible beside the launcher while the panel is closed
+- Explicit public room-emote action with a global 10-second send guard
+- `{name}`, `{member}`, `{message}`, `{room}`, `{me}`, and `{event}` template variables
+- Private Beep `{message}` content is never substituted into a public room emote
+- Quiet room and online baselines prevent a new session from reacting to everyone already present
+- No automatic Beep replies, remote rules service, or background network polling
+
+Rules stay in the current browser profile, while cooldown timers exist only for the active addon
+session. Room-emote rules use the same native Bondage Club emote path as LinkActivities and are
+visible to everyone in the room.
+
 ## Interface
 
 - Embedded KikiLink wolf, red moon, gold ring, and sakura emblem
@@ -156,6 +174,7 @@ src/
   modules/link-activities/  Activity templates and native room action service
   modules/link-chat/  LinkChat service and Shadow DOM interface
   modules/link-presence/ Presence state, native-online merge, and compatibility protocol
+  modules/link-reactions/ Local event rules and guarded reaction execution
   modules/link-roster/ Room roster, encounter tracking, and notebook service
   storage/            IndexedDB, player notebook, and in-memory repositories
   utils/              Small dependency-free helpers
@@ -200,7 +219,6 @@ KikiLink.getVersion();
 
 ## Planned modules
 
-- LinkReactions with configurable event rules
 - Privacy-reviewed optional media upload service for local files
 - Per-conversation notification controls and configurable hotkeys
 - Import/export of remaining settings

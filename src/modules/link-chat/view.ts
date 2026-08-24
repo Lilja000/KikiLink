@@ -3,10 +3,12 @@ import type {
   BCConnectionState,
   ConversationMeta,
   KikiLinkSettings,
+  LinkReactionFired,
   LinkMessage,
   PresenceSnapshot,
   PresenceStatus,
   QuickAction,
+  ReactionRule,
   RoomActivity,
   RoomCharacter,
   RosterEntry,
@@ -31,6 +33,12 @@ import {
 import { PeopleRepository } from "../../storage/people-repository";
 import { conversationDisplayName, type ChatService } from "./chat-service";
 import { LinkPresenceService } from "../link-presence/link-presence-service";
+import {
+  createDefaultReactionRule,
+  MAX_REACTION_COOLDOWN_SECONDS,
+  MAX_REACTION_MEMBERS,
+  MAX_REACTION_RULES,
+} from "../link-reactions/reaction-rules";
 import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
 import { kikiIcon, type KikiLinkIconName } from "./icons";
@@ -274,6 +282,9 @@ export class LinkChatView {
     className: "kl-select kl-activity-pack-select",
   }) as HTMLSelectElement;
   readonly #activityCount = element("span", { className: "kl-data-tools-count" });
+  readonly #reactionsToggle = element("input") as HTMLInputElement;
+  readonly #reactionRulesEditor = element("div", { className: "kl-reaction-rules-editor" });
+  readonly #reactionRuleCount = element("span", { className: "kl-data-tools-count" });
   readonly #activitiesButton = element("button", {
     className: "kl-nav-item kl-activities-button",
     type: "button",
@@ -540,6 +551,14 @@ export class LinkChatView {
       if (message && this.#messageRenderPeer === peerNumber) this.#appendMessage(message);
       else await this.#renderMessages(peerNumber);
     }
+  }
+
+  onReaction(reaction: LinkReactionFired): void {
+    this.#toast(
+      reaction.action === "room-emote"
+        ? `Reaction “${reaction.ruleLabel}” sent: ${reaction.message}`
+        : reaction.message,
+    );
   }
 
   async open(): Promise<void> {
@@ -1640,6 +1659,60 @@ export class LinkChatView {
       addActivity,
     );
 
+    this.#reactionsToggle.type = "checkbox";
+    const reactionsSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#reactionsToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#reactionsToggle.setAttribute("aria-label", "Enable LinkReactions");
+    const reactionsEnabled = this.#settingRow(
+      "Enable LinkReactions",
+      "Watch selected local events and run the first eligible rule from top to bottom.",
+      reactionsSwitch,
+    );
+    const addReactionRule = element("button", {
+      className: "kl-text-button kl-add-action kl-add-reaction-rule",
+      type: "button",
+      text: "+ Add event rule",
+      onClick: () => this.#addReactionRuleEditorRow(),
+    });
+    const reactionRules = element(
+      "section",
+      { className: "kl-setting-section kl-setting-editor-section kl-reaction-rules" },
+      element(
+        "div",
+        { className: "kl-reaction-rules-heading" },
+        element("div", { className: "kl-setting-section-title", text: "Event rules" }),
+        this.#reactionRuleCount,
+      ),
+      element("div", {
+        className: "kl-setting-help",
+        text: "Triggers: incoming Beep, room join/leave, or friend online. Variables: {name}, {member}, {message}, {room}, {me}, {event}.",
+      }),
+      this.#reactionRulesEditor,
+      addReactionRule,
+    );
+    const reactionSafety = element(
+      "div",
+      { className: "kl-reaction-safety" },
+      kikiIcon("lock", "kl-reaction-safety-icon"),
+      element(
+        "span",
+        {},
+        "Local notices never leave this browser. Room emotes are visible to everyone, never expose {message}, and have a global 10-second send guard.",
+      ),
+    );
+    const reactionsSection = this.#createSettingsPanel(
+      "reactions",
+      "Reactions & event rules",
+      "Create small automations without adding a remote service or automatic Beep replies.",
+      reactionsEnabled,
+      reactionSafety,
+      reactionRules,
+    );
+
     const panels = element(
       "div",
       { className: "kl-settings-panels" },
@@ -1648,6 +1721,7 @@ export class LinkChatView {
       chatSection,
       rosterSection,
       activitiesSection,
+      reactionsSection,
     );
 
     this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
@@ -1689,6 +1763,7 @@ export class LinkChatView {
       chat: { icon: "chat", label: "Chat" },
       players: { icon: "users", label: "Players" },
       activities: { icon: "activities", label: "Activities" },
+      reactions: { icon: "reactions", label: "Reactions" },
     };
     const tab = element(
       "button",
@@ -4695,6 +4770,267 @@ export class LinkChatView {
     this.#activityCount.textContent = `${count}/${MAX_ROOM_ACTIVITIES} activities · JSON stays local`;
   }
 
+  #renderReactionRuleEditor(rules: ReactionRule[]): void {
+    this.#reactionRulesEditor.replaceChildren();
+    for (const rule of rules) this.#addReactionRuleEditorRow(rule);
+    this.#updateReactionRuleCount();
+  }
+
+  #addReactionRuleEditorRow(
+    rule: ReactionRule = createDefaultReactionRule(createReactionRuleId()),
+  ): void {
+    if (this.#reactionRulesEditor.childElementCount >= MAX_REACTION_RULES) {
+      this.#toast(`You can keep up to ${MAX_REACTION_RULES} reaction rules.`, "error");
+      return;
+    }
+
+    const enabled = element("input") as HTMLInputElement;
+    enabled.type = "checkbox";
+    enabled.checked = rule.enabled;
+    enabled.dataset.field = "enabled";
+    enabled.setAttribute("aria-label", `Enable ${rule.label}`);
+    const enabledLabel = element(
+      "label",
+      { className: "kl-reaction-rule-enabled" },
+      enabled,
+      element("span", { text: "On" }),
+    );
+    const name = element("input", { className: "kl-reaction-name" }) as HTMLInputElement;
+    name.value = rule.label;
+    name.maxLength = 32;
+    name.placeholder = "Rule name";
+    name.dataset.field = "label";
+    name.setAttribute("aria-label", "Reaction rule name");
+
+    const trigger = element("select", { className: "kl-select" }) as HTMLSelectElement;
+    trigger.replaceChildren(
+      selectOption("beep-received", "Incoming Beep"),
+      selectOption("room-join", "Player joins room"),
+      selectOption("room-leave", "Player leaves room"),
+      selectOption("friend-online", "Friend comes online"),
+    );
+    trigger.value = rule.trigger;
+    trigger.dataset.field = "trigger";
+    const scope = element("select", { className: "kl-select" }) as HTMLSelectElement;
+    scope.replaceChildren(
+      selectOption("anyone", "Anyone"),
+      selectOption("friends", "Friends only"),
+      selectOption("members", "Specific members"),
+    );
+    scope.value = rule.scope;
+    scope.dataset.field = "scope";
+    const members = element("input", { className: "kl-reaction-input" }) as HTMLInputElement;
+    members.value = rule.memberNumbers.join(", ");
+    members.placeholder = "12345, 67890";
+    members.maxLength = 240;
+    members.dataset.field = "members";
+    const textMatch = element("input", { className: "kl-reaction-input" }) as HTMLInputElement;
+    textMatch.value = rule.textMatch;
+    textMatch.placeholder = "Optional words";
+    textMatch.maxLength = 80;
+    textMatch.dataset.field = "text-match";
+    const action = element("select", { className: "kl-select" }) as HTMLSelectElement;
+    action.replaceChildren(
+      selectOption("notice", "Local notice"),
+      selectOption("room-emote", "Send room emote"),
+    );
+    action.value = rule.action;
+    action.dataset.field = "action";
+    const cooldown = element("input", {
+      className: "kl-number-input kl-reaction-cooldown",
+    }) as HTMLInputElement;
+    cooldown.type = "number";
+    cooldown.min = "0";
+    cooldown.max = MAX_REACTION_COOLDOWN_SECONDS.toString();
+    cooldown.value = rule.cooldownSeconds.toString();
+    cooldown.dataset.field = "cooldown";
+    const template = element("textarea", {
+      className: "kl-reaction-template",
+    }) as HTMLTextAreaElement;
+    template.value = rule.template;
+    template.maxLength = 500;
+    template.rows = 2;
+    template.dataset.field = "template";
+
+    const row = element("article", { className: "kl-reaction-rule" });
+    row.dataset.ruleId = rule.id;
+    const moveUp = element("button", {
+      className: "kl-icon-button kl-reaction-move kl-reaction-move--up",
+      type: "button",
+      title: "Move rule up",
+      ariaLabel: `Move ${rule.label} up`,
+      onClick: () => {
+        const previous = row.previousElementSibling;
+        if (previous) this.#reactionRulesEditor.insertBefore(row, previous);
+      },
+    });
+    moveUp.append(kikiIcon("back"));
+    const moveDown = element("button", {
+      className: "kl-icon-button kl-reaction-move kl-reaction-move--down",
+      type: "button",
+      title: "Move rule down",
+      ariaLabel: `Move ${rule.label} down`,
+      onClick: () => {
+        const next = row.nextElementSibling;
+        if (next) next.after(row);
+      },
+    });
+    moveDown.append(kikiIcon("back"));
+    const remove = element("button", {
+      className: "kl-icon-button kl-remove-action",
+      type: "button",
+      title: "Remove reaction rule",
+      ariaLabel: `Remove ${rule.label}`,
+      onClick: () => {
+        row.remove();
+        this.#updateReactionRuleCount();
+      },
+    });
+    remove.append(kikiIcon("trash"));
+    const note = element("div", { className: "kl-reaction-rule-note" });
+    row.append(
+      element(
+        "header",
+        { className: "kl-reaction-rule-header" },
+        enabledLabel,
+        name,
+        element("div", { className: "kl-reaction-rule-order" }, moveUp, moveDown, remove),
+      ),
+      element(
+        "div",
+        { className: "kl-reaction-rule-grid" },
+        reactionField("When", trigger),
+        reactionField("Who", scope),
+        reactionField("Member numbers", members, "kl-reaction-members-field"),
+        reactionField("Beep contains", textMatch, "kl-reaction-match-field"),
+        reactionField("Then", action),
+        reactionField("Cooldown (seconds)", cooldown),
+        reactionField("Message template", template, "kl-reaction-template-field"),
+      ),
+      note,
+    );
+    trigger.addEventListener("change", () => this.#syncReactionRuleEditorRow(row));
+    scope.addEventListener("change", () => this.#syncReactionRuleEditorRow(row));
+    action.addEventListener("change", () => this.#syncReactionRuleEditorRow(row));
+    this.#reactionRulesEditor.append(row);
+    this.#syncReactionRuleEditorRow(row);
+    this.#updateReactionRuleCount();
+    if (!rule.label) name.focus();
+  }
+
+  #syncReactionRuleEditorRow(row: HTMLElement): void {
+    const trigger = row.querySelector<HTMLSelectElement>('[data-field="trigger"]')?.value;
+    const scope = row.querySelector<HTMLSelectElement>('[data-field="scope"]')?.value;
+    const action = row.querySelector<HTMLSelectElement>('[data-field="action"]')?.value;
+    const members = row.querySelector<HTMLInputElement>('[data-field="members"]');
+    const match = row.querySelector<HTMLInputElement>('[data-field="text-match"]');
+    const template = row.querySelector<HTMLTextAreaElement>('[data-field="template"]');
+    if (members) members.disabled = scope !== "members";
+    if (match) match.disabled = trigger !== "beep-received";
+    row.querySelector<HTMLElement>(".kl-reaction-members-field")?.toggleAttribute(
+      "data-disabled",
+      scope !== "members",
+    );
+    row.querySelector<HTMLElement>(".kl-reaction-match-field")?.toggleAttribute(
+      "data-disabled",
+      trigger !== "beep-received",
+    );
+    if (template) {
+      template.placeholder =
+        action === "room-emote"
+          ? "greets {name} as they arrive."
+          : "{name} {event}.";
+    }
+    const note = row.querySelector<HTMLElement>(".kl-reaction-rule-note");
+    if (note) {
+      note.textContent =
+        action === "room-emote"
+          ? "Public room action. Private {message} content is always removed before sending."
+          : "Private KikiLink notice shown beside the launcher when the panel is closed.";
+      note.dataset.public = String(action === "room-emote");
+    }
+  }
+
+  #readReactionRuleEditor(): ReactionRule[] | undefined {
+    const rules: ReactionRule[] = [];
+    const rows = [
+      ...this.#reactionRulesEditor.querySelectorAll<HTMLElement>(".kl-reaction-rule"),
+    ];
+    for (const [index, row] of rows.entries()) {
+      const label = row.querySelector<HTMLInputElement>('[data-field="label"]')?.value.trim() ?? "";
+      const template =
+        row.querySelector<HTMLTextAreaElement>('[data-field="template"]')?.value.trim() ?? "";
+      if (!label || !template) {
+        const control = row.querySelector<HTMLElement>(
+          !label ? '[data-field="label"]' : '[data-field="template"]',
+        );
+        control?.focus();
+        this.#toast(`Complete the name and template for reaction rule ${index + 1}.`, "error");
+        return undefined;
+      }
+
+      const scopeValue = row.querySelector<HTMLSelectElement>('[data-field="scope"]')?.value;
+      const scope =
+        scopeValue === "friends" || scopeValue === "members" ? scopeValue : "anyone";
+      const membersInput = row.querySelector<HTMLInputElement>('[data-field="members"]');
+      const memberNumbers =
+        scope === "members" ? parseReactionMemberNumbers(membersInput?.value ?? "") : [];
+      if (scope === "members" && (!memberNumbers || memberNumbers.length === 0)) {
+        membersInput?.focus();
+        this.#toast(
+          `Enter up to ${MAX_REACTION_MEMBERS} valid member numbers for reaction rule ${index + 1}.`,
+          "error",
+        );
+        return undefined;
+      }
+
+      const cooldownInput = row.querySelector<HTMLInputElement>('[data-field="cooldown"]');
+      const cooldownSeconds = Number(cooldownInput?.value);
+      if (
+        !Number.isInteger(cooldownSeconds) ||
+        cooldownSeconds < 0 ||
+        cooldownSeconds > MAX_REACTION_COOLDOWN_SECONDS
+      ) {
+        cooldownInput?.focus();
+        this.#toast(
+          `Reaction cooldown must be between 0 and ${MAX_REACTION_COOLDOWN_SECONDS} seconds.`,
+          "error",
+        );
+        return undefined;
+      }
+
+      const triggerValue = row.querySelector<HTMLSelectElement>('[data-field="trigger"]')?.value;
+      const actionValue = row.querySelector<HTMLSelectElement>('[data-field="action"]')?.value;
+      rules.push({
+        id: row.dataset.ruleId || createReactionRuleId(),
+        label,
+        enabled:
+          row.querySelector<HTMLInputElement>('[data-field="enabled"]')?.checked === true,
+        trigger:
+          triggerValue === "room-join" ||
+          triggerValue === "room-leave" ||
+          triggerValue === "friend-online"
+            ? triggerValue
+            : "beep-received",
+        scope,
+        memberNumbers: memberNumbers ?? [],
+        textMatch:
+          triggerValue === "beep-received"
+            ? row.querySelector<HTMLInputElement>('[data-field="text-match"]')?.value.trim() ?? ""
+            : "",
+        action: actionValue === "room-emote" ? "room-emote" : "notice",
+        template,
+        cooldownSeconds,
+      });
+    }
+    return rules;
+  }
+
+  #updateReactionRuleCount(): void {
+    const count = this.#reactionRulesEditor.childElementCount;
+    this.#reactionRuleCount.textContent = `${count}/${MAX_REACTION_RULES} rules · stored locally`;
+  }
+
   #openSettings(section?: SettingsSection): void {
     const settings = this.settings.get();
     if (this.#workspaceView !== "settings") this.#settingsReturnView = this.#workspaceView;
@@ -4719,6 +5055,8 @@ export class LinkChatView {
     this.#updateNotebookCount();
     this.#activitiesToggle.checked = settings.linkActivities.enabled;
     this.#renderActivityEditor(settings.linkActivities.activities);
+    this.#reactionsToggle.checked = settings.linkReactions.enabled;
+    this.#renderReactionRuleEditor(settings.linkReactions.rules);
     this.#showWorkspace("settings", false);
     this.#showSettingsSection(section ?? settings.ui.settingsSection, false);
     this.#settingsTabs
@@ -4758,6 +5096,8 @@ export class LinkChatView {
 
   #saveSettings(): void {
     const retentionDays = Number(this.#retentionInput.value);
+    const reactionRules = this.#readReactionRuleEditor();
+    if (!reactionRules) return;
     const currentSettings = this.settings.get();
     const launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
     const settings = this.settings.update((draft) => {
@@ -4801,6 +5141,8 @@ export class LinkChatView {
       }
       draft.linkActivities.enabled = this.#activitiesToggle.checked;
       draft.linkActivities.activities = this.#readActivityEditor();
+      draft.linkReactions.enabled = this.#reactionsToggle.checked;
+      draft.linkReactions.rules = reactionRules;
       if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
     });
     this.#applyTheme(settings);
@@ -5196,7 +5538,15 @@ export class LinkChatView {
     });
     dismiss.append(kikiIcon("close"));
     toast.append(dismiss);
-    const surface = this.#newChatDialog.open ? this.#newChatDialog : this.#panel;
+    const surface = this.#newChatDialog.open
+      ? this.#newChatDialog
+      : this.#panel.hidden
+        ? this.#shadow
+        : this.#panel;
+    if (surface === this.#shadow) {
+      toast.classList.add("kl-toast--floating");
+      toast.dataset.side = this.settings.get().ui.launcherSide;
+    }
     surface.append(toast);
     if (kind === "info") {
       this.#toastTimer = setTimeout(() => {
@@ -5205,6 +5555,42 @@ export class LinkChatView {
       }, 5000);
     }
   }
+}
+
+function reactionField(
+  label: string,
+  control: HTMLElement,
+  className = "",
+): HTMLLabelElement {
+  return element(
+    "label",
+    { className: `kl-reaction-field${className ? ` ${className}` : ""}` },
+    element("span", { className: "kl-reaction-field-label", text: label }),
+    control,
+  );
+}
+
+function parseReactionMemberNumbers(value: string): number[] | undefined {
+  const source = value.trim();
+  if (!source) return [];
+  const memberNumbers: number[] = [];
+  for (const token of source.split(/[\s,;]+/u).filter(Boolean)) {
+    const normalized = token.replace(/^#/u, "");
+    if (!/^\d+$/u.test(normalized)) return undefined;
+    const memberNumber = Number(normalized);
+    if (!Number.isSafeInteger(memberNumber) || memberNumber < 0) return undefined;
+    if (!memberNumbers.includes(memberNumber)) memberNumbers.push(memberNumber);
+    if (memberNumbers.length > MAX_REACTION_MEMBERS) return undefined;
+  }
+  return memberNumbers;
+}
+
+function createReactionRuleId(): string {
+  const random =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID().slice(0, 12)
+      : Math.random().toString(36).slice(2, 14);
+  return `reaction-${Date.now().toString(36)}-${random}`;
 }
 
 function finderSettingResults(): FinderResult[] {
@@ -5243,6 +5629,12 @@ function finderSettingResults(): FinderResult[] {
       title: "Activities & templates",
       detail: "Activity Studio, packs, categories, favorites, and backup",
       keywords: "linkactivities action roleplay target source member edit enable pack category favorite starred export import backup json",
+    },
+    {
+      section: "reactions",
+      title: "Reactions & event rules",
+      detail: "Local notices, room emotes, triggers, scopes, templates, and cooldowns",
+      keywords: "linkreactions automation event rule beep join leave online friend notification notice emote scope member cooldown template",
     },
   ];
   return definitions.map((definition, index) => ({

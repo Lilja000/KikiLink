@@ -128,7 +128,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(9);
+    expect(settings.schemaVersion).toBe(10);
     expect(settings.linkActivities).toEqual({
       enabled: false,
       activities: [
@@ -175,7 +175,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(9);
+    expect(settings.schemaVersion).toBe(10);
     expect(settings.linkActivities.enabled).toBe(false);
     expect(settings.linkRoster).toEqual({
       enabled: true,
@@ -198,7 +198,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(9);
+    expect(settings.schemaVersion).toBe(10);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -238,6 +238,47 @@ describe("SettingsStore", () => {
       status: "dnd",
       statusMessage: "In a scene",
       autoIdleMinutes: 30,
+    });
+  });
+
+  it("adds and sanitizes schema-10 LinkReactions rules", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 9,
+      linkReactions: {
+        enabled: true,
+        rules: [
+          {
+            id: "Greeting Rule",
+            label: "  Welcome friend  ",
+            trigger: "room-join",
+            scope: "members",
+            memberNumbers: [123, 123, -1, "456"],
+            action: "room-emote",
+            template: "  welcomes {name}.  ",
+            cooldownSeconds: 15,
+          },
+          { label: "Broken", template: "" },
+        ],
+      },
+    });
+
+    expect(settings.schemaVersion).toBe(10);
+    expect(settings.linkReactions).toEqual({
+      enabled: true,
+      rules: [
+        {
+          id: "greeting-rule",
+          label: "Welcome friend",
+          enabled: true,
+          trigger: "room-join",
+          scope: "members",
+          memberNumbers: [123],
+          textMatch: "",
+          action: "room-emote",
+          template: "welcomes {name}.",
+          cooldownSeconds: 15,
+        },
+      ],
     });
   });
 });

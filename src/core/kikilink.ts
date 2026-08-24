@@ -1,5 +1,6 @@
 import { BCAdapter } from "../bc/adapter";
 import { LinkChatModule } from "../modules/link-chat/link-chat-module";
+import { LinkReactionsModule } from "../modules/link-reactions/link-reactions-module";
 import { IndexedDbChatRepository } from "../storage/indexeddb-chat-repository";
 import { MemoryChatRepository } from "../storage/memory-chat-repository";
 import { ResilientChatRepository } from "../storage/resilient-chat-repository";
@@ -21,12 +22,14 @@ export class KikiLinkApp {
   readonly #adapter: BCAdapter;
   readonly #modules = new ModuleRegistry();
   readonly #linkChat = new LinkChatModule();
+  readonly #linkReactions = new LinkReactionsModule();
   #adapterStart: Promise<void> | undefined;
   #started = false;
 
   constructor(private readonly version: string) {
     this.#adapter = new BCAdapter(this.#bus, version);
     this.#modules.register(this.#linkChat);
+    this.#modules.register(this.#linkReactions);
   }
 
   publicApi(): KikiLinkPublicApi {

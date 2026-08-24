@@ -4,6 +4,7 @@ import {
   migrateLegacyRoomActivities,
   sanitizeRoomActivities,
 } from "../modules/link-activities/activity-library";
+import { sanitizeReactionRules } from "../modules/link-reactions/reaction-rules";
 
 export interface KeyValueStorage {
   getItem(key: string): string | null;
@@ -12,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 9,
+  schemaVersion: 10,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -55,6 +56,10 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     enabled: true,
     trackEncounters: true,
     retentionDays: 365,
+  },
+  linkReactions: {
+    enabled: false,
+    rules: [],
   },
 };
 
@@ -139,9 +144,10 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkPresence = isRecord(source.linkPresence) ? source.linkPresence : {};
   const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
   const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
+  const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
 
   return {
-    schemaVersion: 9,
+    schemaVersion: 10,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -244,6 +250,10 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
       ),
       retentionDays: rosterRetentionDaysOr(linkRoster.retentionDays),
     },
+    linkReactions: {
+      enabled: booleanOr(linkReactions.enabled, DEFAULT_SETTINGS.linkReactions.enabled),
+      rules: sanitizeReactionRules(linkReactions.rules),
+    },
   };
 }
 
@@ -304,7 +314,8 @@ function isSettingsSection(
     value === "navigation" ||
     value === "chat" ||
     value === "players" ||
-    value === "activities"
+    value === "activities" ||
+    value === "reactions"
   );
 }
 

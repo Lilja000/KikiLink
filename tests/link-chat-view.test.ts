@@ -178,7 +178,7 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
     const settingsPage = shadow?.querySelector<HTMLElement>(".kl-settings-page");
     expect(settingsPage?.hidden).toBe(false);
-    expect(settingsPage?.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(settingsPage?.querySelectorAll('[role="tab"]')).toHaveLength(6);
     const navigationTab = settingsPage?.querySelector<HTMLButtonElement>(
       '[role="tab"][data-section="navigation"]',
     );
@@ -331,6 +331,98 @@ describe("LinkChatView", () => {
         .get()
         .linkActivities.activities.some((activity) => activity.pack === "Social Gestures"),
     ).toBe(true);
+    view.destroy();
+  });
+
+  it("configures a LinkReactions rule and shows private notices beside the closed launcher", () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getCurrentRoomName: () => undefined,
+      getRoomCharacters: () => [],
+      isInChatRoom: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.15.0",
+    );
+    view.mount();
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
+    shadow?.querySelector<HTMLButtonElement>('[data-section="reactions"]')?.click();
+    const panel = shadow?.querySelector<HTMLElement>("#kikilink-settings-panel-reactions");
+    expect(panel?.textContent).toContain("0/20 rules · stored locally");
+    [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .find((button) => button.textContent === "+ Add event rule")
+      ?.click();
+
+    const row = panel?.querySelector<HTMLElement>(".kl-reaction-rule");
+    const trigger = row?.querySelector<HTMLSelectElement>('[data-field="trigger"]');
+    const scope = row?.querySelector<HTMLSelectElement>('[data-field="scope"]');
+    const members = row?.querySelector<HTMLInputElement>('[data-field="members"]');
+    const match = row?.querySelector<HTMLInputElement>('[data-field="text-match"]');
+    const template = row?.querySelector<HTMLTextAreaElement>('[data-field="template"]');
+    if (!row || !trigger || !scope || !members || !match || !template) {
+      throw new Error("Missing LinkReactions editor controls");
+    }
+    trigger.value = "beep-received";
+    trigger.dispatchEvent(new Event("change", { bubbles: true }));
+    scope.value = "members";
+    scope.dispatchEvent(new Event("change", { bubbles: true }));
+    members.value = "#123";
+    match.value = "urgent";
+    template.value = "{name}: {message}";
+    const globalToggle = panel?.querySelector<HTMLInputElement>(
+      'input[aria-label="Enable LinkReactions"]',
+    );
+    if (!globalToggle) throw new Error("Missing LinkReactions toggle");
+    globalToggle.checked = true;
+    shadow
+      ?.querySelector<HTMLButtonElement>(".kl-settings-actions .kl-text-button--primary")
+      ?.click();
+
+    expect(settings.get().linkReactions).toMatchObject({
+      enabled: true,
+      rules: [
+        {
+          trigger: "beep-received",
+          scope: "members",
+          memberNumbers: [123],
+          textMatch: "urgent",
+          action: "notice",
+          template: "{name}: {message}",
+        },
+      ],
+    });
+    view.close();
+    view.onReaction({
+      ruleId: "test",
+      ruleLabel: "Urgent Beep",
+      action: "notice",
+      message: "Reina: urgent hello",
+      event: {
+        trigger: "beep-received",
+        memberNumber: 123,
+        memberName: "Reina",
+        isFriend: true,
+        occurredAt: 1_000,
+        content: "urgent hello",
+      },
+      firedAt: 1_000,
+    });
+    expect(shadow?.querySelector(".kl-toast--floating")?.textContent).toContain(
+      "Reina: urgent hello",
+    );
     view.destroy();
   });
 
