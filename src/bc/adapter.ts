@@ -17,6 +17,7 @@ const RECENT_INCOMING_TTL_MS = 10_000;
 const KIKILINK_BEEP_TYPE = "KikiLink";
 const KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
 const MAX_PROTOCOL_PAYLOAD = 700;
+const CUSTOM_ACTIVITY_HOOK_COUNT = 5;
 
 interface RecentIncoming {
   fingerprint: string;
@@ -32,6 +33,11 @@ export type BCCharacterOverlayRenderer = (
 
 export interface BCCustomActivityIntegration {
   isCustomActivity?(activityName: string): boolean;
+  extendAllowedActivities?(
+    character: BCCharacter,
+    groupName: string,
+    activities: BCItemActivity[],
+  ): BCItemActivity[];
   resolveText(keyword: string): string | undefined;
   resolveImage(activityName: string): string | undefined;
   run(
@@ -104,6 +110,7 @@ export class BCAdapter {
     this.#stopped = true;
     this.#ready = false;
     this.#onlineFriends.clear();
+    this.#nicknameCache.clear();
     this.#recentIncoming.splice(0);
     this.#seenIncomingPayloads = new WeakSet<object>();
     this.#hasOnlineFriendSnapshot = false;
@@ -140,6 +147,7 @@ export class BCAdapter {
 
   registerCustomActivityIntegration(integration: BCCustomActivityIntegration): () => void {
     this.#customActivityIntegrations.add(integration);
+    this.#ensureActivityHooks();
     return () => this.#customActivityIntegrations.delete(integration);
   }
 
@@ -450,7 +458,10 @@ export class BCAdapter {
       );
     }
     this.#ensureActivityHooks();
-    if (this.#installedActivityHooks.size < 4 && this.#activityHookRetryTimer === undefined) {
+    if (
+      this.#installedActivityHooks.size < CUSTOM_ACTIVITY_HOOK_COUNT &&
+      this.#activityHookRetryTimer === undefined
+    ) {
       this.#activityHookRetryTimer = setInterval(
         () => this.#ensureActivityHooks(),
         ACTIVITY_HOOK_RETRY_MS,
@@ -489,6 +500,22 @@ export class BCAdapter {
     const modApi = this.#modApi;
     if (!modApi) return;
 
+    this.#tryInstallActivityHook(
+      "ActivityAllowedForGroup",
+      typeof ActivityAllowedForGroup === "function",
+      () =>
+        modApi.hookFunction("ActivityAllowedForGroup", 10, (args, next) => {
+          let activities = next(args);
+          if (!Array.isArray(activities)) return activities;
+          for (const integration of [...this.#customActivityIntegrations]) {
+            const extended = this.#callActivityIntegration(integration, () =>
+              integration.extendAllowedActivities?.(args[0], args[1], activities),
+            );
+            if (Array.isArray(extended)) activities = extended;
+          }
+          return activities;
+        }),
+    );
     this.#tryInstallActivityHook(
       "ActivityDictionaryText",
       typeof ActivityDictionaryText === "function",
@@ -564,7 +591,10 @@ export class BCAdapter {
         }),
     );
 
-    if (this.#installedActivityHooks.size === 4 && this.#activityHookRetryTimer !== undefined) {
+    if (
+      this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT &&
+      this.#activityHookRetryTimer !== undefined
+    ) {
       clearInterval(this.#activityHookRetryTimer);
       this.#activityHookRetryTimer = undefined;
     }

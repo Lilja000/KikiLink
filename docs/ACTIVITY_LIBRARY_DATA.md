@@ -1,7 +1,9 @@
 # Custom Activities data and compatibility
 
-KikiLink 0.20.1 stores user-created activities locally and registers them beside Bondage Club's
-vanilla activities at runtime. No account, cloud library, or remote activity index is involved.
+KikiLink 0.20.2 stores user-created activities under the authenticated BC MemberNumber and registers
+them beside Bondage Club's vanilla activities at runtime. There is no public activity library or
+remote index; the private library is also included in that account's bounded `ExtensionSettings`
+snapshot so it can follow the same account to another device.
 
 ## Local model
 
@@ -30,6 +32,12 @@ live `ActivityFemale3DCG` registry and ordering list before appending the defini
 lifecycle check detects replaced or rebuilt registry arrays and restores every saved definition
 exactly once. Before every sync and during unload, all names under KikiLink's prefix are removed
 from both the tracked and current registries. This keeps edits idempotent without load-order races.
+
+KikiLink also extends the result of `ActivityAllowedForGroup`, which is the exact list BC assigns to
+`DialogActivity` before creating the native button grid. This second path prevents a late userscript
+load or another addon's registry rebuild from leaving a valid saved definition invisible. Existing
+native results are preserved, empty/blocked native lists are not bypassed, and duplicate runtime
+names are never appended.
 
 The activity uses `MaxProgress: 0`; optional arousal is not delegated to the vanilla activity cap.
 KikiLink intercepts only its own runtime names, reuses the chosen vanilla picture, and appends the
@@ -61,7 +69,8 @@ default. Legacy user-written room actions are preserved and converted with:
 - arousal off; and
 - legacy `{source}` changed to `{me}`.
 
-All processing and persistence remain in the current browser profile.
+All processing remains local. Persistence is separated by MemberNumber and uses the private,
+bounded BC account snapshot described in `ACCOUNT_DATA.md` for same-account device transfer.
 
 Schema 14 adds only profile, AFK, temporary-upload, and the former room-badge preferences. Existing custom
 activities remain intact. The former Cloudinary upload switch is reset to off once during migration

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.1
+// @version      0.20.2
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -279,6 +279,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var KIKILINK_BEEP_TYPE = "KikiLink";
   var KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
   var MAX_PROTOCOL_PAYLOAD = 700;
+  var CUSTOM_ACTIVITY_HOOK_COUNT = 5;
   var BCAdapter = class {
     constructor(bus, version) {
       this.bus = bus;
@@ -334,6 +335,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#stopped = true;
       this.#ready = false;
       this.#onlineFriends.clear();
+      this.#nicknameCache.clear();
       this.#recentIncoming.splice(0);
       this.#seenIncomingPayloads = /* @__PURE__ */ new WeakSet();
       this.#hasOnlineFriendSnapshot = false;
@@ -365,6 +367,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     registerCustomActivityIntegration(integration) {
       this.#customActivityIntegrations.add(integration);
+      this.#ensureActivityHooks();
       return () => this.#customActivityIntegrations.delete(integration);
     }
     refreshOnlineFriends() {
@@ -623,7 +626,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         );
       }
       this.#ensureActivityHooks();
-      if (this.#installedActivityHooks.size < 4 && this.#activityHookRetryTimer === void 0) {
+      if (this.#installedActivityHooks.size < CUSTOM_ACTIVITY_HOOK_COUNT && this.#activityHookRetryTimer === void 0) {
         this.#activityHookRetryTimer = setInterval(
           () => this.#ensureActivityHooks(),
           ACTIVITY_HOOK_RETRY_MS
@@ -663,6 +666,22 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #ensureActivityHooks() {
       const modApi = this.#modApi;
       if (!modApi) return;
+      this.#tryInstallActivityHook(
+        "ActivityAllowedForGroup",
+        typeof ActivityAllowedForGroup === "function",
+        () => modApi.hookFunction("ActivityAllowedForGroup", 10, (args, next) => {
+          let activities = next(args);
+          if (!Array.isArray(activities)) return activities;
+          for (const integration of [...this.#customActivityIntegrations]) {
+            const extended = this.#callActivityIntegration(
+              integration,
+              () => integration.extendAllowedActivities?.(args[0], args[1], activities)
+            );
+            if (Array.isArray(extended)) activities = extended;
+          }
+          return activities;
+        })
+      );
       this.#tryInstallActivityHook(
         "ActivityDictionaryText",
         typeof ActivityDictionaryText === "function",
@@ -734,7 +753,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
           return next(args);
         })
       );
-      if (this.#installedActivityHooks.size === 4 && this.#activityHookRetryTimer !== void 0) {
+      if (this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT && this.#activityHookRetryTimer !== void 0) {
         clearInterval(this.#activityHookRetryTimer);
         this.#activityHookRetryTimer = void 0;
       }
@@ -1913,12 +1932,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var kikilink_blossom_default = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KikiLink blossom">%0A  <g transform="rotate(-18 32 32)" fill="%23e82142" fill-opacity=".62" stroke="%23ff93a3" stroke-opacity=".52" stroke-width="1">%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(72 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(144 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(216 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(288 32 32)"/>%0A  </g>%0A  <g transform="rotate(-18 32 32)" fill="none" stroke="%23ffd9df" stroke-linecap="round" stroke-opacity=".24" stroke-width="1.1">%0A    <path d="M32 31V10"/>%0A    <path d="M32 31V10" transform="rotate(72 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(144 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(216 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(288 32 32)"/>%0A  </g>%0A  <circle cx="32" cy="32" r="6.2" fill="%238d0921" fill-opacity=".92" stroke="%23ff8b9c" stroke-opacity=".48" stroke-width="1"/>%0A  <circle cx="32" cy="32" r="3.1" fill="%23efb34e" fill-opacity=".9"/>%0A</svg>%0A';
 
   // src/modules/link-chat/blossom.ts
-  var BADGE_HIT_SIZE = 44;
-  var BADGE_VISUAL_SIZE = 32;
+  var BADGE_HIT_SIZE = 28;
+  var BADGE_VISUAL_SIZE = 20;
   var BADGE_DRAG_THRESHOLD = 6;
-  var BADGE_OPACITY = 0.82;
+  var BADGE_OPACITY = 0.78;
   var DEFAULT_ROOM_BADGE_POSITION = Object.freeze({
-    x: 0.7,
+    x: 0.6,
     y: 0.055
   });
   function resolveRoomBadgePosition(position, viewportWidth, viewportHeight) {
@@ -1945,10 +1964,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #config;
     #drag;
     #settingsUnsubscribe;
+    #placementActive = false;
     #mounted = false;
     #destroyed = false;
     #handlePointerDown = (event) => {
-      if (event.button !== 0 || this.#drag || !this.#config.enabled) return;
+      if (event.button !== 0 || this.#drag || !this.#config.enabled || !this.#placementActive) {
+        return;
+      }
       const rect = this.#element.getBoundingClientRect();
       const styleLeft = parsePixel(this.#element.style.left);
       const styleTop = parsePixel(this.#element.style.top);
@@ -1995,7 +2017,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (!drag || drag.pointerId !== event.pointerId) return;
       this.#drag = void 0;
       this.#element.dataset.dragging = "false";
-      this.#element.style.cursor = "grab";
+      this.#element.style.cursor = this.#placementActive ? "grab" : "default";
       this.#releasePointer(event.pointerId);
       if (!drag.moved) {
         this.#positionFromConfig();
@@ -2012,6 +2034,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       });
       this.#config = next.ui.roomBadge;
       this.#positionFromConfig();
+      this.#setPlacement(false);
     };
     #handlePointerCancel = (event) => {
       if (!this.#drag || this.#drag.pointerId !== event.pointerId) return;
@@ -2027,6 +2050,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#cancelDrag(true);
       this.#positionFromConfig();
     };
+    #handleKeyDown = (event) => {
+      if (!this.#placementActive || event.key !== "Escape") return;
+      event.preventDefault();
+      this.#cancelDrag(true);
+      this.#positionFromConfig();
+      this.#setPlacement(false);
+    };
     constructor(settings) {
       this.#settings = settings;
       this.#config = settings.get().ui.roomBadge;
@@ -2037,6 +2067,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#config = config;
         if (!changed) return;
         this.#cancelDrag(true);
+        if (!config.enabled) this.#setPlacement(false);
         this.#sync();
       });
     }
@@ -2046,9 +2077,22 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (!this.#mounted) {
         this.#mounted = true;
         window.addEventListener("resize", this.#handleViewportResize);
+        window.addEventListener("keydown", this.#handleKeyDown);
       }
       if (this.#element.parentNode !== root) root.append(this.#element);
       this.#sync();
+    }
+    /** Arms one deliberate drag from the settings screen. */
+    beginPlacement() {
+      if (this.#destroyed || !this.#mounted || !this.#config.enabled) return false;
+      this.#cancelDrag(true);
+      this.#setPlacement(true);
+      return true;
+    }
+    cancelPlacement() {
+      this.#cancelDrag(true);
+      this.#positionFromConfig();
+      this.#setPlacement(false);
     }
     /** Restores the documented default without disabling the badge. */
     resetPosition() {
@@ -2058,13 +2102,17 @@ One of mods you are using is using an old version of SDK. It will work for now b
       });
       this.#config = next.ui.roomBadge;
       this.#cancelDrag(true);
+      this.#setPlacement(false);
       this.#sync();
     }
     destroy() {
       if (this.#destroyed) return;
       this.#destroyed = true;
       this.#cancelDrag(true);
-      if (this.#mounted) window.removeEventListener("resize", this.#handleViewportResize);
+      if (this.#mounted) {
+        window.removeEventListener("resize", this.#handleViewportResize);
+        window.removeEventListener("keydown", this.#handleKeyDown);
+      }
       this.#mounted = false;
       this.#settingsUnsubscribe?.();
       this.#settingsUnsubscribe = void 0;
@@ -2079,8 +2127,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#element.className = "kl-room-blossom";
       this.#element.dataset.dragging = "false";
       this.#element.setAttribute("role", "img");
-      this.#element.setAttribute("aria-label", "KikiLink Blossom; drag to reposition");
-      this.#element.title = "KikiLink Blossom \xB7 drag to move";
+      this.#element.setAttribute("aria-label", "KikiLink Blossom");
+      this.#element.title = "KikiLink Blossom";
       Object.assign(this.#element.style, {
         position: "fixed",
         width: `${BADGE_HIT_SIZE}px`,
@@ -2090,7 +2138,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
         border: "0",
         background: "transparent",
         opacity: String(BADGE_OPACITY),
-        cursor: "grab",
+        cursor: "default",
+        pointerEvents: "none",
         touchAction: "none",
         userSelect: "none",
         webkitUserSelect: "none",
@@ -2113,6 +2162,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         pointerEvents: "none"
       });
       this.#element.append(this.#image);
+      this.#setPlacement(false);
       this.#element.addEventListener("pointerdown", this.#handlePointerDown);
       this.#element.addEventListener("pointermove", this.#handlePointerMove);
       this.#element.addEventListener("pointerup", this.#handlePointerUp);
@@ -2123,6 +2173,20 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#element.hidden = !this.#config.enabled;
       this.#element.style.display = this.#config.enabled ? "block" : "none";
       if (this.#config.enabled) this.#positionFromConfig();
+    }
+    #setPlacement(active) {
+      this.#placementActive = active && this.#config.enabled;
+      this.#element.dataset.placement = String(this.#placementActive);
+      this.#element.style.pointerEvents = this.#placementActive ? "auto" : "none";
+      this.#element.style.cursor = this.#placementActive ? "grab" : "default";
+      this.#element.style.outline = this.#placementActive ? "2px solid rgba(255, 122, 143, 0.78)" : "none";
+      this.#element.style.outlineOffset = this.#placementActive ? "2px" : "0";
+      this.#element.title = this.#placementActive ? "Drag Blossom to its new position \xB7 Esc to cancel" : "KikiLink Blossom";
+      this.#element.setAttribute(
+        "aria-label",
+        this.#placementActive ? "Move KikiLink Blossom" : "KikiLink Blossom"
+      );
+      this.#element.tabIndex = this.#placementActive ? 0 : -1;
     }
     #positionFromConfig() {
       if (!this.#mounted || this.#drag) return;
@@ -2144,7 +2208,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const pointerId = this.#drag?.pointerId;
       this.#drag = void 0;
       this.#element.dataset.dragging = "false";
-      this.#element.style.cursor = "grab";
+      this.#element.style.cursor = this.#placementActive ? "grab" : "default";
       if (releasePointer && pointerId !== void 0) this.#releasePointer(pointerId);
     }
     #releasePointer(pointerId) {
@@ -2307,6 +2371,30 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     isCustomActivity(activityName) {
       return this.#runtimeActivities.has(activityName);
+    }
+    /**
+     * Extends the exact list consumed by BC's native DialogActivity grid. The registry injection is
+     * still kept for native lookups, while this path makes late-loaded userscripts reliable even if
+     * BC or another addon rebuilt/cached the activity list before KikiLink started.
+     */
+    extendAllowedActivities(character, groupName, activities) {
+      if (!Array.isArray(activities) || activities.length === 0 || typeof groupName !== "string") {
+        return activities;
+      }
+      const result = [...activities];
+      const existing = new Set(result.map((item) => item?.Activity?.Name));
+      const selfTarget = character?.MemberNumber === this.adapter.getOwnMemberNumber();
+      for (const [runtimeName, definition] of this.#runtimeActivities) {
+        if (definition.targetGroup !== groupName || existing.has(runtimeName)) continue;
+        if (selfTarget && definition.targetMode === "other") continue;
+        if (!selfTarget && definition.targetMode === "self") continue;
+        result.push({
+          Activity: this.#injectedActivities.get(runtimeName) ?? createNativeActivity(runtimeName, definition),
+          Group: groupName
+        });
+        existing.add(runtimeName);
+      }
+      return result;
     }
     getTargets() {
       return this.adapter.getRoomCharacters();
@@ -4833,6 +4921,7 @@ button { color: inherit; }
   justify-content: space-between;
   gap: 20px;
 }
+.kl-inline-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
 .kl-data-tools {
   position: relative;
   min-width: 0;
@@ -6670,7 +6759,8 @@ select:focus-visible {
   .kl-color-control { align-items: flex-end; flex-direction: column; }
   .kl-conversation-side { max-width: 44px; }
   .kl-setting-row { align-items: flex-start; }
-  .kl-setting-action-row { align-items: flex-start; }
+  .kl-setting-action-row { align-items: flex-start; flex-direction: column; }
+  .kl-inline-actions { width: 100%; justify-content: flex-start; }
   .kl-select { width: 136px; }
   .kl-action-editor-row { grid-template-columns: 72px minmax(0, 1fr) 40px; }
   .kl-reaction-rule-header { grid-template-columns: auto minmax(0, 1fr); }
@@ -8245,7 +8335,7 @@ select:focus-visible {
         element(
           "span",
           {},
-          "Private by design \xB7 history and notes stay in this browser; presence is shared only with compatible KikiLink users."
+          "Account-private by design \xB7 data belongs to this BC MemberNumber; presence is shared only with compatible KikiLink users."
         )
       );
       this.#home.append(hero, sectionHeading, cards, privacy);
@@ -8556,13 +8646,19 @@ select:focus-visible {
         reducedMotionSwitch
       );
       this.#roomBadgeToggle.type = "checkbox";
-      this.#roomBadgeToggle.setAttribute("aria-label", "Show draggable KikiLink Blossom");
+      this.#roomBadgeToggle.setAttribute("aria-label", "Show KikiLink Blossom");
       const roomBadgeSwitch = element(
         "label",
         { className: "kl-switch" },
         this.#roomBadgeToggle,
         element("span", { className: "kl-switch-track" })
       );
+      const moveRoomBadge = element("button", {
+        className: "kl-text-button kl-text-button--primary",
+        type: "button",
+        text: "Move flower",
+        onClick: () => this.#beginRoomBadgePlacement()
+      });
       const resetRoomBadge = element("button", {
         className: "kl-text-button",
         type: "button",
@@ -8587,10 +8683,10 @@ select:focus-visible {
             element("div", { className: "kl-setting-name", text: "Flower position" }),
             element("div", {
               className: "kl-setting-help",
-              text: "Close KikiLink, then drag the flower anywhere on the game screen. Its position saves automatically."
+              text: "Choose Move flower, then drag the small top icon once. Normal gameplay cannot move it."
             })
           ),
-          resetRoomBadge
+          element("div", { className: "kl-inline-actions" }, moveRoomBadge, resetRoomBadge)
         )
       );
       this.#historyToggle.type = "checkbox";
@@ -8603,7 +8699,7 @@ select:focus-visible {
       this.#historyToggle.setAttribute("aria-label", "Save message history");
       const history = this.#settingRow(
         "Save message history",
-        "Stored only in this browser profile.",
+        "Stored for this BC account; recent history is mirrored to your other devices.",
         historySwitch
       );
       this.#enterToSendToggle.type = "checkbox";
@@ -8780,7 +8876,7 @@ select:focus-visible {
       this.#rosterTrackingToggle.setAttribute("aria-label", "Remember player encounters");
       const rosterTracking = this.#settingRow(
         "Remember encounters",
-        "Store the last room, time, and encounter count only in this browser.",
+        "Store the last room, time, and encounter count only for this BC account.",
         rosterTrackingSwitch
       );
       this.#rosterRetentionSelect.replaceChildren(
@@ -8825,7 +8921,7 @@ select:focus-visible {
           element("div", { className: "kl-data-tools-title", text: "Notebook backup" }),
           element("div", {
             className: "kl-setting-help",
-            text: "Move private notes, tags, favorites, and encounter history between browsers."
+            text: "Download or merge a manual JSON backup of this account's player notebook."
           }),
           this.#notebookCount
         ),
@@ -8846,7 +8942,7 @@ select:focus-visible {
       const rosterSection = this.#createSettingsPanel(
         "players",
         "Players & private notebook",
-        "Control what the player workspace remembers in this browser.",
+        "Control what the player workspace remembers for this BC account.",
         rosterEnabled,
         rosterTracking,
         rosterRetention,
@@ -8873,7 +8969,7 @@ select:focus-visible {
       const chatSection = this.#createSettingsPanel(
         "chat",
         "Chat, history & privacy",
-        "Keep Beep history useful, local, and under your control.",
+        "Keep this account's Beep history useful and under your control.",
         enterToSend,
         typingIndicators,
         imagePreviews,
@@ -8909,7 +9005,7 @@ select:focus-visible {
         activitiesEnabled,
         element("div", {
           className: "kl-presence-caveat",
-          text: "Your list starts empty and stays in this browser. Blossom marks every custom action in the native menu."
+          text: "Your account's list starts empty. Blossom marks every custom action in the native menu."
         }),
         openCustomActivities
       );
@@ -9095,7 +9191,7 @@ select:focus-visible {
         { className: "kl-settings-actions" },
         element("span", {
           className: "kl-settings-local-note",
-          text: "Preferences stay in this browser."
+          text: "Saved to this BC account."
         }),
         cancel,
         this.#saveSettingsButton
@@ -9759,7 +9855,7 @@ select:focus-visible {
             {},
             "Remove ",
             this.#removeChatName,
-            " from KikiLink recent chats and delete this chat's local KikiLink history?"
+            " from KikiLink recent chats and delete this chat's account-scoped KikiLink history?"
           ),
           element("p", {
             className: "kl-remove-chat-safe",
@@ -10438,7 +10534,7 @@ select:focus-visible {
       );
       const privacy = element("div", {
         className: "kl-roster-privacy",
-        text: "Notes, tags, favorites, and encounter history stay in this browser profile."
+        text: "Notes, tags, favorites, and encounter history belong only to this BC account."
       });
       const footer = element("footer", { className: "kl-feature-page-footer" }, privacy);
       this.#saveNotebookButton.addEventListener("click", () => this.#saveNotebook(true));
@@ -11353,7 +11449,7 @@ select:focus-visible {
         return true;
       } catch (error) {
         this.#toast(
-          sent ? "Beep was sent, but KikiLink could not save it to local history." : error instanceof Error ? error.message : "Unable to send Beep",
+          sent ? "Beep was sent, but KikiLink could not save it to this account's history." : error instanceof Error ? error.message : "Unable to send Beep",
           "error"
         );
         return false;
@@ -11671,7 +11767,7 @@ select:focus-visible {
         this.#profileMenuAction(
           "trash",
           "Remove from recent chats",
-          "Deletes only this local KikiLink history",
+          "Deletes only this account's KikiLink history",
           () => this.#openRemoveChatDialog(memberNumber, shownName)
         )
       ) : null;
@@ -12238,6 +12334,19 @@ ${expanded}` : expanded;
     #resetRoomBadgePosition() {
       this.#roomBadge.resetPosition();
       this.#toast("Blossom returned to its default top position.");
+    }
+    #beginRoomBadgePlacement() {
+      if (!this.settings.get().ui.roomBadge.enabled) {
+        this.settings.update((draft) => {
+          draft.ui.roomBadge.enabled = true;
+        });
+        this.#roomBadgeToggle.checked = true;
+      }
+      if (!this.#roomBadge.beginPlacement()) {
+        this.#toast("Blossom is not ready yet.", "error");
+        return;
+      }
+      this.close();
     }
     async #clearHistory() {
       if (!window.confirm("Clear all KikiLink Beep history and conversation drafts?")) return;
@@ -12895,7 +13004,7 @@ ${expanded}` : expanded;
       this.#activities.start();
       this.#roster = new LinkRosterService(
         context.adapter,
-        new PeopleRepository(),
+        new PeopleRepository(context.accountStorage),
         context.settings
       );
       this.#presence = new LinkPresenceService(
@@ -13254,6 +13363,438 @@ ${expanded}` : expanded;
     };
   }
 
+  // src/storage/account-data-storage.ts
+  var CLOUD_EXTENSION_KEY = "KikiLink";
+  var CLOUD_MIRROR_KEY = "kikilink:cloud-mirror:v1";
+  var CLOUD_FORMAT_PREFIX = "KIKILINK/1:";
+  var JSON_FORMAT_PREFIX = "JSON:";
+  var CLOUD_SYNC_DELAY_MS = 750;
+  var MAX_CLOUD_PAYLOAD_CHARS = 12e4;
+  var MAX_CLOUD_CONVERSATIONS = 100;
+  var MAX_CLOUD_MESSAGES = 600;
+  var MAX_CLOUD_MESSAGES_PER_CONVERSATION = 100;
+  var AccountKeyValueStorage = class {
+    constructor(memberNumber, backing = defaultBackingStorage()) {
+      this.backing = backing;
+      if (!validMemberNumber4(memberNumber)) throw new Error("A valid BC account is required");
+      this.#prefix = `kikilink:account:${memberNumber}:`;
+    }
+    backing;
+    #prefix;
+    getItem(key) {
+      return this.backing.getItem(this.#key(key));
+    }
+    setItem(key, value) {
+      this.backing.setItem(this.#key(key), value);
+    }
+    removeItem(key) {
+      this.backing.removeItem(this.#key(key));
+    }
+    #key(key) {
+      return `${this.#prefix}${key}`;
+    }
+  };
+  var AccountDataStorage = class {
+    constructor(memberNumber, backing) {
+      this.memberNumber = memberNumber;
+      this.#local = new AccountKeyValueStorage(memberNumber, backing);
+      const remote = this.#readRemoteState();
+      const mirror = parsePortableState(this.getItem(CLOUD_MIRROR_KEY), memberNumber);
+      const selected = newestState(remote, mirror);
+      this.#state = selected ?? {
+        version: 1,
+        owner: memberNumber,
+        updatedAt: 0
+      };
+      if (selected) {
+        this.#restorePortableKey(SETTINGS_KEY, selected.settings);
+        this.#restorePortableKey(PEOPLE_KEY, selected.people);
+        this.#persistMirror();
+        if (selected === mirror && (!remote || mirror.updatedAt > remote.updatedAt)) {
+          this.#markDirty();
+        }
+      } else {
+        this.#adoptLocalKey(SETTINGS_KEY, "settings");
+        this.#adoptLocalKey(PEOPLE_KEY, "people");
+        if (this.#state.settings !== void 0 || this.#state.people !== void 0) {
+          this.#touch();
+          this.#markDirty();
+        }
+      }
+    }
+    memberNumber;
+    #local;
+    #state;
+    #repository;
+    #syncTimer;
+    #flushChain = Promise.resolve();
+    #generation = 0;
+    #chatDirty = false;
+    #destroyed = false;
+    getItem(key) {
+      try {
+        return this.#local.getItem(key);
+      } catch {
+        return null;
+      }
+    }
+    setItem(key, value) {
+      try {
+        this.#local.setItem(key, value);
+      } catch {
+      }
+      if (key === SETTINGS_KEY) this.#setPortableValue("settings", value);
+      if (key === PEOPLE_KEY) this.#setPortableValue("people", value);
+    }
+    removeItem(key) {
+      try {
+        this.#local.removeItem(key);
+      } catch {
+      }
+      if (key === SETTINGS_KEY) this.#removePortableValue("settings");
+      if (key === PEOPLE_KEY) this.#removePortableValue("people");
+    }
+    /** Imports a newer portable snapshot without clearing newer account-local history. */
+    async attachChatRepository(repository) {
+      this.#repository = repository;
+      const chats = this.#state.chats;
+      if (!chats) return;
+      for (const message of chats.messages) await repository.addMessage(message);
+      for (const remoteConversation of chats.conversations) {
+        const localConversation = await repository.getConversation(remoteConversation.peerNumber);
+        if (!localConversation || remoteConversation.lastMessageAt >= localConversation.lastMessageAt) {
+          await repository.putConversation(remoteConversation);
+        }
+      }
+    }
+    markChatChanged() {
+      if (this.#destroyed) return;
+      this.#chatDirty = true;
+      this.#markDirty();
+    }
+    flush() {
+      this.#flushChain = this.#flushChain.then(() => this.#flushOnce());
+      return this.#flushChain;
+    }
+    async destroy() {
+      if (this.#destroyed) return;
+      await this.flush();
+      this.#destroyed = true;
+      if (this.#syncTimer !== void 0) clearTimeout(this.#syncTimer);
+      this.#syncTimer = void 0;
+      this.#repository = void 0;
+    }
+    #setPortableValue(key, raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (key === "people" && !Array.isArray(parsed)) return;
+        this.#state[key] = parsed;
+        this.#touch();
+        this.#persistMirror();
+        this.#markDirty();
+      } catch {
+      }
+    }
+    #removePortableValue(key) {
+      delete this.#state[key];
+      this.#touch();
+      this.#persistMirror();
+      this.#markDirty();
+    }
+    #restorePortableKey(key, value) {
+      if (value === void 0) {
+        try {
+          this.#local.removeItem(key);
+        } catch {
+        }
+        return;
+      }
+      try {
+        this.#local.setItem(key, JSON.stringify(value));
+      } catch {
+      }
+    }
+    #adoptLocalKey(key, field) {
+      const raw = this.getItem(key);
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        if (field === "people" && !Array.isArray(parsed)) return;
+        this.#state[field] = parsed;
+      } catch {
+      }
+    }
+    #touch() {
+      this.#state.updatedAt = Math.max(Date.now(), this.#state.updatedAt + 1);
+    }
+    #markDirty() {
+      this.#generation += 1;
+      if (this.#destroyed) return;
+      if (this.#syncTimer !== void 0) clearTimeout(this.#syncTimer);
+      this.#syncTimer = setTimeout(() => {
+        this.#syncTimer = void 0;
+        void this.flush();
+      }, CLOUD_SYNC_DELAY_MS);
+    }
+    async #flushOnce() {
+      if (this.#syncTimer !== void 0) clearTimeout(this.#syncTimer);
+      this.#syncTimer = void 0;
+      if (this.#generation === 0) return;
+      const generation = this.#generation;
+      if (this.#chatDirty && this.#repository) {
+        this.#state.chats = await capturePortableChats(this.#repository);
+        this.#chatDirty = false;
+        this.#touch();
+        this.#persistMirror();
+      }
+      if (!this.#isCurrentAccount()) return;
+      const encoded = encodePortableState(fitPortableState(this.#state));
+      if (!encoded || encoded.length > MAX_CLOUD_PAYLOAD_CHARS) {
+        console.warn("[KikiLink:storage] Account sync payload is too large; keeping the full local copy");
+        return;
+      }
+      try {
+        Player.ExtensionSettings ??= {};
+        Player.ExtensionSettings[CLOUD_EXTENSION_KEY] = encoded;
+        if (typeof ServerPlayerExtensionSettingsSync !== "function") return;
+        ServerPlayerExtensionSettingsSync(CLOUD_EXTENSION_KEY);
+        if (generation === this.#generation) this.#generation = 0;
+      } catch (error) {
+        console.warn("[KikiLink:storage] BC account sync unavailable; local account data is safe", error);
+      }
+    }
+    #persistMirror() {
+      try {
+        this.#local.setItem(CLOUD_MIRROR_KEY, JSON.stringify(this.#state));
+      } catch {
+      }
+    }
+    #readRemoteState() {
+      if (!this.#isCurrentAccount() || !Player.ExtensionSettings) return void 0;
+      return parsePortableState(Player.ExtensionSettings[CLOUD_EXTENSION_KEY], this.memberNumber);
+    }
+    #isCurrentAccount() {
+      return typeof Player === "object" && Player !== null && Player.MemberNumber === this.memberNumber;
+    }
+  };
+  var AccountSyncedChatRepository = class {
+    constructor(repository, account) {
+      this.repository = repository;
+      this.account = account;
+    }
+    repository;
+    account;
+    async addMessage(message) {
+      await this.repository.addMessage(message);
+      this.account.markChatChanged();
+    }
+    getMessages(peerNumber, limit) {
+      return this.repository.getMessages(peerNumber, limit);
+    }
+    getConversation(peerNumber) {
+      return this.repository.getConversation(peerNumber);
+    }
+    listConversations() {
+      return this.repository.listConversations();
+    }
+    async putConversation(conversation) {
+      await this.repository.putConversation(conversation);
+      this.account.markChatChanged();
+    }
+    async deleteConversation(peerNumber) {
+      await this.repository.deleteConversation(peerNumber);
+      this.account.markChatChanged();
+    }
+    async deleteMessagesOlderThan(timestamp) {
+      const removed = await this.repository.deleteMessagesOlderThan(timestamp);
+      if (removed > 0) this.account.markChatChanged();
+      return removed;
+    }
+    async trimConversation(peerNumber, keepNewest) {
+      const removed = await this.repository.trimConversation(peerNumber, keepNewest);
+      if (removed > 0) this.account.markChatChanged();
+      return removed;
+    }
+    async clearAll() {
+      await this.repository.clearAll();
+      this.account.markChatChanged();
+    }
+    close() {
+      this.repository.close();
+    }
+  };
+  function accountChatDatabaseName(memberNumber) {
+    if (!validMemberNumber4(memberNumber)) throw new Error("A valid BC account is required");
+    return `kikilink-account-${memberNumber}`;
+  }
+  async function capturePortableChats(repository) {
+    const conversations = (await repository.listConversations()).slice(0, MAX_CLOUD_CONVERSATIONS);
+    const messages = [];
+    for (const conversation of conversations) {
+      messages.push(
+        ...await repository.getMessages(
+          conversation.peerNumber,
+          MAX_CLOUD_MESSAGES_PER_CONVERSATION
+        )
+      );
+    }
+    messages.sort((left, right) => right.sentAt - left.sentAt);
+    return {
+      conversations: conversations.map((conversation) => structuredClone(conversation)),
+      messages: messages.slice(0, MAX_CLOUD_MESSAGES).sort((left, right) => left.sentAt - right.sentAt).map((message) => structuredClone(message))
+    };
+  }
+  function newestState(remote, mirror) {
+    if (!remote) return mirror;
+    if (!mirror) return remote;
+    return mirror.updatedAt > remote.updatedAt ? mirror : remote;
+  }
+  function parsePortableState(value, owner) {
+    let parsed = value;
+    if (typeof value === "string") {
+      try {
+        if (value.startsWith(CLOUD_FORMAT_PREFIX)) {
+          if (typeof LZString !== "object" || typeof LZString.decompressFromBase64 !== "function") {
+            return void 0;
+          }
+          const json = LZString.decompressFromBase64(value.slice(CLOUD_FORMAT_PREFIX.length));
+          if (!json) return void 0;
+          parsed = JSON.parse(json);
+        } else if (value.startsWith(JSON_FORMAT_PREFIX)) {
+          parsed = JSON.parse(value.slice(JSON_FORMAT_PREFIX.length));
+        } else {
+          parsed = JSON.parse(value);
+        }
+      } catch {
+        return void 0;
+      }
+    }
+    if (!isRecord6(parsed) || parsed.version !== 1 || parsed.owner !== owner) return void 0;
+    const updatedAt = validTime2(parsed.updatedAt) ? parsed.updatedAt : 0;
+    const state = { version: 1, owner, updatedAt };
+    if (isRecord6(parsed.settings)) state.settings = structuredClone(parsed.settings);
+    if (Array.isArray(parsed.people)) state.people = structuredClone(parsed.people);
+    const chats = sanitizePortableChats(parsed.chats);
+    if (chats) state.chats = chats;
+    return state;
+  }
+  function sanitizePortableChats(value) {
+    if (!isRecord6(value) || !Array.isArray(value.conversations) || !Array.isArray(value.messages)) {
+      return void 0;
+    }
+    const conversations = value.conversations.slice(0, MAX_CLOUD_CONVERSATIONS).map(sanitizeConversation).filter((item) => item !== void 0);
+    const allowedPeers = new Set(conversations.map((conversation) => conversation.peerNumber));
+    const messages = value.messages.slice(-MAX_CLOUD_MESSAGES).map(sanitizeMessage).filter(
+      (item) => item !== void 0 && allowedPeers.has(item.peerNumber)
+    );
+    return { conversations, messages };
+  }
+  function sanitizeConversation(value) {
+    if (!isRecord6(value) || !validMemberNumber4(value.peerNumber)) return void 0;
+    const peerName = cleanText4(value.peerName, 80) || `Member ${value.peerNumber}`;
+    const lastDirection = value.lastDirection === "outgoing" ? "outgoing" : "incoming";
+    const localAlias = cleanText4(value.localAlias, 80);
+    const hiddenAt = validTime2(value.hiddenAt) ? value.hiddenAt : void 0;
+    return {
+      peerNumber: value.peerNumber,
+      peerName,
+      ...localAlias ? { localAlias } : {},
+      ...hiddenAt !== void 0 ? { hiddenAt } : {},
+      lastMessage: cleanText4(value.lastMessage, 1e3),
+      lastMessageAt: validTime2(value.lastMessageAt) ? value.lastMessageAt : 0,
+      lastDirection,
+      unread: integerInRange4(value.unread, 0, 1e5, 0),
+      pinned: value.pinned === true,
+      draft: cleanText4(value.draft, 1e3)
+    };
+  }
+  function sanitizeMessage(value) {
+    if (!isRecord6(value) || !validMemberNumber4(value.peerNumber) || typeof value.id !== "string" || !value.id.trim() || value.id.length > 200 || !validTime2(value.sentAt)) {
+      return void 0;
+    }
+    const roomName = cleanText4(value.roomName, 100);
+    return {
+      id: value.id,
+      direction: value.direction === "outgoing" ? "outgoing" : "incoming",
+      peerNumber: value.peerNumber,
+      peerName: cleanText4(value.peerName, 80) || `Member ${value.peerNumber}`,
+      content: cleanText4(value.content, 1e3),
+      sentAt: value.sentAt,
+      includeRoom: value.includeRoom === true,
+      ...roomName ? { roomName } : {},
+      read: value.read === true
+    };
+  }
+  function fitPortableState(state) {
+    const fitted = structuredClone(state);
+    let encoded = encodePortableState(fitted);
+    while (encoded && encoded.length > MAX_CLOUD_PAYLOAD_CHARS && fitted.chats && fitted.chats.messages.length > 0) {
+      const remove = Math.max(1, Math.ceil(fitted.chats.messages.length / 5));
+      fitted.chats.messages.splice(0, remove);
+      encoded = encodePortableState(fitted);
+    }
+    if (encoded && encoded.length <= MAX_CLOUD_PAYLOAD_CHARS) return fitted;
+    if (fitted.chats) {
+      delete fitted.chats;
+      encoded = encodePortableState(fitted);
+    }
+    if (encoded && encoded.length <= MAX_CLOUD_PAYLOAD_CHARS) return fitted;
+    if (Array.isArray(fitted.people)) {
+      fitted.people = prioritizePortablePeople(fitted.people);
+      while (fitted.people.length > 0) {
+        fitted.people.length = Math.floor(fitted.people.length * 0.8);
+        encoded = encodePortableState(fitted);
+        if (encoded && encoded.length <= MAX_CLOUD_PAYLOAD_CHARS) return fitted;
+      }
+      delete fitted.people;
+    }
+    return fitted;
+  }
+  function prioritizePortablePeople(values) {
+    return [...values].sort((left, right) => personPriority(right) - personPriority(left));
+  }
+  function personPriority(value) {
+    if (!isRecord6(value)) return 0;
+    const notebook = value.favorite === true || cleanText4(value.note, 1).length > 0 || Array.isArray(value.tags) && value.tags.length > 0;
+    const lastSeen = validTime2(value.lastSeenAt) ? value.lastSeenAt : 0;
+    return (notebook ? 10 ** 15 : 0) + lastSeen;
+  }
+  function encodePortableState(state) {
+    try {
+      const json = JSON.stringify(state);
+      if (typeof LZString === "object" && typeof LZString.compressToBase64 === "function") {
+        return `${CLOUD_FORMAT_PREFIX}${LZString.compressToBase64(json)}`;
+      }
+      return `${JSON_FORMAT_PREFIX}${json}`;
+    } catch {
+      return void 0;
+    }
+  }
+  function defaultBackingStorage() {
+    if (typeof localStorage === "undefined") return new MemoryKeyValueStorage();
+    try {
+      localStorage.getItem("kikilink:account-storage-probe");
+      return localStorage;
+    } catch {
+      return new MemoryKeyValueStorage();
+    }
+  }
+  function validMemberNumber4(value) {
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  }
+  function validTime2(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  }
+  function integerInRange4(value, min, max, fallback) {
+    return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+  }
+  function cleanText4(value, limit) {
+    return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit) : "";
+  }
+  function isRecord6(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
   // src/storage/indexeddb-chat-repository.ts
   var DATABASE_NAME = "kikilink";
   var DATABASE_VERSION = 1;
@@ -13262,6 +13803,10 @@ ${expanded}` : expanded;
   var PEER_TIME_INDEX = "peer-time";
   var TIME_INDEX = "time";
   var IndexedDbChatRepository = class {
+    constructor(databaseName = DATABASE_NAME) {
+      this.databaseName = databaseName;
+    }
+    databaseName;
     #databasePromise;
     async addMessage(message) {
       const database = await this.#database();
@@ -13372,13 +13917,13 @@ ${expanded}` : expanded;
       this.#databasePromise = void 0;
     }
     #database() {
-      this.#databasePromise ??= openDatabase();
+      this.#databasePromise ??= openDatabase(this.databaseName);
       return this.#databasePromise;
     }
   };
-  function openDatabase() {
+  function openDatabase(databaseName) {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+      const request = indexedDB.open(databaseName, DATABASE_VERSION);
       request.onerror = () => reject(request.error ?? new Error("Unable to open KikiLink storage"));
       request.onblocked = () => reject(new Error("KikiLink storage upgrade is blocked"));
       request.onupgradeneeded = () => {
@@ -13524,14 +14069,18 @@ ${expanded}` : expanded;
     version;
     #logger = new Logger("core");
     #bus = new EventBus();
-    #settings = new SettingsStore();
-    #repository = typeof indexedDB === "undefined" ? new MemoryChatRepository() : new ResilientChatRepository(new IndexedDbChatRepository(), new MemoryChatRepository());
     #adapter;
     #modules = new ModuleRegistry();
     #linkChat = new LinkChatModule();
     #linkReactions = new LinkReactionsModule();
+    #settings;
+    #repository;
+    #accountStorage;
     #adapterStart;
-    #authVisibilityTimer;
+    #accountMonitorTimer;
+    #activeMemberNumber;
+    #desiredMemberNumber;
+    #transitionPromise;
     #started = false;
     publicApi() {
       return {
@@ -13550,53 +14099,116 @@ ${expanded}` : expanded;
       this.#started = true;
       await waitForAuthenticatedPlayer(() => this.#started);
       if (!this.#started) return;
-      await this.#modules.startAll({
-        adapter: this.#adapter,
-        bus: this.#bus,
-        repository: this.#repository,
-        settings: this.#settings,
-        version: this.version
-      });
-      this.#adapterStart = this.#adapter.start().catch((error) => {
-        this.#logger.error("Bondage Club connection failed", error);
-      });
-      this.#syncAuthenticatedVisibility();
-      this.#authVisibilityTimer = setInterval(() => this.#syncAuthenticatedVisibility(), 250);
-      this.#logger.info(`KikiLink ${this.version} interface is ready`);
+      this.#desiredMemberNumber = authenticatedMemberNumber();
+      await this.#runAccountTransitions();
+      if (!this.#started) return;
+      this.#accountMonitorTimer = setInterval(() => this.#monitorAccount(), 250);
     }
     async destroy() {
       if (!this.#started) return;
       this.#started = false;
-      if (this.#authVisibilityTimer !== void 0) clearInterval(this.#authVisibilityTimer);
-      this.#authVisibilityTimer = void 0;
+      if (this.#accountMonitorTimer !== void 0) clearInterval(this.#accountMonitorTimer);
+      this.#accountMonitorTimer = void 0;
+      this.#desiredMemberNumber = void 0;
+      await this.#transitionPromise;
+      await this.#deactivateAccount();
+      this.#bus.clear();
+      this.#logger.info("Stopped");
+    }
+    #monitorAccount() {
+      const memberNumber = authenticatedMemberNumber();
+      if (memberNumber === this.#desiredMemberNumber && memberNumber === this.#activeMemberNumber) {
+        const host = document.querySelector("#kikilink-root");
+        if (host) host.hidden = false;
+        return;
+      }
+      const oldHost = document.querySelector("#kikilink-root");
+      if (oldHost) oldHost.hidden = true;
+      this.#desiredMemberNumber = memberNumber;
+      void this.#runAccountTransitions();
+    }
+    #runAccountTransitions() {
+      if (this.#transitionPromise) return this.#transitionPromise;
+      const transition = (async () => {
+        while (this.#started && this.#desiredMemberNumber !== this.#activeMemberNumber) {
+          const target = this.#desiredMemberNumber;
+          await this.#deactivateAccount();
+          if (!this.#started || target === void 0) continue;
+          if (authenticatedMemberNumber() !== target) continue;
+          await this.#activateAccount(target);
+        }
+      })();
+      this.#transitionPromise = transition.finally(() => {
+        this.#transitionPromise = void 0;
+        if (this.#started && this.#desiredMemberNumber !== this.#activeMemberNumber) {
+          void this.#runAccountTransitions();
+        }
+      });
+      return this.#transitionPromise;
+    }
+    async #activateAccount(memberNumber) {
+      const accountStorage = new AccountDataStorage(memberNumber);
+      const settings = new SettingsStore(accountStorage);
+      const localRepository = typeof indexedDB === "undefined" ? new MemoryChatRepository() : new ResilientChatRepository(
+        new IndexedDbChatRepository(accountChatDatabaseName(memberNumber)),
+        new MemoryChatRepository()
+      );
+      await accountStorage.attachChatRepository(localRepository);
+      if (!this.#started || this.#desiredMemberNumber !== memberNumber || authenticatedMemberNumber() !== memberNumber) {
+        localRepository.close();
+        await accountStorage.destroy();
+        return;
+      }
+      const repository = new AccountSyncedChatRepository(localRepository, accountStorage);
+      this.#settings = settings;
+      this.#repository = repository;
+      this.#accountStorage = accountStorage;
+      await this.#modules.startAll({
+        adapter: this.#adapter,
+        bus: this.#bus,
+        repository,
+        settings,
+        accountStorage,
+        memberNumber,
+        version: this.version
+      });
+      this.#activeMemberNumber = memberNumber;
+      this.#adapterStart = this.#adapter.start().catch((error) => {
+        this.#logger.error("Bondage Club connection failed", error);
+      });
+      const host = document.querySelector("#kikilink-root");
+      if (host) host.hidden = false;
+      this.#logger.info(`KikiLink ${this.version} ready for account ${memberNumber}`);
+    }
+    async #deactivateAccount() {
+      if (this.#activeMemberNumber === void 0 && !this.#settings && !this.#repository && !this.#accountStorage) {
+        return;
+      }
       this.#adapter.stop();
       await this.#adapterStart;
       this.#adapterStart = void 0;
       await this.#modules.stopAll();
-      this.#repository.close();
-      this.#bus.clear();
-      this.#logger.info("Stopped");
-    }
-    #syncAuthenticatedVisibility() {
-      if (typeof document === "undefined") return;
-      const host = document.querySelector("#kikilink-root");
-      if (!host) return;
-      host.hidden = !hasAuthenticatedPlayer();
+      await this.#accountStorage?.destroy();
+      this.#repository?.close();
+      this.#repository = void 0;
+      this.#settings = void 0;
+      this.#accountStorage = void 0;
+      this.#activeMemberNumber = void 0;
     }
   };
   async function waitForAuthenticatedPlayer(keepWaiting) {
-    while (keepWaiting() && !hasAuthenticatedPlayer()) {
+    while (keepWaiting() && authenticatedMemberNumber() === void 0) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
-  function hasAuthenticatedPlayer() {
+  function authenticatedMemberNumber() {
     if (typeof document === "undefined" || document.body === null || typeof Player !== "object" || Player === null || !Number.isSafeInteger(Player.MemberNumber) || Player.MemberNumber <= 0) {
-      return false;
+      return void 0;
     }
     try {
-      return typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn();
+      return typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn() ? Player.MemberNumber : void 0;
     } catch {
-      return false;
+      return void 0;
     }
   }
 
@@ -13604,7 +14216,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.1");
+    const app = new KikiLinkApp("0.20.2");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

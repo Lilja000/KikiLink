@@ -86,7 +86,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
   },
 };
 
-const SETTINGS_KEY = "kikilink:settings:v1";
+export const SETTINGS_KEY = "kikilink:settings:v1";
 
 export class SettingsStore {
   #settings: KikiLinkSettings;

@@ -38,20 +38,20 @@ afterEach(() => {
 
 describe("room Blossom viewport positioning", () => {
   it("resolves defaults, normalized positions, and viewport clamps", () => {
-    expect(resolveRoomBadgePosition(null, 500, 900)).toEqual({ left: 319, top: 47 });
+    expect(resolveRoomBadgePosition(null, 500, 900)).toEqual({ left: 283, top: 48 });
     expect(resolveRoomBadgePosition({ x: 0.25, y: 0.5 }, 500, 300)).toEqual({
-      left: 114,
-      top: 128,
+      left: 118,
+      top: 136,
     });
     expect(resolveRoomBadgePosition({ x: -4, y: 7 }, 100, 100)).toEqual({
       left: 0,
-      top: 56,
+      top: 72,
     });
     expect(resolveRoomBadgePosition({ x: 1, y: 1 }, 20, 20)).toEqual({ left: 0, top: 0 });
   });
 
   it("normalizes pixels into portable 0..1 settings", () => {
-    expect(normalizeRoomBadgePosition(228, 128, 500, 300)).toEqual({ x: 0.5, y: 0.5 });
+    expect(normalizeRoomBadgePosition(236, 136, 500, 300)).toEqual({ x: 0.5, y: 0.5 });
     expect(normalizeRoomBadgePosition(-100, 9_999, 500, 300)).toEqual({ x: 0, y: 1 });
     expect(normalizeRoomBadgePosition(0, 0, 20, 20)).toEqual({ x: 0.5, y: 0.5 });
   });
@@ -62,17 +62,27 @@ describe("room Blossom viewport positioning", () => {
     const image = element.querySelector("img");
 
     expect(element.style.position).toBe("fixed");
-    expect(element.style.opacity).toBe("0.82");
-    expect(element.style.width).toBe("44px");
-    expect(element.style.left).toBe("319px");
-    expect(element.style.top).toBe("47px");
+    expect(element.style.opacity).toBe("0.78");
+    expect(element.style.width).toBe("28px");
+    expect(element.style.pointerEvents).toBe("none");
+    expect(element.style.left).toBe("283px");
+    expect(element.style.top).toBe("48px");
     expect(element.getAttribute("role")).toBe("img");
     expect(image?.getAttribute("src")).toBe(BLOSSOM_ICON_DATA_URL);
     expect(image?.draggable).toBe(false);
 
     const before = settings.get().ui.roomBadge;
+    const beforeLeft = element.style.left;
     element.click();
+    element.dispatchEvent(
+      new PointerEvent("pointerdown", { pointerId: 1, button: 0, clientX: 10, clientY: 10 }),
+    );
+    element.dispatchEvent(
+      new PointerEvent("pointermove", { pointerId: 1, clientX: 120, clientY: 120 }),
+    );
+    element.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1 }));
     expect(settings.get().ui.roomBadge).toEqual(before);
+    expect(element.style.left).toBe(beforeLeft);
     expect(root.querySelectorAll(".kl-room-blossom")).toHaveLength(1);
     badge.mount(root);
     expect(root.querySelectorAll(".kl-room-blossom")).toHaveLength(1);
@@ -111,6 +121,8 @@ describe("room Blossom dragging", () => {
     });
     const initialLeft = element.style.left;
     const initialTop = element.style.top;
+    expect(badge.beginPlacement()).toBe(true);
+    expect(element.style.pointerEvents).toBe("auto");
 
     element.dispatchEvent(
       new PointerEvent("pointerdown", { bubbles: true, pointerId: 7, button: 0, clientX: 10, clientY: 10 }),
@@ -125,8 +137,8 @@ describe("room Blossom dragging", () => {
     element.dispatchEvent(
       new PointerEvent("pointermove", { bubbles: true, pointerId: 7, clientX: 900, clientY: 900 }),
     );
-    expect(element.style.left).toBe("256px");
-    expect(element.style.top).toBe("156px");
+    expect(element.style.left).toBe("272px");
+    expect(element.style.top).toBe("172px");
     expect(element.dataset.dragging).toBe("true");
     element.dispatchEvent(
       new PointerEvent("pointerup", { bubbles: true, pointerId: 7, clientX: 900, clientY: 900 }),
@@ -136,6 +148,8 @@ describe("room Blossom dragging", () => {
     expect(release).toHaveBeenCalledWith(7);
     expect(settings.get().ui.roomBadge.position).toEqual({ x: 1, y: 1 });
     expect(element.dataset.dragging).toBe("false");
+    expect(element.dataset.placement).toBe("false");
+    expect(element.style.pointerEvents).toBe("none");
     badge.destroy();
   });
 
@@ -148,6 +162,7 @@ describe("room Blossom dragging", () => {
     const { badge, element } = mountedBadge(settings);
     const left = element.style.left;
     const top = element.style.top;
+    badge.beginPlacement();
 
     element.dispatchEvent(
       new PointerEvent("pointerdown", { bubbles: true, pointerId: 2, button: 0, clientX: 20, clientY: 20 }),
@@ -170,22 +185,22 @@ describe("room Blossom dragging", () => {
       draft.ui.roomBadge.position = { x: 0.5, y: 0.5 };
     });
     const { badge, element } = mountedBadge(settings);
-    expect(element.style.left).toBe("128px");
-    expect(element.style.top).toBe("78px");
+    expect(element.style.left).toBe("136px");
+    expect(element.style.top).toBe("86px");
 
     vi.spyOn(window, "innerWidth", "get").mockReturnValue(500);
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(300);
     window.dispatchEvent(new Event("resize"));
-    expect(element.style.left).toBe("228px");
-    expect(element.style.top).toBe("128px");
+    expect(element.style.left).toBe("236px");
+    expect(element.style.top).toBe("136px");
 
     badge.resetPosition();
     expect(settings.get().ui.roomBadge.position).toBeNull();
     expect(element.style.left).toBe(
-      `${Math.round(DEFAULT_ROOM_BADGE_POSITION.x * (500 - 44))}px`,
+      `${Math.round(DEFAULT_ROOM_BADGE_POSITION.x * (500 - 28))}px`,
     );
     expect(element.style.top).toBe(
-      `${Math.round(DEFAULT_ROOM_BADGE_POSITION.y * (300 - 44))}px`,
+      `${Math.round(DEFAULT_ROOM_BADGE_POSITION.y * (300 - 28))}px`,
     );
     badge.destroy();
   });

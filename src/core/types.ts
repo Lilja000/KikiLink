@@ -2,6 +2,7 @@ import type { BCAdapter } from "../bc/adapter";
 import type { ChatRepository } from "../storage/chat-repository";
 import type { EventBus } from "./event-bus";
 import type { SettingsStore } from "./settings";
+import type { KeyValueStorage } from "./settings";
 
 export type MessageDirection = "incoming" | "outgoing";
 export type ThemePreference = "dark" | "light" | "system";
@@ -265,6 +266,8 @@ export interface KikiLinkContext {
   bus: EventBus<KikiLinkEvents>;
   repository: ChatRepository;
   settings: SettingsStore;
+  accountStorage?: KeyValueStorage;
+  memberNumber?: number;
   version: string;
 }
 

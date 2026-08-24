@@ -2,10 +2,10 @@ import type { SettingsStore } from "../../core/settings";
 import type { KikiLinkSettings } from "../../core/types";
 import BLOSSOM_ICON_DATA_URL from "../../../design/branding/kikilink-blossom.svg";
 
-const BADGE_HIT_SIZE = 44;
-const BADGE_VISUAL_SIZE = 32;
+const BADGE_HIT_SIZE = 28;
+const BADGE_VISUAL_SIZE = 20;
 const BADGE_DRAG_THRESHOLD = 6;
-const BADGE_OPACITY = 0.82;
+const BADGE_OPACITY = 0.78;
 
 export interface NormalizedRoomBadgePosition {
   x: number;
@@ -35,7 +35,7 @@ type RoomBadgeConfig = KikiLinkSettings["ui"]["roomBadge"];
  * viewport position rather than a character/canvas coordinate.
  */
 export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
-  x: 0.7,
+  x: 0.6,
   y: 0.055,
 });
 
@@ -72,8 +72,8 @@ export function normalizeRoomBadgePosition(
 }
 
 /**
- * A small screen-space Blossom that can be dragged beside other addon icons.
- * It has no click action: pointer input is used only to reposition it.
+ * A small screen-space Blossom beside other addon icons. It ignores pointer input during normal
+ * play and becomes draggable only after the explicit settings action arms placement mode.
  */
 export class RoomBlossomBadge {
   readonly #element = document.createElement("span");
@@ -82,11 +82,19 @@ export class RoomBlossomBadge {
   #config: RoomBadgeConfig;
   #drag: RoomBadgeDrag | undefined;
   #settingsUnsubscribe: (() => void) | undefined;
+  #placementActive = false;
   #mounted = false;
   #destroyed = false;
 
   readonly #handlePointerDown = (event: PointerEvent): void => {
-    if (event.button !== 0 || this.#drag || !this.#config.enabled) return;
+    if (
+      event.button !== 0 ||
+      this.#drag ||
+      !this.#config.enabled ||
+      !this.#placementActive
+    ) {
+      return;
+    }
     const rect = this.#element.getBoundingClientRect();
     const styleLeft = parsePixel(this.#element.style.left);
     const styleTop = parsePixel(this.#element.style.top);
@@ -138,7 +146,7 @@ export class RoomBlossomBadge {
     if (!drag || drag.pointerId !== event.pointerId) return;
     this.#drag = undefined;
     this.#element.dataset.dragging = "false";
-    this.#element.style.cursor = "grab";
+    this.#element.style.cursor = this.#placementActive ? "grab" : "default";
     this.#releasePointer(event.pointerId);
     if (!drag.moved) {
       this.#positionFromConfig();
@@ -156,6 +164,7 @@ export class RoomBlossomBadge {
     });
     this.#config = next.ui.roomBadge;
     this.#positionFromConfig();
+    this.#setPlacement(false);
   };
 
   readonly #handlePointerCancel = (event: PointerEvent): void => {
@@ -175,6 +184,14 @@ export class RoomBlossomBadge {
     this.#positionFromConfig();
   };
 
+  readonly #handleKeyDown = (event: KeyboardEvent): void => {
+    if (!this.#placementActive || event.key !== "Escape") return;
+    event.preventDefault();
+    this.#cancelDrag(true);
+    this.#positionFromConfig();
+    this.#setPlacement(false);
+  };
+
   constructor(settings: SettingsStore) {
     this.#settings = settings;
     this.#config = settings.get().ui.roomBadge;
@@ -188,6 +205,7 @@ export class RoomBlossomBadge {
       this.#config = config;
       if (!changed) return;
       this.#cancelDrag(true);
+      if (!config.enabled) this.#setPlacement(false);
       this.#sync();
     });
   }
@@ -198,9 +216,24 @@ export class RoomBlossomBadge {
     if (!this.#mounted) {
       this.#mounted = true;
       window.addEventListener("resize", this.#handleViewportResize);
+      window.addEventListener("keydown", this.#handleKeyDown);
     }
     if (this.#element.parentNode !== root) root.append(this.#element);
     this.#sync();
+  }
+
+  /** Arms one deliberate drag from the settings screen. */
+  beginPlacement(): boolean {
+    if (this.#destroyed || !this.#mounted || !this.#config.enabled) return false;
+    this.#cancelDrag(true);
+    this.#setPlacement(true);
+    return true;
+  }
+
+  cancelPlacement(): void {
+    this.#cancelDrag(true);
+    this.#positionFromConfig();
+    this.#setPlacement(false);
   }
 
   /** Restores the documented default without disabling the badge. */
@@ -211,6 +244,7 @@ export class RoomBlossomBadge {
     });
     this.#config = next.ui.roomBadge;
     this.#cancelDrag(true);
+    this.#setPlacement(false);
     this.#sync();
   }
 
@@ -218,7 +252,10 @@ export class RoomBlossomBadge {
     if (this.#destroyed) return;
     this.#destroyed = true;
     this.#cancelDrag(true);
-    if (this.#mounted) window.removeEventListener("resize", this.#handleViewportResize);
+    if (this.#mounted) {
+      window.removeEventListener("resize", this.#handleViewportResize);
+      window.removeEventListener("keydown", this.#handleKeyDown);
+    }
     this.#mounted = false;
     this.#settingsUnsubscribe?.();
     this.#settingsUnsubscribe = undefined;
@@ -234,8 +271,8 @@ export class RoomBlossomBadge {
     this.#element.className = "kl-room-blossom";
     this.#element.dataset.dragging = "false";
     this.#element.setAttribute("role", "img");
-    this.#element.setAttribute("aria-label", "KikiLink Blossom; drag to reposition");
-    this.#element.title = "KikiLink Blossom · drag to move";
+    this.#element.setAttribute("aria-label", "KikiLink Blossom");
+    this.#element.title = "KikiLink Blossom";
     Object.assign(this.#element.style, {
       position: "fixed",
       width: `${BADGE_HIT_SIZE}px`,
@@ -245,7 +282,8 @@ export class RoomBlossomBadge {
       border: "0",
       background: "transparent",
       opacity: String(BADGE_OPACITY),
-      cursor: "grab",
+      cursor: "default",
+      pointerEvents: "none",
       touchAction: "none",
       userSelect: "none",
       webkitUserSelect: "none",
@@ -269,6 +307,7 @@ export class RoomBlossomBadge {
       pointerEvents: "none",
     });
     this.#element.append(this.#image);
+    this.#setPlacement(false);
     this.#element.addEventListener("pointerdown", this.#handlePointerDown);
     this.#element.addEventListener("pointermove", this.#handlePointerMove);
     this.#element.addEventListener("pointerup", this.#handlePointerUp);
@@ -280,6 +319,25 @@ export class RoomBlossomBadge {
     this.#element.hidden = !this.#config.enabled;
     this.#element.style.display = this.#config.enabled ? "block" : "none";
     if (this.#config.enabled) this.#positionFromConfig();
+  }
+
+  #setPlacement(active: boolean): void {
+    this.#placementActive = active && this.#config.enabled;
+    this.#element.dataset.placement = String(this.#placementActive);
+    this.#element.style.pointerEvents = this.#placementActive ? "auto" : "none";
+    this.#element.style.cursor = this.#placementActive ? "grab" : "default";
+    this.#element.style.outline = this.#placementActive
+      ? "2px solid rgba(255, 122, 143, 0.78)"
+      : "none";
+    this.#element.style.outlineOffset = this.#placementActive ? "2px" : "0";
+    this.#element.title = this.#placementActive
+      ? "Drag Blossom to its new position · Esc to cancel"
+      : "KikiLink Blossom";
+    this.#element.setAttribute(
+      "aria-label",
+      this.#placementActive ? "Move KikiLink Blossom" : "KikiLink Blossom",
+    );
+    this.#element.tabIndex = this.#placementActive ? 0 : -1;
   }
 
   #positionFromConfig(): void {
@@ -304,7 +362,7 @@ export class RoomBlossomBadge {
     const pointerId = this.#drag?.pointerId;
     this.#drag = undefined;
     this.#element.dataset.dragging = "false";
-    this.#element.style.cursor = "grab";
+    this.#element.style.cursor = this.#placementActive ? "grab" : "default";
     if (releasePointer && pointerId !== undefined) this.#releasePointer(pointerId);
   }
 

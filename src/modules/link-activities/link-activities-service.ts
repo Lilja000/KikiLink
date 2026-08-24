@@ -172,6 +172,38 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     return this.#runtimeActivities.has(activityName);
   }
 
+  /**
+   * Extends the exact list consumed by BC's native DialogActivity grid. The registry injection is
+   * still kept for native lookups, while this path makes late-loaded userscripts reliable even if
+   * BC or another addon rebuilt/cached the activity list before KikiLink started.
+   */
+  extendAllowedActivities(
+    character: BCCharacter,
+    groupName: string,
+    activities: BCItemActivity[],
+  ): BCItemActivity[] {
+    if (!Array.isArray(activities) || activities.length === 0 || typeof groupName !== "string") {
+      return activities;
+    }
+    const result = [...activities];
+    const existing = new Set(result.map((item) => item?.Activity?.Name));
+    const selfTarget = character?.MemberNumber === this.adapter.getOwnMemberNumber();
+
+    for (const [runtimeName, definition] of this.#runtimeActivities) {
+      if (definition.targetGroup !== groupName || existing.has(runtimeName)) continue;
+      if (selfTarget && definition.targetMode === "other") continue;
+      if (!selfTarget && definition.targetMode === "self") continue;
+      result.push({
+        Activity:
+          this.#injectedActivities.get(runtimeName) ??
+          createNativeActivity(runtimeName, definition),
+        Group: groupName,
+      });
+      existing.add(runtimeName);
+    }
+    return result;
+  }
+
   getTargets(): RoomCharacter[] {
     return this.adapter.getRoomCharacters();
   }

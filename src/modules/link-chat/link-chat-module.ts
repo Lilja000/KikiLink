@@ -32,7 +32,7 @@ export class LinkChatModule implements KikiLinkModule {
     this.#activities.start();
     this.#roster = new LinkRosterService(
       context.adapter,
-      new PeopleRepository(),
+      new PeopleRepository(context.accountStorage),
       context.settings,
     );
     this.#presence = new LinkPresenceService(

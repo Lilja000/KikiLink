@@ -241,6 +241,7 @@ describe("native Custom Activities", () => {
       canSendRoomEmote: () => true,
       getRoomCharacters: () => [],
       getOwnName: () => "Kiki",
+      getOwnMemberNumber: () => 999,
       sendRoomEmote: vi.fn(),
     } as unknown as BCAdapter;
     const service = new LinkActivitiesService(adapter, settings);
@@ -277,6 +278,57 @@ describe("native Custom Activities", () => {
     service.stop();
     expect(globalThis.ActivityFemale3DCG.map((activity) => activity.Name)).toEqual(["Caress"]);
     expect(globalThis.ActivityFemale3DCGOrdering).toEqual(["Caress"]);
+  });
+
+  it("extends the exact native dialog list and never duplicates its registered activity", () => {
+    globalThis.ActivityFemale3DCG = [
+      { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
+    ];
+    globalThis.ActivityFemale3DCGOrdering = ["Caress"];
+    const service = new LinkActivitiesService(
+      {
+        registerCustomActivityIntegration: () => () => undefined,
+        getOwnMemberNumber: () => 999,
+      } as unknown as BCAdapter,
+      settingsWithElbowTouch(),
+    );
+    service.start();
+    const vanilla: BCItemActivity = {
+      Activity: globalThis.ActivityFemale3DCG[0]!,
+      Group: "ItemArms",
+    };
+
+    const first = service.extendAllowedActivities(
+      { MemberNumber: 123, Name: "Reina" },
+      "ItemArms",
+      [vanilla],
+    );
+    expect(first.map((item) => item.Activity.Name)).toEqual([
+      "Caress",
+      expect.stringMatching(/^KikiLinkCustom_/),
+    ]);
+    expect(
+      service.extendAllowedActivities(
+        { MemberNumber: 123, Name: "Reina" },
+        "ItemArms",
+        first,
+      ),
+    ).toHaveLength(2);
+    expect(
+      service.extendAllowedActivities(
+        { MemberNumber: 123, Name: "Reina" },
+        "ItemLegs",
+        [vanilla],
+      ),
+    ).toEqual([vanilla]);
+    expect(
+      service.extendAllowedActivities(
+        { MemberNumber: 123, Name: "Reina" },
+        "ItemArms",
+        [],
+      ),
+    ).toEqual([]);
+    service.stop();
   });
 
   it("publishes only the finished sentence while carrying validated arousal metadata", () => {

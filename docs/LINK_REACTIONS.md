@@ -55,5 +55,5 @@ Public room emotes use Bondage Club's native emote function, retain its 1,000-ch
 and share a global 10-second guard even when several rules have shorter cooldowns. If the user
 is not in a room or the native emote function is unavailable, no public reaction is sent.
 
-Rule configuration remains in the current browser profile. Cooldown timers reset when the addon
-session ends.
+Rule configuration belongs to the current BC MemberNumber and follows the normal bounded KikiLink
+account snapshot. Cooldown timers are session-only and reset when the addon session ends.

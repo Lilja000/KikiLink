@@ -20,6 +20,7 @@ afterEach(() => {
     "ChatRoomSendEmote",
     "ChatRoomMessage",
     "ActivityDictionaryText",
+    "ActivityAllowedForGroup",
     "ActivityRun",
     "PreferenceGetActivityFactor",
     "ElementButton",
@@ -452,6 +453,12 @@ describe("BCAdapter", () => {
     const nativeMessage = vi.fn();
     const nativeDictionary = vi.fn((keyword: string) => `native:${keyword}`);
     const nativeRun = vi.fn();
+    const nativeAllowed = vi.fn((_character: BCCharacter, groupName: string) => [
+      {
+        Activity: { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: [groupName] },
+        Group: groupName,
+      },
+    ]);
     const nativePreference = vi.fn(() => 0);
     const nativeCreateButton = vi.fn(
       (
@@ -475,6 +482,7 @@ describe("BCAdapter", () => {
     globalThis.ChatRoomMessage = nativeMessage;
     globalThis.ActivityDictionaryText = nativeDictionary;
     globalThis.ActivityRun = nativeRun;
+    globalThis.ActivityAllowedForGroup = nativeAllowed;
     Object.assign(globalThis, {
       ElementButton: { CreateForActivity: nativeCreateButton },
     });
@@ -482,6 +490,18 @@ describe("BCAdapter", () => {
     const customName = "KikiLinkCustom_test";
     const integration: BCCustomActivityIntegration = {
       isCustomActivity: vi.fn((activityName) => activityName === customName),
+      extendAllowedActivities: vi.fn((_character, groupName, activities) => [
+        ...activities,
+        {
+          Activity: {
+            Name: customName,
+            MaxProgress: 0,
+            Prerequisite: [],
+            Target: [groupName],
+          },
+          Group: groupName,
+        },
+      ]),
       resolveText: vi.fn((keyword) =>
         keyword === `Activity${customName}` ? "Elbow touch" : undefined,
       ),
@@ -519,6 +539,11 @@ describe("BCAdapter", () => {
       Activity: { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
       Group: "ItemArms",
     };
+    expect(globalThis.ActivityAllowedForGroup(acted, "ItemArms").map((item) => item.Activity.Name)).toEqual([
+      "Caress",
+      customName,
+    ]);
+    expect(integration.extendAllowedActivities).toHaveBeenCalledOnce();
     globalThis.ActivityRun(actor, acted, group, custom);
     globalThis.ActivityRun(actor, acted, group, vanilla);
     expect(integration.run).toHaveBeenCalledTimes(2);

@@ -1,7 +1,8 @@
 # Player notebook data
 
-KikiLink 0.10.0 makes the local Player notebook portable without adding an account,
-cloud service, or remote index.
+KikiLink keeps the Player notebook private to the authenticated BC MemberNumber. Manual JSON
+backup remains available, while 0.20.2 also includes the notebook in KikiLink's bounded private BC
+account snapshot for same-account device transfer. There is no public notebook or search index.
 
 ## Backup format
 
@@ -26,5 +27,6 @@ The user may keep encounter-only records forever or automatically forget them af
 30, 90, 180, 365, or 730 days. A favorite or any record with a note or tag is protected
 from automatic retention cleanup regardless of age.
 
-All processing happens in the browser. Export writes only to the file the user chooses;
-KikiLink does not upload the backup or notebook contents.
+All processing happens in the browser. Export writes only to the file the user chooses. Normal
+account sync stores a bounded copy under that player's Bondage Club `ExtensionSettings.KikiLink`;
+it is never assigned to another MemberNumber or sent to a KikiLink-owned server.

@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 describe("LinkChatView", () => {
-  it("mounts the draggable screen Blossom without legacy WCE or BCX placement controls", () => {
+  it("mounts a small passive Blossom with settings-only placement", () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
@@ -49,10 +49,21 @@ describe("LinkChatView", () => {
     expect(blossom).not.toBeNull();
     expect(blossom?.style.position).toBe("fixed");
     expect(blossom?.querySelector(".kl-room-blossom-image")).not.toBeNull();
-    expect(blossomSettings?.textContent).toContain("drag the flower anywhere");
+    expect(blossom?.style.width).toBe("28px");
+    expect(blossom?.style.pointerEvents).toBe("none");
+    expect(blossomSettings?.textContent).toContain("Move flower");
+    expect(blossomSettings?.textContent).toContain("Normal gameplay cannot move it");
     expect(shadow?.querySelector('select[aria-label="Room Blossom position"]')).toBeNull();
     expect(shadow?.querySelector(".kl-room-badge-advanced")).toBeNull();
     expect(blossomSettings?.textContent).not.toMatch(/WCE|BCX|Before addon|Between WCE/i);
+    const moveFlower = [...(blossomSettings?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .find((button) => button.textContent.includes("Move flower"));
+    moveFlower?.click();
+    expect(blossom?.dataset.placement).toBe("true");
+    expect(blossom?.style.pointerEvents).toBe("auto");
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(blossom?.dataset.placement).toBe("false");
+    expect(blossom?.style.pointerEvents).toBe("none");
     expect(
       shadow?.querySelector<HTMLTextAreaElement>(".kl-afk-reply-message")?.placeholder,
     ).toBe("Hi, I'm AFK. Message me later!");

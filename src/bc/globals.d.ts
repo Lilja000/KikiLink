@@ -5,6 +5,12 @@ declare global {
     Nickname?: string;
     FriendNames: Map<number, string>;
     FriendList?: number[];
+    ExtensionSettings?: Record<string, unknown>;
+  }
+
+  interface BCLZString {
+    compressToBase64(value: string): string;
+    decompressFromBase64(value: string): string | null;
   }
 
   interface BCServerSocket {
@@ -105,6 +111,7 @@ declare global {
   }
 
   var Player: BCPlayer;
+  var LZString: BCLZString;
   var CurrentScreen: string;
   var ChatRoomData: BCChatRoomData | null;
   var ChatRoomCharacter: BCCharacter[];
@@ -133,6 +140,7 @@ declare global {
     dictionary: unknown[],
   ): void;
   function ActivityDictionaryText(keyword: string): string;
+  function ActivityAllowedForGroup(character: BCCharacter, groupName: string): BCItemActivity[];
   function ActivityRun(
     actor: BCCharacter,
     acted: BCCharacter,
@@ -163,6 +171,7 @@ declare global {
   function ChatRoomSetTarget(memberNumber: number): void;
   function InformationSheetLoadCharacter(character: BCCharacter): void;
   function ServerIsLoggedIn(): boolean;
+  function ServerPlayerExtensionSettingsSync(dataKeyName: string, force?: boolean): void;
   function ServerPlayerIsInChatRoom(): boolean;
   function CharacterNickname(character: BCCharacter): string;
   function ChatRoomDrawCharacterStatusIcons(

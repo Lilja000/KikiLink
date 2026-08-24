@@ -2,7 +2,7 @@ import type { KeyValueStorage } from "../core/settings";
 import { MemoryKeyValueStorage } from "../core/settings";
 import type { PersonRecord } from "../core/types";
 
-const PEOPLE_KEY = "kikilink:people:v1";
+export const PEOPLE_KEY = "kikilink:people:v1";
 const MAX_PEOPLE = 2000;
 const NOTEBOOK_FORMAT = "kikilink-player-notebook";
 const NOTEBOOK_VERSION = 1;

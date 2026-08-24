@@ -626,6 +626,7 @@ button { color: inherit; }
   justify-content: space-between;
   gap: 20px;
 }
+.kl-inline-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
 .kl-data-tools {
   position: relative;
   min-width: 0;
@@ -2463,7 +2464,8 @@ select:focus-visible {
   .kl-color-control { align-items: flex-end; flex-direction: column; }
   .kl-conversation-side { max-width: 44px; }
   .kl-setting-row { align-items: flex-start; }
-  .kl-setting-action-row { align-items: flex-start; }
+  .kl-setting-action-row { align-items: flex-start; flex-direction: column; }
+  .kl-inline-actions { width: 100%; justify-content: flex-start; }
   .kl-select { width: 136px; }
   .kl-action-editor-row { grid-template-columns: 72px minmax(0, 1fr) 40px; }
   .kl-reaction-rule-header { grid-template-columns: auto minmax(0, 1fr); }

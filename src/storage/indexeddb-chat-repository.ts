@@ -12,6 +12,8 @@ const TIME_INDEX = "time";
 export class IndexedDbChatRepository implements ChatRepository {
   #databasePromise: Promise<IDBDatabase> | undefined;
 
+  constructor(private readonly databaseName = DATABASE_NAME) {}
+
   async addMessage(message: LinkMessage): Promise<void> {
     const database = await this.#database();
     const transaction = database.transaction(MESSAGE_STORE, "readwrite");
@@ -134,14 +136,14 @@ export class IndexedDbChatRepository implements ChatRepository {
   }
 
   #database(): Promise<IDBDatabase> {
-    this.#databasePromise ??= openDatabase();
+    this.#databasePromise ??= openDatabase(this.databaseName);
     return this.#databasePromise;
   }
 }
 
-function openDatabase(): Promise<IDBDatabase> {
+function openDatabase(databaseName: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+    const request = indexedDB.open(databaseName, DATABASE_VERSION);
     request.onerror = () => reject(request.error ?? new Error("Unable to open KikiLink storage"));
     request.onblocked = () => reject(new Error("KikiLink storage upgrade is blocked"));
     request.onupgradeneeded = () => {

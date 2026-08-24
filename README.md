@@ -11,8 +11,9 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.20.1` makes the Blossom freely draggable, guarantees that saved Custom Activities join
-Bondage Club's live native menu, and changes the untouched AFK reply default to English.
+Version `0.20.2` isolates every KikiLink by Bondage Club account, mirrors portable account data to
+other devices, puts saved Custom Activities into the actual native dialog list, and makes the small
+top Blossom movable only through its Appearance setting.
 
 ## Link Deck
 
@@ -46,7 +47,7 @@ Bondage Club's live native menu, and changes the untouched AFK reply default to 
 - Results show their category and destination instead of presenting one ambiguous flat list
 - Mouse, touch, `Arrow Up`/`Arrow Down`, `Enter`, and `Escape` support with combobox semantics
 - Optional `Ctrl+K` / `Cmd+K` shortcut when focus is not inside an editor
-- No server index: chat previews, notes, contacts, and preferences never leave this browser
+- No search server: the Finder index is rebuilt in memory from the active account's KikiLink data
 
 ## LinkRoster
 
@@ -55,21 +56,23 @@ Bondage Club's live native menu, and changes the untouched AFK reply default to 
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - Private notes and searchable tags for individual players
 - Favorites that remain easy to find after leaving the room
-- Local last-seen time, last room, and encounter count
+- Per-account last-seen time, last room, and encounter count
 - `In room`, `Known`, and `Favorites` views with name, number, tag, and note search
 - Optional encounter tracking and a one-click local-data clear action
 - Versioned local JSON export and merge-safe import for moving the notebook between browsers
 - Configurable cleanup of old encounter-only records while notes, tags, and favorites stay protected
 - Responsive two-pane desktop view and compact phone layout inside the main Link Deck
 
-LinkRoster notes, tags, favorites, and encounter history stay in the current
-browser profile. KikiLink does not upload them to a server.
+LinkRoster notes, tags, favorites, and encounter history belong only to the current BC MemberNumber.
+They are kept in an account-scoped browser copy and included in KikiLink's bounded BC account mirror
+so they can follow that same account to another device.
 
 ## LinkChat
 
 - Conversation list instead of one isolated Beep at a time
 - Native recent Beeps imported from the current game session without duplicates
-- Persistent local message history
+- Persistent message history in a separate local database for each BC account
+- A bounded mirror of up to 600 recent messages follows the same BC account to another device
 - Search by player name, member number, or message text
 - Unread counters and pinned conversations
 - Drafts saved per conversation
@@ -131,7 +134,7 @@ browser profile. KikiLink does not upload them to a server.
 - Other players receive one ordinary finished action sentence, including players without KikiLink
 - Compatible KikiLink recipients validate sender, target, body group, amount, and nonce before handing
   optional arousal to Bondage Club's own preference-aware activity system
-- Up to 100 local actions; invalid names, paths, amounts, duplicate IDs, and oversized fields are sanitized
+- Up to 100 account-owned actions; invalid names, paths, amounts, duplicate IDs, and oversized fields are sanitized
 - Schema-13 migration preserves user-written legacy actions while removing the old bundled starter pack
 
 Custom Activities never change items, poses, or permissions. Optional arousal is the only gameplay
@@ -153,15 +156,15 @@ does not process the KikiLink arousal metadata.
 - Advanced alert rules never send automatic Beep replies and use no remote rules service or
   background network polling; the separate AFK profile option is the only guarded auto-reply path
 
-Alert choices and rules stay in the current browser profile. Sounds are synthesized locally with
-the browser audio API, so KikiLink downloads no audio files. Advanced room-emote rules use the
+Alert choices and rules belong to the current BC account and use the same bounded account mirror.
+Sounds are synthesized locally with the browser audio API, so KikiLink downloads no audio files. Advanced room-emote rules use the
 same native Bondage Club emote path and are visible to everyone in the room.
 
 ## Interface
 
 - The original wolf-and-red-moon KikiLink emblem is restored in the launcher and workspace
-- A separate quiet translucent Blossom starts near the top addon-icon area and can be dragged freely
-  anywhere over the game; its responsive position saves automatically and can be reset in Appearance
+- A separate 20 px translucent Blossom starts near the top addon-icon area, ignores ordinary
+  gameplay input, and can be moved once only after choosing `Move flower` in Appearance
 - Original dependency-free SVG icons with one consistent rounded line style across navigation,
   chat controls, favorites, pins, images, dialogs, and player actions
 - Dark lacquer, light paper, and follow-system appearance modes
@@ -187,11 +190,23 @@ uses the game's native Whisper and profile controls, and Custom Activities exten
 the game's native activity registry and action path. Image messages are ordinary HTTPS links, so other players
 do not need KikiLink to open them. Optional local-file upload sends a privacy-prepared WebP
 directly to Catbox's temporary Litterbox service only after `Upload & send`; it never passes through
-a KikiLink server. Profile avatars are user-supplied direct HTTPS links. Otherwise no remote KikiLink server is used; message
-history, player notes, settings, and custom templates remain in the current browser
-profile. Presence uses small validated compatibility packets through Bondage Club:
+a KikiLink server. Profile avatars are user-supplied direct HTTPS links. No remote KikiLink server is
+used. Full data is stored locally under the authenticated MemberNumber; a bounded portable snapshot
+is stored in that same player's Bondage Club `ExtensionSettings` so settings, activities, profile
+preferences, notebook data, and recent chats can follow the account to another device. Presence uses
+small validated compatibility packets through Bondage Club:
 one hidden room handshake when needed and a point-to-point request for an opened chat,
 never a background Beep broadcast to every friend.
+
+## Account data and switching
+
+- Every localStorage key and IndexedDB database is derived from the authenticated BC MemberNumber.
+- Logout removes the entire KikiLink interface and stops its timers, hooks, and repositories.
+- Switching accounts without reloading tears down the old instance before creating the new one.
+- Legacy unscoped KikiLink data is quarantined, not silently assigned to whichever account logs in first.
+- The portable snapshot is bounded to 120,000 encoded characters. Settings are retained first;
+  recent chats are trimmed before notebook data if the account approaches that safety bound.
+- The complete local account copy remains available even when BC account sync is temporarily unavailable.
 
 ## Architecture
 

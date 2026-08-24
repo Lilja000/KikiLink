@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.20.2 - 2026-08-24
+
+- Scoped settings, player records, drafts, conversations, and IndexedDB message history to the
+  authenticated Bondage Club MemberNumber. Logging out now fully tears KikiLink down, and an
+  in-page account switch rebuilds it with the new account instead of exposing the previous one.
+- Deliberately quarantined the old unscoped browser keys instead of guessing which account owned
+  them. Every new account starts with its own defaults unless it already has account-linked data.
+- Added a bounded account mirror through Bondage Club `ExtensionSettings`: settings, Custom
+  Activities, presence/profile preferences, player notebook data, and up to 600 recent messages
+  can follow the same account to another browser while the full per-account local copy remains.
+- Reduced the top Blossom from a 44 px hit area / 32 px graphic to a quiet 28 px / 20 px mark near
+  the addon-icon row. It ignores input during play and permits exactly one drag only after choosing
+  `Move flower` in Appearance; Escape cancels placement and reset remains separate.
+- Hooked the real `ActivityAllowedForGroup` result consumed by Bondage Club's native dialog grid,
+  while retaining registry registration for native lookups. This removes the remaining late-load
+  path where a saved activity existed internally but never reached `DialogActivity`.
+- Added account-switch, cloud-mirror, legacy-quarantine, native-dialog, and settings-only Blossom
+  coverage.
+
 ## 0.20.1 - 2026-08-24
 
 - Replaced the WCE/BCX preset selector and character-relative Blossom drawing with one visible,
