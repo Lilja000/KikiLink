@@ -22,12 +22,20 @@ interface RecentIncoming {
   capturedAt: number;
 }
 
+export type BCCharacterOverlayRenderer = (
+  character: BCCharacter,
+  characterX: number,
+  characterY: number,
+  zoom: number,
+) => void;
+
 export class BCAdapter {
   readonly #logger = new Logger("bc");
   readonly #unhooks: Array<() => void> = [];
   readonly #nicknameCache = new Map<number, string>();
   readonly #onlineFriends = new Map<number, OnlineFriend>();
   readonly #recentIncoming: RecentIncoming[] = [];
+  readonly #characterOverlayRenderers = new Set<BCCharacterOverlayRenderer>();
   #modApi: ModSDKModAPI | undefined;
   #socket: BCServerSocket | undefined;
   #socketRebindTimer: ReturnType<typeof setInterval> | undefined;
@@ -102,6 +110,11 @@ export class BCAdapter {
 
   canUseKikiLinkProtocol(): boolean {
     return typeof ServerSend === "function";
+  }
+
+  registerCharacterOverlay(renderer: BCCharacterOverlayRenderer): () => void {
+    this.#characterOverlayRenderers.add(renderer);
+    return () => this.#characterOverlayRenderers.delete(renderer);
   }
 
   refreshOnlineFriends(): boolean {
@@ -419,6 +432,39 @@ export class BCAdapter {
         return result;
       }),
     );
+    if (typeof ChatRoomDrawCharacterStatusIcons === "function") {
+      this.#tryInstallHook("ChatRoomDrawCharacterStatusIcons", () =>
+        modApi.hookFunction("ChatRoomDrawCharacterStatusIcons", -10, (args, next) => {
+          const result = next(args);
+          this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
+          return result;
+        }),
+      );
+    } else if (typeof ChatRoomCharacterViewDrawOverlay === "function") {
+      this.#tryInstallHook("ChatRoomCharacterViewDrawOverlay", () =>
+        modApi.hookFunction("ChatRoomCharacterViewDrawOverlay", -10, (args, next) => {
+          const result = next(args);
+          this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
+          return result;
+        }),
+      );
+    }
+  }
+
+  #renderCharacterOverlays(
+    character: BCCharacter,
+    characterX: number,
+    characterY: number,
+    zoom: number,
+  ): void {
+    for (const renderer of [...this.#characterOverlayRenderers]) {
+      try {
+        renderer(character, characterX, characterY, zoom);
+      } catch (error) {
+        this.#characterOverlayRenderers.delete(renderer);
+        this.#logger.warn("Disabled a failing character overlay renderer", error);
+      }
+    }
   }
 
   #tryInstallHook(name: string, install: () => () => void): void {

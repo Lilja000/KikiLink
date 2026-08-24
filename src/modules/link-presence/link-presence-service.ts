@@ -267,6 +267,12 @@ export class LinkPresenceService {
     return (this.#remoteTypingUntil.get(memberNumber) ?? 0) > now;
   }
 
+  hasCompatiblePeer(memberNumber: number, now = Date.now()): boolean {
+    if (memberNumber === this.adapter.getOwnMemberNumber()) return true;
+    const remote = this.#remote.get(memberNumber);
+    return remote !== undefined && now - remote.receivedAt <= REMOTE_STATUS_TTL_MS;
+  }
+
   setTyping(memberNumber: number, active: boolean, force = false): boolean {
     if (
       !Number.isSafeInteger(memberNumber) ||

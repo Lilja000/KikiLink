@@ -49,6 +49,7 @@ describe("LinkChatView", () => {
     const shadow = host?.shadowRoot;
     expect((host as HTMLElement | null)?.dataset.theme).toBe("dark");
     expect(shadow?.querySelector(".kl-brand-emblem .kl-emblem-image")).not.toBeNull();
+    expect(shadow?.querySelector(".kl-launcher-emblem .kl-emblem-image")).not.toBeNull();
     expect(shadow?.querySelector(".kl-panel")?.hasAttribute("hidden")).toBe(false);
     expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Reina");
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.mobileView).toBe(
@@ -1327,7 +1328,8 @@ describe("LinkChatView", () => {
     const initialRows = shadow?.querySelectorAll<HTMLElement>(".kl-message-row") ?? [];
     expect(initialRows).toHaveLength(120);
     expect(shadow?.querySelector(".kl-load-older")?.textContent).toContain("Load earlier");
-    const preservedRow = initialRows[1];
+    const preservedRow = initialRows[2];
+    expect(shadow?.querySelector("style")?.textContent).not.toContain("content-visibility");
 
     const liveMessage = await service.capture(
       {
@@ -1347,6 +1349,31 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-message-row:last-child")?.textContent).toContain(
       "Live message 170",
     );
+
+    const nextLiveMessage = await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 123,
+        peerName: "Reina",
+        content: "Live message 171",
+        sentAt: 172,
+        includeRoom: false,
+      },
+      true,
+    );
+    await view.onMessage(123, true, nextLiveMessage);
+
+    const groupedTail = [...(shadow?.querySelectorAll<HTMLElement>(".kl-message-row") ?? [])].slice(-2);
+    expect(groupedTail.map((row) => row.dataset.group)).toEqual(["start", "end"]);
+    expect(shadow?.querySelectorAll(".kl-message-row")).toHaveLength(120);
+    expect(preservedRow?.isConnected).toBe(true);
+
+    shadow?.querySelector<HTMLButtonElement>(".kl-load-older button")?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelectorAll(".kl-message-row")).toHaveLength(172);
+    });
+    expect(preservedRow?.isConnected).toBe(true);
+    expect(shadow?.querySelector(".kl-load-older")).toBeNull();
     view.destroy();
   });
 });

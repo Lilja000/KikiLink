@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.18.0 - 2026-08-24
+
+- Added KikiLink's original translucent red five-petal blossom and applied it consistently to the
+  launcher, workspace brand, and Home artwork.
+- Added the blossom above the local room character and confirmed compatible KikiLink peers through
+  the shared ModSDK overlay chain. It uses the existing presence handshake, respects Bondage Club's
+  native icon-visibility state, and does not replace other addon drawing.
+- Removed viewport-lazy message painting that made bubbles visibly appear while scrolling. The
+  bounded chat feed is now fully painted and keeps ordinary instant scrolling.
+- Prepend older history in one fragment without recreating messages already on screen, preserve the
+  scroll anchor, and guard against overlapping history requests.
+- Redesigned incoming and outgoing messages with quiet depth, a slim incoming accent, grouped corner
+  shapes, improved text rhythm, and clearer metadata without adding more visible information.
+- Batch message and conversation DOM work, reuse one conversation read per full refresh, append live
+  messages before secondary UI updates, and avoid scanning every rendered row for each new Beep.
+- Replaced the 146 KB raster emblem embedded as base64 with the compact SVG, reducing the built
+  userscript from about 685 KB to about 501 KB, while expanding the suite to 94 tests.
+
 ## 0.17.0 - 2026-08-24
 
 - Removed the trailing private-use marker and exact `messageType`/`messageColor` compatibility

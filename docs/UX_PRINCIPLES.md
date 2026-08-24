@@ -105,6 +105,15 @@ References:
 - [WCAG dragging movements](https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html)
 - [WCAG status messages](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html)
 
+## 8. Motion and rendering should never compete with reading
+
+- Do not defer paint for a bounded chat feed when doing so makes content visibly appear during scroll.
+- Preserve the reader's anchor when older history is inserted and keep live appends separate from
+  history loading.
+- Use grouping, shape, and restrained surface contrast to distinguish message direction without
+  adding labels or metadata the reader did not ask for.
+- Reuse existing compatibility state for room badges instead of adding a second heartbeat or poll.
+
 ## Review checklist
 
 Before a UI release, verify:
@@ -118,6 +127,8 @@ Before a UI release, verify:
 - Global search works by pointer and keyboard, announces its result count, and retains no remote index.
 - Default, Large, and Extra large text remain usable in both themes and both densities.
 - Reduced motion and system motion preferences are respected.
+- Scrolling through a populated chat never triggers row-entry animation or delayed bubble paint.
+- Loading earlier messages preserves already rendered nodes and the reader's visual position.
 - Custom accents keep readable foreground text.
 - Destructive actions explain exactly what local data they remove.
 - Notebook imports are bounded, validated, and merge-safe; existing private notes are not overwritten.

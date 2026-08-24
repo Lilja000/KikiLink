@@ -24,6 +24,7 @@ declare global {
   }
 
   interface BCCharacter {
+    ID?: number;
     MemberNumber: number;
     Name: string;
     Nickname?: string;
@@ -85,6 +86,8 @@ declare global {
   var ChatRoomCharacter: BCCharacter[];
   var FriendListBeepLog: BCFriendListBeepLogMessage[];
   var ServerSocket: BCServerSocket | null;
+  var MainCanvas: HTMLCanvasElement;
+  var ChatRoomHideIconState: number;
 
   function ServerAccountBeep(data: BCServerAccountBeepResponse): void;
   function ServerAccountQueryResult(data: BCAccountQueryResponse): void;
@@ -102,6 +105,18 @@ declare global {
   function ServerIsLoggedIn(): boolean;
   function ServerPlayerIsInChatRoom(): boolean;
   function CharacterNickname(character: BCCharacter): string;
+  function ChatRoomDrawCharacterStatusIcons(
+    character: BCCharacter,
+    characterX: number,
+    characterY: number,
+    zoom: number,
+  ): void;
+  function ChatRoomCharacterViewDrawOverlay(
+    character: BCCharacter,
+    characterX: number,
+    characterY: number,
+    zoom: number,
+  ): void;
 }
 
 export {};

@@ -149,17 +149,22 @@ button { color: inherit; }
   position: relative;
   display: block;
   overflow: hidden;
-  background: #020203;
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--kl-accent), transparent 78%), transparent 68%),
+    color-mix(in srgb, var(--kl-surface), transparent 24%);
 }
 
 .kl-emblem-image {
   position: absolute;
-  top: 0;
+  top: 50%;
   left: 50%;
-  width: 156%;
-  height: auto;
+  width: 88%;
+  height: 88%;
   max-width: none;
-  transform: translateX(-50%);
+  object-fit: contain;
+  opacity: 0.94;
+  filter: drop-shadow(0 3px 8px color-mix(in srgb, var(--kl-accent), transparent 62%));
+  transform: translate(-50%, -50%);
   pointer-events: none;
   user-select: none;
 }
@@ -171,11 +176,11 @@ button { color: inherit; }
   width: 58px;
   height: 58px;
   padding: 0;
-  border: 1px solid var(--kl-border-strong);
-  border-radius: 19px;
-  background: #030304;
+  border: 1px solid color-mix(in srgb, var(--kl-accent), var(--kl-border-strong) 58%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--kl-panel-bg), transparent 24%);
   box-shadow:
-    0 14px 38px color-mix(in srgb, var(--kl-accent), transparent 62%),
+    0 12px 32px color-mix(in srgb, var(--kl-accent), transparent 70%),
     0 0 0 1px rgba(0, 0, 0, 0.75),
     inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   cursor: pointer;
@@ -193,7 +198,7 @@ button { color: inherit; }
 .kl-launcher-emblem {
   position: absolute;
   inset: 3px;
-  border-radius: 15px;
+  border-radius: 50%;
 }
 
 .kl-badge {
@@ -288,9 +293,8 @@ button { color: inherit; }
   width: 38px;
   height: 38px;
   flex: 0 0 auto;
-  border: 1px solid var(--kl-border-strong);
-  border-radius: 12px;
-  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.24);
+  border: 1px solid color-mix(in srgb, var(--kl-accent), transparent 64%);
+  border-radius: 50%;
 }
 
 .kl-brand-copy { min-width: 0; }
@@ -740,9 +744,9 @@ button { color: inherit; }
   position: absolute;
   inset: 14px;
   z-index: 1;
-  border: 1px solid var(--kl-border-strong);
-  border-radius: 38px;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+  border: 1px solid color-mix(in srgb, var(--kl-accent), transparent 52%);
+  border-radius: 50%;
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--kl-accent), transparent 82%);
   transform: rotate(3deg);
 }
 .kl-home-orbit {
@@ -1069,6 +1073,16 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-message-row { margin-block: 4px; }
 :host([data-density="super-compact"]) .kl-message-bubble { padding: 7px 9px 6px; border-radius: 12px 12px 12px 4px; box-shadow: none; }
 :host([data-density="super-compact"]) .kl-message-row[data-direction="outgoing"] .kl-message-bubble { border-radius: 12px 12px 4px 12px; }
+:host([data-density="super-compact"]) .kl-message-row[data-group="start"],
+:host([data-density="super-compact"]) .kl-message-row[data-group="middle"] { margin-bottom: 2px; }
+:host([data-density="super-compact"]) .kl-message-row[data-group="middle"],
+:host([data-density="super-compact"]) .kl-message-row[data-group="end"] { margin-top: 2px; }
+:host([data-density="super-compact"]) .kl-message-row[data-direction="incoming"][data-group="start"] .kl-message-bubble { border-radius: 12px 12px 12px 8px; }
+:host([data-density="super-compact"]) .kl-message-row[data-direction="incoming"][data-group="middle"] .kl-message-bubble { border-radius: 8px 12px 12px 8px; }
+:host([data-density="super-compact"]) .kl-message-row[data-direction="incoming"][data-group="end"] .kl-message-bubble { border-radius: 8px 12px 12px 4px; }
+:host([data-density="super-compact"]) .kl-message-row[data-direction="outgoing"][data-group="start"] .kl-message-bubble { border-radius: 12px 12px 8px 12px; }
+:host([data-density="super-compact"]) .kl-message-row[data-direction="outgoing"][data-group="middle"] .kl-message-bubble { border-radius: 12px 8px 8px 12px; }
+:host([data-density="super-compact"]) .kl-message-row[data-direction="outgoing"][data-group="end"] .kl-message-bubble { border-radius: 12px 8px 4px 12px; }
 :host([data-density="super-compact"]) .kl-message-meta { margin-top: 3px; }
 :host([data-density="super-compact"]) .kl-composer { padding: 7px 9px 8px; }
 :host([data-density="super-compact"]) .kl-quick-actions { gap: 5px; margin-bottom: 5px; padding-bottom: 2px; }
@@ -1337,7 +1351,9 @@ button { color: inherit; }
   padding: 18px;
   scrollbar-color: var(--kl-border-strong) transparent;
   scrollbar-width: thin;
+  scroll-behavior: auto;
   overscroll-behavior: contain;
+  overflow-anchor: auto;
   contain: layout paint;
 }
 
@@ -1345,30 +1361,57 @@ button { color: inherit; }
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 7px 0;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 64px;
+  margin: 8px 0;
 }
+.kl-message-row[data-group="start"],
+.kl-message-row[data-group="middle"] { margin-bottom: 2px; }
+.kl-message-row[data-group="middle"],
+.kl-message-row[data-group="end"] { margin-top: 2px; }
 .kl-message-row[data-direction="outgoing"] { flex-direction: row-reverse; }
 .kl-message-bubble {
+  position: relative;
   max-width: min(72%, 540px);
-  padding: 10px 12px 8px;
-  border: 1px solid var(--kl-border);
-  border-radius: 16px 16px 16px 5px;
-  background: var(--kl-surface-2);
+  padding: 10px 13px 8px;
+  border: 1px solid color-mix(in srgb, var(--kl-border), var(--kl-accent) 9%);
+  border-radius: 17px 17px 17px 5px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--kl-accent), transparent 94%), transparent 62%),
+    color-mix(in srgb, var(--kl-surface-2), var(--kl-surface) 18%);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.kl-message-row[data-direction="incoming"] .kl-message-bubble::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(var(--kl-accent), var(--kl-gold));
+  opacity: 0.55;
+}
 .kl-message-row[data-direction="outgoing"] .kl-message-bubble {
-  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 22%);
-  border-radius: 16px 16px 5px 16px;
-  background: var(--kl-accent);
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 28%);
+  border-radius: 17px 17px 5px 17px;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--kl-accent), var(--kl-gold) 11%),
+    color-mix(in srgb, var(--kl-accent), #060607 16%)
+  );
   color: var(--kl-accent-foreground);
 }
-.kl-message-meta { display: flex; justify-content: flex-end; gap: 7px; margin-top: 5px; color: var(--kl-meta); font-size: var(--kl-type-xxs); }
+.kl-message-row[data-direction="incoming"][data-group="start"] .kl-message-bubble { border-radius: 17px 17px 17px 9px; }
+.kl-message-row[data-direction="incoming"][data-group="middle"] .kl-message-bubble { border-radius: 9px 17px 17px 9px; }
+.kl-message-row[data-direction="incoming"][data-group="end"] .kl-message-bubble { border-radius: 9px 17px 17px 5px; }
+.kl-message-row[data-direction="outgoing"][data-group="start"] .kl-message-bubble { border-radius: 17px 17px 9px 17px; }
+.kl-message-row[data-direction="outgoing"][data-group="middle"] .kl-message-bubble { border-radius: 17px 9px 9px 17px; }
+.kl-message-row[data-direction="outgoing"][data-group="end"] .kl-message-bubble { border-radius: 17px 9px 5px 17px; }
+.kl-message-row:hover .kl-message-bubble { border-color: color-mix(in srgb, var(--kl-border-strong), var(--kl-accent) 18%); }
+.kl-message-meta { display: flex; justify-content: flex-end; gap: 7px; margin-top: 6px; color: var(--kl-meta); font-size: var(--kl-type-xxs); font-weight: 650; letter-spacing: 0.015em; }
 .kl-message-row[data-direction="outgoing"] .kl-message-meta { color: color-mix(in srgb, var(--kl-accent-foreground), transparent 32%); }
 .kl-message-room { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kl-load-older { display: flex; justify-content: center; padding: 3px 0 11px; }
+.kl-load-older { display: flex; justify-content: center; padding: 3px 0 11px; overflow-anchor: none; }
 .kl-load-older .kl-text-button { min-height: 34px; }
 
 .kl-composer {
@@ -2502,7 +2545,7 @@ select:focus-visible {
 .kl-image-file-privacy { display: flex; align-items: flex-start; gap: 7px; }
 .kl-image-file-privacy .kl-icon { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; color: var(--kl-gold); }
 .kl-local-image-thumbnail { width: 54px; height: 54px; flex: 0 0 auto; object-fit: cover; border-radius: 10px; background: #09090a; }
-.kl-message-content { white-space: pre-wrap; }
+.kl-message-content { line-height: 1.48; white-space: pre-wrap; }
 .kl-message-link { color: #efc56c; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor, transparent 48%); text-underline-offset: 2px; }
 .kl-message-row[data-direction="outgoing"] .kl-message-link { color: var(--kl-accent-foreground); }
 .kl-message-media { display: grid; gap: 7px; margin-top: 8px; }

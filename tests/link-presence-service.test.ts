@@ -47,6 +47,9 @@ describe("LinkPresenceService", () => {
     const { bus, service, sendKikiLinkProtocol } = setup();
     service.start();
 
+    expect(service.hasCompatiblePeer(999)).toBe(true);
+    expect(service.hasCompatiblePeer(123)).toBe(false);
+
     bus.emit("bc:protocol", {
       senderNumber: 123,
       channel: "beep",
@@ -73,6 +76,8 @@ describe("LinkPresenceService", () => {
       source: "kikilink",
       statusMessage: "In a scene",
     });
+    expect(service.hasCompatiblePeer(123)).toBe(true);
+    expect(service.hasCompatiblePeer(123, Date.now() + 5 * 60_000 + 1)).toBe(false);
     service.stop();
   });
 

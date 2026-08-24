@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.17.0` cleans compatibility metadata out of received chat text and adds an optional,
-privacy-prepared local image flow through the user's own Cloudinary account.
+Version `0.18.0` introduces KikiLink's translucent red blossom identity, calms chat scrolling,
+refreshes message styling, and reduces rendering and bundle overhead.
 
 ## Link Deck
 
@@ -103,6 +103,9 @@ browser profile. KikiLink does not upload them to a server.
 - Strict removal of the known trailing `{"messageType":"Message","messageColor":"#ffffff"}`
   compatibility envelope without stripping ordinary JSON-like user text
 - Smooth bounded rendering: 120 recent messages at once, incremental live append, and on-demand older history
+- Stable scrolling without viewport-triggered message paint; older history is prepended without replacing
+  messages already on screen
+- Softly grouped incoming and outgoing bubbles with clearer shape, depth, and direction at a glance
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
 
@@ -143,7 +146,9 @@ same native Bondage Club emote path as LinkActivities and are visible to everyon
 
 ## Interface
 
-- Embedded KikiLink wolf, red moon, gold ring, and sakura emblem
+- Original translucent red blossom emblem shared by the launcher, workspace, and room presence badge
+- A quiet blossom above your own room character and confirmed compatible KikiLink peers; it respects
+  Bondage Club's native icon-visibility control and adds no new presence traffic
 - Original dependency-free SVG icons with one consistent rounded line style across navigation,
   chat controls, favorites, pins, images, dialogs, and player actions
 - Dark lacquer, light paper, and follow-system appearance modes
@@ -161,8 +166,9 @@ same native Bondage Club emote path as LinkActivities and are visible to everyon
 - Full-width mobile conversation list with a clear back-to-list flow
 - Live Bondage Club connection status without blocking an available native Beep function
 
-The emblem is bundled into the userscript, so KikiLink does not fetch visual
-assets from a remote server while the game is running.
+The blossom is bundled as a compact SVG inside the userscript, so KikiLink does not fetch visual
+assets from a remote server while the game is running. Replacing the old embedded raster also makes
+the public userscript roughly 27% smaller.
 
 Standard Beeps use Bondage Club's own `ServerSendBeepMessage` path. LinkRoster
 uses the game's native Whisper and profile controls, and LinkActivities uses the
@@ -188,7 +194,8 @@ src/
   modules/link-roster/ Room roster, encounter tracking, and notebook service
   storage/            IndexedDB, player notebook, and in-memory repositories
   utils/              Small dependency-free helpers
-design/references/     Selected original KikiLink visual source
+design/branding/       Shipping KikiLink blossom SVG
+design/references/     Earlier KikiLink visual reference
 docs/                  UX principles and accessibility decisions
 ```
 

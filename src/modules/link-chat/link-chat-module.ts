@@ -6,6 +6,7 @@ import { LinkActivitiesService } from "../link-activities/link-activities-servic
 import { LinkRosterService } from "../link-roster/link-roster-service";
 import { PeopleRepository } from "../../storage/people-repository";
 import { LinkPresenceService } from "../link-presence/link-presence-service";
+import { RoomBlossomBadge } from "./blossom";
 
 export class LinkChatModule implements KikiLinkModule {
   readonly id = "link-chat";
@@ -15,6 +16,8 @@ export class LinkChatModule implements KikiLinkModule {
   #service: ChatService | undefined;
   #roster: LinkRosterService | undefined;
   #presence: LinkPresenceService | undefined;
+  #roomBadge: RoomBlossomBadge | undefined;
+  #roomBadgeUnsubscribe: (() => void) | undefined;
   #view: LinkChatView | undefined;
   #rosterTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -38,6 +41,11 @@ export class LinkChatModule implements KikiLinkModule {
       context.version,
     );
     this.#presence.start();
+    this.#roomBadge = new RoomBlossomBadge(context.adapter, this.#presence);
+    this.#roomBadgeUnsubscribe = context.adapter.registerCharacterOverlay(
+      (character, characterX, characterY, zoom) =>
+        this.#roomBadge?.draw(character, characterX, characterY, zoom),
+    );
     this.#roster.prune();
     this.#view = new LinkChatView(
       context.adapter,
@@ -77,6 +85,9 @@ export class LinkChatModule implements KikiLinkModule {
     for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
     this.#view?.destroy();
     this.#view = undefined;
+    this.#roomBadgeUnsubscribe?.();
+    this.#roomBadgeUnsubscribe = undefined;
+    this.#roomBadge = undefined;
     this.#presence?.stop();
     this.#presence = undefined;
     this.#service = undefined;

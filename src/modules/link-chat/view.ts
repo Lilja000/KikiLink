@@ -54,7 +54,7 @@ import {
   type PreparedLocalImage,
 } from "./image-upload";
 import { kikiIcon, type KikiLinkIconName } from "./icons";
-import KIKILINK_EMBLEM_DATA_URL from "../../../design/references/3929.png";
+import { BLOSSOM_ICON_DATA_URL } from "./blossom";
 
 type WorkspaceView = "home" | "chat" | "roster" | "activities" | "settings";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
@@ -66,6 +66,7 @@ type HomeAction =
   | { kind: "activities" }
   | { kind: "settings" };
 type FinderResultKind = "destination" | "conversation" | "player" | "activity" | "setting";
+type MessageGroupPosition = "single" | "start" | "middle" | "end";
 type FinderAction =
   | { kind: "workspace"; target: FeatureTarget }
   | { kind: "new-chat" }
@@ -460,6 +461,7 @@ export class LinkChatView {
   #typingStopTimer: ReturnType<typeof setTimeout> | undefined;
   #messageRenderLimit = 120;
   #messageRenderPeer: number | undefined;
+  #loadingOlderMessages = false;
   readonly #renderedMessageIds = new Set<string>();
   readonly #suppressProfileClickUntil = new WeakMap<HTMLElement, number>();
   #profileMenuToken = 0;
@@ -613,11 +615,11 @@ export class LinkChatView {
       return;
     }
 
-    await this.refresh();
     if (this.#activePeer === peerNumber) {
       if (message && this.#messageRenderPeer === peerNumber) this.#appendMessage(message);
       else await this.#renderMessages(peerNumber);
     }
+    await this.refresh();
   }
 
   onReaction(reaction: LinkReactionFired): void {
@@ -719,8 +721,12 @@ export class LinkChatView {
   }
 
   async refresh(): Promise<void> {
-    await this.#updateUnreadBadge();
-    await Promise.all([this.#renderConversations(), this.#renderHome()]);
+    const [, conversations] = await Promise.all([
+      this.#updateUnreadBadge(),
+      this.service.listConversations(),
+    ]);
+    await this.#renderConversations(conversations);
+    await this.#renderHome(conversations);
   }
 
   #buildLauncher(): void {
@@ -4075,7 +4081,7 @@ export class LinkChatView {
     return button;
   }
 
-  async #renderHome(): Promise<void> {
+  async #renderHome(providedConversations?: ConversationMeta[]): Promise<void> {
     const ownName = this.adapter.getOwnName().trim();
     const greeting = greetingForCurrentTime();
     this.#homeGreeting.textContent =
@@ -4083,7 +4089,7 @@ export class LinkChatView {
         ? `${greeting}, ${ownName}.`
         : `${greeting}.`;
 
-    const conversations = await this.service.listConversations();
+    const conversations = providedConversations ?? await this.service.listConversations();
     const onlineFriendCount =
       typeof this.adapter.getOnlineFriends === "function"
         ? this.adapter.getOnlineFriends().length
@@ -4359,9 +4365,9 @@ export class LinkChatView {
     }
   }
 
-  async #renderConversations(): Promise<void> {
+  async #renderConversations(providedConversations?: ConversationMeta[]): Promise<void> {
     const query = this.#search.value.trim().toLocaleLowerCase();
-    const allConversations = await this.service.listConversations();
+    const allConversations = providedConversations ?? await this.service.listConversations();
     for (const conversation of allConversations) {
       const nickname = this.adapter.getMemberNickname(conversation.peerNumber);
       if (nickname && nickname !== conversation.peerName) {
@@ -4386,9 +4392,8 @@ export class LinkChatView {
       );
     });
 
-    this.#conversationList.replaceChildren();
     if (conversations.length === 0) {
-      this.#conversationList.append(
+      this.#conversationList.replaceChildren(
         element("div", {
           className: "kl-empty-copy",
           text: query ? "No matching chats." : "No conversations yet.",
@@ -4397,9 +4402,11 @@ export class LinkChatView {
       return;
     }
 
+    const fragment = document.createDocumentFragment();
     for (const conversation of conversations) {
-      this.#conversationList.append(this.#conversationButton(conversation));
+      fragment.append(this.#conversationButton(conversation));
     }
+    this.#conversationList.replaceChildren(fragment);
   }
 
   #conversationButton(conversation: ConversationMeta): HTMLButtonElement {
@@ -4484,6 +4491,7 @@ export class LinkChatView {
     this.#chatNumber.textContent = `Member ${peerNumber}`;
     this.#messageRenderLimit = 120;
     this.#messageRenderPeer = peerNumber;
+    this.#loadingOlderMessages = false;
     this.#renderedMessageIds.clear();
     this.#renderActivePresence();
     this.presence.request(peerNumber);
@@ -4504,9 +4512,8 @@ export class LinkChatView {
     const visibleMessages = hasOlder ? messages.slice(-this.#messageRenderLimit) : messages;
     this.#messageRenderPeer = peerNumber;
     this.#renderedMessageIds.clear();
-    this.#messages.replaceChildren();
     if (visibleMessages.length === 0) {
-      this.#messages.append(
+      this.#messages.replaceChildren(
         element("div", {
           className: "kl-empty-copy",
           text: "No Beeps here yet. Send the first one.",
@@ -4515,29 +4522,66 @@ export class LinkChatView {
       return;
     }
 
+    const fragment = document.createDocumentFragment();
     if (hasOlder) {
-      this.#messages.append(this.#olderMessagesControl(peerNumber));
+      fragment.append(this.#olderMessagesControl(peerNumber));
     }
-    for (const message of visibleMessages) {
+    for (const [index, message] of visibleMessages.entries()) {
       this.#renderedMessageIds.add(message.id);
-      this.#messages.append(this.#messageNode(message));
+      fragment.append(
+        this.#messageNode(
+          message,
+          messageGroupPosition(
+            visibleMessages[index - 1]?.direction,
+            message.direction,
+            visibleMessages[index + 1]?.direction,
+          ),
+        ),
+      );
     }
+    this.#messages.replaceChildren(fragment);
     if (scrollToBottom) {
-      requestAnimationFrame(() => {
-        this.#messages.scrollTop = this.#messages.scrollHeight;
-      });
+      this.#messages.scrollTop = this.#messages.scrollHeight;
     }
   }
 
   async #loadOlderMessages(peerNumber: number): Promise<void> {
-    if (this.#activePeer !== peerNumber) return;
+    if (this.#activePeer !== peerNumber || this.#loadingOlderMessages) return;
+    this.#loadingOlderMessages = true;
+    this.#messages.setAttribute("aria-busy", "true");
+    const button = this.#messages.querySelector<HTMLButtonElement>(".kl-load-older button");
+    if (button) button.disabled = true;
     const previousHeight = this.#messages.scrollHeight;
     const previousTop = this.#messages.scrollTop;
-    this.#messageRenderLimit += 120;
-    await this.#renderMessages(peerNumber, false);
-    requestAnimationFrame(() => {
+    try {
+      const nextLimit = this.#messageRenderLimit + 120;
+      const messages = await this.service.getMessages(peerNumber, nextLimit + 1);
+      if (this.#activePeer !== peerNumber) return;
+      const hasOlder = messages.length > nextLimit;
+      const visibleMessages = hasOlder ? messages.slice(-nextLimit) : messages;
+      const missingMessages = visibleMessages.filter(
+        (message) => !this.#renderedMessageIds.has(message.id),
+      );
+      const currentControl = this.#messages.querySelector<HTMLElement>(".kl-load-older");
+      const fragment = document.createDocumentFragment();
+      if (hasOlder) fragment.append(currentControl ?? this.#olderMessagesControl(peerNumber));
+      else currentControl?.remove();
+      for (const message of missingMessages) {
+        this.#renderedMessageIds.add(message.id);
+        fragment.append(this.#messageNode(message));
+      }
+      if (fragment.childNodes.length > 0) this.#messages.prepend(fragment);
+      this.#messageRenderLimit = nextLimit;
+      this.#syncMessageGrouping();
       this.#messages.scrollTop = previousTop + (this.#messages.scrollHeight - previousHeight);
-    });
+    } finally {
+      this.#loadingOlderMessages = false;
+      this.#messages.setAttribute("aria-busy", "false");
+      const currentButton = this.#messages.querySelector<HTMLButtonElement>(
+        ".kl-load-older button",
+      );
+      if (currentButton) currentButton.disabled = false;
+    }
   }
 
   #olderMessagesControl(peerNumber: number): HTMLDivElement {
@@ -4553,7 +4597,10 @@ export class LinkChatView {
     );
   }
 
-  #messageNode(message: LinkMessage): HTMLDivElement {
+  #messageNode(
+    message: LinkMessage,
+    group: MessageGroupPosition = "single",
+  ): HTMLDivElement {
     const body = this.#renderMessageBody(message);
     const actions = element(
       "div",
@@ -4584,6 +4631,7 @@ export class LinkChatView {
     const bubble = element("div", { className: "kl-message-bubble" }, body, meta);
     const row = element("div", { className: "kl-message-row" }, bubble, actions);
     row.dataset.direction = message.direction;
+    row.dataset.group = group;
     row.dataset.messageId = message.id;
     return row;
   }
@@ -4599,18 +4647,24 @@ export class LinkChatView {
     const nearBottom =
       this.#messages.scrollHeight - this.#messages.scrollTop - this.#messages.clientHeight < 96;
     this.#messages.querySelector(".kl-empty-copy")?.remove();
-    this.#messages.append(this.#messageNode(message));
+    const previous = this.#messages.querySelector<HTMLElement>(".kl-message-row:last-child");
+    const row = this.#messageNode(message);
+    if (previous?.dataset.direction === message.direction) {
+      previous.dataset.group = previous.dataset.group === "single" ? "start" : "middle";
+      row.dataset.group = "end";
+    }
+    this.#messages.append(row);
     this.#renderedMessageIds.add(message.id);
 
-    const rows = this.#messages.querySelectorAll<HTMLElement>(".kl-message-row");
-    if (rows.length > this.#messageRenderLimit) {
+    if (this.#renderedMessageIds.size > this.#messageRenderLimit) {
       if (!this.#messages.querySelector(".kl-load-older")) {
         this.#messages.prepend(this.#olderMessagesControl(message.peerNumber));
       }
-      const oldest = rows[0];
+      const oldest = this.#messages.querySelector<HTMLElement>(".kl-message-row");
       if (oldest) {
         if (oldest.dataset.messageId) this.#renderedMessageIds.delete(oldest.dataset.messageId);
         oldest.remove();
+        this.#repairFirstMessageGrouping();
       }
     }
     if (message.direction === "outgoing" || nearBottom) {
@@ -4618,6 +4672,29 @@ export class LinkChatView {
         this.#messages.scrollTop = this.#messages.scrollHeight;
       });
     }
+  }
+
+  #syncMessageGrouping(): void {
+    const rows = [...this.#messages.querySelectorAll<HTMLElement>(".kl-message-row")];
+    for (const [index, row] of rows.entries()) {
+      row.dataset.group = messageGroupPosition(
+        rows[index - 1]?.dataset.direction,
+        row.dataset.direction,
+        rows[index + 1]?.dataset.direction,
+      );
+    }
+  }
+
+  #repairFirstMessageGrouping(): void {
+    const first = this.#messages.querySelector<HTMLElement>(".kl-message-row");
+    if (!first) return;
+    const next = first.nextElementSibling;
+    first.dataset.group =
+      next instanceof HTMLElement &&
+      next.classList.contains("kl-message-row") &&
+      next.dataset.direction === first.dataset.direction
+        ? "start"
+        : "single";
   }
 
   async #send(): Promise<void> {
@@ -5791,6 +5868,7 @@ export class LinkChatView {
     this.#activeName = "";
     this.#activeNativeName = "";
     this.#messageRenderPeer = undefined;
+    this.#loadingOlderMessages = false;
     this.#renderedMessageIds.clear();
     this.#composer.value = "";
     this.#messages.replaceChildren();
@@ -6111,7 +6189,7 @@ export class LinkChatView {
 
   #emblem(className: string): HTMLSpanElement {
     const image = element("img", { className: "kl-emblem-image" }) as HTMLImageElement;
-    image.src = KIKILINK_EMBLEM_DATA_URL;
+    image.src = BLOSSOM_ICON_DATA_URL;
     image.alt = "";
     image.decoding = "async";
     image.draggable = false;
@@ -6352,6 +6430,19 @@ function messagePreview(content: string): string {
     (link) => link.image && link.start === 0 && link.end === trimmed.length,
   );
   return image ? "Image" : content;
+}
+
+function messageGroupPosition(
+  previousDirection: string | undefined,
+  direction: string | undefined,
+  nextDirection: string | undefined,
+): MessageGroupPosition {
+  const joinsPrevious = direction !== undefined && previousDirection === direction;
+  const joinsNext = direction !== undefined && nextDirection === direction;
+  if (joinsPrevious && joinsNext) return "middle";
+  if (joinsPrevious) return "end";
+  if (joinsNext) return "start";
+  return "single";
 }
 
 function avatarText(name: string): string {

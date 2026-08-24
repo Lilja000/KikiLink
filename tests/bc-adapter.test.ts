@@ -18,12 +18,16 @@ afterEach(() => {
     "ServerSocket",
     "ServerSendBeepMessage",
     "ChatRoomSendEmote",
+    "ChatRoomDrawCharacterStatusIcons",
+    "ChatRoomCharacterViewDrawOverlay",
+    "ChatRoomHideIconState",
     "ChatRoomSetTarget",
     "InformationSheetLoadCharacter",
     "ServerSend",
     "ServerIsLoggedIn",
     "ServerPlayerIsInChatRoom",
     "CurrentScreen",
+    "MainCanvas",
   ]) {
     Reflect.deleteProperty(globalThis, key);
   }
@@ -413,5 +417,28 @@ describe("BCAdapter", () => {
 
     adapter.stop();
     vi.useRealTimers();
+  });
+
+  it("shares the native character overlay without replacing other addon drawing", async () => {
+    const nativeOverlay = vi.fn();
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ServerSendBeepMessage = vi.fn();
+    globalThis.ChatRoomDrawCharacterStatusIcons = nativeOverlay;
+
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.18.0");
+    const renderer = vi.fn();
+    adapter.registerCharacterOverlay(renderer);
+    await adapter.start();
+
+    const character = { MemberNumber: 999, Name: "AccountKiki" };
+    globalThis.ChatRoomDrawCharacterStatusIcons(character, 120, 30, 0.75);
+
+    expect(nativeOverlay).toHaveBeenCalledWith(character, 120, 30, 0.75);
+    expect(renderer).toHaveBeenCalledWith(character, 120, 30, 0.75);
+    adapter.stop();
   });
 });
