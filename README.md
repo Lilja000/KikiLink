@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.8.0` makes the first screen explain itself: Guided Home suggests one useful
-next step from the current context, while Focused Home keeps a clean four-tool deck.
+Version `0.9.0` adds LinkFinder: one local, keyboard-friendly place to find any chat,
+player, activity, destination, or settings category without knowing where it lives first.
 
 ## Link Deck
 
@@ -33,6 +33,19 @@ next step from the current context, while Focused Home keeps a clean four-tool d
 - Larger mobile tap targets, visible focus states, current-page semantics, and keyboard-friendly settings
 - A button to reset the launcher position without dragging it
 - Disabled optional features remain discoverable and lead directly to the correct setting
+
+## LinkFinder
+
+- A visible `Find` control in the top bar, available from every KikiLink workspace
+- Local search across destinations, recent chats, current and recorded players, known contacts,
+  saved activities, and all five Settings categories
+- Useful suggestions before typing, prioritized unread/recent conversations, and immediate
+  result refinement while typing
+- Direct member-number actions such as `#12345` even when no conversation exists yet
+- Results show their category and destination instead of presenting one ambiguous flat list
+- Mouse, touch, `Arrow Up`/`Arrow Down`, `Enter`, and `Escape` support with combobox semantics
+- Optional `Ctrl+K` / `Cmd+K` shortcut when focus is not inside an editor
+- No server index: chat previews, notes, contacts, and preferences never leave this browser
 
 ## LinkRoster
 
@@ -87,6 +100,7 @@ character's items, pose, permissions, or game state.
 - Comfortable/compact density, three text sizes, and Guided/Focused Home layouts
 - Draggable launcher with a saved position, button-based reset, configurable side, and reduced-motion mode
 - Full-page categorized settings that remember the last category
+- LinkFinder for immediate access to chats, players, activities, and deeply nested settings
 - Accessible current-location, focus, live-status, and error semantics
 - Full-width mobile conversation list with a clear back-to-list flow
 - Live Bondage Club connection status without blocking an available native Beep function

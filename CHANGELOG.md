@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0 - 2026-08-24
+
+- Added LinkFinder as a visible top-bar action available from every workspace.
+- Added one local search index for destinations, recent chats, room and recorded players,
+  known contacts, saved activities, and every Settings category.
+- Added context-aware suggestions before typing and relevance ranking that favors exact titles,
+  unread conversations, room presence, favorites, and pinned chats.
+- Added direct member-number chat actions when a matching conversation does not exist yet.
+- Added category labels, responsive phone presentation, and privacy copy beside the results.
+- Implemented the WAI editable-combobox interaction with `aria-activedescendant`, live result
+  counts, arrow-key selection, `Enter`, `Escape`, and a visible close action.
+- Added an optional `Ctrl+K` / `Cmd+K` shortcut without intercepting input, textarea, select,
+  or content-editable controls.
+- Added regression coverage for accessible suggestions, keyboard navigation, exact player
+  notebook routing, selected Activity Studio routing, and direct member-number chats,
+  bringing the suite to 41 tests.
+
 ## 0.8.0 - 2026-08-24
 
 - Reworked Guided Home around one context-aware next step instead of decorative-first content.

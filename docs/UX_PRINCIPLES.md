@@ -31,7 +31,22 @@ References:
 - [Material bottom navigation](https://m2.material.io/components/bottom-navigation/)
 - [WAI navigation landmark example](https://www.w3.org/WAI/ARIA/apg/patterns/landmarks/examples/navigation.html)
 
-## 3. Keep context visible
+## 3. Search supplements navigation; it does not replace it
+
+- Keep stable destinations visible so nobody has to search for basic wayfinding.
+- Offer global search in the top bar when it spans several content types and workspaces.
+- Show useful suggestions before typing and refine results immediately during input.
+- Put the most relevant matches first and expose a visible category on every result.
+- Keep DOM focus in the search field while arrow keys move the active result.
+- Build the search catalog locally; private content must never be uploaded for indexing.
+
+References:
+
+- [Apple Search fields](https://developer.apple.com/design/human-interface-guidelines/search-fields)
+- [WAI editable combobox pattern](https://www.w3.org/WAI/ARIA/apg/patterns/combobox/)
+- [WAI modal dialog pattern](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/)
+
+## 4. Keep context visible
 
 - Use the workspace for features people browse or use for more than a quick decision.
 - Reserve modal dialogs for short, focused tasks such as choosing a new chat contact.
@@ -43,7 +58,7 @@ References:
 - [Microsoft Fluent Drawer guidance](https://fluent2.microsoft.design/components/web/react/core/drawer/usage)
 - [WAI modal dialog pattern](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/)
 
-## 4. Personalization must change comfort, not just decoration
+## 5. Personalization must change comfort, not just decoration
 
 - Themes and accents express identity, but text size, density, motion, and simplification
   determine whether the interface remains comfortable over time.
@@ -58,7 +73,7 @@ References:
 - [Apple settings guidance](https://developer.apple.com/design/human-interface-guidelines/settings)
 - [Apple accessibility guidance](https://developer.apple.com/design/human-interface-guidelines/accessibility/)
 
-## 5. Clarity beats cleverness
+## 6. Clarity beats cleverness
 
 - Keep visible labels beside controls; icons supplement words rather than replace them.
 - Prefer common names such as Settings, Chat, and Players in navigation.
@@ -70,7 +85,7 @@ References:
 - [W3C clear visible labels pattern](https://www.w3.org/WAI/WCAG2/supplemental/patterns/o4p06-clear-labels/)
 - [Microsoft Fluent accessibility guidance](https://fluent2.microsoft.design/accessibility)
 
-## 6. Every important interaction has more than one path
+## 7. Every important interaction has more than one path
 
 - Important pointer targets should be generous; all interactive targets must meet the
   WCAG 2.2 minimum or have sufficient spacing.
@@ -96,6 +111,7 @@ Before a UI release, verify:
 - Keyboard order follows the visual order and focus never becomes invisible.
 - Mobile controls are comfortable to tap and content reflows without horizontal page scroll.
 - Home never presents more than five prominent choices and its suggested action remains optional.
+- Global search works by pointer and keyboard, announces its result count, and retains no remote index.
 - Default, Large, and Extra large text remain usable in both themes and both densities.
 - Reduced motion and system motion preferences are respected.
 - Custom accents keep readable foreground text.

@@ -262,6 +262,218 @@ describe("LinkChatView", () => {
     view.destroy();
   });
 
+  it("opens LinkFinder with accessible suggestions and jumps to a setting by keyboard", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getRoomCharacters: () => [],
+      getCurrentRoomName: () => undefined,
+      isInChatRoom: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.9.0",
+    );
+    view.mount();
+    await view.open();
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".kl-finder-trigger")?.click();
+    const finder = shadow?.querySelector<HTMLDialogElement>(".kl-finder-dialog");
+    const query = shadow?.querySelector<HTMLInputElement>(".kl-finder-query");
+    await vi.waitFor(() => {
+      expect(finder?.open).toBe(true);
+      expect(shadow?.querySelectorAll(".kl-finder-result")).toHaveLength(5);
+    });
+    expect(query?.getAttribute("role")).toBe("combobox");
+    expect(query?.getAttribute("aria-expanded")).toBe("true");
+    expect(query?.getAttribute("aria-activedescendant")).not.toBeNull();
+    expect(shadow?.querySelector(".kl-finder-trigger")?.getAttribute("aria-keyshortcuts")).toBe(
+      "Control+K Meta+K",
+    );
+
+    if (!query) throw new Error("Missing LinkFinder query");
+    const firstSuggestion = query.getAttribute("aria-activedescendant");
+    query.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
+    expect(query.getAttribute("aria-activedescendant")).not.toBe(firstSuggestion);
+    query.value = "appearance";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(shadow?.querySelectorAll(".kl-finder-result")).toHaveLength(1);
+    expect(shadow?.querySelector(".kl-finder-result-title")?.textContent).toBe(
+      "Appearance & comfort",
+    );
+    query.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    await vi.waitFor(() => {
+      expect(finder?.open).toBe(false);
+      expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+        "settings",
+      );
+    });
+    expect(
+      shadow
+        ?.querySelector('[role="tab"][data-section="appearance"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+    view.destroy();
+  });
+
+  it("finds a current-room player and opens the exact notebook entry", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) =>
+        memberNumber === 123 ? "Reina" : `Member ${memberNumber}`,
+      getMemberNickname: (memberNumber: number) =>
+        memberNumber === 123 ? "Reina" : undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getRoomCharacters: () => [
+        { memberNumber: 123, memberName: "Reina", accountName: "AccountReina", isFriend: true },
+      ],
+      getCurrentRoomName: () => "Moon Garden",
+      isInChatRoom: () => true,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.9.0",
+    );
+    view.mount();
+    await view.open();
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".kl-finder-trigger")?.click();
+    const query = shadow?.querySelector<HTMLInputElement>(".kl-finder-query");
+    await vi.waitFor(() => expect(shadow?.querySelector(".kl-finder-result")).not.toBeNull());
+    if (!query) throw new Error("Missing LinkFinder query");
+    query.value = "Reina";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    const player = shadow?.querySelector<HTMLButtonElement>('[data-finder-kind="player"]');
+    expect(player?.textContent).toContain("Reina");
+    expect(player?.textContent).toContain("In room");
+    player?.click();
+
+    expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+      "roster",
+    );
+    expect(
+      shadow
+        ?.querySelector('[data-member-number="123"]')
+        ?.getAttribute("data-selected"),
+    ).toBe("true");
+    expect(shadow?.querySelector(".kl-roster-name")?.textContent).toBe("Reina");
+    view.destroy();
+  });
+
+  it("finds a saved activity and opens it selected in Activity Studio", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: (memberNumber: number) =>
+        memberNumber === 123 ? "Reina" : undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getRoomCharacters: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getCurrentRoomName: () => "Moon Garden",
+      isInChatRoom: () => true,
+      canSendRoomEmote: () => true,
+      sendRoomEmote: vi.fn(),
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.linkActivities.enabled = true;
+    });
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.9.0",
+    );
+    view.mount();
+    await view.open();
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".kl-finder-trigger")?.click();
+    const query = shadow?.querySelector<HTMLInputElement>(".kl-finder-query");
+    await vi.waitFor(() => expect(shadow?.querySelector(".kl-finder-result")).not.toBeNull());
+    if (!query) throw new Error("Missing LinkFinder query");
+    query.value = "wolf greeting";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    const activity = shadow?.querySelector<HTMLButtonElement>('[data-finder-kind="activity"]');
+    expect(activity?.textContent).toContain("Wolf greeting");
+    activity?.click();
+
+    expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+      "activities",
+    );
+    expect(
+      shadow
+        ?.querySelector('[data-activity-index="1"]')
+        ?.getAttribute("data-selected"),
+    ).toBe("true");
+    view.destroy();
+  });
+
+  it("starts a Beep chat directly from a member number in LinkFinder", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getRoomCharacters: () => [],
+      getCurrentRoomName: () => undefined,
+      isInChatRoom: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.9.0",
+    );
+    view.mount();
+    await view.open();
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".kl-finder-trigger")?.click();
+    const query = shadow?.querySelector<HTMLInputElement>(".kl-finder-query");
+    await vi.waitFor(() => expect(shadow?.querySelector(".kl-finder-result")).not.toBeNull());
+    if (!query) throw new Error("Missing LinkFinder query");
+    query.value = "456";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    const direct = shadow?.querySelector<HTMLButtonElement>('[data-finder-kind="conversation"]');
+    expect(direct?.textContent).toContain("Start chat with #456");
+    direct?.click();
+
+    await vi.waitFor(() => {
+      expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
+        "chat",
+      );
+      expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Member 456");
+    });
+    view.destroy();
+  });
+
   it("opens a known contact without using a browser prompt", async () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.8.0
+// @version      0.9.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -1588,6 +1588,32 @@ button { color: inherit; }
   text-transform: uppercase;
 }
 .kl-topbar-settings { display: none; }
+.kl-finder-trigger {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px 6px 10px;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-sm);
+}
+.kl-finder-trigger:hover { color: var(--kl-text); }
+.kl-finder-trigger-icon { color: var(--kl-gold); font-size: 18px; line-height: 1; }
+.kl-finder-trigger-label { font-weight: 800; }
+.kl-finder-shortcut,
+.kl-finder-keys kbd {
+  padding: 2px 5px;
+  border: 1px solid var(--kl-border);
+  border-bottom-color: var(--kl-border-strong);
+  border-radius: 5px;
+  background: var(--kl-input-bg);
+  color: var(--kl-meta);
+  font-family: inherit;
+  font-size: var(--kl-type-xxs);
+  font-weight: 780;
+  line-height: 1.35;
+  white-space: nowrap;
+}
 .kl-topbar-settings[aria-current="page"] {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 24%);
   background: color-mix(in srgb, var(--kl-accent), transparent 84%);
@@ -2564,6 +2590,151 @@ button { color: inherit; }
 .kl-contact-empty { color: var(--kl-muted); font-size: var(--kl-type-sm); }
 .kl-contact-empty { padding: 18px 8px; text-align: center; }
 
+.kl-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.kl-finder-dialog { width: min(680px, calc(100vw - 32px)); }
+.kl-finder-body {
+  position: relative;
+  min-height: 360px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px;
+}
+.kl-finder-input-wrap { position: relative; }
+.kl-finder-search-icon {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 15px;
+  color: var(--kl-gold);
+  font-size: 21px;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+.kl-finder-query {
+  width: 100%;
+  height: 52px;
+  padding: 0 42px;
+  border: 1px solid var(--kl-border-strong);
+  border-radius: 15px;
+  background: var(--kl-input-bg);
+  color: var(--kl-text);
+  font-size: var(--kl-type-body);
+  outline: none;
+}
+.kl-finder-query:focus {
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 30%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kl-accent), transparent 78%);
+}
+.kl-finder-results {
+  min-height: 260px;
+  max-height: min(480px, calc(100vh - 240px));
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  overflow-y: auto;
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
+}
+.kl-finder-result {
+  width: 100%;
+  min-width: 0;
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.kl-finder-result:hover,
+.kl-finder-result[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 25%);
+  background: color-mix(in srgb, var(--kl-accent), transparent 87%);
+}
+.kl-finder-result-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--kl-border);
+  border-radius: 13px;
+  background: var(--kl-surface-2);
+  color: var(--kl-gold);
+  font-size: 18px;
+  font-weight: 850;
+}
+.kl-finder-result-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.kl-finder-result-title {
+  overflow: hidden;
+  font-weight: 820;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kl-finder-result-detail {
+  overflow: hidden;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kl-finder-result-category {
+  padding: 3px 7px;
+  border: 1px solid var(--kl-border);
+  border-radius: 999px;
+  color: var(--kl-meta);
+  font-size: var(--kl-type-xxs);
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.kl-finder-loading,
+.kl-finder-empty {
+  min-height: 220px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 5px;
+  padding: 24px;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-sm);
+  text-align: center;
+}
+.kl-finder-empty-title { color: var(--kl-text); font-size: var(--kl-type-body); font-weight: 820; }
+.kl-finder-footer {
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--kl-border);
+  background: var(--kl-topbar-bg);
+  color: var(--kl-muted);
+  font-size: var(--kl-type-xs);
+}
+.kl-finder-keys { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+
 .kl-roster-body {
   min-width: 0;
   min-height: 0;
@@ -2923,6 +3094,9 @@ select:focus-visible {
   .kl-conversation { grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; padding: 10px; }
   .kl-brand-subtitle { display: none; }
   .kl-topbar { padding-left: 12px; }
+  .kl-finder-trigger { width: 44px; min-height: 44px; justify-content: center; padding: 0; }
+  .kl-finder-trigger-label,
+  .kl-finder-shortcut { display: none; }
   .kl-topbar-settings { display: grid; }
   .kl-topbar .kl-icon-button { width: 44px; height: 44px; }
   .kl-chat-header { padding: 0 12px; }
@@ -2975,6 +3149,14 @@ select:focus-visible {
   .kl-settings-panel { padding: 18px 18px 28px; }
   .kl-settings-actions { min-height: 60px; padding: 8px 12px; }
   .kl-toast { right: 12px; bottom: 76px; max-width: calc(100% - 24px); }
+  .kl-finder-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+    border-radius: 17px;
+  }
+  .kl-finder-body { min-height: 300px; padding: 12px; }
+  .kl-finder-results { min-height: 210px; max-height: calc(100vh - 230px); }
+  .kl-finder-footer { padding-inline: 12px; }
 }
 
 @media (max-width: 420px) {
@@ -3015,6 +3197,13 @@ select:focus-visible {
   .kl-roster-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kl-roster-stats { grid-template-columns: minmax(0, 1fr); }
   .kl-roster-stat-value { white-space: normal; }
+  .kl-finder-dialog .kl-dialog-header { padding-inline: 14px; }
+  .kl-finder-query { height: 48px; padding-inline: 40px 12px; }
+  .kl-finder-result { grid-template-columns: 38px minmax(0, 1fr) auto; gap: 9px; padding: 8px; }
+  .kl-finder-result-icon { width: 38px; height: 38px; border-radius: 12px; }
+  .kl-finder-result-category { max-width: 82px; overflow: hidden; text-overflow: ellipsis; }
+  .kl-finder-footer > span:first-child { display: none; }
+  .kl-finder-footer { justify-content: center; }
 }
 
 :host([data-reduced-motion="true"]) *,
@@ -3076,6 +3265,12 @@ select:focus-visible {
     #home = element("section", { className: "kl-home" });
     #chatLayout = element("div", { className: "kl-layout" });
     #contextTitle = element("div", { className: "kl-topbar-context", text: "Home" });
+    #finderTrigger = element("button", {
+      className: "kl-text-button kl-finder-trigger",
+      type: "button",
+      title: "Find anything in KikiLink (Ctrl+K)",
+      ariaLabel: "Find chats, players, activities, and settings"
+    });
     #topbarSettingsButton = element("button", {
       className: "kl-icon-button kl-topbar-settings",
       type: "button",
@@ -3237,6 +3432,10 @@ select:focus-visible {
     #newChatDialog = element("dialog", { className: "kl-dialog kl-new-chat-dialog" });
     #newChatQuery = element("input", { className: "kl-search kl-new-chat-query" });
     #newChatResults = element("div", { className: "kl-contact-results" });
+    #finderDialog = element("dialog", { className: "kl-dialog kl-finder-dialog" });
+    #finderQuery = element("input", { className: "kl-finder-query" });
+    #finderResults = element("div", { className: "kl-finder-results" });
+    #finderStatus = element("div", { className: "kl-sr-only" });
     #backButton = element("button", {
       className: "kl-icon-button kl-back",
       type: "button",
@@ -3260,6 +3459,10 @@ select:focus-visible {
     #mounted = false;
     #connectionState = "connecting";
     #homeAction = { kind: "new-chat" };
+    #finderCatalog = [];
+    #visibleFinderResults = [];
+    #finderSelectedIndex = 0;
+    #finderRenderToken = 0;
     #toastTimer;
     #launcherDrag;
     #suppressLauncherClickUntil = 0;
@@ -3280,11 +3483,13 @@ select:focus-visible {
       this.#buildLauncher();
       this.#buildPanel();
       this.#buildNewChatDialog();
+      this.#buildFinderDialog();
       this.#shadow.append(
         style,
         this.#launcher,
         this.#panel,
-        this.#newChatDialog
+        this.#newChatDialog,
+        this.#finderDialog
       );
       document.body.append(this.#host);
       this.#positionLauncher();
@@ -3293,6 +3498,7 @@ select:focus-visible {
     }
     destroy() {
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
+      this.#finderDialog.close();
       this.#newChatDialog.close();
       window.removeEventListener("resize", this.#handleViewportResize);
       this.#host.remove();
@@ -3336,6 +3542,8 @@ select:focus-visible {
       await this.refresh();
     }
     close() {
+      if (this.#finderDialog.open) this.#finderDialog.close();
+      if (this.#newChatDialog.open) this.#newChatDialog.close();
       this.#panel.hidden = true;
       this.#launcher.setAttribute("aria-expanded", "false");
     }
@@ -3417,11 +3625,19 @@ select:focus-visible {
         onClick: () => this.close()
       });
       this.#topbarSettingsButton.addEventListener("click", () => this.#openSettings());
+      this.#finderTrigger.replaceChildren(
+        element("span", { className: "kl-finder-trigger-icon", text: "\u2315" }),
+        element("span", { className: "kl-finder-trigger-label", text: "Find" }),
+        element("kbd", { className: "kl-finder-shortcut", text: "Ctrl K" })
+      );
+      this.#finderTrigger.setAttribute("aria-keyshortcuts", "Control+K Meta+K");
+      this.#finderTrigger.addEventListener("click", () => this.#openFinder());
       const topbar = element(
         "header",
         { className: "kl-topbar" },
         brand,
         this.#contextTitle,
+        this.#finderTrigger,
         this.#topbarSettingsButton,
         close
       );
@@ -3481,7 +3697,14 @@ select:focus-visible {
       this.#panel.append(topbar, shell);
       this.#showWorkspace("home", false);
       this.#panel.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && !this.#newChatDialog.open) {
+        const target = event.target;
+        const editing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target instanceof HTMLElement && target.isContentEditable;
+        if (event.key.toLocaleLowerCase() === "k" && (event.ctrlKey || event.metaKey) && !editing) {
+          event.preventDefault();
+          this.#openFinder();
+          return;
+        }
+        if (event.key === "Escape" && !this.#newChatDialog.open && !this.#finderDialog.open) {
           this.close();
         }
       });
@@ -4218,6 +4441,379 @@ select:focus-visible {
         element("footer", { className: "kl-dialog-actions" }, cancel, open)
       );
     }
+    #buildFinderDialog() {
+      const title = element("div", { className: "kl-dialog-title", text: "Find anything" });
+      title.id = "kikilink-finder-title";
+      this.#finderDialog.setAttribute("aria-labelledby", title.id);
+      const close = element("button", {
+        className: "kl-icon-button",
+        type: "button",
+        text: "\xD7",
+        title: "Close",
+        ariaLabel: "Close LinkFinder",
+        onClick: () => this.#finderDialog.close()
+      });
+      const header = element(
+        "header",
+        { className: "kl-dialog-header" },
+        element(
+          "div",
+          { className: "kl-dialog-heading" },
+          title,
+          element("div", {
+            className: "kl-dialog-subtitle",
+            text: "Jump to a chat, player, activity, or setting."
+          })
+        ),
+        close
+      );
+      this.#finderResults.id = "kikilink-finder-results";
+      this.#finderResults.setAttribute("role", "listbox");
+      this.#finderResults.setAttribute("aria-label", "KikiLink search results");
+      this.#finderQuery.type = "search";
+      this.#finderQuery.placeholder = "Search chats, players, activities, settings\u2026";
+      this.#finderQuery.autocomplete = "off";
+      this.#finderQuery.spellcheck = false;
+      this.#finderQuery.setAttribute("role", "combobox");
+      this.#finderQuery.setAttribute("aria-label", "Find anything in KikiLink");
+      this.#finderQuery.setAttribute("aria-autocomplete", "list");
+      this.#finderQuery.setAttribute("aria-controls", this.#finderResults.id);
+      this.#finderQuery.setAttribute("aria-expanded", "false");
+      this.#finderQuery.addEventListener("input", () => this.#renderFinderResults());
+      this.#finderQuery.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          this.#moveFinderSelection(event.key === "ArrowDown" ? 1 : -1);
+          return;
+        }
+        if (event.key === "Enter" && this.#visibleFinderResults.length > 0) {
+          event.preventDefault();
+          void this.#chooseFinderResult(this.#finderSelectedIndex);
+        }
+      });
+      this.#finderStatus.setAttribute("role", "status");
+      this.#finderStatus.setAttribute("aria-live", "polite");
+      this.#finderDialog.addEventListener("close", () => {
+        this.#finderRenderToken += 1;
+        this.#finderQuery.setAttribute("aria-expanded", "false");
+        this.#finderQuery.removeAttribute("aria-activedescendant");
+      });
+      const searchIcon = element("span", { className: "kl-finder-search-icon", text: "\u2315" });
+      searchIcon.setAttribute("aria-hidden", "true");
+      const body = element(
+        "div",
+        { className: "kl-finder-body" },
+        element("div", { className: "kl-finder-input-wrap" }, searchIcon, this.#finderQuery),
+        this.#finderStatus,
+        this.#finderResults
+      );
+      const footer = element(
+        "footer",
+        { className: "kl-finder-footer" },
+        element("span", { text: "Results stay in this browser" }),
+        element(
+          "span",
+          { className: "kl-finder-keys" },
+          element("kbd", { text: "\u2191\u2193" }),
+          " navigate ",
+          element("kbd", { text: "Enter" }),
+          " open ",
+          element("kbd", { text: "Esc" }),
+          " close"
+        )
+      );
+      this.#finderDialog.append(header, body, footer);
+    }
+    async #openFinder() {
+      this.#finderQuery.value = "";
+      this.#finderCatalog = [];
+      this.#visibleFinderResults = [];
+      this.#finderSelectedIndex = 0;
+      this.#finderResults.replaceChildren(
+        element("div", { className: "kl-finder-loading", text: "Gathering your shortcuts\u2026" })
+      );
+      if (!this.#finderDialog.open) this.#finderDialog.showModal();
+      this.#finderQuery.setAttribute("aria-expanded", "true");
+      this.#finderQuery.focus();
+      const token = ++this.#finderRenderToken;
+      const catalog = await this.#buildFinderCatalog();
+      if (token !== this.#finderRenderToken || !this.#finderDialog.open) return;
+      this.#finderCatalog = catalog;
+      this.#renderFinderResults();
+    }
+    async #buildFinderCatalog() {
+      const settings = this.settings.get();
+      const conversations = await this.service.listConversations();
+      const unread = conversations.reduce((count, conversation) => count + conversation.unread, 0);
+      const currentRoomCount = this.adapter.getRoomCharacters().length;
+      const results = [
+        {
+          id: "destination-home",
+          kind: "destination",
+          icon: "\u2302",
+          category: "Destination",
+          title: "Home",
+          detail: "Overview and your suggested next step",
+          keywords: "start link deck overview dashboard",
+          priority: 52,
+          action: { kind: "workspace", target: "home" }
+        },
+        {
+          id: "destination-chat",
+          kind: "destination",
+          icon: "\u2194",
+          category: "Destination",
+          title: "Chat",
+          detail: unread > 0 ? `${unread} unread ${unread === 1 ? "Beep" : "Beeps"}` : "Recent Beep conversations",
+          keywords: "beep message messages conversation conversations linkchat",
+          priority: 76 + Math.min(unread, 20),
+          action: { kind: "workspace", target: "chat" }
+        },
+        {
+          id: "new-chat",
+          kind: "destination",
+          icon: "+",
+          category: "Action",
+          title: "Start a new chat",
+          detail: "Choose a contact or enter a member number",
+          keywords: "new beep contact member number send message",
+          priority: 92,
+          action: { kind: "new-chat" }
+        },
+        {
+          id: "destination-players",
+          kind: "destination",
+          icon: "\u2637",
+          category: "Destination",
+          title: "Players",
+          detail: settings.linkRoster.enabled ? `${currentRoomCount} ${currentRoomCount === 1 ? "person" : "people"} here now` : "Optional player notebook \xB7 currently off",
+          keywords: "roster people room notes tags favorites whisper profile linkroster",
+          priority: 74,
+          action: { kind: "workspace", target: "roster" }
+        },
+        {
+          id: "destination-activities",
+          kind: "destination",
+          icon: "\u2726",
+          category: "Destination",
+          title: "Activities",
+          detail: settings.linkActivities.enabled ? `${settings.linkActivities.activities.length} saved activities` : "Optional room actions \xB7 currently off",
+          keywords: "activity activities emote room roleplay studio linkactivities",
+          priority: 68,
+          action: { kind: "workspace", target: "activities" }
+        },
+        {
+          id: "destination-settings",
+          kind: "destination",
+          icon: "\u2699",
+          category: "Destination",
+          title: "Settings",
+          detail: "Customize KikiLink",
+          keywords: "preferences customize configuration options",
+          priority: 62,
+          action: { kind: "workspace", target: "settings" }
+        }
+      ];
+      for (const conversation of conversations) {
+        const details = [
+          "Chat",
+          `#${conversation.peerNumber}`,
+          conversation.unread > 0 ? `${conversation.unread} unread` : "",
+          conversation.lastMessageAt > 0 ? formatRelativeTime(conversation.lastMessageAt) : ""
+        ].filter(Boolean);
+        results.push({
+          id: `conversation-${conversation.peerNumber}`,
+          kind: "conversation",
+          icon: "\u2194",
+          category: "Chat",
+          title: conversation.peerName,
+          detail: details.join(" \xB7 "),
+          keywords: `${conversation.peerNumber} beep message conversation ${conversation.lastMessage}`,
+          priority: 120 + Math.min(conversation.unread * 8, 40) + (conversation.pinned ? 12 : 0),
+          action: {
+            kind: "conversation",
+            peerNumber: conversation.peerNumber,
+            peerName: conversation.peerName
+          }
+        });
+      }
+      const rosterEntries = this.roster.list("known");
+      const knownPeople = new Set(rosterEntries.map((entry) => entry.memberNumber));
+      for (const entry of rosterEntries) {
+        const details = [
+          entry.present ? "Here now" : "Player",
+          `#${entry.memberNumber}`,
+          entry.favorite ? "Favorite" : "",
+          entry.tags.slice(0, 2).join(" \xB7 ")
+        ].filter(Boolean);
+        results.push({
+          id: `player-${entry.memberNumber}`,
+          kind: "player",
+          icon: entry.favorite ? "\u2605" : "\u2637",
+          category: entry.present ? "In room" : "Player",
+          title: entry.displayName,
+          detail: details.join(" \xB7 "),
+          keywords: `${entry.memberNumber} ${entry.note} ${entry.tags.join(" ")} ${entry.lastRoomName} roster player`,
+          priority: 104 + (entry.present ? 24 : 0) + (entry.favorite ? 12 : 0),
+          action: { kind: "player", memberNumber: entry.memberNumber }
+        });
+      }
+      const conversationNumbers = new Set(conversations.map((conversation) => conversation.peerNumber));
+      for (const contact of this.adapter.getKnownContacts()) {
+        if (knownPeople.has(contact.memberNumber) || conversationNumbers.has(contact.memberNumber)) continue;
+        results.push({
+          id: `contact-${contact.memberNumber}`,
+          kind: "conversation",
+          icon: "\u2194",
+          category: "Contact",
+          title: contact.memberName,
+          detail: `Known contact \xB7 #${contact.memberNumber}`,
+          keywords: `${contact.memberNumber} contact friend beep new chat`,
+          priority: 90,
+          action: {
+            kind: "conversation",
+            peerNumber: contact.memberNumber,
+            peerName: contact.memberName
+          }
+        });
+      }
+      settings.linkActivities.activities.forEach((activity, index) => {
+        results.push({
+          id: `activity-${index}`,
+          kind: "activity",
+          icon: "\u2726",
+          category: "Activity",
+          title: activity.label,
+          detail: activity.template,
+          keywords: `activity emote room action ${activity.template}`,
+          priority: 72,
+          action: { kind: "activity", index }
+        });
+      });
+      for (const setting of finderSettingResults()) results.push(setting);
+      return results;
+    }
+    #renderFinderResults() {
+      const query = normalizeFinderText(this.#finderQuery.value);
+      let results;
+      if (!query) {
+        const featuredConversation = this.#finderCatalog.filter((result) => result.kind === "conversation" && result.id.startsWith("conversation-")).sort((left, right) => right.priority - left.priority)[0];
+        const suggestedIds = [
+          featuredConversation?.id,
+          "new-chat",
+          featuredConversation ? void 0 : "destination-chat",
+          "destination-players",
+          "destination-activities",
+          "destination-settings"
+        ].filter((id) => Boolean(id));
+        results = suggestedIds.map((id) => this.#finderCatalog.find((result) => result.id === id)).filter((result) => result !== void 0);
+      } else {
+        results = rankFinderResults(this.#finderCatalog, query);
+        const directNumber = Number(query.replace(/^#/u, ""));
+        const hasDirectConversation = results.some(
+          (result) => result.action.kind === "conversation" && result.action.peerNumber === directNumber
+        );
+        if (/^#?\d+$/u.test(query) && Number.isSafeInteger(directNumber) && directNumber >= 0 && directNumber !== this.adapter.getOwnMemberNumber() && !hasDirectConversation) {
+          results.unshift({
+            id: `direct-${directNumber}`,
+            kind: "conversation",
+            icon: "+",
+            category: "Action",
+            title: `Start chat with #${directNumber}`,
+            detail: this.adapter.getMemberName(directNumber),
+            keywords: query,
+            priority: 1e3,
+            action: {
+              kind: "conversation",
+              peerNumber: directNumber,
+              peerName: this.adapter.getMemberName(directNumber)
+            }
+          });
+        }
+        results = results.slice(0, 12);
+      }
+      this.#visibleFinderResults = results;
+      this.#finderSelectedIndex = 0;
+      this.#finderResults.replaceChildren();
+      if (results.length === 0) {
+        this.#finderResults.append(
+          element(
+            "div",
+            { className: "kl-finder-empty" },
+            element("div", { className: "kl-finder-empty-title", text: "Nothing matches yet" }),
+            element("div", {
+              text: "Try a name, member number, feature, activity, or setting."
+            })
+          )
+        );
+        this.#finderStatus.textContent = "No KikiLink results found";
+        this.#finderQuery.removeAttribute("aria-activedescendant");
+        return;
+      }
+      results.forEach((result, index) => {
+        const resultIcon = element("span", { className: "kl-finder-result-icon", text: result.icon });
+        resultIcon.setAttribute("aria-hidden", "true");
+        const option = element(
+          "button",
+          { className: "kl-finder-result", type: "button" },
+          resultIcon,
+          element(
+            "span",
+            { className: "kl-finder-result-copy" },
+            element("span", { className: "kl-finder-result-title", text: result.title }),
+            element("span", { className: "kl-finder-result-detail", text: result.detail })
+          ),
+          element("span", { className: "kl-finder-result-category", text: result.category })
+        );
+        option.id = `kikilink-finder-option-${index}`;
+        option.dataset.finderKind = result.kind;
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", String(index === 0));
+        option.tabIndex = -1;
+        option.addEventListener("pointermove", () => this.#setFinderSelection(index, false));
+        option.addEventListener("click", () => void this.#chooseFinderResult(index));
+        this.#finderResults.append(option);
+      });
+      this.#finderStatus.textContent = `${results.length} ${results.length === 1 ? "result" : "results"} available`;
+      this.#setFinderSelection(0, false);
+    }
+    #moveFinderSelection(delta) {
+      if (this.#visibleFinderResults.length === 0) return;
+      const next = (this.#finderSelectedIndex + delta + this.#visibleFinderResults.length) % this.#visibleFinderResults.length;
+      this.#setFinderSelection(next, true);
+    }
+    #setFinderSelection(index, scroll) {
+      if (index < 0 || index >= this.#visibleFinderResults.length) return;
+      this.#finderSelectedIndex = index;
+      const options = [...this.#finderResults.querySelectorAll('[role="option"]')];
+      options.forEach((option, candidate) => {
+        option.dataset.selected = String(candidate === index);
+        option.setAttribute("aria-selected", String(candidate === index));
+      });
+      const selected = options[index];
+      if (!selected) return;
+      this.#finderQuery.setAttribute("aria-activedescendant", selected.id);
+      if (scroll) selected.scrollIntoView?.({ block: "nearest" });
+    }
+    async #chooseFinderResult(index) {
+      const result = this.#visibleFinderResults[index];
+      if (!result) return;
+      this.#finderDialog.close();
+      const action = result.action;
+      if (action.kind === "workspace") {
+        this.#activateFeature(action.target);
+      } else if (action.kind === "new-chat") {
+        this.#openNewChat();
+      } else if (action.kind === "conversation") {
+        await this.openChat(action.peerNumber, action.peerName);
+      } else if (action.kind === "player") {
+        this.#openRoster(action.memberNumber);
+      } else if (action.kind === "activity") {
+        this.#openActivities(action.index);
+      } else {
+        this.#openSettings(action.section);
+      }
+    }
     #buildRosterPage() {
       const header = element(
         "header",
@@ -4299,7 +4895,7 @@ select:focus-visible {
       });
       this.#rosterPage.append(header, body, footer);
     }
-    #openRoster() {
+    #openRoster(memberNumber) {
       if (!this.settings.get().linkRoster.enabled) {
         this.#openSettings("players");
         this.#rosterEnabledToggle.focus();
@@ -4309,11 +4905,16 @@ select:focus-visible {
       this.#showWorkspace("roster");
       this.roster.sync();
       this.#rosterSearch.value = "";
-      this.#rosterScope = this.adapter.isInChatRoom() ? "current" : "known";
-      this.#selectedRosterMember = void 0;
+      const selectedEntry = memberNumber === void 0 ? void 0 : this.roster.list("known").find((entry) => entry.memberNumber === memberNumber);
+      this.#rosterScope = selectedEntry?.present === true ? "current" : memberNumber !== void 0 ? "known" : this.adapter.isInChatRoom() ? "current" : "known";
+      this.#selectedRosterMember = memberNumber;
       this.#notebookDirty = false;
       this.#renderRoster();
-      this.#rosterSearch.focus();
+      if (memberNumber !== void 0) {
+        this.#rosterList.querySelector(`[data-member-number="${memberNumber}"]`)?.focus();
+      } else {
+        this.#rosterSearch.focus();
+      }
     }
     #renderRoster() {
       const roomName = this.adapter.getCurrentRoomName();
@@ -4371,6 +4972,7 @@ select:focus-visible {
         })
       );
       button.dataset.selected = String(entry.memberNumber === this.#selectedRosterMember);
+      button.dataset.memberNumber = entry.memberNumber.toString();
       button.addEventListener("click", () => {
         if (entry.memberNumber === this.#selectedRosterMember) return;
         this.#saveNotebook(false);
@@ -4602,7 +5204,7 @@ select:focus-visible {
       );
       this.#activitiesPage.append(header, body, actions);
     }
-    #openActivities() {
+    #openActivities(activityIndex) {
       if (!this.settings.get().linkActivities.enabled) {
         this.#openSettings("activities");
         this.#activitiesToggle.focus();
@@ -4610,6 +5212,9 @@ select:focus-visible {
         return;
       }
       this.#showWorkspace("activities");
+      if (activityIndex !== void 0 && Number.isInteger(activityIndex) && activityIndex >= 0) {
+        this.#selectedActivityIndex = activityIndex;
+      }
       this.#activityTargetQuery.value = "";
       const targets = this.activities.getTargets();
       const preferredTarget = targets.find(
@@ -4619,7 +5224,11 @@ select:focus-visible {
       const activityCount = this.settings.get().linkActivities.activities.length;
       if (this.#selectedActivityIndex >= activityCount) this.#selectedActivityIndex = 0;
       this.#renderActivitiesPage();
-      this.#activityTargetQuery.focus();
+      if (activityIndex !== void 0) {
+        this.#activityLibrary.querySelector(`[data-activity-index="${this.#selectedActivityIndex}"]`)?.focus();
+      } else {
+        this.#activityTargetQuery.focus();
+      }
     }
     #renderActivitiesPage() {
       const targets = this.activities.getTargets();
@@ -4684,6 +5293,7 @@ select:focus-visible {
             element("div", { className: "kl-activity-card-template", text: activity2.template })
           );
           button.dataset.selected = String(index === this.#selectedActivityIndex);
+          button.dataset.activityIndex = index.toString();
           button.addEventListener("click", () => {
             this.#selectedActivityIndex = index;
             this.#renderActivitiesPage();
@@ -5437,6 +6047,77 @@ ${expanded}` : expanded;
       }
     }
   };
+  function finderSettingResults() {
+    const definitions = [
+      {
+        section: "appearance",
+        title: "Appearance & comfort",
+        detail: "Theme, accent, spacing, text size, Home style, and motion",
+        keywords: "light dark system color colour guided focused density font scale reduced motion"
+      },
+      {
+        section: "navigation",
+        title: "Navigation & launcher",
+        detail: "Opening destination, side, and launcher position",
+        keywords: "home last chat left right drag reset emblem start screen"
+      },
+      {
+        section: "chat",
+        title: "Chat & history",
+        detail: "History, retention, and Quick Actions",
+        keywords: "beep messages save storage days clear wave hug boop template"
+      },
+      {
+        section: "players",
+        title: "Players & notebook",
+        detail: "Roster, encounters, notes, favorites, and tags",
+        keywords: "people linkroster tracking private data clear whisper profile"
+      },
+      {
+        section: "activities",
+        title: "Activities & templates",
+        detail: "Activity Studio and reusable room emotes",
+        keywords: "linkactivities action roleplay target source member edit enable"
+      }
+    ];
+    return definitions.map((definition, index) => ({
+      id: `setting-${definition.section}`,
+      kind: "setting",
+      icon: "\u2699",
+      category: "Settings",
+      title: definition.title,
+      detail: definition.detail,
+      keywords: definition.keywords,
+      priority: 58 - index,
+      action: { kind: "setting", section: definition.section }
+    }));
+  }
+  function normalizeFinderText(value) {
+    return value.trim().toLocaleLowerCase().normalize("NFKD").replace(/\p{M}/gu, "").replace(/\s+/gu, " ");
+  }
+  function rankFinderResults(catalog, query) {
+    const terms = query.split(" ").filter(Boolean);
+    return catalog.map((result) => {
+      const title = normalizeFinderText(result.title);
+      const detail = normalizeFinderText(result.detail);
+      const category = normalizeFinderText(result.category);
+      const haystack = `${title} ${detail} ${category} ${normalizeFinderText(result.keywords)}`;
+      if (!terms.every((term) => haystack.includes(term))) return void 0;
+      let score = result.priority;
+      if (title === query) score += 1e3;
+      else if (title.startsWith(query)) score += 650;
+      else if (title.includes(query)) score += 360;
+      if (category === query) score += 220;
+      else if (category.startsWith(query)) score += 90;
+      if (detail.startsWith(query)) score += 80;
+      for (const term of terms) {
+        if (title.split(" ").some((word) => word.startsWith(term))) score += 35;
+      }
+      return { result, score };
+    }).filter((entry) => entry !== void 0).sort(
+      (left, right) => right.score - left.score || left.result.title.localeCompare(right.result.title)
+    ).map((entry) => entry.result);
+  }
   function selectOption(value, label) {
     const option = element("option", { text: label });
     option.value = value;
@@ -5990,7 +6671,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.8.0");
+    const app = new KikiLinkApp("0.9.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();
