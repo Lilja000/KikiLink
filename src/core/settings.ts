@@ -4,7 +4,7 @@ import {
   sanitizeCustomActivities,
 } from "../modules/link-activities/custom-activity-library";
 import { sanitizeReactionRules } from "../modules/link-reactions/reaction-rules";
-import { normalizeCloudinaryUploadConfig } from "../modules/link-chat/image-upload";
+import { normalizeImageUrl } from "../modules/link-chat/media";
 
 export interface KeyValueStorage {
   getItem(key: string): string | null;
@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 13,
+  schemaVersion: 14,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -23,6 +23,12 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     launcherSide: "right",
     launcherOpen: "home",
     launcherPosition: null,
+    roomBadge: {
+      enabled: true,
+      placement: "between-addons",
+      offsetX: 0,
+      offsetY: 0,
+    },
     reducedMotion: false,
     settingsSection: "appearance",
   },
@@ -37,9 +43,8 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     typingIndicators: true,
     imagePreviews: "ask",
     imageUploads: {
-      enabled: false,
-      cloudName: "",
-      uploadPreset: "",
+      enabled: true,
+      retention: "24h",
     },
     quickActions: [
       { label: "Wave", template: "*waves to {name}*" },
@@ -51,7 +56,12 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     enabled: true,
     status: "online",
     statusMessage: "",
+    avatarUrl: "",
     autoIdleMinutes: 10,
+    afkAutoReply: {
+      enabled: false,
+      message: "Привет, я АФК, напишите мне позже!",
+    },
   },
   linkActivities: {
     enabled: true,
@@ -83,6 +93,7 @@ const SETTINGS_KEY = "kikilink:settings:v1";
 export class SettingsStore {
   #settings: KikiLinkSettings;
   readonly #storage: KeyValueStorage;
+  readonly #listeners = new Set<(settings: KikiLinkSettings) => void>();
 
   constructor(storage?: KeyValueStorage) {
     this.#storage = storage ?? getDefaultStorage();
@@ -102,7 +113,9 @@ export class SettingsStore {
     } catch {
       // Keep the validated in-memory settings if persistent storage is unavailable.
     }
-    return this.get();
+    const settings = this.get();
+    this.#notify(settings);
+    return settings;
   }
 
   reset(): KikiLinkSettings {
@@ -112,7 +125,18 @@ export class SettingsStore {
     } catch {
       // The in-memory reset still succeeds.
     }
-    return this.get();
+    const settings = this.get();
+    this.#notify(settings);
+    return settings;
+  }
+
+  subscribe(listener: (settings: KikiLinkSettings) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #notify(settings: KikiLinkSettings): void {
+    for (const listener of [...this.#listeners]) listener(structuredClone(settings));
   }
 
   #load(): KikiLinkSettings {
@@ -163,7 +187,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
 
   return {
-    schemaVersion: 13,
+    schemaVersion: 14,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -186,6 +210,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? ui.launcherOpen
           : DEFAULT_SETTINGS.ui.launcherOpen,
       launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
+      roomBadge: sanitizeRoomBadge(ui.roomBadge),
       reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
       settingsSection: isSettingsSection(ui.settingsSection)
         ? ui.settingsSection
@@ -223,7 +248,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never"
           ? linkChat.imagePreviews
           : DEFAULT_SETTINGS.linkChat.imagePreviews,
-      imageUploads: sanitizeImageUploads(imageUploads),
+      imageUploads: sanitizeImageUploads(imageUploads, sourceSchema),
       quickActions: sanitizeQuickActions(linkChat.quickActions),
     },
     linkPresence: {
@@ -238,12 +263,14 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         typeof linkPresence.statusMessage === "string"
           ? linkPresence.statusMessage.trim().slice(0, 80)
           : DEFAULT_SETTINGS.linkPresence.statusMessage,
+      avatarUrl: sanitizeAvatarUrl(linkPresence.avatarUrl),
       autoIdleMinutes: integerInRange(
         linkPresence.autoIdleMinutes,
         0,
         120,
         DEFAULT_SETTINGS.linkPresence.autoIdleMinutes,
       ),
+      afkAutoReply: sanitizeAfkAutoReply(linkPresence.afkAutoReply),
     },
     linkActivities: {
       enabled:
@@ -274,12 +301,57 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
 
 function sanitizeImageUploads(
   value: Record<string, unknown>,
+  sourceSchema: number,
 ): KikiLinkSettings["linkChat"]["imageUploads"] {
-  const config = normalizeCloudinaryUploadConfig(value);
   return {
-    enabled: value.enabled === true && config !== null,
-    cloudName: config?.cloudName ?? "",
-    uploadPreset: config?.uploadPreset ?? "",
+    // Schema 13 stored Cloudinary credentials. Do not silently reinterpret its enabled switch as
+    // consent to upload to a different third-party provider after upgrading.
+    enabled:
+      sourceSchema < 14
+        ? false
+        : booleanOr(value.enabled, DEFAULT_SETTINGS.linkChat.imageUploads.enabled),
+    retention:
+      value.retention === "1h" ||
+      value.retention === "12h" ||
+      value.retention === "24h" ||
+      value.retention === "72h"
+        ? value.retention
+        : DEFAULT_SETTINGS.linkChat.imageUploads.retention,
+  };
+}
+
+function sanitizeAfkAutoReply(
+  value: unknown,
+): KikiLinkSettings["linkPresence"]["afkAutoReply"] {
+  const source = isRecord(value) ? value : {};
+  const message =
+    typeof source.message === "string"
+      ? source.message.trim().slice(0, 500)
+      : DEFAULT_SETTINGS.linkPresence.afkAutoReply.message;
+  return {
+    enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.linkPresence.afkAutoReply.enabled),
+    message: message || DEFAULT_SETTINGS.linkPresence.afkAutoReply.message,
+  };
+}
+
+function sanitizeAvatarUrl(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length > 500) return "";
+  const normalized = normalizeImageUrl(value);
+  return normalized && normalized.length <= 500 ? normalized : "";
+}
+
+function sanitizeRoomBadge(value: unknown): KikiLinkSettings["ui"]["roomBadge"] {
+  const source = isRecord(value) ? value : {};
+  return {
+    enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.ui.roomBadge.enabled),
+    placement:
+      source.placement === "before-addons" ||
+      source.placement === "between-addons" ||
+      source.placement === "after-addons"
+        ? source.placement
+        : DEFAULT_SETTINGS.ui.roomBadge.placement,
+    offsetX: integerInRange(source.offsetX, -96, 96, DEFAULT_SETTINGS.ui.roomBadge.offsetX),
+    offsetY: integerInRange(source.offsetY, -40, 120, DEFAULT_SETTINGS.ui.roomBadge.offsetY),
   };
 }
 

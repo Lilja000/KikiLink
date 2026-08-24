@@ -5,6 +5,7 @@ import { element } from "../../utils/dom";
 import { BLOSSOM_ICON_DATA_URL } from "../link-chat/blossom";
 import {
   activityImageUrl,
+  canonicalVanillaActivityImage,
   expandCustomActivityTemplate,
   LinkActivitiesService,
 } from "./link-activities-service";
@@ -161,6 +162,7 @@ export class CustomActivitiesView {
       return;
     }
     const draft = structuredClone(existing ?? createBlankCustomActivity(createCustomActivityId()));
+    draft.image = canonicalVanillaActivityImage(draft.image);
     this.#editingId = draft.id;
     this.#hoveredGroup = undefined;
     const back = element("button", {
@@ -201,6 +203,10 @@ export class CustomActivitiesView {
       className: "kl-select kl-custom-slot-select",
       ariaLabel: "Body slot",
     }) as HTMLSelectElement;
+    // Kept as a hidden compatibility/form control; the visible picker is the radio grid below.
+    slotSelect.hidden = true;
+    slotSelect.tabIndex = -1;
+    slotSelect.setAttribute("aria-hidden", "true");
     for (const slot of slots) {
       const option = document.createElement("option");
       option.value = slot.name;
@@ -208,6 +214,41 @@ export class CustomActivitiesView {
       slotSelect.append(option);
     }
     slotSelect.value = draft.targetGroup;
+    const slotButtons = new Map<string, HTMLButtonElement>();
+    let redrawCharacter = (): void => undefined;
+    const selectSlot = (groupName: string): void => {
+      if (!slotButtons.has(groupName)) return;
+      draft.targetGroup = groupName;
+      slotSelect.value = groupName;
+      for (const [name, button] of slotButtons) {
+        const selected = name === groupName;
+        button.dataset.selected = String(selected);
+        button.setAttribute("aria-checked", String(selected));
+      }
+      redrawCharacter();
+    };
+    const slotGrid = element("div", {
+      className: "kl-custom-slot-grid",
+      ariaLabel: "Body slots",
+    });
+    slotGrid.setAttribute("role", "radiogroup");
+    for (const slot of slots) {
+      const button = element("button", {
+        className: "kl-custom-slot-choice",
+        type: "button",
+        text: slot.label,
+        title: slot.label,
+        ariaLabel: `Use ${slot.label} body slot`,
+        onClick: () => selectSlot(slot.name),
+      });
+      button.dataset.slot = slot.name;
+      button.dataset.selected = String(slot.name === draft.targetGroup);
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", String(slot.name === draft.targetGroup));
+      slotButtons.set(slot.name, button);
+      slotGrid.append(button);
+    }
+    slotSelect.addEventListener("change", () => selectSlot(slotSelect.value));
 
     const name = element("input", {
       className: "kl-search kl-custom-activity-name",
@@ -284,7 +325,7 @@ export class CustomActivitiesView {
             title: image,
             ariaLabel: `Use ${image} picture`,
             onClick: () => {
-              draft.image = image;
+              draft.image = canonicalVanillaActivityImage(image);
               renderImages();
             },
           },
@@ -404,8 +445,9 @@ export class CustomActivitiesView {
       element("div", { className: "kl-custom-field-label", text: "Body slot" }),
       element("div", {
         className: "kl-custom-field-help",
-        text: "Tap your character or choose a slot below.",
+        text: "Tap your character or use one of the always-visible slots below.",
       }),
+      slotGrid,
       element("div", { className: "kl-custom-character-stage" }, canvas, canvasFallback),
       slotSelect,
       element("div", {
@@ -413,17 +455,31 @@ export class CustomActivitiesView {
         text: "The activity will appear next to vanilla actions on this slot.",
       }),
     );
+    let redrawFrame: number | undefined;
     const redraw = (): void => {
+      if (redrawFrame !== undefined) return;
+      redrawFrame = requestAnimationFrame(() => {
+        redrawFrame = undefined;
+        if (!canvas.isConnected) return;
+        const drawn = this.service.drawPlayer(canvas, draft.targetGroup, this.#hoveredGroup);
+        canvasFallback.hidden = drawn;
+      });
+    };
+    redrawCharacter = redraw;
+    const redrawImmediately = (): void => {
       const drawn = this.service.drawPlayer(canvas, slotSelect.value, this.#hoveredGroup);
       canvasFallback.hidden = drawn;
     };
-    slotSelect.addEventListener("change", redraw);
     canvas.addEventListener("pointermove", (event) => {
+      if (event.pointerType && event.pointerType !== "mouse") return;
       const point = canvasPoint(canvas, event);
-      this.#hoveredGroup = this.service.bodySlotAt(point.x, point.y)?.name;
+      const hoveredGroup = this.service.bodySlotAt(point.x, point.y)?.name;
+      if (hoveredGroup === this.#hoveredGroup) return;
+      this.#hoveredGroup = hoveredGroup;
       redraw();
     });
     canvas.addEventListener("pointerleave", () => {
+      if (this.#hoveredGroup === undefined) return;
       this.#hoveredGroup = undefined;
       redraw();
     });
@@ -431,12 +487,12 @@ export class CustomActivitiesView {
       const point = canvasPoint(canvas, event);
       const slot = this.service.bodySlotAt(point.x, point.y);
       if (!slot) return;
-      slotSelect.value = slot.name;
-      redraw();
+      selectSlot(slot.name);
     });
+    redrawImmediately();
 
     const save = element("button", {
-      className: "kl-text-button kl-text-button--primary",
+      className: "kl-text-button kl-text-button--primary kl-custom-activity-save",
       type: "button",
       text: "Save activity",
       onClick: () => {
@@ -452,7 +508,7 @@ export class CustomActivitiesView {
           targetGroup: slotSelect.value,
           targetMode: targetMode.value as CustomActivityTargetMode,
           template: activityTemplate,
-          image: draft.image,
+          image: canonicalVanillaActivityImage(draft.image),
           arousal: arousalToggle.checked ? Number(arousalRange.value) : 0,
         };
         this.settings.update((settingsDraft) => {
@@ -469,7 +525,7 @@ export class CustomActivitiesView {
       },
     });
     const cancel = element("button", {
-      className: "kl-text-button",
+      className: "kl-text-button kl-custom-activity-cancel",
       type: "button",
       text: "Cancel",
       onClick: () => this.#renderLibrary(),

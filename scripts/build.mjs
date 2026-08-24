@@ -38,7 +38,7 @@ await build({
   format: "iife",
   platform: "browser",
   target: ["es2022"],
-  loader: { ".png": "dataurl", ".svg": "dataurl" },
+  loader: { ".png": "dataurl", ".svg": "dataurl", ".webp": "dataurl" },
   legalComments: "eof",
   sourcemap: false,
   minify: false,

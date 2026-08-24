@@ -4,8 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter, BCCustomActivityIntegration } from "../src/bc/adapter";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import {
+  activityImageUrl,
+  canonicalVanillaActivityImage,
   expandCustomActivityTemplate,
   LinkActivitiesService,
+  VANILLA_ACTIVITY_IMAGES,
 } from "../src/modules/link-activities/link-activities-service";
 
 afterEach(() => {
@@ -18,6 +21,7 @@ afterEach(() => {
     "ChatRoomPublishCustomAction",
     "ActivityEffectFlat",
     "CharacterNickname",
+    "DrawCharacter",
   ]) {
     Reflect.deleteProperty(globalThis, key);
   }
@@ -25,6 +29,78 @@ afterEach(() => {
 });
 
 describe("native Custom Activities", () => {
+  it("offers only canonical, visually unique vanilla pictures from a fixed manifest", () => {
+    globalThis.ActivityFemale3DCG = [
+      { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
+      { Name: "LSCG_Choke", MaxProgress: 10, Prerequisite: [], Target: ["ItemNeck"] },
+    ];
+    globalThis.ActivityFemale3DCGOrdering = [
+      "Caress",
+      "Pet",
+      "SpankItem",
+      "LSCG_Choke",
+      "OtherAddonFoo",
+    ];
+    const service = new LinkActivitiesService({} as BCAdapter);
+
+    expect(service.getVanillaImages()).toEqual([...VANILLA_ACTIVITY_IMAGES]);
+    expect(service.getVanillaImages()).toHaveLength(33);
+    expect(new Set(service.getVanillaImages())).toHaveLength(33);
+    expect(service.getVanillaImages()).not.toContain("LSCG_Choke");
+    expect(service.getVanillaImages()).not.toContain("SpankItem");
+    expect(service.getVanillaImages()).not.toContain("Pet");
+    expect(canonicalVanillaActivityImage("Pet")).toBe("Caress");
+    expect(canonicalVanillaActivityImage("Spank")).toBe("Slap");
+    expect(canonicalVanillaActivityImage("PenetrateFast")).toBe("PenetrateSlow");
+    expect(canonicalVanillaActivityImage("LSCG_Choke")).toBe("Caress");
+    expect(activityImageUrl("LSCG_Choke")).toBe("Assets/Female3DCG/Activity/Caress.png");
+  });
+
+  it("outlines every body zone, draws the selected zone last, and picks the smallest overlap", () => {
+    globalThis.ActivityFemale3DCG = [
+      {
+        Name: "Caress",
+        MaxProgress: 10,
+        Prerequisite: [],
+        Target: ["ItemArms", "ItemHands"],
+      },
+    ];
+    globalThis.ActivityFemale3DCGOrdering = ["Caress"];
+    globalThis.AssetGroup = [
+      {
+        Name: "ItemArms",
+        Description: "Arms",
+        Category: "Item",
+        Zone: [[0, 0, 400, 400]],
+      },
+      {
+        Name: "ItemHands",
+        Description: "Hands",
+        Category: "Item",
+        Zone: [[100, 100, 50, 50]],
+      },
+    ];
+    globalThis.Player = { MemberNumber: 999, Name: "Kiki", FriendNames: new Map() };
+    globalThis.DrawCharacter = vi.fn();
+    const context = {
+      clearRect: vi.fn(),
+      fillRect: vi.fn(),
+      strokeRect: vi.fn(),
+      fillStyle: "",
+      strokeStyle: "",
+      lineWidth: 1,
+    } as unknown as CanvasRenderingContext2D;
+    const canvas = document.createElement("canvas");
+    Object.defineProperty(canvas, "getContext", { value: () => context });
+    const service = new LinkActivitiesService({} as BCAdapter);
+
+    expect(service.drawPlayer(canvas, "ItemArms")).toBe(true);
+    expect(globalThis.DrawCharacter).toHaveBeenCalledOnce();
+    expect(context.strokeRect).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(context.strokeRect).mock.calls.at(-1)).toEqual([0, 0, 200, 200]);
+    expect(service.bodySlotAt(60, 60)?.name).toBe("ItemHands");
+  });
+
   it("registers beside vanilla activities, reuses an icon, and adds the Blossom marker", () => {
     globalThis.ActivityFemale3DCG = [
       { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },

@@ -40,13 +40,14 @@ import {
 import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
 import {
-  CloudinaryImageUploader,
-  normalizeCloudinaryUploadConfig,
+  LitterboxImageUploader,
+  normalizeLitterboxUploadConfig,
+  type LitterboxUploadConfig,
   type LocalImageUploader,
   type PreparedLocalImage,
 } from "./image-upload";
 import { kikiIcon, type KikiLinkIconName } from "./icons";
-import { BLOSSOM_ICON_DATA_URL } from "./blossom";
+import KIKILINK_EMBLEM_DATA_URL from "../../../design/branding/kikilink-emblem.webp";
 
 type WorkspaceView = "home" | "chat" | "roster" | "activities" | "settings";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
@@ -224,15 +225,22 @@ export class LinkChatView {
   readonly #typingIndicatorsToggle = element("input") as HTMLInputElement;
   readonly #imagePreviewSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
   readonly #imageUploadsToggle = element("input") as HTMLInputElement;
-  readonly #cloudinaryCloudNameInput = element("input", {
-    className: "kl-search kl-image-upload-setting-input",
-  }) as HTMLInputElement;
-  readonly #cloudinaryPresetInput = element("input", {
-    className: "kl-search kl-image-upload-setting-input",
-  }) as HTMLInputElement;
+  readonly #imageUploadRetentionSelect = element("select", {
+    className: "kl-select",
+  }) as HTMLSelectElement;
   readonly #imageUploadSettingsOptions = element("div", {
     className: "kl-image-upload-settings-options",
   });
+  readonly #roomBadgeToggle = element("input") as HTMLInputElement;
+  readonly #roomBadgePlacementSelect = element("select", {
+    className: "kl-select",
+  }) as HTMLSelectElement;
+  readonly #roomBadgeOffsetXInput = element("input", {
+    className: "kl-number-input",
+  }) as HTMLInputElement;
+  readonly #roomBadgeOffsetYInput = element("input", {
+    className: "kl-number-input",
+  }) as HTMLInputElement;
   readonly #retentionInput = element("input", { className: "kl-number-input" }) as HTMLInputElement;
   readonly #saveSettingsButton = element("button", {
     className: "kl-text-button kl-text-button--primary",
@@ -331,7 +339,16 @@ export class LinkChatView {
   readonly #presenceOptions = element("div", { className: "kl-presence-options" });
   readonly #presenceEnabledToggle = element("input") as HTMLInputElement;
   readonly #presenceMessage = element("input", { className: "kl-search kl-presence-message" }) as HTMLInputElement;
-  readonly #autoIdleSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #autoIdleInput = element("input", { className: "kl-number-input" }) as HTMLInputElement;
+  readonly #presenceAvatarUrl = element("input", {
+    className: "kl-search kl-presence-avatar-url",
+  }) as HTMLInputElement;
+  readonly #presenceAvatarPreview = element("div", { className: "kl-avatar kl-profile-avatar-preview" });
+  readonly #afkAutoReplyToggle = element("input") as HTMLInputElement;
+  readonly #afkAutoReplyMessage = element("textarea", {
+    className: "kl-custom-activity-template kl-afk-reply-message",
+  }) as HTMLTextAreaElement;
+  readonly #afkAutoReplyOptions = element("div", { className: "kl-afk-reply-options" });
   readonly #imageDialog = element("dialog", { className: "kl-dialog kl-image-dialog" });
   readonly #imageUrlInput = element("input", { className: "kl-search kl-image-url" }) as HTMLInputElement;
   readonly #imagePreview = element("div", { className: "kl-image-compose-preview" });
@@ -429,6 +446,7 @@ export class LinkChatView {
   #messageRenderPeer: number | undefined;
   #loadingOlderMessages = false;
   readonly #renderedMessageIds = new Set<string>();
+  readonly #allowedAvatarUrls = new Set<string>();
   readonly #suppressProfileClickUntil = new WeakMap<HTMLElement, number>();
   #profileMenuToken = 0;
   #aliasTarget: { memberNumber: number; nativeName: string } | undefined;
@@ -469,7 +487,7 @@ export class LinkChatView {
       settings,
     ),
     presence?: LinkPresenceService,
-    private readonly imageUploader: LocalImageUploader = new CloudinaryImageUploader(),
+    private readonly imageUploader: LocalImageUploader<LitterboxUploadConfig> = new LitterboxImageUploader(),
   ) {
     this.presence =
       presence ??
@@ -541,6 +559,7 @@ export class LinkChatView {
     document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
     this.#presenceUnsubscribe?.();
     this.#presenceUnsubscribe = undefined;
+    this.#allowedAvatarUrls.clear();
     this.#host.remove();
     void this.#notificationSounds.destroy();
     this.#mounted = false;
@@ -1388,6 +1407,83 @@ export class LinkChatView {
       reducedMotionSwitch,
     );
 
+    this.#roomBadgeToggle.type = "checkbox";
+    this.#roomBadgeToggle.setAttribute("aria-label", "Show KikiLink Blossom beside room addon icons");
+    this.#roomBadgeToggle.addEventListener("change", () => this.#renderRoomBadgeSettings());
+    const roomBadgeSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#roomBadgeToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#roomBadgePlacementSelect.replaceChildren(
+      selectOption("before-addons", "Before addon icons"),
+      selectOption("between-addons", "Between WCE and BCX"),
+      selectOption("after-addons", "After addon icons"),
+    );
+    this.#roomBadgePlacementSelect.setAttribute("aria-label", "Room Blossom position");
+    for (const [input, label] of [
+      [this.#roomBadgeOffsetXInput, "Horizontal fine adjustment"],
+      [this.#roomBadgeOffsetYInput, "Vertical fine adjustment"],
+    ] as const) {
+      input.type = "number";
+      input.min = label.startsWith("Horizontal") ? "-96" : "-40";
+      input.max = label.startsWith("Horizontal") ? "96" : "120";
+      input.step = "1";
+      input.setAttribute("aria-label", label);
+    }
+    const roomBadgeAdvanced = element(
+      "details",
+      { className: "kl-settings-disclosure kl-room-badge-advanced" },
+      element(
+        "summary",
+        {},
+        element("span", { text: "Fine position" }),
+        element("span", { className: "kl-disclosure-meta", text: "Advanced" }),
+      ),
+      element(
+        "div",
+        { className: "kl-room-badge-offsets" },
+        element(
+          "label",
+          { className: "kl-image-upload-setting-field" },
+          element("span", { text: "Horizontal" }),
+          this.#roomBadgeOffsetXInput,
+        ),
+        element(
+          "label",
+          { className: "kl-image-upload-setting-field" },
+          element("span", { text: "Vertical" }),
+          this.#roomBadgeOffsetYInput,
+        ),
+        element("button", {
+          className: "kl-text-button",
+          type: "button",
+          text: "Reset fine position",
+          onClick: () => {
+            this.#roomBadgeOffsetXInput.value = "0";
+            this.#roomBadgeOffsetYInput.value = "0";
+          },
+        }),
+      ),
+    );
+    const roomBadgeSection = element(
+      "section",
+      { className: "kl-setting-section kl-room-badge-settings" },
+      element("div", { className: "kl-setting-section-title", text: "Room addon badge" }),
+      this.#settingRow(
+        "Show Blossom flower",
+        "A small translucent KikiLink mark beside the other addon icons above your character.",
+        roomBadgeSwitch,
+      ),
+      this.#settingRow(
+        "Badge position",
+        "Pick a safe slot in the same top row as WCE and BCX.",
+        this.#roomBadgePlacementSelect,
+      ),
+      roomBadgeAdvanced,
+    );
+
     this.#historyToggle.type = "checkbox";
     const historySwitch = element(
       "label",
@@ -1438,12 +1534,12 @@ export class LinkChatView {
     this.#imagePreviewSelect.setAttribute("aria-label", "Remote image previews");
     const imagePreviews = this.#settingRow(
       "Image previews",
-      "Remote hosts can see your IP when an image loads. Ask first is the privacy-friendly default.",
+      "Remote hosts can see your IP when an image loads. Ask first adds a one-time Show avatar action to player menus.",
       this.#imagePreviewSelect,
     );
 
     this.#imageUploadsToggle.type = "checkbox";
-    this.#imageUploadsToggle.setAttribute("aria-label", "Enable local image uploads");
+    this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary local image uploads");
     this.#imageUploadsToggle.addEventListener("change", () =>
       this.#renderImageUploadSettingsOptions(),
     );
@@ -1453,37 +1549,25 @@ export class LinkChatView {
       this.#imageUploadsToggle,
       element("span", { className: "kl-switch-track" }),
     );
-    this.#cloudinaryCloudNameInput.type = "text";
-    this.#cloudinaryCloudNameInput.maxLength = 64;
-    this.#cloudinaryCloudNameInput.autocomplete = "off";
-    this.#cloudinaryCloudNameInput.spellcheck = false;
-    this.#cloudinaryCloudNameInput.placeholder = "your-cloud-name";
-    this.#cloudinaryCloudNameInput.setAttribute("aria-label", "Cloudinary cloud name");
-    this.#cloudinaryPresetInput.type = "text";
-    this.#cloudinaryPresetInput.maxLength = 128;
-    this.#cloudinaryPresetInput.autocomplete = "off";
-    this.#cloudinaryPresetInput.spellcheck = false;
-    this.#cloudinaryPresetInput.placeholder = "unsigned-upload-preset";
-    this.#cloudinaryPresetInput.setAttribute("aria-label", "Cloudinary unsigned upload preset");
-    const cloudinaryDocs = element("a", {
+    this.#imageUploadRetentionSelect.replaceChildren(
+      selectOption("1h", "1 hour"),
+      selectOption("12h", "12 hours"),
+      selectOption("24h", "24 hours"),
+      selectOption("72h", "3 days"),
+    );
+    this.#imageUploadRetentionSelect.setAttribute("aria-label", "Temporary image lifetime");
+    const litterboxLink = element("a", {
       className: "kl-inline-link",
-      text: "Cloudinary setup guide",
+      text: "Litterbox by Catbox",
     });
-    cloudinaryDocs.href = "https://cloudinary.com/documentation/upload_presets";
-    cloudinaryDocs.target = "_blank";
-    cloudinaryDocs.rel = "noopener noreferrer";
+    litterboxLink.href = "https://litterbox.catbox.moe/";
+    litterboxLink.target = "_blank";
+    litterboxLink.rel = "noopener noreferrer";
     this.#imageUploadSettingsOptions.append(
-      element(
-        "label",
-        { className: "kl-image-upload-setting-field" },
-        element("span", { text: "Cloud name" }),
-        this.#cloudinaryCloudNameInput,
-      ),
-      element(
-        "label",
-        { className: "kl-image-upload-setting-field" },
-        element("span", { text: "Unsigned preset" }),
-        this.#cloudinaryPresetInput,
+      this.#settingRow(
+        "Link lifetime",
+        "The host removes the temporary file after this period.",
+        this.#imageUploadRetentionSelect,
       ),
       element(
         "p",
@@ -1492,9 +1576,9 @@ export class LinkChatView {
         element(
           "span",
           {},
-          "Selection stays local. On Upload & send, KikiLink removes the original filename and metadata, resizes to 2560 px, then uploads to your Cloudinary account. The resulting link is public. ",
-          cloudinaryDocs,
-          ".",
+          "Only Upload & send makes a network request. KikiLink removes the filename and metadata, resizes to 2560 px, then sends the public file to ",
+          litterboxLink,
+          ". Catbox can see your IP and image; expiration cannot remove copies someone already saved.",
         ),
       ),
     );
@@ -1503,11 +1587,11 @@ export class LinkChatView {
       { className: "kl-setting-section kl-image-upload-settings" },
       element("div", {
         className: "kl-setting-section-title",
-        text: "Local images · optional",
+        text: "Temporary local images",
       }),
       this.#settingRow(
         "Upload local files",
-        "Connect your own Cloudinary unsigned preset. Off by default.",
+        "Upload through Litterbox without creating an account.",
         imageUploadsSwitch,
       ),
       this.#imageUploadSettingsOptions,
@@ -1540,6 +1624,7 @@ export class LinkChatView {
       textScale,
       homeLayout,
       reducedMotion,
+      roomBadgeSection,
     );
 
     const resetLauncher = element("button", {
@@ -2152,7 +2237,7 @@ export class LinkChatView {
   }
 
   #buildPresenceDialog(): void {
-    const title = element("div", { className: "kl-dialog-title", text: "Your KikiLink status" });
+    const title = element("div", { className: "kl-dialog-title", text: "Your KikiLink profile" });
     title.id = "kikilink-presence-title";
     this.#presenceDialog.setAttribute("aria-labelledby", title.id);
     const close = element("button", {
@@ -2172,7 +2257,7 @@ export class LinkChatView {
         title,
         element("div", {
           className: "kl-dialog-subtitle",
-          text: "Visible to compatible KikiLink users you meet or contact.",
+          text: "Avatar, status, Idle, and a quiet AFK auto-reply in one place.",
         }),
       ),
       close,
@@ -2214,15 +2299,39 @@ export class LinkChatView {
     this.#presenceMessage.maxLength = 80;
     this.#presenceMessage.placeholder = "Optional: roleplaying, busy, open to chat…";
     this.#presenceMessage.autocomplete = "off";
-    this.#autoIdleSelect.replaceChildren(
-      selectOption("0", "Never"),
-      selectOption("5", "After 5 minutes"),
-      selectOption("10", "After 10 minutes"),
-      selectOption("15", "After 15 minutes"),
-      selectOption("30", "After 30 minutes"),
-      selectOption("60", "After 1 hour"),
+    this.#autoIdleInput.type = "number";
+    this.#autoIdleInput.min = "0";
+    this.#autoIdleInput.max = "120";
+    this.#autoIdleInput.step = "1";
+    this.#autoIdleInput.setAttribute("aria-label", "Minutes before automatic Idle");
+
+    this.#presenceAvatarUrl.type = "url";
+    this.#presenceAvatarUrl.maxLength = 500;
+    this.#presenceAvatarUrl.placeholder = "https://i.imgur.com/avatar.png";
+    this.#presenceAvatarUrl.autocomplete = "off";
+    this.#presenceAvatarUrl.spellcheck = false;
+    this.#presenceAvatarUrl.setAttribute("aria-label", "Direct profile avatar URL");
+    this.#presenceAvatarUrl.addEventListener("input", () => this.#renderOwnAvatarPreview());
+
+    this.#afkAutoReplyToggle.type = "checkbox";
+    this.#afkAutoReplyToggle.setAttribute("aria-label", "Send an automatic reply while Idle");
+    this.#afkAutoReplyToggle.addEventListener("change", () => this.#renderPresenceDialog());
+    const afkAutoReplySwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#afkAutoReplyToggle,
+      element("span", { className: "kl-switch-track" }),
     );
-    this.#autoIdleSelect.setAttribute("aria-label", "Automatic idle delay");
+    this.#afkAutoReplyMessage.maxLength = 500;
+    this.#afkAutoReplyMessage.placeholder = "Привет, я АФК, напишите мне позже!";
+    this.#afkAutoReplyOptions.append(
+      element("span", { className: "kl-custom-field-label", text: "AFK message" }),
+      this.#afkAutoReplyMessage,
+      element("span", {
+        className: "kl-custom-field-help",
+        text: "Sent privately at most once per person during an Idle session; your room is never included.",
+      }),
+    );
 
     const body = element(
       "div",
@@ -2239,11 +2348,32 @@ export class LinkChatView {
         element("span", { className: "kl-presence-field-label", text: "Status note" }),
         this.#presenceMessage,
       ),
+      element(
+        "section",
+        { className: "kl-profile-avatar-field" },
+        this.#presenceAvatarPreview,
+        element(
+          "label",
+          { className: "kl-presence-field" },
+          element("span", { className: "kl-presence-field-label", text: "Profile avatar" }),
+          this.#presenceAvatarUrl,
+          element("span", {
+            className: "kl-custom-field-help",
+            text: "Use a direct HTTPS JPG, PNG, GIF, WebP, or AVIF link from Imgur, Catbox, or another host. Other players' avatars follow your image-preview privacy setting.",
+          }),
+        ),
+      ),
       this.#settingRow(
         "Automatic Idle",
-        "Only applies while your selected status is Online.",
-        this.#autoIdleSelect,
+        "Minutes without a tap or keypress. Enter 0 to disable; maximum 120.",
+        element("label", {}, this.#autoIdleInput, " min"),
       ),
+      this.#settingRow(
+        "Reply while AFK",
+        "When Automatic Idle is active, privately answer new Beeps for you.",
+        afkAutoReplySwitch,
+      ),
+      this.#afkAutoReplyOptions,
       element(
         "div",
         { className: "kl-presence-caveat" },
@@ -2254,7 +2384,7 @@ export class LinkChatView {
     const save = element("button", {
       className: "kl-text-button kl-text-button--primary",
       type: "button",
-      text: "Save status",
+      text: "Save profile",
       onClick: () => this.#savePresencePreferences(),
     });
     this.#presenceDialog.append(
@@ -2278,7 +2408,11 @@ export class LinkChatView {
     const config = this.settings.get().linkPresence;
     this.#presenceEnabledToggle.checked = config.enabled;
     this.#presenceMessage.value = config.statusMessage;
-    this.#autoIdleSelect.value = config.autoIdleMinutes.toString();
+    this.#presenceAvatarUrl.value = config.avatarUrl;
+    this.#autoIdleInput.value = config.autoIdleMinutes.toString();
+    this.#afkAutoReplyToggle.checked = config.afkAutoReply.enabled;
+    this.#afkAutoReplyMessage.value = config.afkAutoReply.message;
+    this.#renderOwnAvatarPreview();
     this.#renderPresenceDialog();
     if (!this.#presenceDialog.open) this.#presenceDialog.showModal();
     this.#presenceOptions.querySelector<HTMLButtonElement>('[data-active="true"]')?.focus();
@@ -2296,19 +2430,51 @@ export class LinkChatView {
       option.disabled = !enabled;
     }
     this.#presenceMessage.disabled = !enabled;
-    this.#autoIdleSelect.disabled = !enabled;
+    this.#afkAutoReplyMessage.disabled = !this.#afkAutoReplyToggle.checked;
+    this.#afkAutoReplyOptions.dataset.disabled = String(!this.#afkAutoReplyToggle.checked);
   }
 
   #savePresencePreferences(): void {
-    const autoIdle = Number(this.#autoIdleSelect.value);
-    this.settings.update((draft) => {
-      draft.linkPresence.autoIdleMinutes = Number.isInteger(autoIdle) ? autoIdle : 10;
+    const autoIdle = Number(this.#autoIdleInput.value);
+    const normalizedAvatarUrl = this.#presenceAvatarUrl.value.trim()
+      ? normalizeImageUrl(this.#presenceAvatarUrl.value)
+      : null;
+    if (
+      this.#presenceAvatarUrl.value.trim() &&
+      (!normalizedAvatarUrl || normalizedAvatarUrl.length > 500)
+    ) {
+      this.#presenceAvatarUrl.focus();
+      this.#toast("Use a direct HTTPS avatar link up to 500 characters ending in an image extension.", "error");
+      return;
+    }
+    const avatarUrl = normalizedAvatarUrl ?? "";
+    if (
+      !Number.isInteger(autoIdle) ||
+      autoIdle < 0 ||
+      autoIdle > 120
+    ) {
+      this.#autoIdleInput.focus();
+      this.#toast("Automatic Idle must be between 0 and 120 minutes.", "error");
+      return;
+    }
+    if (this.#afkAutoReplyToggle.checked && !this.#afkAutoReplyMessage.value.trim()) {
+      this.#afkAutoReplyMessage.focus();
+      this.#toast("Add a short AFK auto-reply message.", "error");
+      return;
+    }
+    this.presence.setOwnProfile({
+      enabled: this.#presenceEnabledToggle.checked,
+      statusMessage: this.#presenceMessage.value,
+      avatarUrl,
+      autoIdleMinutes: autoIdle,
+      afkAutoReply: {
+        enabled: this.#afkAutoReplyToggle.checked,
+        message: this.#afkAutoReplyMessage.value,
+      },
     });
-    this.presence.setEnabled(this.#presenceEnabledToggle.checked);
-    this.presence.setOwnStatusMessage(this.#presenceMessage.value);
     this.#renderOwnPresence();
     this.#presenceDialog.close();
-    this.#toast("KikiLink status saved.");
+    this.#toast("KikiLink profile saved.");
   }
 
   #buildImageDialog(): void {
@@ -2405,7 +2571,7 @@ export class LinkChatView {
         { className: "kl-image-upload-note kl-image-file-privacy" },
         kikiIcon("lock"),
         element("span", {
-          text: "Nothing uploads on selection. KikiLink first removes the filename and metadata; Upload & send is the only network action.",
+          text: "Nothing uploads on selection. KikiLink first removes the filename and metadata; Upload & send creates a public temporary Litterbox link.",
         }),
       ),
     );
@@ -2591,7 +2757,7 @@ export class LinkChatView {
       this.#activeName = displayName;
       this.#activeNativeName = conversation.peerName;
       this.#chatName.textContent = displayName;
-      this.#chatAvatar.textContent = avatarText(displayName);
+      this.#renderAvatar(this.#chatAvatar, displayName, target.memberNumber);
       this.#renderTypingIndicator();
     }
     this.#aliasDialog.close();
@@ -2690,7 +2856,7 @@ export class LinkChatView {
 
   #renderLocalImageComposeState(): void {
     const settings = this.settings.get().linkChat.imageUploads;
-    const config = settings.enabled ? normalizeCloudinaryUploadConfig(settings) : null;
+    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
     const setupButton = this.#imageFilePanel.querySelector<HTMLButtonElement>(
       ".kl-image-upload-setup",
     );
@@ -2724,8 +2890,8 @@ export class LinkChatView {
         element(
           "span",
           {},
-          element("strong", { text: "Local upload is off" }),
-          element("small", { text: "Connect your own Cloudinary account once in Chat settings." }),
+          element("strong", { text: "Temporary upload is off" }),
+          element("small", { text: "Enable Litterbox uploads once in Chat settings." }),
         ),
       );
       this.#localImageStatus.dataset.state = "empty";
@@ -2854,7 +3020,7 @@ export class LinkChatView {
     const image = this.#preparedLocalImage;
     const uploadSettings = this.settings.get().linkChat.imageUploads;
     const config = uploadSettings.enabled
-      ? normalizeCloudinaryUploadConfig(uploadSettings)
+      ? normalizeLitterboxUploadConfig(uploadSettings)
       : null;
     if (!image || !config || this.#imageUploadBusy) {
       this.#renderLocalImageComposeState();
@@ -2877,7 +3043,7 @@ export class LinkChatView {
         this.#toast("Upload finished. The direct link is kept here so it is not lost.", "error");
         return;
       }
-      this.#toast("Private details removed; image uploaded and sent.");
+      this.#toast(`Private details removed; temporary ${config.retention} link sent.`);
       this.#imageDialog.close();
     } catch (error) {
       if (token !== this.#imageUploadToken) return;
@@ -3413,7 +3579,7 @@ export class LinkChatView {
       element(
         "div",
         { className: "kl-avatar-wrap" },
-        element("div", { className: "kl-avatar", text: avatarText(entry.displayName) }),
+        this.#avatar(entry.displayName, entry.memberNumber),
         presenceDot(presence.status),
       ),
       element(
@@ -3480,7 +3646,7 @@ export class LinkChatView {
       element(
         "div",
         { className: "kl-avatar-wrap" },
-        element("div", { className: "kl-avatar kl-roster-avatar", text: avatarText(entry.displayName) }),
+        this.#avatar(entry.displayName, entry.memberNumber, "kl-roster-avatar"),
         presenceDot(presence.status),
       ),
       element(
@@ -3886,6 +4052,7 @@ export class LinkChatView {
       return;
     }
     const snapshot = this.presence.get(this.#activePeer);
+    this.#renderAvatar(this.#chatAvatar, this.#activeName, this.#activePeer);
     this.#chatPresence.append(
       presenceDot(snapshot.status),
       element("span", { text: presenceLabel(snapshot.status) }),
@@ -3992,6 +4159,14 @@ export class LinkChatView {
       }
       const description = target.querySelector<HTMLElement>("[data-presence-description]");
       if (description) description.title = presenceDescription(snapshot);
+      const avatar = target.querySelector<HTMLElement>("[data-kikilink-avatar]");
+      if (avatar) {
+        this.#renderAvatar(
+          avatar,
+          avatar.dataset.avatarName || this.adapter.getMemberName(memberNumber),
+          memberNumber,
+        );
+      }
     }
   }
 
@@ -4009,7 +4184,7 @@ export class LinkChatView {
         this.#activeName = displayName;
         this.#activeNativeName = conversation.peerName;
         this.#chatName.textContent = displayName;
-        this.#chatAvatar.textContent = avatarText(displayName);
+        this.#renderAvatar(this.#chatAvatar, displayName, conversation.peerNumber);
       }
     }
     const conversations = allConversations.filter((conversation) => {
@@ -4079,7 +4254,7 @@ export class LinkChatView {
       element(
         "div",
         { className: "kl-avatar-wrap" },
-        element("div", { className: "kl-avatar", text: avatarText(displayName) }),
+        this.#avatar(displayName, conversation.peerNumber),
         presenceDot(presence.status),
       ),
       main,
@@ -4116,7 +4291,8 @@ export class LinkChatView {
 
     this.#empty.hidden = true;
     this.#chat.hidden = false;
-    this.#chatAvatar.textContent = avatarText(displayName);
+    this.#chatAvatar.dataset.memberNumber = peerNumber.toString();
+    this.#renderAvatar(this.#chatAvatar, displayName, peerNumber);
     this.#chatName.textContent = displayName;
     this.#chatNumber.textContent = `Member ${peerNumber}`;
     this.#messageRenderLimit = 120;
@@ -4276,6 +4452,8 @@ export class LinkChatView {
     }
     const nearBottom =
       this.#messages.scrollHeight - this.#messages.scrollTop - this.#messages.clientHeight < 96;
+    const shouldFollowMessage = message.direction === "outgoing" || nearBottom;
+    const previousScrollTop = this.#messages.scrollTop;
     this.#messages.querySelector(".kl-empty-copy")?.remove();
     const previous = this.#messages.querySelector<HTMLElement>(".kl-message-row:last-child");
     const row = this.#messageNode(message);
@@ -4292,16 +4470,17 @@ export class LinkChatView {
       }
       const oldest = this.#messages.querySelector<HTMLElement>(".kl-message-row");
       if (oldest) {
+        const heightBeforeRemoval = this.#messages.scrollHeight;
         if (oldest.dataset.messageId) this.#renderedMessageIds.delete(oldest.dataset.messageId);
         oldest.remove();
         this.#repairFirstMessageGrouping();
+        if (!shouldFollowMessage) {
+          const removedHeight = Math.max(0, heightBeforeRemoval - this.#messages.scrollHeight);
+          this.#messages.scrollTop = Math.max(0, previousScrollTop - removedHeight);
+        }
       }
     }
-    if (message.direction === "outgoing" || nearBottom) {
-      requestAnimationFrame(() => {
-        this.#messages.scrollTop = this.#messages.scrollHeight;
-      });
-    }
+    if (shouldFollowMessage) this.#messages.scrollTop = this.#messages.scrollHeight;
   }
 
   #syncMessageGrouping(): void {
@@ -4584,7 +4763,7 @@ export class LinkChatView {
       element(
         "div",
         { className: "kl-avatar-wrap" },
-        element("div", { className: "kl-avatar", text: avatarText(shownName) }),
+        this.#avatar(shownName, memberNumber),
         presenceDot(snapshot.status),
       ),
       element(
@@ -4614,6 +4793,21 @@ export class LinkChatView {
       this.#profileMenuAction("chat", "Message", "Open LinkChat", () => {
         void this.openChat(memberNumber, nativeName);
       }),
+      snapshot.avatarUrl &&
+        this.settings.get().linkChat.imagePreviews === "ask" &&
+        !this.#allowedAvatarUrls.has(snapshot.avatarUrl)
+        ? this.#profileMenuAction(
+            "image",
+            "Show profile avatar",
+            "Load this remote image once",
+            () => {
+              if (!snapshot.avatarUrl) return;
+              this.#allowedAvatarUrls.add(snapshot.avatarUrl);
+              this.#schedulePresenceRender(memberNumber);
+              this.#toast("Profile avatar allowed for this session.");
+            },
+          )
+        : null,
       this.#profileMenuAction(
         "whisper",
         "Whisper",
@@ -4827,7 +5021,7 @@ export class LinkChatView {
         element(
           "div",
           { className: "kl-avatar-wrap" },
-          element("div", { className: "kl-avatar", text: avatarText(contact.memberName) }),
+          this.#avatar(contact.memberName, contact.memberNumber),
           presenceDot(presence.status),
         ),
         element(
@@ -5208,9 +5402,13 @@ export class LinkChatView {
     this.#typingIndicatorsToggle.checked = settings.linkChat.typingIndicators;
     this.#imagePreviewSelect.value = settings.linkChat.imagePreviews;
     this.#imageUploadsToggle.checked = settings.linkChat.imageUploads.enabled;
-    this.#cloudinaryCloudNameInput.value = settings.linkChat.imageUploads.cloudName;
-    this.#cloudinaryPresetInput.value = settings.linkChat.imageUploads.uploadPreset;
+    this.#imageUploadRetentionSelect.value = settings.linkChat.imageUploads.retention;
     this.#renderImageUploadSettingsOptions();
+    this.#roomBadgeToggle.checked = settings.ui.roomBadge.enabled;
+    this.#roomBadgePlacementSelect.value = settings.ui.roomBadge.placement;
+    this.#roomBadgeOffsetXInput.value = settings.ui.roomBadge.offsetX.toString();
+    this.#roomBadgeOffsetYInput.value = settings.ui.roomBadge.offsetY.toString();
+    this.#renderRoomBadgeSettings();
     this.#retentionInput.value = settings.linkChat.retentionDays.toString();
     this.#renderQuickActionEditor(settings.linkChat.quickActions);
     this.#rosterEnabledToggle.checked = settings.linkRoster.enabled;
@@ -5254,8 +5452,18 @@ export class LinkChatView {
   #renderImageUploadSettingsOptions(): void {
     const enabled = this.#imageUploadsToggle.checked;
     this.#imageUploadSettingsOptions.hidden = !enabled;
-    this.#cloudinaryCloudNameInput.disabled = !enabled;
-    this.#cloudinaryPresetInput.disabled = !enabled;
+    this.#imageUploadRetentionSelect.disabled = !enabled;
+  }
+
+  #renderRoomBadgeSettings(): void {
+    const enabled = this.#roomBadgeToggle.checked;
+    this.#roomBadgePlacementSelect.disabled = !enabled;
+    this.#roomBadgeOffsetXInput.disabled = !enabled;
+    this.#roomBadgeOffsetYInput.disabled = !enabled;
+    const advanced = this.#settingsPage.querySelector<HTMLDetailsElement>(
+      ".kl-room-badge-advanced",
+    );
+    if (advanced) advanced.dataset.disabled = String(!enabled);
   }
 
   #updateAccentPresets(): void {
@@ -5274,17 +5482,6 @@ export class LinkChatView {
     const retentionDays = Number(this.#retentionInput.value);
     const reactionRules = this.#readReactionRuleEditor();
     if (!reactionRules) return;
-    const imageUploadConfig = normalizeCloudinaryUploadConfig({
-      cloudName: this.#cloudinaryCloudNameInput.value,
-      uploadPreset: this.#cloudinaryPresetInput.value,
-    });
-    if (this.#imageUploadsToggle.checked && !imageUploadConfig) {
-      this.#showSettingsSection("chat", true);
-      if (!this.#cloudinaryCloudNameInput.value.trim()) this.#cloudinaryCloudNameInput.focus();
-      else this.#cloudinaryPresetInput.focus();
-      this.#toast("Enter a valid Cloudinary cloud name and unsigned preset.", "error");
-      return;
-    }
     const currentSettings = this.settings.get();
     const launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
     const settings = this.settings.update((draft) => {
@@ -5310,6 +5507,16 @@ export class LinkChatView {
           ? this.#launcherOpenSelect.value
           : "home";
       if (launcherSide !== currentSettings.ui.launcherSide) draft.ui.launcherPosition = null;
+      draft.ui.roomBadge = {
+        enabled: this.#roomBadgeToggle.checked,
+        placement:
+          this.#roomBadgePlacementSelect.value === "before-addons" ||
+          this.#roomBadgePlacementSelect.value === "after-addons"
+            ? this.#roomBadgePlacementSelect.value
+            : "between-addons",
+        offsetX: Number(this.#roomBadgeOffsetXInput.value),
+        offsetY: Number(this.#roomBadgeOffsetYInput.value),
+      };
       draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
       draft.ui.settingsSection = this.#settingsSection;
       draft.linkChat.saveHistory = this.#historyToggle.checked;
@@ -5320,9 +5527,13 @@ export class LinkChatView {
           ? this.#imagePreviewSelect.value
           : "ask";
       draft.linkChat.imageUploads = {
-        enabled: this.#imageUploadsToggle.checked && imageUploadConfig !== null,
-        cloudName: imageUploadConfig?.cloudName ?? "",
-        uploadPreset: imageUploadConfig?.uploadPreset ?? "",
+        enabled: this.#imageUploadsToggle.checked,
+        retention:
+          this.#imageUploadRetentionSelect.value === "1h" ||
+          this.#imageUploadRetentionSelect.value === "12h" ||
+          this.#imageUploadRetentionSelect.value === "72h"
+            ? this.#imageUploadRetentionSelect.value
+            : "24h",
       };
       draft.linkChat.quickActions = this.#readQuickActionEditor();
       draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
@@ -5349,6 +5560,7 @@ export class LinkChatView {
       if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
     });
     this.#applyTheme(settings);
+    this.#schedulePresenceRender();
     this.activities.syncFromSettings();
     if (settings.linkReactions.sounds.enabled) void this.#notificationSounds.unlock();
     if (!settings.linkChat.typingIndicators) this.#stopLocalTyping();
@@ -5616,11 +5828,78 @@ export class LinkChatView {
 
   #emblem(className: string): HTMLSpanElement {
     const image = element("img", { className: "kl-emblem-image" }) as HTMLImageElement;
-    image.src = BLOSSOM_ICON_DATA_URL;
+    image.src = KIKILINK_EMBLEM_DATA_URL;
     image.alt = "";
     image.decoding = "async";
     image.draggable = false;
     return element("span", { className: `kl-emblem ${className}` }, image);
+  }
+
+  #avatar(name: string, memberNumber: number, extraClass = ""): HTMLDivElement {
+    const avatar = element("div", {
+      className: `kl-avatar${extraClass ? ` ${extraClass}` : ""}`,
+    });
+    this.#renderAvatar(avatar, name, memberNumber);
+    return avatar;
+  }
+
+  #renderAvatar(
+    target: HTMLElement,
+    name: string,
+    memberNumber: number,
+    explicitUrl?: string,
+  ): void {
+    const own = memberNumber === this.adapter.getOwnMemberNumber();
+    const url = explicitUrl ?? this.presence.get(memberNumber).avatarUrl;
+    const previewPolicy = this.settings.get().linkChat.imagePreviews;
+    const allowedUrl =
+      url &&
+      (own ||
+        previewPolicy === "always" ||
+        (previewPolicy === "ask" && this.#allowedAvatarUrls.has(url)))
+        ? url
+        : "";
+    if (
+      target.dataset.avatarName === name &&
+      target.dataset.avatarUrl === allowedUrl &&
+      target.childNodes.length > 0
+    ) {
+      return;
+    }
+    target.dataset.kikilinkAvatar = "true";
+    target.dataset.avatarName = name;
+    target.dataset.avatarUrl = allowedUrl;
+    const fallback = (): void => {
+      if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
+      target.replaceChildren(document.createTextNode(avatarText(name)));
+      target.dataset.avatarState = "initials";
+    };
+    fallback();
+    if (!allowedUrl) return;
+
+    const image = document.createElement("img");
+    image.alt = `${name} profile avatar`;
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("load", () => {
+      if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
+      target.dataset.avatarState = "image";
+    }, { once: true });
+    image.addEventListener("error", fallback, { once: true });
+    target.replaceChildren(image);
+    target.dataset.avatarState = "loading";
+    image.src = allowedUrl;
+  }
+
+  #renderOwnAvatarPreview(): void {
+    const url = normalizeImageUrl(this.#presenceAvatarUrl.value);
+    this.#renderAvatar(
+      this.#presenceAvatarPreview,
+      this.adapter.getOwnName(),
+      this.adapter.getOwnMemberNumber(),
+      url ?? "",
+    );
   }
 
   #toast(message: string, kind: "info" | "error" = "info"): void {
@@ -5721,8 +6000,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "appearance",
       title: "Appearance & comfort",
-      detail: "Theme, accent, Super compact spacing, text size, Home style, and motion",
-      keywords: "light dark system color colour guided focused density compact super tiny font scale reduced motion",
+      detail: "Theme, logo comfort, room Blossom position, spacing, text size, and motion",
+      keywords: "light dark system color colour blossom addon badge icon position offset wce bcx guided focused density compact super tiny font scale reduced motion",
     },
     {
       section: "navigation",
@@ -5733,8 +6012,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "chat",
       title: "Chat & history",
-      detail: "Typing, image links and uploads, history, retention, and Quick Actions",
-      keywords: "beep messages typing indicator realtime image picture preview upload local cloudinary preset privacy enter send newline save storage days clear wave hug boop template",
+      detail: "Typing, temporary Catbox images, history, retention, and Quick Actions",
+      keywords: "beep messages typing indicator realtime image picture preview upload local catbox litterbox temporary privacy enter send newline save storage days clear wave hug boop template afk idle avatar profile",
     },
     {
       section: "players",

@@ -7,7 +7,10 @@ import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import type { KikiLinkEvents } from "../src/core/types";
 import { LinkActivitiesService } from "../src/modules/link-activities/link-activities-service";
 import { ChatService } from "../src/modules/link-chat/chat-service";
-import type { LocalImageUploader } from "../src/modules/link-chat/image-upload";
+import type {
+  LitterboxUploadConfig,
+  LocalImageUploader,
+} from "../src/modules/link-chat/image-upload";
 import { LinkChatView } from "../src/modules/link-chat/view";
 import { LinkRosterService } from "../src/modules/link-roster/link-roster-service";
 import { LinkPresenceService } from "../src/modules/link-presence/link-presence-service";
@@ -48,8 +51,14 @@ describe("LinkChatView", () => {
     const host = document.querySelector("#kikilink-root");
     const shadow = host?.shadowRoot;
     expect((host as HTMLElement | null)?.dataset.theme).toBe("dark");
-    expect(shadow?.querySelector(".kl-brand-emblem .kl-emblem-image")).not.toBeNull();
-    expect(shadow?.querySelector(".kl-launcher-emblem .kl-emblem-image")).not.toBeNull();
+    const brandEmblem = shadow?.querySelector<HTMLImageElement>(
+      ".kl-brand-emblem .kl-emblem-image",
+    );
+    const launcherEmblem = shadow?.querySelector<HTMLImageElement>(
+      ".kl-launcher-emblem .kl-emblem-image",
+    );
+    expect(brandEmblem?.src).toContain("design/branding/kikilink-emblem.webp");
+    expect(launcherEmblem?.src).toContain("design/branding/kikilink-emblem.webp");
     expect(shadow?.querySelector(".kl-panel")?.hasAttribute("hidden")).toBe(false);
     expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Reina");
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.mobileView).toBe(
@@ -524,6 +533,7 @@ describe("LinkChatView", () => {
       ],
       getCurrentRoomName: () => "Moon Garden",
       isInChatRoom: () => true,
+      refreshOnlineFriends: vi.fn(() => true),
       canSendBeep: () => true,
       isReady: () => true,
       sendKikiLinkProtocol: vi.fn(() => "room" as const),
@@ -531,6 +541,20 @@ describe("LinkChatView", () => {
       sendBeep,
     } as unknown as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const presenceBus = new EventBus<KikiLinkEvents>();
+    const presence = new LinkPresenceService(adapter, settings, presenceBus, "0.20.0");
+    presence.start();
+    presenceBus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "room",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://i.imgur.com/reina.png",
+        u: Date.now(),
+        v: "0.20.0",
+      }),
+    });
     const service = new ChatService(new MemoryChatRepository(), settings);
     await service.capture(
       {
@@ -543,7 +567,15 @@ describe("LinkChatView", () => {
       },
       true,
     );
-    const view = new LinkChatView(adapter, service, settings, "0.11.0");
+    const view = new LinkChatView(
+      adapter,
+      service,
+      settings,
+      "0.20.0",
+      undefined,
+      undefined,
+      presence,
+    );
     view.mount();
     await view.openChat(123, "Reina");
 
@@ -551,6 +583,8 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-chat-presence")?.textContent).toContain("Online");
     expect(shadow?.querySelector(".kl-chat-room")?.textContent).toContain("Moon Garden");
     expect(shadow?.querySelector(".kl-image-load")?.textContent).toBe("Show image");
+    const remoteAvatar = shadow?.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar");
+    expect(remoteAvatar?.querySelector("img")).toBeNull();
 
     shadow?.querySelector<HTMLButtonElement>(".kl-attach-image")?.click();
     const imageInput = shadow?.querySelector<HTMLInputElement>(".kl-image-url");
@@ -568,14 +602,63 @@ describe("LinkChatView", () => {
     await vi.waitFor(() => {
       expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain("Whisper");
       expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain("Player note");
+      expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain(
+        "Show profile avatar",
+      );
     });
+    const showAvatar = [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action") ?? [])]
+      .find((button) => button.textContent?.includes("Show profile avatar"));
+    showAvatar?.click();
+    await vi.waitFor(() => {
+      expect(remoteAvatar?.querySelector<HTMLImageElement>("img")?.src).toBe(
+        "https://i.imgur.com/reina.png",
+      );
+    });
+    const allowedAvatarImage = remoteAvatar?.querySelector("img");
+    presenceBus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "room",
+      payload: JSON.stringify({ t: "ty", a: 1 }),
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(remoteAvatar?.querySelector("img")).toBe(allowedAvatarImage);
 
     shadow?.querySelector<HTMLButtonElement>(".kl-presence-trigger")?.click();
     shadow?.querySelector<HTMLButtonElement>('[data-status="dnd"]')?.click();
     expect(settings.get().linkPresence.status).toBe("dnd");
     expect(shadow?.querySelector(".kl-presence-trigger")?.textContent).toContain("Do not disturb");
 
+    const avatarUrl = shadow?.querySelector<HTMLInputElement>(".kl-presence-avatar-url");
+    const idleMinutes = shadow?.querySelector<HTMLInputElement>(
+      'input[aria-label="Minutes before automatic Idle"]',
+    );
+    const afkToggle = shadow?.querySelector<HTMLInputElement>(
+      'input[aria-label="Send an automatic reply while Idle"]',
+    );
+    const afkMessage = shadow?.querySelector<HTMLTextAreaElement>(".kl-afk-reply-message");
+    if (!avatarUrl || !idleMinutes || !afkToggle || !afkMessage) {
+      throw new Error("Missing KikiLink profile controls");
+    }
+    avatarUrl.value = "https://i.imgur.com/kiki.png";
+    avatarUrl.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(
+      shadow?.querySelector<HTMLImageElement>(".kl-profile-avatar-preview img")?.src,
+    ).toBe("https://i.imgur.com/kiki.png");
+    idleMinutes.value = "7";
+    afkToggle.checked = true;
+    afkToggle.dispatchEvent(new Event("change", { bubbles: true }));
+    afkMessage.value = "Back later!";
+    shadow
+      ?.querySelector<HTMLButtonElement>(".kl-presence-dialog .kl-text-button--primary")
+      ?.click();
+    expect(settings.get().linkPresence).toMatchObject({
+      avatarUrl: "https://i.imgur.com/kiki.png",
+      autoIdleMinutes: 7,
+      afkAutoReply: { enabled: true, message: "Back later!" },
+    });
+
     view.destroy();
+    presence.stop();
   });
 
   it("keeps a selected local image offline until Upload & send is clicked", async () => {
@@ -608,13 +691,12 @@ describe("LinkChatView", () => {
     settings.update((draft) => {
       draft.linkChat.imageUploads = {
         enabled: true,
-        cloudName: "sakura-cloud",
-        uploadPreset: "kikilink_unsigned",
+        retention: "24h",
       };
     });
     const service = new ChatService(new MemoryChatRepository(), settings);
     const preparedBlob = new Blob([Uint8Array.of(1, 2, 3)], { type: "image/webp" });
-    const imageUploader: LocalImageUploader = {
+    const imageUploader: LocalImageUploader<LitterboxUploadConfig> = {
       prepare: vi.fn(async () => ({
         blob: preparedBlob,
         width: 640,
@@ -622,7 +704,7 @@ describe("LinkChatView", () => {
         sourceBytes: 10,
       })),
       upload: vi.fn(async () =>
-        "https://res.cloudinary.com/sakura-cloud/image/upload/v1/photo.webp"),
+        "https://litter.catbox.moe/photo.webp"),
     };
     const view = new LinkChatView(
       adapter,
@@ -665,11 +747,11 @@ describe("LinkChatView", () => {
     await vi.waitFor(() => {
       expect(imageUploader.upload).toHaveBeenCalledWith(
         expect.objectContaining({ blob: preparedBlob, width: 640, height: 480 }),
-        { cloudName: "sakura-cloud", uploadPreset: "kikilink_unsigned" },
+        { retention: "24h" },
       );
       expect(sendBeep).toHaveBeenCalledWith(
         123,
-        "https://res.cloudinary.com/sakura-cloud/image/upload/v1/photo.webp",
+        "https://litter.catbox.moe/photo.webp",
         false,
       );
     });
@@ -1359,7 +1441,31 @@ describe("LinkChatView", () => {
     expect(initialRows).toHaveLength(120);
     expect(shadow?.querySelector(".kl-load-older")?.textContent).toContain("Load earlier");
     const preservedRow = initialRows[2];
-    expect(shadow?.querySelector("style")?.textContent).not.toContain("content-visibility");
+    const styles = shadow?.querySelector("style")?.textContent ?? "";
+    expect(styles).not.toContain("content-visibility");
+    expect(styles).toContain("overflow-anchor: none");
+    expect(styles).toContain("contain: paint");
+    expect(styles).toContain(".kl-message-bubble::before");
+    expect(styles).toContain("aspect-ratio: 16 / 10");
+
+    const messageScroller = shadow?.querySelector<HTMLElement>(".kl-messages");
+    const oldestRow = initialRows[0];
+    if (!messageScroller || !oldestRow) throw new Error("Missing bounded message feed");
+    let syntheticScrollHeight = 1_200;
+    Object.defineProperty(messageScroller, "scrollHeight", {
+      configurable: true,
+      get: () => syntheticScrollHeight,
+    });
+    Object.defineProperty(messageScroller, "clientHeight", {
+      configurable: true,
+      get: () => 300,
+    });
+    messageScroller.scrollTop = 600;
+    const removeOldest = oldestRow.remove.bind(oldestRow);
+    vi.spyOn(oldestRow, "remove").mockImplementation(() => {
+      syntheticScrollHeight -= 10;
+      removeOldest();
+    });
 
     const liveMessage = await service.capture(
       {
@@ -1375,6 +1481,7 @@ describe("LinkChatView", () => {
     await view.onMessage(123, true, liveMessage);
 
     expect(shadow?.querySelectorAll(".kl-message-row")).toHaveLength(120);
+    expect(messageScroller.scrollTop).toBe(590);
     expect(preservedRow?.isConnected).toBe(true);
     expect(shadow?.querySelector(".kl-message-row:last-child")?.textContent).toContain(
       "Live message 170",

@@ -7,6 +7,7 @@ import type {
   PresenceStatus,
 } from "../../core/types";
 import { createId } from "../../utils/id";
+import { normalizeImageUrl } from "../link-chat/media";
 
 const NATIVE_REFRESH_MS = 30_000;
 const STATUS_CHECK_MS = 15_000;
@@ -21,14 +22,26 @@ type PresenceListener = (memberNumber?: number) => void;
 
 type PresencePacket =
   | { t: "pq"; i: string; b?: 1 }
-  | { t: "ps"; i?: string; s: PresenceStatus; m?: string; u: number; v: string }
+  | { t: "ps"; i?: string; s: PresenceStatus; m?: string; a?: string; u: number; v: string }
   | { t: "ty"; a: 0 | 1 };
 
 interface RemotePresence {
   status: PresenceStatus;
   statusMessage?: string;
+  avatarUrl?: string;
   receivedAt: number;
   remoteUpdatedAt: number;
+}
+
+export interface OwnProfilePreferences {
+  enabled: boolean;
+  statusMessage: string;
+  avatarUrl: string;
+  autoIdleMinutes: number;
+  afkAutoReply: {
+    enabled: boolean;
+    message: string;
+  };
 }
 
 export class LinkPresenceService {
@@ -51,7 +64,11 @@ export class LinkPresenceService {
     const previous = this.getOwnStatus();
     this.#lastInteractionAt = Date.now();
     const next = this.getOwnStatus();
-    if (previous !== next) this.#publishOwnPresence();
+    if (previous !== next) {
+      this.#lastEffectiveStatus = next;
+      this.#publishOwnPresence();
+      this.#notify(this.adapter.getOwnMemberNumber());
+    }
   };
 
   readonly #onVisibilityChange = (): void => {
@@ -145,6 +162,10 @@ export class LinkPresenceService {
     return this.settings.get().linkPresence.statusMessage;
   }
 
+  getOwnAvatarUrl(): string {
+    return this.settings.get().linkPresence.avatarUrl;
+  }
+
   setOwnStatus(status: PresenceStatus): void {
     this.settings.update((draft) => {
       draft.linkPresence.status = status;
@@ -158,13 +179,32 @@ export class LinkPresenceService {
   setEnabled(enabled: boolean): void {
     const previous = this.settings.get().linkPresence.enabled;
     if (previous === enabled) return;
-    if (previous && !enabled) this.#publishOwnPresence("offline", true);
     this.settings.update((draft) => {
       draft.linkPresence.enabled = enabled;
     });
-    if (enabled) {
-      this.#syncRoom(true);
-      this.#publishOwnPresence();
+    this.#lastEffectiveStatus = this.getOwnStatus();
+    if (previous && !enabled) this.#publishOwnPresence("offline", true, false);
+    else if (enabled) this.#syncRoom(true);
+    this.#notify(this.adapter.getOwnMemberNumber());
+  }
+
+  setOwnProfile(profile: OwnProfilePreferences): void {
+    const previousEnabled = this.settings.get().linkPresence.enabled;
+    const next = this.settings.update((draft) => {
+      draft.linkPresence.enabled = profile.enabled;
+      draft.linkPresence.statusMessage = profile.statusMessage;
+      draft.linkPresence.avatarUrl = profile.avatarUrl;
+      draft.linkPresence.autoIdleMinutes = profile.autoIdleMinutes;
+      draft.linkPresence.afkAutoReply = profile.afkAutoReply;
+    }).linkPresence;
+    this.#lastEffectiveStatus = this.getOwnStatus();
+
+    if (previousEnabled && !next.enabled) {
+      // Omitting optional profile fields makes peers replace, rather than retain, stale avatar data.
+      this.#publishOwnPresence("offline", true, false);
+    } else if (next.enabled) {
+      if (previousEnabled) this.#publishOwnPresence();
+      else this.#syncRoom(true);
     }
     this.#notify(this.adapter.getOwnMemberNumber());
   }
@@ -172,6 +212,14 @@ export class LinkPresenceService {
   setOwnStatusMessage(statusMessage: string): void {
     this.settings.update((draft) => {
       draft.linkPresence.statusMessage = statusMessage;
+    });
+    this.#publishOwnPresence();
+    this.#notify(this.adapter.getOwnMemberNumber());
+  }
+
+  setOwnAvatarUrl(avatarUrl: string): void {
+    this.settings.update((draft) => {
+      draft.linkPresence.avatarUrl = avatarUrl;
     });
     this.#publishOwnPresence();
     this.#notify(this.adapter.getOwnMemberNumber());
@@ -186,6 +234,7 @@ export class LinkPresenceService {
         source: "kikilink",
         updatedAt: now,
         ...(statusMessage ? { statusMessage } : {}),
+        ...(this.getOwnAvatarUrl() ? { avatarUrl: this.getOwnAvatarUrl() } : {}),
       };
     }
 
@@ -213,6 +262,7 @@ export class LinkPresenceService {
         source: "kikilink",
         updatedAt: remote.remoteUpdatedAt,
         ...(remote.statusMessage ? { statusMessage: remote.statusMessage } : {}),
+        ...(remote.avatarUrl ? { avatarUrl: remote.avatarUrl } : {}),
         ...(observableRoomName ? { roomName: observableRoomName } : {}),
       };
     }
@@ -321,6 +371,7 @@ export class LinkPresenceService {
     this.#remote.set(senderNumber, {
       status: packet.s,
       ...(packet.m ? { statusMessage: packet.m } : {}),
+      ...(packet.a ? { avatarUrl: packet.a } : {}),
       receivedAt,
       remoteUpdatedAt: Math.abs(packet.u - receivedAt) <= 24 * 60 * 60_000 ? packet.u : receivedAt,
     });
@@ -358,6 +409,7 @@ export class LinkPresenceService {
       ...(requestId ? { i: requestId } : {}),
       s: this.getOwnStatus(),
       ...(config.statusMessage ? { m: config.statusMessage } : {}),
+      ...(config.avatarUrl ? { a: config.avatarUrl } : {}),
       u: Date.now(),
       v: this.version,
     };
@@ -368,17 +420,26 @@ export class LinkPresenceService {
     }
   }
 
-  #publishOwnPresence(statusOverride?: PresenceStatus, force = false): void {
+  #publishOwnPresence(
+    statusOverride?: PresenceStatus,
+    force = false,
+    includeProfile = true,
+  ): void {
     if (!force && !this.settings.get().linkPresence.enabled) return;
     const config = this.settings.get().linkPresence;
     const packet: PresencePacket = {
       t: "ps",
       s: statusOverride ?? this.getOwnStatus(),
-      ...(config.statusMessage ? { m: config.statusMessage } : {}),
+      ...(includeProfile && config.statusMessage ? { m: config.statusMessage } : {}),
+      ...(includeProfile && config.avatarUrl ? { a: config.avatarUrl } : {}),
       u: Date.now(),
       v: this.version,
     };
-    this.adapter.broadcastKikiLinkProtocol(JSON.stringify(packet));
+    try {
+      this.adapter.broadcastKikiLinkProtocol(JSON.stringify(packet));
+    } catch {
+      // A malformed or unexpectedly oversized local preference must never break profile controls.
+    }
   }
 
   #syncRoom(force: boolean): void {
@@ -444,12 +505,18 @@ function parsePresencePacket(payload: string): PresencePacket | null {
     return null;
   }
   const message = "m" in value && typeof value.m === "string" ? value.m.trim().slice(0, 80) : "";
+  const normalizedAvatar =
+    "a" in value && typeof value.a === "string" && value.a.length <= 500
+      ? normalizeImageUrl(value.a)
+      : null;
+  const avatar = normalizedAvatar && normalizedAvatar.length <= 500 ? normalizedAvatar : "";
   const requestId = "i" in value && typeof value.i === "string" ? value.i.slice(0, 32) : "";
   return {
     t: "ps",
     ...(requestId ? { i: requestId } : {}),
     s: value.s,
     ...(message ? { m: message } : {}),
+    ...(avatar ? { a: avatar } : {}),
     u: value.u,
     v: value.v,
   };

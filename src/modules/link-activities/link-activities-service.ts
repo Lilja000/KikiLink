@@ -15,20 +15,71 @@ const ACTION_CONTENT = "KikiLinkCustomActivity";
 const META_TAG = "KikiLinkActivityMeta";
 const MAX_SEEN_NONCES = 120;
 const SAFE_ASSET_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
-const FALLBACK_IMAGES = [
+/**
+ * Canonical, byte-distinct activity pictures shipped by Bondage Club itself.
+ *
+ * ActivityFemale3DCGOrdering is intentionally not used here: it is a shared mutable registry,
+ * so addons such as LSCG append their own activities to it. Several vanilla activity names also
+ * point at the same PNG. Keeping this small manifest makes the picker stable, strictly vanilla,
+ * and free from visually repeated choices.
+ */
+export const VANILLA_ACTIVITY_IMAGES = [
+  "Bite",
+  "BrothersHandshake",
   "Caress",
+  "Choke",
   "Cuddle",
-  "Kiss",
   "FrenchKiss",
-  "PoliteKiss",
-  "Nod",
-  "TakeCare",
-  "Pet",
-  "Tickle",
-  "MassageHands",
+  "GagKiss",
+  "GaggedKiss",
+  "Grope",
+  "HandGag",
+  "Inject",
+  "Kiss",
+  "Lick",
   "MassageFeet",
+  "MassageHands",
+  "MasturbateFist",
+  "MasturbateHand",
+  "MoanGag",
+  "MoanGagAngry",
+  "MoanGagGiggle",
+  "MoanGagTalk",
+  "MoanGagWhimper",
+  "Nod",
+  "PenetrateSlow",
+  "Pinch",
+  "PoliteKiss",
+  "Pull",
   "RestHead",
+  "SiblingsCheekKiss",
+  "SistersHug",
+  "Slap",
+  "Suck",
+  "Tickle",
 ] as const;
+
+const VANILLA_ACTIVITY_IMAGE_SET = new Set<string>(VANILLA_ACTIVITY_IMAGES);
+const VANILLA_ACTIVITY_IMAGE_ALIASES: Readonly<Record<string, string>> = {
+  Clean: "Caress",
+  Pet: "Caress",
+  Rub: "Cuddle",
+  StruggleArms: "Cuddle",
+  StruggleLegs: "Cuddle",
+  Wiggle: "Cuddle",
+  MoanGagGroan: "GaggedKiss",
+  CollarGrab: "Grope",
+  TakeCare: "Grope",
+  MasturbateFoot: "MassageFeet",
+  Step: "MassageFeet",
+  Kick: "MassageFeet",
+  Sit: "MassageFeet",
+  MasturbateTongue: "Lick",
+  Whisper: "Kiss",
+  PenetrateFast: "PenetrateSlow",
+  Spank: "Slap",
+  Nibble: "Bite",
+};
 
 export interface ActivityBodySlot {
   name: string;
@@ -54,6 +105,7 @@ interface Pronouns {
 export class LinkActivitiesService implements BCCustomActivityIntegration {
   readonly #runtimeActivities = new Map<string, CustomActivityDefinition>();
   readonly #seenNonces: string[] = [];
+  #bodySlotsCache: ActivityBodySlot[] | undefined;
   #unregister: (() => void) | undefined;
 
   constructor(
@@ -73,10 +125,12 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     this.#unregister = undefined;
     this.#removeRegisteredActivities();
     this.#runtimeActivities.clear();
+    this.#bodySlotsCache = undefined;
     this.#seenNonces.splice(0);
   }
 
   syncFromSettings(): void {
+    this.#bodySlotsCache = undefined;
     this.#removeRegisteredActivities();
     this.#runtimeActivities.clear();
     const settings = this.settings?.get();
@@ -129,15 +183,19 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   }
 
   getBodySlots(): ActivityBodySlot[] {
-    if (typeof AssetGroup === "undefined" || !Array.isArray(AssetGroup)) {
+    if (this.#bodySlotsCache) return this.#bodySlotsCache;
+    if (
+      typeof AssetGroup === "undefined" ||
+      !Array.isArray(AssetGroup) ||
+      typeof ActivityFemale3DCG === "undefined" ||
+      !Array.isArray(ActivityFemale3DCG)
+    ) {
       return fallbackBodySlots();
     }
     const nativeTargets = new Set<string>();
-    if (typeof ActivityFemale3DCG !== "undefined" && Array.isArray(ActivityFemale3DCG)) {
-      for (const activity of ActivityFemale3DCG) {
-        if (!activity.Name.startsWith(ACTIVITY_PREFIX)) {
-          for (const target of activity.Target) nativeTargets.add(target);
-        }
+    for (const activity of ActivityFemale3DCG) {
+      if (!activity.Name.startsWith(ACTIVITY_PREFIX) && Array.isArray(activity.Target)) {
+        for (const target of activity.Target) nativeTargets.add(target);
       }
     }
     const slots = AssetGroup.filter(
@@ -153,20 +211,13 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
         zones: group.Zone ?? [],
       }))
       .sort((left, right) => left.label.localeCompare(right.label));
-    return slots.length > 0 ? slots : fallbackBodySlots();
+    if (slots.length === 0) return fallbackBodySlots();
+    this.#bodySlotsCache = slots;
+    return slots;
   }
 
   getVanillaImages(): string[] {
-    const images = new Set<string>(FALLBACK_IMAGES);
-    if (
-      typeof ActivityFemale3DCGOrdering !== "undefined" &&
-      Array.isArray(ActivityFemale3DCGOrdering)
-    ) {
-      for (const name of ActivityFemale3DCGOrdering) {
-        if (SAFE_ASSET_NAME.test(name) && !name.startsWith(ACTIVITY_PREFIX)) images.add(name);
-      }
-    }
-    return [...images].sort((left, right) => left.localeCompare(right));
+    return [...VANILLA_ACTIVITY_IMAGES];
   }
 
   drawPlayer(
@@ -176,8 +227,8 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   ): boolean {
     const context = canvas.getContext("2d");
     if (!context) return false;
-    canvas.width = 250;
-    canvas.height = 500;
+    if (canvas.width !== 250) canvas.width = 250;
+    if (canvas.height !== 500) canvas.height = 500;
     context.clearRect(0, 0, canvas.width, canvas.height);
     if (
       typeof Player !== "object" ||
@@ -187,14 +238,29 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       return false;
     }
     DrawCharacter(Player, 0, 0, 0.5, false, context);
-    for (const slot of this.getBodySlots()) {
-      if (slot.name !== selectedGroup && slot.name !== hoveredGroup) continue;
+    const slots = [...this.getBodySlots()].sort(
+      (left, right) =>
+        bodySlotDrawLayer(left.name, selectedGroup, hoveredGroup) -
+        bodySlotDrawLayer(right.name, selectedGroup, hoveredGroup),
+    );
+    for (const slot of slots) {
       const selected = slot.name === selectedGroup;
-      context.fillStyle = selected ? "rgba(215, 25, 50, 0.25)" : "rgba(214, 162, 75, 0.18)";
-      context.strokeStyle = selected ? "rgba(255, 106, 126, 0.95)" : "rgba(224, 185, 112, 0.88)";
-      context.lineWidth = selected ? 2 : 1.5;
+      const hovered = !selected && slot.name === hoveredGroup;
+      context.fillStyle = selected
+        ? "rgba(215, 25, 50, 0.22)"
+        : hovered
+          ? "rgba(214, 162, 75, 0.12)"
+          : "rgba(255, 255, 255, 0)";
+      context.strokeStyle = selected
+        ? "rgba(255, 106, 126, 0.98)"
+        : hovered
+          ? "rgba(224, 185, 112, 0.9)"
+          : "rgba(238, 226, 210, 0.28)";
+      context.lineWidth = selected ? 2.25 : hovered ? 1.75 : 1;
       for (const [x, y, width, height] of slot.zones) {
-        context.fillRect(x * 0.5, y * 0.5, width * 0.5, height * 0.5);
+        if (selected || hovered) {
+          context.fillRect(x * 0.5, y * 0.5, width * 0.5, height * 0.5);
+        }
         context.strokeRect(x * 0.5, y * 0.5, width * 0.5, height * 0.5);
       }
     }
@@ -204,15 +270,26 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   bodySlotAt(x: number, y: number): ActivityBodySlot | undefined {
     const sourceX = x * 2;
     const sourceY = y * 2;
-    return this.getBodySlots().find((slot) =>
-      slot.zones.some(
-        ([zoneX, zoneY, width, height]) =>
-          sourceX >= zoneX &&
-          sourceX <= zoneX + width &&
-          sourceY >= zoneY &&
-          sourceY <= zoneY + height,
-      ),
-    );
+    let best: ActivityBodySlot | undefined;
+    let bestArea = Number.POSITIVE_INFINITY;
+    for (const slot of this.getBodySlots()) {
+      for (const [zoneX, zoneY, width, height] of slot.zones) {
+        if (
+          sourceX < zoneX ||
+          sourceX > zoneX + width ||
+          sourceY < zoneY ||
+          sourceY > zoneY + height
+        ) {
+          continue;
+        }
+        const area = width * height;
+        if (area < bestArea) {
+          best = slot;
+          bestArea = area;
+        }
+      }
+    }
+    return best;
   }
 
   resolveText(keyword: string): string | undefined {
@@ -345,8 +422,12 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
 }
 
 export function activityImageUrl(image: string): string {
-  const safeImage = SAFE_ASSET_NAME.test(image) ? image : "Caress";
-  return `Assets/Female3DCG/Activity/${safeImage}.png`;
+  return `Assets/Female3DCG/Activity/${canonicalVanillaActivityImage(image)}.png`;
+}
+
+export function canonicalVanillaActivityImage(image: string): string {
+  const canonical = VANILLA_ACTIVITY_IMAGE_ALIASES[image] ?? image;
+  return VANILLA_ACTIVITY_IMAGE_SET.has(canonical) ? canonical : "Caress";
 }
 
 export function expandCustomActivityTemplate(
@@ -503,6 +584,16 @@ function fallbackBodySlots(): ActivityBodySlot[] {
     { name: "ItemLegs", label: "Legs", zones: [[130, 610, 240, 250]] },
     { name: "ItemFeet", label: "Feet", zones: [[115, 850, 270, 130]] },
   ];
+}
+
+function bodySlotDrawLayer(
+  groupName: string,
+  selectedGroup?: string,
+  hoveredGroup?: string,
+): number {
+  if (groupName === selectedGroup) return 2;
+  if (groupName === hoveredGroup) return 1;
+  return 0;
 }
 
 function humanizeGroupName(value: string): string {

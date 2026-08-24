@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.20.0 - 2026-08-24
+
+- Restored the original wolf-and-red-moon KikiLink emblem everywhere inside the addon and kept the
+  translucent Blossom as a separate room-addon and Custom Activities marker. A visually matched,
+  metadata-free 512 px WebP keeps the restored emblem inexpensive inside the userscript.
+- Moved the room Blossom into selectable safe positions around common WCE and BCX icon areas, added
+  bounded horizontal and vertical fine adjustment, and kept native icon hiding and compatibility checks.
+- Added account-free temporary local-image uploads through Catbox's Litterbox with 1, 12, 24, or
+  72 hour retention. Files are still validated, resized, metadata-stripped, and re-encoded locally
+  before an explicit upload.
+- Added direct-link profile avatars shared through the bounded presence packet. Remote avatars obey
+  the existing image-preview privacy preference, offer one-session consent under `Ask`, avoid reloads
+  on typing updates, and load without credentials or referrer data.
+- Added configurable automatic Idle from 0–120 minutes and an optional editable AFK reply. Replies
+  are private, exclude the room, run once per sender per Idle session, and have per-sender and global limits.
+- Stabilized chat scrolling with fixed-aspect remote image cards, paint-only containment, disabled
+  browser scroll anchoring, no viewport-lazy message creation, and explicit viewport compensation
+  when the bounded feed removes its oldest rendered row.
+- Refined incoming and outgoing bubbles with a restrained one-pixel top gradient and calmer surfaces.
+- Rebuilt Custom Activities around an always-visible body-slot grid, deterministic smallest-zone taps,
+  a canonical 33-icon vanilla-only gallery, and a single-scroll mobile editor that presents the slot
+  grid before the character stage and keeps touch-safe controls.
+- Keep the entire KikiLink host hidden whenever Bondage Club reports that the account logged out,
+  while preserving the existing pre-login mount gate.
+- Migrated settings to schema version 14, reset the former Cloudinary provider switch instead of
+  treating it as Litterbox consent, and expanded validation for bounded profile packets.
+
 ## 0.19.0 - 2026-08-24
 
 - Replaced the old target-first Activity Studio with a dedicated Custom Activities workspace that

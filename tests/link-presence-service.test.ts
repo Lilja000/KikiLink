@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter } from "../src/bc/adapter";
 import { EventBus } from "../src/core/event-bus";
@@ -7,6 +9,7 @@ import { LinkPresenceService } from "../src/modules/link-presence/link-presence-
 
 function setup() {
   const sendKikiLinkProtocol = vi.fn(() => "beep" as const);
+  const broadcastKikiLinkProtocol = vi.fn((_payload: string) => false);
   const adapter = {
     getOwnMemberNumber: () => 999,
     refreshOnlineFriends: vi.fn(() => true),
@@ -24,12 +27,19 @@ function setup() {
     isInChatRoom: () => false,
     getCurrentRoomName: () => undefined,
     sendKikiLinkProtocol,
-    broadcastKikiLinkProtocol: vi.fn(() => false),
+    broadcastKikiLinkProtocol,
   } as unknown as BCAdapter;
   const settings = new SettingsStore(new MemoryKeyValueStorage());
   const bus = new EventBus<KikiLinkEvents>();
   const service = new LinkPresenceService(adapter, settings, bus, "0.11.0");
-  return { adapter, settings, bus, service, sendKikiLinkProtocol };
+  return {
+    adapter,
+    settings,
+    bus,
+    service,
+    sendKikiLinkProtocol,
+    broadcastKikiLinkProtocol,
+  };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -67,6 +77,7 @@ describe("LinkPresenceService", () => {
         t: "ps",
         s: "dnd",
         m: "In a scene",
+        a: "https://i.imgur.com/reina.png",
         u: Date.now(),
         v: "0.11.0",
       }),
@@ -75,6 +86,7 @@ describe("LinkPresenceService", () => {
       status: "dnd",
       source: "kikilink",
       statusMessage: "In a scene",
+      avatarUrl: "https://i.imgur.com/reina.png",
     });
     expect(service.hasCompatiblePeer(123)).toBe(true);
     expect(service.hasCompatiblePeer(123, Date.now() + 5 * 60_000 + 1)).toBe(false);
@@ -87,6 +99,99 @@ describe("LinkPresenceService", () => {
 
     expect(service.getOwnStatus()).toBe("offline");
     expect(settings.get().linkPresence.status).toBe("offline");
+  });
+
+  it("shares a bounded direct avatar URL and ignores unsafe remote avatars", () => {
+    const { bus, service, settings, broadcastKikiLinkProtocol } = setup();
+    service.start();
+    service.setOwnAvatarUrl("https://files.catbox.moe/kiki.webp");
+
+    expect(settings.get().linkPresence.avatarUrl).toBe(
+      "https://files.catbox.moe/kiki.webp",
+    );
+    expect(
+      broadcastKikiLinkProtocol.mock.calls.some(
+        ([payload]) =>
+          typeof payload === "string" &&
+          payload.includes('"a":"https://files.catbox.moe/kiki.webp"'),
+      ),
+    ).toBe(true);
+
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "http://tracker.example/avatar.png",
+        u: Date.now(),
+        v: "0.20.0",
+      }),
+    });
+    expect(service.get(456).avatarUrl).toBeUndefined();
+    service.stop();
+  });
+
+  it("publishes a saved profile once and clears remote profile fields when disabled", () => {
+    const { service, settings, broadcastKikiLinkProtocol } = setup();
+
+    service.setOwnProfile({
+      enabled: true,
+      statusMessage: "Open to chat",
+      avatarUrl: "https://files.catbox.moe/kiki.webp",
+      autoIdleMinutes: 7,
+      afkAutoReply: { enabled: true, message: "Back later!" },
+    });
+
+    expect(broadcastKikiLinkProtocol).toHaveBeenCalledOnce();
+    expect(broadcastKikiLinkProtocol).toHaveBeenLastCalledWith(
+      expect.stringContaining('"a":"https://files.catbox.moe/kiki.webp"'),
+    );
+    expect(settings.get().linkPresence).toMatchObject({
+      statusMessage: "Open to chat",
+      avatarUrl: "https://files.catbox.moe/kiki.webp",
+      autoIdleMinutes: 7,
+      afkAutoReply: { enabled: true, message: "Back later!" },
+    });
+
+    service.setOwnProfile({
+      enabled: false,
+      statusMessage: "",
+      avatarUrl: "",
+      autoIdleMinutes: 7,
+      afkAutoReply: { enabled: true, message: "Back later!" },
+    });
+    expect(broadcastKikiLinkProtocol).toHaveBeenCalledTimes(2);
+    const disabledPacket = broadcastKikiLinkProtocol.mock.calls.at(-1)?.[0] ?? "";
+    expect(disabledPacket).toContain('"s":"offline"');
+    expect(disabledPacket).not.toContain('"a":');
+    expect(disabledPacket).not.toContain('"m":');
+  });
+
+  it("moves Online to Idle and publishes one immediate Online update after interaction", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-24T12:00:00Z"));
+    const { service, settings, broadcastKikiLinkProtocol } = setup();
+    const listener = vi.fn();
+    service.subscribe(listener);
+    settings.update((draft) => {
+      draft.linkPresence.autoIdleMinutes = 1;
+    });
+    service.start();
+    expect(service.getOwnStatus()).toBe("online");
+
+    vi.advanceTimersByTime(60_001);
+    expect(service.getOwnStatus()).toBe("idle");
+    const broadcastsWhileIdle = broadcastKikiLinkProtocol.mock.calls.length;
+
+    window.dispatchEvent(new KeyboardEvent("keydown"));
+    expect(service.getOwnStatus()).toBe("online");
+    expect(listener).toHaveBeenLastCalledWith(999);
+    expect(broadcastKikiLinkProtocol).toHaveBeenCalledTimes(broadcastsWhileIdle + 1);
+
+    vi.advanceTimersByTime(15_000);
+    expect(broadcastKikiLinkProtocol).toHaveBeenCalledTimes(broadcastsWhileIdle + 1);
+    service.stop();
   });
 
   it("shares throttled typing state only through short-lived KikiLink packets", () => {

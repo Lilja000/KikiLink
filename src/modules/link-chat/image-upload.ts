@@ -5,9 +5,17 @@ export const MAX_LOCAL_IMAGE_EDGE = 2_560;
 export const MAX_LOCAL_IMAGE_PIXELS = 32_000_000;
 
 const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
-const CLOUDINARY_UPLOAD_TIMEOUT_MS = 60_000;
+const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
+const LITTERBOX_UPLOAD_ENDPOINT =
+  "https://litterbox.catbox.moe/resources/internals/api.php";
 const CLOUD_NAME_PATTERN = /^[a-z0-9_-]{1,64}$/iu;
 const UPLOAD_PRESET_PATTERN = /^[a-z0-9_-]{1,128}$/iu;
+
+export type LitterboxRetention = "1h" | "12h" | "24h" | "72h";
+
+export interface LitterboxUploadConfig {
+  retention: LitterboxRetention;
+}
 
 export interface CloudinaryUploadConfig {
   cloudName: string;
@@ -21,9 +29,9 @@ export interface PreparedLocalImage {
   sourceBytes: number;
 }
 
-export interface LocalImageUploader {
+export interface LocalImageUploader<Config = LitterboxUploadConfig> {
   prepare(file: File): Promise<PreparedLocalImage>;
-  upload(image: PreparedLocalImage, config: CloudinaryUploadConfig): Promise<string>;
+  upload(image: PreparedLocalImage, config: Config): Promise<string>;
 }
 
 interface CloudinaryUploadResponse {
@@ -31,62 +39,77 @@ interface CloudinaryUploadResponse {
   error?: { message?: unknown };
 }
 
-export class CloudinaryImageUploader implements LocalImageUploader {
+/**
+ * A zero-account temporary uploader backed by Litterbox.
+ *
+ * File selection and preparation remain fully local. The prepared, generically named WebP is sent
+ * only when `upload` is called explicitly.
+ */
+export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploadConfig> {
   constructor(private readonly request: typeof fetch = globalThis.fetch.bind(globalThis)) {}
 
-  async prepare(file: File): Promise<PreparedLocalImage> {
-    await validateLocalImageFile(file);
+  prepare(file: File): Promise<PreparedLocalImage> {
+    return prepareLocalImage(file);
+  }
 
-    const decoded = await decodeLocalImage(file);
+  async upload(image: PreparedLocalImage, config: LitterboxUploadConfig): Promise<string> {
+    const normalizedConfig = normalizeLitterboxUploadConfig(config);
+    if (!normalizedConfig) throw new Error("Choose a valid temporary image lifetime");
+    validatePreparedImage(image);
+
+    const form = new FormData();
+    form.append("reqtype", "fileupload");
+    form.append("time", normalizedConfig.retention);
+    form.append("fileToUpload", preparedImageFile(image));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
+
     try {
-      if (
-        decoded.width <= 0 ||
-        decoded.height <= 0 ||
-        decoded.width * decoded.height > MAX_LOCAL_IMAGE_PIXELS
-      ) {
-        throw new Error("This image has too many pixels to prepare safely");
+      const response = await this.request(LITTERBOX_UPLOAD_ENDPOINT, {
+        method: "POST",
+        body: form,
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        signal: controller.signal,
+      });
+      const payload = (await response.text().catch(() => "")).trim();
+      if (!response.ok) {
+        throw new Error(cleanProviderError(payload) || `Image host returned HTTP ${response.status}`);
       }
 
-      const scale = Math.min(1, MAX_LOCAL_IMAGE_EDGE / Math.max(decoded.width, decoded.height));
-      const width = Math.max(1, Math.round(decoded.width * scale));
-      const height = Math.max(1, Math.round(decoded.height * scale));
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext("2d", { alpha: true });
-      if (!context) throw new Error("Your browser could not prepare this image");
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = "high";
-      context.drawImage(decoded.source, 0, 0, width, height);
-
-      const blob = await canvasToWebp(canvas);
-      if (blob.size > MAX_PREPARED_IMAGE_BYTES) {
-        throw new Error("The privacy-prepared image is still larger than 8 MB");
+      const directUrl = normalizeImageUrl(payload);
+      if (!directUrl || !isExpectedLitterboxUrl(directUrl)) {
+        throw new Error("The temporary image host returned an unexpected link");
       }
-      return { blob, width, height, sourceBytes: file.size };
+      return directUrl;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("The image upload timed out");
+      }
+      throw error;
     } finally {
-      decoded.dispose();
+      clearTimeout(timer);
     }
+  }
+}
+
+export class CloudinaryImageUploader implements LocalImageUploader<CloudinaryUploadConfig> {
+  constructor(private readonly request: typeof fetch = globalThis.fetch.bind(globalThis)) {}
+
+  prepare(file: File): Promise<PreparedLocalImage> {
+    return prepareLocalImage(file);
   }
 
   async upload(image: PreparedLocalImage, config: CloudinaryUploadConfig): Promise<string> {
     const normalizedConfig = normalizeCloudinaryUploadConfig(config);
     if (!normalizedConfig) throw new Error("Complete the local image upload setup first");
-    if (image.blob.type !== "image/webp" || image.blob.size <= 0) {
-      throw new Error("The prepared image is invalid");
-    }
+    validatePreparedImage(image);
 
     const form = new FormData();
-    form.append(
-      "file",
-      new File([image.blob], "kikilink-image.webp", {
-        type: "image/webp",
-        lastModified: 0,
-      }),
-    );
+    form.append("file", preparedImageFile(image));
     form.append("upload_preset", normalizedConfig.uploadPreset);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), CLOUDINARY_UPLOAD_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
 
     try {
       const response = await this.request(
@@ -133,6 +156,52 @@ export function normalizeCloudinaryUploadConfig(value: unknown): CloudinaryUploa
     return null;
   }
   return { cloudName, uploadPreset };
+}
+
+export function normalizeLitterboxUploadConfig(value: unknown): LitterboxUploadConfig | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const retention = (value as Record<string, unknown>).retention;
+  return retention === "1h" ||
+    retention === "12h" ||
+    retention === "24h" ||
+    retention === "72h"
+    ? { retention }
+    : null;
+}
+
+export async function prepareLocalImage(file: File): Promise<PreparedLocalImage> {
+  await validateLocalImageFile(file);
+
+  const decoded = await decodeLocalImage(file);
+  try {
+    if (
+      decoded.width <= 0 ||
+      decoded.height <= 0 ||
+      decoded.width * decoded.height > MAX_LOCAL_IMAGE_PIXELS
+    ) {
+      throw new Error("This image has too many pixels to prepare safely");
+    }
+
+    const scale = Math.min(1, MAX_LOCAL_IMAGE_EDGE / Math.max(decoded.width, decoded.height));
+    const width = Math.max(1, Math.round(decoded.width * scale));
+    const height = Math.max(1, Math.round(decoded.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: true });
+    if (!context) throw new Error("Your browser could not prepare this image");
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(decoded.source, 0, 0, width, height);
+
+    const blob = await canvasToWebp(canvas);
+    if (blob.size > MAX_PREPARED_IMAGE_BYTES) {
+      throw new Error("The privacy-prepared image is still larger than 8 MB");
+    }
+    return { blob, width, height, sourceBytes: file.size };
+  } finally {
+    decoded.dispose();
+  }
 }
 
 export async function validateLocalImageFile(file: File): Promise<void> {
@@ -234,4 +303,42 @@ function isExpectedCloudinaryUrl(value: string, cloudName: string): boolean {
     url.hostname === "res.cloudinary.com" &&
     url.pathname.startsWith(`/${cloudName}/image/upload/`)
   );
+}
+
+function isExpectedLitterboxUrl(value: string): boolean {
+  const url = new URL(value);
+  return (
+    url.protocol === "https:" &&
+    url.hostname === "litter.catbox.moe" &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    /^\/[a-z0-9_-]+\.webp$/iu.test(url.pathname)
+  );
+}
+
+function validatePreparedImage(image: PreparedLocalImage): void {
+  if (
+    image.blob.type !== "image/webp" ||
+    image.blob.size <= 0 ||
+    image.blob.size > MAX_PREPARED_IMAGE_BYTES ||
+    !Number.isSafeInteger(image.width) ||
+    image.width <= 0 ||
+    !Number.isSafeInteger(image.height) ||
+    image.height <= 0
+  ) {
+    throw new Error("The prepared image is invalid");
+  }
+}
+
+function preparedImageFile(image: PreparedLocalImage): File {
+  return new File([image.blob], "kikilink-image.webp", {
+    type: "image/webp",
+    lastModified: 0,
+  });
+}
+
+function cleanProviderError(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 180);
 }

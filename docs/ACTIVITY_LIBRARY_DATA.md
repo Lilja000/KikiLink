@@ -1,6 +1,6 @@
 # Custom Activities data and compatibility
 
-KikiLink 0.19.0 stores user-created activities locally and registers them beside Bondage Club's
+KikiLink 0.20.0 stores user-created activities locally and registers them beside Bondage Club's
 vanilla activities at runtime. No account, cloud library, or remote activity index is involved.
 
 ## Local model
@@ -17,6 +17,11 @@ Each complete activity contains:
 The library starts empty and is limited to 100 complete entries. Text controls are normalized,
 asset and image names must be simple Bondage Club identifiers, duplicate IDs are made unique, and
 invalid target modes or amounts fall back to safe defaults.
+
+The editor exposes every available body group in a visible selection grid. Its picture gallery is
+a static canonical manifest of 33 unique vanilla activity images; live addon registries, LSCG images,
+item-action images, and duplicate vanilla aliases are never offered. Older saved aliases are mapped
+to their canonical vanilla image during editing and sanitation.
 
 ## Runtime registration
 
@@ -43,7 +48,7 @@ receiving KikiLink instance checks all fields, confirms the sender is in the cur
 the `0–20` bound, and rejects replayed nonces before calling Bondage Club's preference-aware
 `ActivityEffectFlat` API. Players without KikiLink simply ignore this metadata.
 
-## Schema-13 migration
+## Settings migrations
 
 The former KikiLink Starter pack is intentionally discarded so the new library honors the empty
 default. Legacy user-written room actions are preserved and converted with:
@@ -56,3 +61,7 @@ default. Legacy user-written room actions are preserved and converted with:
 - legacy `{source}` changed to `{me}`.
 
 All processing and persistence remain in the current browser profile.
+
+Schema 14 adds only profile, AFK, temporary-upload, and room-badge preferences. Existing custom
+activities remain intact. The former Cloudinary upload switch is reset to off once during migration
+so it is not silently treated as consent to send files to Litterbox.

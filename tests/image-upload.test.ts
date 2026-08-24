@@ -4,7 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CloudinaryImageUploader,
   detectLocalImageType,
+  LitterboxImageUploader,
   normalizeCloudinaryUploadConfig,
+  normalizeLitterboxUploadConfig,
   validateLocalImageFile,
   type PreparedLocalImage,
 } from "../src/modules/link-chat/image-upload";
@@ -47,6 +49,69 @@ describe("local image uploads", () => {
     expect(
       normalizeCloudinaryUploadConfig({ cloudName: "https://evil.example", uploadPreset: "x" }),
     ).toBeNull();
+  });
+
+  it("accepts only supported temporary Litterbox lifetimes", () => {
+    expect(normalizeLitterboxUploadConfig({ retention: "1h" })).toEqual({ retention: "1h" });
+    expect(normalizeLitterboxUploadConfig({ retention: "24h" })).toEqual({ retention: "24h" });
+    expect(normalizeLitterboxUploadConfig({ retention: "7d" })).toBeNull();
+    expect(normalizeLitterboxUploadConfig({ retention: 24 })).toBeNull();
+  });
+
+  it("uploads a prepared generic WebP to Litterbox with an explicit retention", async () => {
+    const request = vi.fn<typeof fetch>(async () =>
+      new Response("  https://litter.catbox.moe/abc_123.webp\n", { status: 200 }),
+    );
+    const uploader = new LitterboxImageUploader(request as typeof fetch);
+    const image: PreparedLocalImage = {
+      blob: new Blob([bytes(1, 2, 3)], { type: "image/webp" }),
+      width: 640,
+      height: 480,
+      sourceBytes: 1234,
+    };
+
+    await expect(uploader.upload(image, { retention: "24h" })).resolves.toBe(
+      "https://litter.catbox.moe/abc_123.webp",
+    );
+
+    expect(request).toHaveBeenCalledOnce();
+    const [endpoint, options] = request.mock.calls[0] ?? [];
+    expect(endpoint).toBe("https://litterbox.catbox.moe/resources/internals/api.php");
+    expect(options).toMatchObject({
+      method: "POST",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+    });
+    const form = options?.body as FormData;
+    expect(form.get("reqtype")).toBe("fileupload");
+    expect(form.get("time")).toBe("24h");
+    const uploaded = form.get("fileToUpload");
+    expect(uploaded).toBeInstanceOf(File);
+    expect((uploaded as File).name).toBe("kikilink-image.webp");
+    expect((uploaded as File).type).toBe("image/webp");
+  });
+
+  it("rejects Litterbox responses outside the exact temporary WebP host and shape", async () => {
+    const image: PreparedLocalImage = {
+      blob: new Blob([bytes(1)], { type: "image/webp" }),
+      width: 1,
+      height: 1,
+      sourceBytes: 1,
+    };
+
+    for (const responseUrl of [
+      "https://files.catbox.moe/photo.webp",
+      "https://litter.catbox.moe/photo.png",
+      "https://litter.catbox.moe/folder/photo.webp",
+      "https://litter.catbox.moe/photo.webp?tracking=1",
+    ]) {
+      const uploader = new LitterboxImageUploader(
+        vi.fn<typeof fetch>(async () => new Response(responseUrl, { status: 200 })) as typeof fetch,
+      );
+      await expect(uploader.upload(image, { retention: "12h" })).rejects.toThrow(
+        "unexpected link",
+      );
+    }
   });
 
   it("uploads only the prepared generic WebP and validates the returned direct URL", async () => {

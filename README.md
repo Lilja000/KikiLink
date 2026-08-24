@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.19.0` adds native Custom Activities: choose a body slot and vanilla picture, write
-your own action, optionally add bounded arousal, and find it beside normal activities with a Blossom.
+Version `0.20.0` adds AFK replies, temporary Litterbox image uploads, profile avatars, a separate
+configurable room Blossom, smoother chat rendering, and a phone-friendly Custom Activities editor.
 
 ## Link Deck
 
@@ -77,12 +77,14 @@ browser profile. KikiLink does not upload them to a server.
   Offline status shared between compatible KikiLink users
 - Short-lived typing indicators between compatible KikiLink users, with a private on/off preference
 - The friend's observable current room beside their identity in the active chat
-- Status notes and optional automatic Idle with an explicit presence on/off control
+- Status notes, a direct-link profile avatar, and configurable automatic Idle with an explicit
+  presence on/off control
+- Optional editable AFK auto-reply while Idle, limited to one private reply per person per Idle session
 - Direct HTTPS image messages that remain ordinary usable links for players without KikiLink
 - Pasted Markdown, BBCode, and color wrappers are reduced to the direct image URL before sending
 - Privacy-aware inline image previews: ask before loading, always show, or links only
-- Optional local JPG, PNG, and WebP uploads through a user-owned Cloudinary unsigned preset,
-  disabled until explicitly configured
+- Account-free temporary JPG, PNG, and WebP uploads through Catbox's Litterbox, with selectable
+  1, 12, 24, or 72 hour retention
 - Local privacy preparation before upload: validate the real file signature, remove the original
   filename and embedded metadata, convert to WebP, and resize the longest edge to at most 2560 px
 - Choosing a file never starts a network request; only the explicit `Upload & send` action uploads it
@@ -102,10 +104,11 @@ browser profile. KikiLink does not upload them to a server.
 - Reliable live incoming-message capture across Bondage Club's null and empty normal Beep types
 - Strict removal of the known trailing `{"messageType":"Message","messageColor":"#ffffff"}`
   compatibility envelope without stripping ordinary JSON-like user text
-- Smooth bounded rendering: 120 recent messages at once, incremental live append, and on-demand older history
+- Smooth bounded rendering: 120 recent messages at once, incremental live append, stable image-card
+  geometry, and on-demand older history
 - Stable scrolling without viewport-triggered message paint; older history is prepended without replacing
   messages already on screen
-- Softly grouped incoming and outgoing bubbles with clearer shape, depth, and direction at a glance
+- Softly grouped incoming and outgoing bubbles with a very light one-pixel top gradient
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
 
@@ -113,9 +116,12 @@ browser profile. KikiLink does not upload them to a server.
 
 - A dedicated Custom Activities destination, visible by default and optional in Settings
 - An intentionally empty starting library: KikiLink does not make choices for the player
-- A focused creator that renders the current character and lets the player tap a body slot
-- An accessible body-slot selector remains available alongside the character view
-- Vanilla Bondage Club activity pictures can be searched and reused without remote assets
+- A focused creator that renders the current character and keeps every body slot visible in a
+  tap-friendly selection grid
+- A canonical set of 33 unique vanilla Bondage Club activity pictures, without LSCG assets,
+  item-action icons, or visual duplicates
+- Mobile layouts keep the character, two-column slot grid, horizontally scrolling picture gallery,
+  and save controls usable inside one predictable scroll area
 - Quick `{me}`, `{target}`, `{target's}`, and `{target's gender}` variables with a live preview
 - Other-character targeting by default; self-only and both modes live inside `Advanced`
 - Optional arousal is off by default and exposes a bounded `1–20` base-amount slider only when enabled
@@ -143,7 +149,8 @@ does not process the KikiLink arousal metadata.
   cooldowns, templates, private notices, or explicitly enabled room emotes
 - Public room emotes keep the global 10-second guard and never substitute private `{message}` content
 - Quiet room and online baselines prevent a new session from reacting to everyone already present
-- No automatic Beep replies, remote rules service, or background network polling
+- Advanced alert rules never send automatic Beep replies and use no remote rules service or
+  background network polling; the separate AFK profile option is the only guarded auto-reply path
 
 Alert choices and rules stay in the current browser profile. Sounds are synthesized locally with
 the browser audio API, so KikiLink downloads no audio files. Advanced room-emote rules use the
@@ -151,9 +158,10 @@ same native Bondage Club emote path and are visible to everyone in the room.
 
 ## Interface
 
-- Original translucent red blossom emblem shared by the launcher, workspace, and room presence badge
-- A quiet blossom above your own room character and confirmed compatible KikiLink peers; it respects
-  Bondage Club's native icon-visibility control and adds no new presence traffic
+- The original wolf-and-red-moon KikiLink emblem is restored in the launcher and workspace
+- A separate quiet translucent Blossom appears in the room addon-icon row for your own character and
+  confirmed compatible KikiLink peers; its preset position and fine offsets are configurable, it
+  respects Bondage Club's native icon-visibility control, and it adds no new presence traffic
 - Original dependency-free SVG icons with one consistent rounded line style across navigation,
   chat controls, favorites, pins, images, dialogs, and player actions
 - Dark lacquer, light paper, and follow-system appearance modes
@@ -171,16 +179,15 @@ same native Bondage Club emote path and are visible to everyone in the room.
 - Full-width mobile conversation list with a clear back-to-list flow
 - Live Bondage Club connection status without blocking an available native Beep function
 
-The blossom is bundled as a compact SVG inside the userscript, so KikiLink does not fetch visual
-assets from a remote server while the game is running. Replacing the old embedded raster also makes
-the public userscript roughly 27% smaller.
+The wolf emblem and Blossom marker are both bundled inside the userscript, so KikiLink does not
+fetch branding assets from a remote server while the game is running.
 
 Standard Beeps use Bondage Club's own `ServerSendBeepMessage` path. LinkRoster
 uses the game's native Whisper and profile controls, and Custom Activities extend
 the game's native activity registry and action path. Image messages are ordinary HTTPS links, so other players
 do not need KikiLink to open them. Optional local-file upload sends a privacy-prepared WebP
-only to the Cloudinary account configured by that user; it never passes through a KikiLink
-server. Otherwise no remote KikiLink server is used; message
+directly to Catbox's temporary Litterbox service only after `Upload & send`; it never passes through
+a KikiLink server. Profile avatars are user-supplied direct HTTPS links. Otherwise no remote KikiLink server is used; message
 history, player notes, settings, and custom templates remain in the current browser
 profile. Presence uses small validated compatibility packets through Bondage Club:
 one hidden room handshake when needed and a point-to-point request for an opened chat,
@@ -199,8 +206,8 @@ src/
   modules/link-roster/ Room roster, encounter tracking, and notebook service
   storage/            IndexedDB, player notebook, and in-memory repositories
   utils/              Small dependency-free helpers
-design/branding/       Shipping KikiLink blossom SVG
-design/references/     Earlier KikiLink visual reference
+design/branding/       Shipping KikiLink wolf emblem and Blossom marker
+design/references/     Full-resolution KikiLink visual reference
 docs/                  UX principles and accessibility decisions
 ```
 

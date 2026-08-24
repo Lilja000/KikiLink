@@ -132,7 +132,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(13);
+    expect(settings.schemaVersion).toBe(14);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -256,7 +256,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(13);
+    expect(settings.schemaVersion).toBe(14);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -280,7 +280,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(13);
+    expect(settings.schemaVersion).toBe(14);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -319,7 +319,9 @@ describe("SettingsStore", () => {
       enabled: true,
       status: "dnd",
       statusMessage: "In a scene",
+      avatarUrl: "",
       autoIdleMinutes: 30,
+      afkAutoReply: DEFAULT_SETTINGS.linkPresence.afkAutoReply,
     });
   });
 
@@ -344,7 +346,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(13);
+    expect(settings.schemaVersion).toBe(14);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -400,29 +402,98 @@ describe("SettingsStore", () => {
     });
   });
 
-  it("keeps local image uploads off until a complete Cloudinary setup is present", () => {
+  it("sanitizes zero-account temporary image upload preferences", () => {
     expect(
       sanitizeSettings({
-        schemaVersion: 11,
-        linkChat: { imageUploads: { enabled: true, cloudName: "", uploadPreset: "bad preset" } },
+        schemaVersion: 13,
+        linkChat: { imageUploads: { enabled: false, retention: "forever" } },
       }).linkChat.imageUploads,
-    ).toEqual(DEFAULT_SETTINGS.linkChat.imageUploads);
+    ).toEqual({ enabled: false, retention: "24h" });
 
     expect(
       sanitizeSettings({
-        schemaVersion: 11,
+        schemaVersion: 13,
         linkChat: {
           imageUploads: {
             enabled: true,
-            cloudName: "  sakura-cloud  ",
-            uploadPreset: "  kikilink_unsigned  ",
+            cloudName: "old-cloud",
+            uploadPreset: "old-preset",
+          },
+        },
+      }).linkChat.imageUploads,
+    ).toEqual({ enabled: false, retention: "24h" });
+
+    expect(
+      sanitizeSettings({
+        schemaVersion: 14,
+        linkChat: {
+          imageUploads: {
+            enabled: true,
+            retention: "72h",
           },
         },
       }).linkChat.imageUploads,
     ).toEqual({
       enabled: true,
-      cloudName: "sakura-cloud",
-      uploadPreset: "kikilink_unsigned",
+      retention: "72h",
+    });
+  });
+
+  it("sanitizes the room Blossom, profile avatar, and AFK reply", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 14,
+      ui: {
+        roomBadge: {
+          enabled: true,
+          placement: "after-addons",
+          offsetX: 24,
+          offsetY: -8,
+        },
+      },
+      linkPresence: {
+        avatarUrl: " https://i.imgur.com/kiki.png ",
+        afkAutoReply: {
+          enabled: true,
+          message: "  Back later!  ",
+        },
+      },
+    });
+
+    expect(settings.ui.roomBadge).toEqual({
+      enabled: true,
+      placement: "after-addons",
+      offsetX: 24,
+      offsetY: -8,
+    });
+    expect(settings.linkPresence.avatarUrl).toBe("https://i.imgur.com/kiki.png");
+    expect(settings.linkPresence.afkAutoReply).toEqual({
+      enabled: true,
+      message: "Back later!",
+    });
+
+    const rejected = sanitizeSettings({
+      ui: {
+        roomBadge: { placement: "over-face", offsetX: 999, offsetY: -999 },
+      },
+      linkPresence: {
+        avatarUrl: "http://tracker.example/avatar.png",
+        afkAutoReply: { enabled: true, message: "   " },
+      },
+    });
+    expect(rejected.ui.roomBadge).toEqual(DEFAULT_SETTINGS.ui.roomBadge);
+    expect(rejected.linkPresence.avatarUrl).toBe("");
+
+    const expandingUnicodeAvatar = `https://example.com/${"é".repeat(240)}.png`;
+    expect(expandingUnicodeAvatar.length).toBeLessThan(500);
+    expect(
+      sanitizeSettings({
+        schemaVersion: 14,
+        linkPresence: { avatarUrl: expandingUnicodeAvatar },
+      }).linkPresence.avatarUrl,
+    ).toBe("");
+    expect(rejected.linkPresence.afkAutoReply).toEqual({
+      enabled: true,
+      message: DEFAULT_SETTINGS.linkPresence.afkAutoReply.message,
     });
   });
 });

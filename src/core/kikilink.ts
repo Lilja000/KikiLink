@@ -24,6 +24,7 @@ export class KikiLinkApp {
   readonly #linkChat = new LinkChatModule();
   readonly #linkReactions = new LinkReactionsModule();
   #adapterStart: Promise<void> | undefined;
+  #authVisibilityTimer: ReturnType<typeof setInterval> | undefined;
   #started = false;
 
   constructor(private readonly version: string) {
@@ -62,12 +63,16 @@ export class KikiLinkApp {
     this.#adapterStart = this.#adapter.start().catch((error: unknown) => {
       this.#logger.error("Bondage Club connection failed", error);
     });
+    this.#syncAuthenticatedVisibility();
+    this.#authVisibilityTimer = setInterval(() => this.#syncAuthenticatedVisibility(), 250);
     this.#logger.info(`KikiLink ${this.version} interface is ready`);
   }
 
   async destroy(): Promise<void> {
     if (!this.#started) return;
     this.#started = false;
+    if (this.#authVisibilityTimer !== undefined) clearInterval(this.#authVisibilityTimer);
+    this.#authVisibilityTimer = undefined;
     this.#adapter.stop();
     await this.#adapterStart;
     this.#adapterStart = undefined;
@@ -75,6 +80,13 @@ export class KikiLinkApp {
     this.#repository.close();
     this.#bus.clear();
     this.#logger.info("Stopped");
+  }
+
+  #syncAuthenticatedVisibility(): void {
+    if (typeof document === "undefined") return;
+    const host = document.querySelector<HTMLElement>("#kikilink-root");
+    if (!host) return;
+    host.hidden = !hasAuthenticatedPlayer();
   }
 }
 

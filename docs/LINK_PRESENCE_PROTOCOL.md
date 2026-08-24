@@ -2,6 +2,7 @@
 
 KikiLink 0.11 introduced peer presence without a KikiLink account or remote database.
 KikiLink 0.12 extends the same validated realtime channel with ephemeral typing state.
+KikiLink 0.20 adds an optional direct avatar URL to the presence state.
 It deliberately separates facts supplied by Bondage Club from voluntary KikiLink signals.
 
 ## Presence sources
@@ -10,7 +11,7 @@ It deliberately separates facts supplied by Bondage Club from voluntary KikiLink
 2. Bondage Club's `OnlineFriends` account query supplies online friends and, when
    permitted by the room, their current room name.
 3. A compatible KikiLink peer can answer with Online, Idle, Do not disturb, or Offline
-   plus an optional status note.
+   plus an optional status note and direct HTTPS avatar URL.
 4. A non-friend outside the current room is `Status unavailable`; KikiLink does not
    pretend that absence from an observable list proves they are offline.
 
@@ -42,8 +43,15 @@ packets cannot invoke UI actions, edit settings, access notes, or run arbitrary 
   Offline state to the current room so peers do not keep a stale Online badge.
 - `Appear Offline` changes KikiLink presence only. Bondage Club may still expose the
   player's native online state to friends.
-- Status notes are limited to 80 characters and are shared only with compatible peers
+- Status notes are limited to 80 characters. Avatar URLs are limited to 500 characters, must pass
+  the same direct HTTPS image validation as chat previews, and are shared only with compatible peers
   reached through the transports above.
+- Remote avatars load without credentials or referrer data. `Always show` loads them automatically,
+  `Ask before loading` keeps initials until the user chooses `Show profile avatar` for that session,
+  and `Links only` never requests them.
+- The optional AFK response is an ordinary private Beep, not a presence packet. It is sent only while
+  the effective local status is Idle, at most once per sender per Idle session, with a 30-minute
+  per-sender cooldown and a five-replies-per-minute global cap. It never includes the current room.
 - Typing indicators have a separate Chat preference. They contain no draft text and are
   never written to IndexedDB.
 - No presence or typing history is stored, and there is no KikiLink presence server.

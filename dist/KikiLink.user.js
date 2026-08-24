@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.19.0
+// @version      0.20.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -1451,179 +1451,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return [...value].filter((candidate) => candidate === character).length;
   }
 
-  // src/modules/link-chat/image-upload.ts
-  var MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
-  var MAX_LOCAL_IMAGE_EDGE = 2560;
-  var MAX_LOCAL_IMAGE_PIXELS = 32e6;
-  var MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
-  var CLOUDINARY_UPLOAD_TIMEOUT_MS = 6e4;
-  var CLOUD_NAME_PATTERN = /^[a-z0-9_-]{1,64}$/iu;
-  var UPLOAD_PRESET_PATTERN = /^[a-z0-9_-]{1,128}$/iu;
-  var CloudinaryImageUploader = class {
-    constructor(request = globalThis.fetch.bind(globalThis)) {
-      this.request = request;
-    }
-    request;
-    async prepare(file) {
-      await validateLocalImageFile(file);
-      const decoded = await decodeLocalImage(file);
-      try {
-        if (decoded.width <= 0 || decoded.height <= 0 || decoded.width * decoded.height > MAX_LOCAL_IMAGE_PIXELS) {
-          throw new Error("This image has too many pixels to prepare safely");
-        }
-        const scale = Math.min(1, MAX_LOCAL_IMAGE_EDGE / Math.max(decoded.width, decoded.height));
-        const width = Math.max(1, Math.round(decoded.width * scale));
-        const height = Math.max(1, Math.round(decoded.height * scale));
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext("2d", { alpha: true });
-        if (!context) throw new Error("Your browser could not prepare this image");
-        context.imageSmoothingEnabled = true;
-        context.imageSmoothingQuality = "high";
-        context.drawImage(decoded.source, 0, 0, width, height);
-        const blob = await canvasToWebp(canvas);
-        if (blob.size > MAX_PREPARED_IMAGE_BYTES) {
-          throw new Error("The privacy-prepared image is still larger than 8 MB");
-        }
-        return { blob, width, height, sourceBytes: file.size };
-      } finally {
-        decoded.dispose();
-      }
-    }
-    async upload(image, config) {
-      const normalizedConfig = normalizeCloudinaryUploadConfig(config);
-      if (!normalizedConfig) throw new Error("Complete the local image upload setup first");
-      if (image.blob.type !== "image/webp" || image.blob.size <= 0) {
-        throw new Error("The prepared image is invalid");
-      }
-      const form = new FormData();
-      form.append(
-        "file",
-        new File([image.blob], "kikilink-image.webp", {
-          type: "image/webp",
-          lastModified: 0
-        })
-      );
-      form.append("upload_preset", normalizedConfig.uploadPreset);
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), CLOUDINARY_UPLOAD_TIMEOUT_MS);
-      try {
-        const response = await this.request(
-          `https://api.cloudinary.com/v1_1/${encodeURIComponent(normalizedConfig.cloudName)}/image/upload`,
-          {
-            method: "POST",
-            body: form,
-            credentials: "omit",
-            referrerPolicy: "no-referrer",
-            signal: controller.signal
-          }
-        );
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          const providerMessage = typeof payload.error?.message === "string" ? payload.error.message : void 0;
-          throw new Error(providerMessage ?? `Image host returned HTTP ${response.status}`);
-        }
-        const directUrl = typeof payload.secure_url === "string" ? normalizeImageUrl(payload.secure_url) : null;
-        if (!directUrl || !isExpectedCloudinaryUrl(directUrl, normalizedConfig.cloudName)) {
-          throw new Error("The image host returned an unexpected link");
-        }
-        return directUrl;
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          throw new Error("The image upload timed out");
-        }
-        throw error;
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-  };
-  function normalizeCloudinaryUploadConfig(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const source = value;
-    const cloudName = typeof source.cloudName === "string" ? source.cloudName.trim() : "";
-    const uploadPreset = typeof source.uploadPreset === "string" ? source.uploadPreset.trim() : "";
-    if (!CLOUD_NAME_PATTERN.test(cloudName) || !UPLOAD_PRESET_PATTERN.test(uploadPreset)) {
-      return null;
-    }
-    return { cloudName, uploadPreset };
-  }
-  async function validateLocalImageFile(file) {
-    if (file.size <= 0) throw new Error("Choose a non-empty image file");
-    if (file.size > MAX_LOCAL_IMAGE_BYTES) throw new Error("Choose an image up to 10 MB");
-    const detectedType = detectLocalImageType(await file.slice(0, 16).arrayBuffer());
-    if (!detectedType) throw new Error("Use a real JPG, PNG, or WebP image");
-    if (file.type && file.type.toLocaleLowerCase() !== detectedType) {
-      throw new Error("The file contents do not match its image type");
-    }
-  }
-  function detectLocalImageType(header) {
-    const bytes = new Uint8Array(header);
-    if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
-    if (bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71 && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10) {
-      return "image/png";
-    }
-    if (bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80) {
-      return "image/webp";
-    }
-    return null;
-  }
-  async function decodeLocalImage(file) {
-    if (typeof globalThis.createImageBitmap === "function") {
-      const bitmap = await globalThis.createImageBitmap(file, { imageOrientation: "from-image" });
-      return {
-        source: bitmap,
-        width: bitmap.width,
-        height: bitmap.height,
-        dispose: () => bitmap.close()
-      };
-    }
-    const objectUrl = URL.createObjectURL(file);
-    const image = new Image();
-    image.decoding = "async";
-    try {
-      await new Promise((resolve, reject) => {
-        image.addEventListener("load", () => resolve(), { once: true });
-        image.addEventListener("error", () => reject(new Error("This image could not be decoded")), {
-          once: true
-        });
-        image.src = objectUrl;
-      });
-      return {
-        source: image,
-        width: image.naturalWidth,
-        height: image.naturalHeight,
-        dispose: () => URL.revokeObjectURL(objectUrl)
-      };
-    } catch (error) {
-      URL.revokeObjectURL(objectUrl);
-      throw error;
-    }
-  }
-  function canvasToWebp(canvas) {
-    return new Promise((resolve, reject) => {
-      canvas.toBlob(
-        (blob) => {
-          if (!blob || blob.type !== "image/webp") {
-            reject(new Error("Your browser could not create a privacy-safe WebP image"));
-            return;
-          }
-          resolve(blob);
-        },
-        "image/webp",
-        0.88
-      );
-    });
-  }
-  function isExpectedCloudinaryUrl(value, cloudName) {
-    const url = new URL(value);
-    return url.hostname === "res.cloudinary.com" && url.pathname.startsWith(`/${cloudName}/image/upload/`);
-  }
-
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 13,
+    schemaVersion: 14,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -1633,6 +1463,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
       launcherSide: "right",
       launcherOpen: "home",
       launcherPosition: null,
+      roomBadge: {
+        enabled: true,
+        placement: "between-addons",
+        offsetX: 0,
+        offsetY: 0
+      },
       reducedMotion: false,
       settingsSection: "appearance"
     },
@@ -1647,9 +1483,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
       typingIndicators: true,
       imagePreviews: "ask",
       imageUploads: {
-        enabled: false,
-        cloudName: "",
-        uploadPreset: ""
+        enabled: true,
+        retention: "24h"
       },
       quickActions: [
         { label: "Wave", template: "*waves to {name}*" },
@@ -1661,7 +1496,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
       enabled: true,
       status: "online",
       statusMessage: "",
-      autoIdleMinutes: 10
+      avatarUrl: "",
+      autoIdleMinutes: 10,
+      afkAutoReply: {
+        enabled: false,
+        message: "\u041F\u0440\u0438\u0432\u0435\u0442, \u044F \u0410\u0424\u041A, \u043D\u0430\u043F\u0438\u0448\u0438\u0442\u0435 \u043C\u043D\u0435 \u043F\u043E\u0437\u0436\u0435!"
+      }
     },
     linkActivities: {
       enabled: true,
@@ -1691,6 +1531,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var SettingsStore = class {
     #settings;
     #storage;
+    #listeners = /* @__PURE__ */ new Set();
     constructor(storage) {
       this.#storage = storage ?? getDefaultStorage();
       this.#settings = this.#load();
@@ -1706,7 +1547,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#storage.setItem(SETTINGS_KEY, JSON.stringify(this.#settings));
       } catch {
       }
-      return this.get();
+      const settings = this.get();
+      this.#notify(settings);
+      return settings;
     }
     reset() {
       this.#settings = structuredClone(DEFAULT_SETTINGS);
@@ -1714,7 +1557,16 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#storage.removeItem(SETTINGS_KEY);
       } catch {
       }
-      return this.get();
+      const settings = this.get();
+      this.#notify(settings);
+      return settings;
+    }
+    subscribe(listener) {
+      this.#listeners.add(listener);
+      return () => this.#listeners.delete(listener);
+    }
+    #notify(settings) {
+      for (const listener of [...this.#listeners]) listener(structuredClone(settings));
     }
     #load() {
       let raw = null;
@@ -1754,7 +1606,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkRoster = isRecord3(source.linkRoster) ? source.linkRoster : {};
     const linkReactions = isRecord3(source.linkReactions) ? source.linkReactions : {};
     return {
-      schemaVersion: 13,
+      schemaVersion: 14,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -1764,6 +1616,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         launcherSide: ui.launcherSide === "left" ? "left" : "right",
         launcherOpen: ui.launcherOpen === "last" || ui.launcherOpen === "chat" ? ui.launcherOpen : DEFAULT_SETTINGS.ui.launcherOpen,
         launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
+        roomBadge: sanitizeRoomBadge(ui.roomBadge),
         reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
         settingsSection: isSettingsSection(ui.settingsSection) ? ui.settingsSection : DEFAULT_SETTINGS.ui.settingsSection
       },
@@ -1796,19 +1649,21 @@ One of mods you are using is using an old version of SDK. It will work for now b
           DEFAULT_SETTINGS.linkChat.typingIndicators
         ),
         imagePreviews: linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never" ? linkChat.imagePreviews : DEFAULT_SETTINGS.linkChat.imagePreviews,
-        imageUploads: sanitizeImageUploads(imageUploads),
+        imageUploads: sanitizeImageUploads(imageUploads, sourceSchema),
         quickActions: sanitizeQuickActions(linkChat.quickActions)
       },
       linkPresence: {
         enabled: booleanOr(linkPresence.enabled, DEFAULT_SETTINGS.linkPresence.enabled),
         status: linkPresence.status === "idle" || linkPresence.status === "dnd" || linkPresence.status === "offline" ? linkPresence.status : DEFAULT_SETTINGS.linkPresence.status,
         statusMessage: typeof linkPresence.statusMessage === "string" ? linkPresence.statusMessage.trim().slice(0, 80) : DEFAULT_SETTINGS.linkPresence.statusMessage,
+        avatarUrl: sanitizeAvatarUrl(linkPresence.avatarUrl),
         autoIdleMinutes: integerInRange3(
           linkPresence.autoIdleMinutes,
           0,
           120,
           DEFAULT_SETTINGS.linkPresence.autoIdleMinutes
-        )
+        ),
+        afkAutoReply: sanitizeAfkAutoReply(linkPresence.afkAutoReply)
       },
       linkActivities: {
         enabled: sourceSchema < 13 ? true : booleanOr(linkActivities.enabled, DEFAULT_SETTINGS.linkActivities.enabled),
@@ -1830,12 +1685,34 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
     };
   }
-  function sanitizeImageUploads(value) {
-    const config = normalizeCloudinaryUploadConfig(value);
+  function sanitizeImageUploads(value, sourceSchema) {
     return {
-      enabled: value.enabled === true && config !== null,
-      cloudName: config?.cloudName ?? "",
-      uploadPreset: config?.uploadPreset ?? ""
+      // Schema 13 stored Cloudinary credentials. Do not silently reinterpret its enabled switch as
+      // consent to upload to a different third-party provider after upgrading.
+      enabled: sourceSchema < 14 ? false : booleanOr(value.enabled, DEFAULT_SETTINGS.linkChat.imageUploads.enabled),
+      retention: value.retention === "1h" || value.retention === "12h" || value.retention === "24h" || value.retention === "72h" ? value.retention : DEFAULT_SETTINGS.linkChat.imageUploads.retention
+    };
+  }
+  function sanitizeAfkAutoReply(value) {
+    const source = isRecord3(value) ? value : {};
+    const message = typeof source.message === "string" ? source.message.trim().slice(0, 500) : DEFAULT_SETTINGS.linkPresence.afkAutoReply.message;
+    return {
+      enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.linkPresence.afkAutoReply.enabled),
+      message: message || DEFAULT_SETTINGS.linkPresence.afkAutoReply.message
+    };
+  }
+  function sanitizeAvatarUrl(value) {
+    if (typeof value !== "string" || value.trim().length > 500) return "";
+    const normalized = normalizeImageUrl(value);
+    return normalized && normalized.length <= 500 ? normalized : "";
+  }
+  function sanitizeRoomBadge(value) {
+    const source = isRecord3(value) ? value : {};
+    return {
+      enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.ui.roomBadge.enabled),
+      placement: source.placement === "before-addons" || source.placement === "between-addons" || source.placement === "after-addons" ? source.placement : DEFAULT_SETTINGS.ui.roomBadge.placement,
+      offsetX: integerInRange3(source.offsetX, -96, 96, DEFAULT_SETTINGS.ui.roomBadge.offsetX),
+      offsetY: integerInRange3(source.offsetY, -40, 120, DEFAULT_SETTINGS.ui.roomBadge.offsetY)
     };
   }
   function sanitizeQuickAlerts(value) {
@@ -1998,21 +1875,42 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var kikilink_blossom_default = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KikiLink blossom">%0A  <g transform="rotate(-18 32 32)" fill="%23e82142" fill-opacity=".62" stroke="%23ff93a3" stroke-opacity=".52" stroke-width="1">%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(72 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(144 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(216 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(288 32 32)"/>%0A  </g>%0A  <g transform="rotate(-18 32 32)" fill="none" stroke="%23ffd9df" stroke-linecap="round" stroke-opacity=".24" stroke-width="1.1">%0A    <path d="M32 31V10"/>%0A    <path d="M32 31V10" transform="rotate(72 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(144 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(216 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(288 32 32)"/>%0A  </g>%0A  <circle cx="32" cy="32" r="6.2" fill="%238d0921" fill-opacity=".92" stroke="%23ff8b9c" stroke-opacity=".48" stroke-width="1"/>%0A  <circle cx="32" cy="32" r="3.1" fill="%23efb34e" fill-opacity=".9"/>%0A</svg>%0A';
 
   // src/modules/link-chat/blossom.ts
-  var BADGE_X_OFFSET = 332;
-  var BADGE_Y_OFFSET = 5;
+  var BADGE_PRESET_X = {
+    "before-addons": 216,
+    "between-addons": 332,
+    "after-addons": 417
+  };
+  var BADGE_BASE_Y = 5;
   var BADGE_SIZE = 32;
+  var BADGE_MAX_X = 500 - BADGE_SIZE;
+  var BADGE_MAX_Y = 160;
+  var BADGE_OPACITY = 0.82;
   function resolveMainDrawingContext(canvas) {
     return "drawImage" in canvas ? canvas : canvas.getContext("2d");
   }
+  function resolveRoomBadgeRect(config, characterX, characterY, zoom) {
+    const presetX = BADGE_PRESET_X[config.placement] ?? BADGE_PRESET_X["between-addons"];
+    const offsetX = Number.isFinite(config.offsetX) ? config.offsetX : 0;
+    const offsetY = Number.isFinite(config.offsetY) ? config.offsetY : 0;
+    const localX = clamp(presetX + offsetX, 0, BADGE_MAX_X);
+    const localY = clamp(BADGE_BASE_Y + offsetY, 0, BADGE_MAX_Y);
+    return {
+      x: characterX + localX * zoom,
+      y: characterY + localY * zoom,
+      size: BADGE_SIZE * zoom
+    };
+  }
   var RoomBlossomBadge = class {
-    constructor(adapter, presence) {
+    constructor(adapter, presence, settings) {
       this.adapter = adapter;
       this.presence = presence;
+      this.#config = settings.get().ui.roomBadge;
+      this.#settingsUnsubscribe = settings.subscribe((next) => {
+        this.#config = next.ui.roomBadge;
+      });
       this.#image.alt = "";
       this.#image.decoding = "async";
-      this.#image.addEventListener("load", () => {
-        this.#ready = this.#image.naturalWidth > 0;
-      });
+      this.#image.addEventListener("load", this.#handleImageLoad);
       this.#image.src = kikilink_blossom_default;
       this.#ready = this.#image.complete && this.#image.naturalWidth > 0;
     }
@@ -2022,8 +1920,21 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #ready = false;
     #canvas;
     #context = null;
+    #config;
+    #settingsUnsubscribe;
+    #handleImageLoad = () => {
+      this.#ready = this.#image.naturalWidth > 0;
+    };
+    destroy() {
+      this.#settingsUnsubscribe?.();
+      this.#settingsUnsubscribe = void 0;
+      this.#image.removeEventListener("load", this.#handleImageLoad);
+      this.#ready = false;
+      this.#canvas = void 0;
+      this.#context = null;
+    }
     draw(character, characterX, characterY, zoom) {
-      if (!this.#ready || !Number.isFinite(characterX) || !Number.isFinite(characterY) || !Number.isFinite(zoom) || zoom <= 0 || typeof ChatRoomHideIconState === "number" && ChatRoomHideIconState !== 0) {
+      if (!this.#ready || !this.#config.enabled || !Number.isFinite(characterX) || !Number.isFinite(characterY) || !Number.isFinite(zoom) || zoom <= 0 || typeof ChatRoomHideIconState === "number" && ChatRoomHideIconState !== 0) {
         return;
       }
       const memberNumber = character.MemberNumber;
@@ -2037,16 +1948,19 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#context = resolveMainDrawingContext(MainCanvas);
       }
       if (!this.#context) return;
-      const size = BADGE_SIZE * zoom;
-      this.#context.drawImage(
-        this.#image,
-        characterX + BADGE_X_OFFSET * zoom,
-        characterY + BADGE_Y_OFFSET * zoom,
-        size,
-        size
-      );
+      const rect = resolveRoomBadgeRect(this.#config, characterX, characterY, zoom);
+      const previousAlpha = this.#context.globalAlpha;
+      this.#context.globalAlpha = previousAlpha * BADGE_OPACITY;
+      try {
+        this.#context.drawImage(this.#image, rect.x, rect.y, rect.size, rect.size);
+      } finally {
+        this.#context.globalAlpha = previousAlpha;
+      }
     }
   };
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
 
   // src/modules/link-activities/link-activities-service.ts
   var ACTIVITY_PREFIX = "KikiLinkCustom_";
@@ -2054,20 +1968,62 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var META_TAG = "KikiLinkActivityMeta";
   var MAX_SEEN_NONCES = 120;
   var SAFE_ASSET_NAME2 = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
-  var FALLBACK_IMAGES = [
+  var VANILLA_ACTIVITY_IMAGES = [
+    "Bite",
+    "BrothersHandshake",
     "Caress",
+    "Choke",
     "Cuddle",
-    "Kiss",
     "FrenchKiss",
-    "PoliteKiss",
-    "Nod",
-    "TakeCare",
-    "Pet",
-    "Tickle",
-    "MassageHands",
+    "GagKiss",
+    "GaggedKiss",
+    "Grope",
+    "HandGag",
+    "Inject",
+    "Kiss",
+    "Lick",
     "MassageFeet",
-    "RestHead"
+    "MassageHands",
+    "MasturbateFist",
+    "MasturbateHand",
+    "MoanGag",
+    "MoanGagAngry",
+    "MoanGagGiggle",
+    "MoanGagTalk",
+    "MoanGagWhimper",
+    "Nod",
+    "PenetrateSlow",
+    "Pinch",
+    "PoliteKiss",
+    "Pull",
+    "RestHead",
+    "SiblingsCheekKiss",
+    "SistersHug",
+    "Slap",
+    "Suck",
+    "Tickle"
   ];
+  var VANILLA_ACTIVITY_IMAGE_SET = new Set(VANILLA_ACTIVITY_IMAGES);
+  var VANILLA_ACTIVITY_IMAGE_ALIASES = {
+    Clean: "Caress",
+    Pet: "Caress",
+    Rub: "Cuddle",
+    StruggleArms: "Cuddle",
+    StruggleLegs: "Cuddle",
+    Wiggle: "Cuddle",
+    MoanGagGroan: "GaggedKiss",
+    CollarGrab: "Grope",
+    TakeCare: "Grope",
+    MasturbateFoot: "MassageFeet",
+    Step: "MassageFeet",
+    Kick: "MassageFeet",
+    Sit: "MassageFeet",
+    MasturbateTongue: "Lick",
+    Whisper: "Kiss",
+    PenetrateFast: "PenetrateSlow",
+    Spank: "Slap",
+    Nibble: "Bite"
+  };
   var LinkActivitiesService = class {
     constructor(adapter, settings) {
       this.adapter = adapter;
@@ -2077,6 +2033,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     settings;
     #runtimeActivities = /* @__PURE__ */ new Map();
     #seenNonces = [];
+    #bodySlotsCache;
     #unregister;
     start() {
       if (!this.#unregister) {
@@ -2089,9 +2046,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#unregister = void 0;
       this.#removeRegisteredActivities();
       this.#runtimeActivities.clear();
+      this.#bodySlotsCache = void 0;
       this.#seenNonces.splice(0);
     }
     syncFromSettings() {
+      this.#bodySlotsCache = void 0;
       this.#removeRegisteredActivities();
       this.#runtimeActivities.clear();
       const settings = this.settings?.get();
@@ -2133,15 +2092,14 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return content;
     }
     getBodySlots() {
-      if (typeof AssetGroup === "undefined" || !Array.isArray(AssetGroup)) {
+      if (this.#bodySlotsCache) return this.#bodySlotsCache;
+      if (typeof AssetGroup === "undefined" || !Array.isArray(AssetGroup) || typeof ActivityFemale3DCG === "undefined" || !Array.isArray(ActivityFemale3DCG)) {
         return fallbackBodySlots();
       }
       const nativeTargets = /* @__PURE__ */ new Set();
-      if (typeof ActivityFemale3DCG !== "undefined" && Array.isArray(ActivityFemale3DCG)) {
-        for (const activity of ActivityFemale3DCG) {
-          if (!activity.Name.startsWith(ACTIVITY_PREFIX)) {
-            for (const target of activity.Target) nativeTargets.add(target);
-          }
+      for (const activity of ActivityFemale3DCG) {
+        if (!activity.Name.startsWith(ACTIVITY_PREFIX) && Array.isArray(activity.Target)) {
+          for (const target of activity.Target) nativeTargets.add(target);
         }
       }
       const slots = AssetGroup.filter(
@@ -2151,35 +2109,36 @@ One of mods you are using is using an old version of SDK. It will work for now b
         label: group.Description || humanizeGroupName(group.Name),
         zones: group.Zone ?? []
       })).sort((left, right) => left.label.localeCompare(right.label));
-      return slots.length > 0 ? slots : fallbackBodySlots();
+      if (slots.length === 0) return fallbackBodySlots();
+      this.#bodySlotsCache = slots;
+      return slots;
     }
     getVanillaImages() {
-      const images = new Set(FALLBACK_IMAGES);
-      if (typeof ActivityFemale3DCGOrdering !== "undefined" && Array.isArray(ActivityFemale3DCGOrdering)) {
-        for (const name of ActivityFemale3DCGOrdering) {
-          if (SAFE_ASSET_NAME2.test(name) && !name.startsWith(ACTIVITY_PREFIX)) images.add(name);
-        }
-      }
-      return [...images].sort((left, right) => left.localeCompare(right));
+      return [...VANILLA_ACTIVITY_IMAGES];
     }
     drawPlayer(canvas, selectedGroup, hoveredGroup) {
       const context = canvas.getContext("2d");
       if (!context) return false;
-      canvas.width = 250;
-      canvas.height = 500;
+      if (canvas.width !== 250) canvas.width = 250;
+      if (canvas.height !== 500) canvas.height = 500;
       context.clearRect(0, 0, canvas.width, canvas.height);
       if (typeof Player !== "object" || Player === null || typeof DrawCharacter !== "function") {
         return false;
       }
       DrawCharacter(Player, 0, 0, 0.5, false, context);
-      for (const slot of this.getBodySlots()) {
-        if (slot.name !== selectedGroup && slot.name !== hoveredGroup) continue;
+      const slots = [...this.getBodySlots()].sort(
+        (left, right) => bodySlotDrawLayer(left.name, selectedGroup, hoveredGroup) - bodySlotDrawLayer(right.name, selectedGroup, hoveredGroup)
+      );
+      for (const slot of slots) {
         const selected = slot.name === selectedGroup;
-        context.fillStyle = selected ? "rgba(215, 25, 50, 0.25)" : "rgba(214, 162, 75, 0.18)";
-        context.strokeStyle = selected ? "rgba(255, 106, 126, 0.95)" : "rgba(224, 185, 112, 0.88)";
-        context.lineWidth = selected ? 2 : 1.5;
+        const hovered = !selected && slot.name === hoveredGroup;
+        context.fillStyle = selected ? "rgba(215, 25, 50, 0.22)" : hovered ? "rgba(214, 162, 75, 0.12)" : "rgba(255, 255, 255, 0)";
+        context.strokeStyle = selected ? "rgba(255, 106, 126, 0.98)" : hovered ? "rgba(224, 185, 112, 0.9)" : "rgba(238, 226, 210, 0.28)";
+        context.lineWidth = selected ? 2.25 : hovered ? 1.75 : 1;
         for (const [x, y, width, height] of slot.zones) {
-          context.fillRect(x * 0.5, y * 0.5, width * 0.5, height * 0.5);
+          if (selected || hovered) {
+            context.fillRect(x * 0.5, y * 0.5, width * 0.5, height * 0.5);
+          }
           context.strokeRect(x * 0.5, y * 0.5, width * 0.5, height * 0.5);
         }
       }
@@ -2188,11 +2147,21 @@ One of mods you are using is using an old version of SDK. It will work for now b
     bodySlotAt(x, y) {
       const sourceX = x * 2;
       const sourceY = y * 2;
-      return this.getBodySlots().find(
-        (slot) => slot.zones.some(
-          ([zoneX, zoneY, width, height]) => sourceX >= zoneX && sourceX <= zoneX + width && sourceY >= zoneY && sourceY <= zoneY + height
-        )
-      );
+      let best;
+      let bestArea = Number.POSITIVE_INFINITY;
+      for (const slot of this.getBodySlots()) {
+        for (const [zoneX, zoneY, width, height] of slot.zones) {
+          if (sourceX < zoneX || sourceX > zoneX + width || sourceY < zoneY || sourceY > zoneY + height) {
+            continue;
+          }
+          const area = width * height;
+          if (area < bestArea) {
+            best = slot;
+            bestArea = area;
+          }
+        }
+      }
+      return best;
     }
     resolveText(keyword) {
       if (keyword.startsWith("Activity")) {
@@ -2297,8 +2266,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
   };
   function activityImageUrl(image) {
-    const safeImage = SAFE_ASSET_NAME2.test(image) ? image : "Caress";
-    return `Assets/Female3DCG/Activity/${safeImage}.png`;
+    return `Assets/Female3DCG/Activity/${canonicalVanillaActivityImage(image)}.png`;
+  }
+  function canonicalVanillaActivityImage(image) {
+    const canonical = VANILLA_ACTIVITY_IMAGE_ALIASES[image] ?? image;
+    return VANILLA_ACTIVITY_IMAGE_SET.has(canonical) ? canonical : "Caress";
   }
   function expandCustomActivityTemplate(template, context) {
     const pronouns = context.pronouns ?? { subject: "they", object: "them", possessive: "their" };
@@ -2396,6 +2368,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
       { name: "ItemLegs", label: "Legs", zones: [[130, 610, 240, 250]] },
       { name: "ItemFeet", label: "Feet", zones: [[115, 850, 270, 130]] }
     ];
+  }
+  function bodySlotDrawLayer(groupName, selectedGroup, hoveredGroup) {
+    if (groupName === selectedGroup) return 2;
+    if (groupName === hoveredGroup) return 1;
+    return 0;
   }
   function humanizeGroupName(value) {
     return value.replace(/^Item/, "").replace(/([a-z])([A-Z])/g, "$1 $2");
@@ -2550,6 +2527,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         return;
       }
       const draft = structuredClone(existing ?? createBlankCustomActivity(createCustomActivityId()));
+      draft.image = canonicalVanillaActivityImage(draft.image);
       this.#editingId = draft.id;
       this.#hoveredGroup = void 0;
       const back = element("button", {
@@ -2588,6 +2566,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
         className: "kl-select kl-custom-slot-select",
         ariaLabel: "Body slot"
       });
+      slotSelect.hidden = true;
+      slotSelect.tabIndex = -1;
+      slotSelect.setAttribute("aria-hidden", "true");
       for (const slot of slots) {
         const option = document.createElement("option");
         option.value = slot.name;
@@ -2595,6 +2576,41 @@ One of mods you are using is using an old version of SDK. It will work for now b
         slotSelect.append(option);
       }
       slotSelect.value = draft.targetGroup;
+      const slotButtons = /* @__PURE__ */ new Map();
+      let redrawCharacter = () => void 0;
+      const selectSlot = (groupName) => {
+        if (!slotButtons.has(groupName)) return;
+        draft.targetGroup = groupName;
+        slotSelect.value = groupName;
+        for (const [name2, button] of slotButtons) {
+          const selected = name2 === groupName;
+          button.dataset.selected = String(selected);
+          button.setAttribute("aria-checked", String(selected));
+        }
+        redrawCharacter();
+      };
+      const slotGrid = element("div", {
+        className: "kl-custom-slot-grid",
+        ariaLabel: "Body slots"
+      });
+      slotGrid.setAttribute("role", "radiogroup");
+      for (const slot of slots) {
+        const button = element("button", {
+          className: "kl-custom-slot-choice",
+          type: "button",
+          text: slot.label,
+          title: slot.label,
+          ariaLabel: `Use ${slot.label} body slot`,
+          onClick: () => selectSlot(slot.name)
+        });
+        button.dataset.slot = slot.name;
+        button.dataset.selected = String(slot.name === draft.targetGroup);
+        button.setAttribute("role", "radio");
+        button.setAttribute("aria-checked", String(slot.name === draft.targetGroup));
+        slotButtons.set(slot.name, button);
+        slotGrid.append(button);
+      }
+      slotSelect.addEventListener("change", () => selectSlot(slotSelect.value));
       const name = element("input", {
         className: "kl-search kl-custom-activity-name",
         ariaLabel: "Activity name"
@@ -2666,7 +2682,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
               title: image,
               ariaLabel: `Use ${image} picture`,
               onClick: () => {
-                draft.image = image;
+                draft.image = canonicalVanillaActivityImage(image);
                 renderImages();
               }
             },
@@ -2782,8 +2798,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
         element("div", { className: "kl-custom-field-label", text: "Body slot" }),
         element("div", {
           className: "kl-custom-field-help",
-          text: "Tap your character or choose a slot below."
+          text: "Tap your character or use one of the always-visible slots below."
         }),
+        slotGrid,
         element("div", { className: "kl-custom-character-stage" }, canvas, canvasFallback),
         slotSelect,
         element("div", {
@@ -2791,17 +2808,31 @@ One of mods you are using is using an old version of SDK. It will work for now b
           text: "The activity will appear next to vanilla actions on this slot."
         })
       );
+      let redrawFrame;
       const redraw = () => {
+        if (redrawFrame !== void 0) return;
+        redrawFrame = requestAnimationFrame(() => {
+          redrawFrame = void 0;
+          if (!canvas.isConnected) return;
+          const drawn = this.service.drawPlayer(canvas, draft.targetGroup, this.#hoveredGroup);
+          canvasFallback.hidden = drawn;
+        });
+      };
+      redrawCharacter = redraw;
+      const redrawImmediately = () => {
         const drawn = this.service.drawPlayer(canvas, slotSelect.value, this.#hoveredGroup);
         canvasFallback.hidden = drawn;
       };
-      slotSelect.addEventListener("change", redraw);
       canvas.addEventListener("pointermove", (event) => {
+        if (event.pointerType && event.pointerType !== "mouse") return;
         const point = canvasPoint(canvas, event);
-        this.#hoveredGroup = this.service.bodySlotAt(point.x, point.y)?.name;
+        const hoveredGroup = this.service.bodySlotAt(point.x, point.y)?.name;
+        if (hoveredGroup === this.#hoveredGroup) return;
+        this.#hoveredGroup = hoveredGroup;
         redraw();
       });
       canvas.addEventListener("pointerleave", () => {
+        if (this.#hoveredGroup === void 0) return;
         this.#hoveredGroup = void 0;
         redraw();
       });
@@ -2809,11 +2840,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
         const point = canvasPoint(canvas, event);
         const slot = this.service.bodySlotAt(point.x, point.y);
         if (!slot) return;
-        slotSelect.value = slot.name;
-        redraw();
+        selectSlot(slot.name);
       });
+      redrawImmediately();
       const save = element("button", {
-        className: "kl-text-button kl-text-button--primary",
+        className: "kl-text-button kl-text-button--primary kl-custom-activity-save",
         type: "button",
         text: "Save activity",
         onClick: () => {
@@ -2829,7 +2860,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
             targetGroup: slotSelect.value,
             targetMode: targetMode.value,
             template: activityTemplate,
-            image: draft.image,
+            image: canonicalVanillaActivityImage(draft.image),
             arousal: arousalToggle.checked ? Number(arousalRange.value) : 0
           };
           this.settings.update((settingsDraft) => {
@@ -2846,7 +2877,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         }
       });
       const cancel = element("button", {
-        className: "kl-text-button",
+        className: "kl-text-button kl-custom-activity-cancel",
         type: "button",
         text: "Cancel",
         onClick: () => this.#renderLibrary()
@@ -3372,7 +3403,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const previous = this.getOwnStatus();
       this.#lastInteractionAt = Date.now();
       const next = this.getOwnStatus();
-      if (previous !== next) this.#publishOwnPresence();
+      if (previous !== next) {
+        this.#lastEffectiveStatus = next;
+        this.#publishOwnPresence();
+        this.#notify(this.adapter.getOwnMemberNumber());
+      }
     };
     #onVisibilityChange = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
@@ -3448,6 +3483,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     getOwnStatusMessage() {
       return this.settings.get().linkPresence.statusMessage;
     }
+    getOwnAvatarUrl() {
+      return this.settings.get().linkPresence.avatarUrl;
+    }
     setOwnStatus(status) {
       this.settings.update((draft) => {
         draft.linkPresence.status = status;
@@ -3460,19 +3498,42 @@ One of mods you are using is using an old version of SDK. It will work for now b
     setEnabled(enabled) {
       const previous = this.settings.get().linkPresence.enabled;
       if (previous === enabled) return;
-      if (previous && !enabled) this.#publishOwnPresence("offline", true);
       this.settings.update((draft) => {
         draft.linkPresence.enabled = enabled;
       });
-      if (enabled) {
-        this.#syncRoom(true);
-        this.#publishOwnPresence();
+      this.#lastEffectiveStatus = this.getOwnStatus();
+      if (previous && !enabled) this.#publishOwnPresence("offline", true, false);
+      else if (enabled) this.#syncRoom(true);
+      this.#notify(this.adapter.getOwnMemberNumber());
+    }
+    setOwnProfile(profile) {
+      const previousEnabled = this.settings.get().linkPresence.enabled;
+      const next = this.settings.update((draft) => {
+        draft.linkPresence.enabled = profile.enabled;
+        draft.linkPresence.statusMessage = profile.statusMessage;
+        draft.linkPresence.avatarUrl = profile.avatarUrl;
+        draft.linkPresence.autoIdleMinutes = profile.autoIdleMinutes;
+        draft.linkPresence.afkAutoReply = profile.afkAutoReply;
+      }).linkPresence;
+      this.#lastEffectiveStatus = this.getOwnStatus();
+      if (previousEnabled && !next.enabled) {
+        this.#publishOwnPresence("offline", true, false);
+      } else if (next.enabled) {
+        if (previousEnabled) this.#publishOwnPresence();
+        else this.#syncRoom(true);
       }
       this.#notify(this.adapter.getOwnMemberNumber());
     }
     setOwnStatusMessage(statusMessage) {
       this.settings.update((draft) => {
         draft.linkPresence.statusMessage = statusMessage;
+      });
+      this.#publishOwnPresence();
+      this.#notify(this.adapter.getOwnMemberNumber());
+    }
+    setOwnAvatarUrl(avatarUrl) {
+      this.settings.update((draft) => {
+        draft.linkPresence.avatarUrl = avatarUrl;
       });
       this.#publishOwnPresence();
       this.#notify(this.adapter.getOwnMemberNumber());
@@ -3485,7 +3546,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
           status: this.getOwnStatus(),
           source: "kikilink",
           updatedAt: now,
-          ...statusMessage ? { statusMessage } : {}
+          ...statusMessage ? { statusMessage } : {},
+          ...this.getOwnAvatarUrl() ? { avatarUrl: this.getOwnAvatarUrl() } : {}
         };
       }
       const remote = this.#remote.get(memberNumber);
@@ -3500,6 +3562,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
           source: "kikilink",
           updatedAt: remote.remoteUpdatedAt,
           ...remote.statusMessage ? { statusMessage: remote.statusMessage } : {},
+          ...remote.avatarUrl ? { avatarUrl: remote.avatarUrl } : {},
           ...observableRoomName ? { roomName: observableRoomName } : {}
         };
       }
@@ -3591,6 +3654,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#remote.set(senderNumber, {
         status: packet.s,
         ...packet.m ? { statusMessage: packet.m } : {},
+        ...packet.a ? { avatarUrl: packet.a } : {},
         receivedAt,
         remoteUpdatedAt: Math.abs(packet.u - receivedAt) <= 24 * 60 * 6e4 ? packet.u : receivedAt
       });
@@ -3624,6 +3688,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         ...requestId ? { i: requestId } : {},
         s: this.getOwnStatus(),
         ...config.statusMessage ? { m: config.statusMessage } : {},
+        ...config.avatarUrl ? { a: config.avatarUrl } : {},
         u: Date.now(),
         v: this.version
       };
@@ -3632,17 +3697,21 @@ One of mods you are using is using an old version of SDK. It will work for now b
       } catch {
       }
     }
-    #publishOwnPresence(statusOverride, force = false) {
+    #publishOwnPresence(statusOverride, force = false, includeProfile = true) {
       if (!force && !this.settings.get().linkPresence.enabled) return;
       const config = this.settings.get().linkPresence;
       const packet = {
         t: "ps",
         s: statusOverride ?? this.getOwnStatus(),
-        ...config.statusMessage ? { m: config.statusMessage } : {},
+        ...includeProfile && config.statusMessage ? { m: config.statusMessage } : {},
+        ...includeProfile && config.avatarUrl ? { a: config.avatarUrl } : {},
         u: Date.now(),
         v: this.version
       };
-      this.adapter.broadcastKikiLinkProtocol(JSON.stringify(packet));
+      try {
+        this.adapter.broadcastKikiLinkProtocol(JSON.stringify(packet));
+      } catch {
+      }
     }
     #syncRoom(force) {
       const roomName = this.adapter.isInChatRoom() ? this.adapter.getCurrentRoomName() ?? "?" : "";
@@ -3693,12 +3762,15 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return null;
     }
     const message = "m" in value && typeof value.m === "string" ? value.m.trim().slice(0, 80) : "";
+    const normalizedAvatar = "a" in value && typeof value.a === "string" && value.a.length <= 500 ? normalizeImageUrl(value.a) : null;
+    const avatar = normalizedAvatar && normalizedAvatar.length <= 500 ? normalizedAvatar : "";
     const requestId = "i" in value && typeof value.i === "string" ? value.i.slice(0, 32) : "";
     return {
       t: "ps",
       ...requestId ? { i: requestId } : {},
       s: value.s,
       ...message ? { m: message } : {},
+      ...avatar ? { a: avatar } : {},
       u: value.u,
       v: value.v
     };
@@ -3966,22 +4038,17 @@ button { color: inherit; }
   position: relative;
   display: block;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--kl-accent), transparent 78%), transparent 68%),
-    color-mix(in srgb, var(--kl-surface), transparent 24%);
+  background: #020203;
 }
 
 .kl-emblem-image {
   position: absolute;
-  top: 50%;
+  top: 0;
   left: 50%;
-  width: 88%;
-  height: 88%;
+  width: 156%;
+  height: auto;
   max-width: none;
-  object-fit: contain;
-  opacity: 0.94;
-  filter: drop-shadow(0 3px 8px color-mix(in srgb, var(--kl-accent), transparent 62%));
-  transform: translate(-50%, -50%);
+  transform: translateX(-50%);
   pointer-events: none;
   user-select: none;
 }
@@ -3993,11 +4060,11 @@ button { color: inherit; }
   width: 58px;
   height: 58px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--kl-accent), var(--kl-border-strong) 58%);
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--kl-panel-bg), transparent 24%);
+  border: 1px solid var(--kl-border-strong);
+  border-radius: 19px;
+  background: #030304;
   box-shadow:
-    0 12px 32px color-mix(in srgb, var(--kl-accent), transparent 70%),
+    0 14px 38px color-mix(in srgb, var(--kl-accent), transparent 62%),
     0 0 0 1px rgba(0, 0, 0, 0.75),
     inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   cursor: pointer;
@@ -4015,7 +4082,7 @@ button { color: inherit; }
 .kl-launcher-emblem {
   position: absolute;
   inset: 3px;
-  border-radius: 50%;
+  border-radius: 15px;
 }
 
 .kl-badge {
@@ -4110,8 +4177,9 @@ button { color: inherit; }
   width: 38px;
   height: 38px;
   flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--kl-accent), transparent 64%);
-  border-radius: 50%;
+  border: 1px solid var(--kl-border-strong);
+  border-radius: 12px;
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.24);
 }
 
 .kl-brand-copy { min-width: 0; }
@@ -4559,9 +4627,9 @@ button { color: inherit; }
   position: absolute;
   inset: 14px;
   z-index: 1;
-  border: 1px solid color-mix(in srgb, var(--kl-accent), transparent 52%);
-  border-radius: 50%;
-  box-shadow: 0 18px 44px color-mix(in srgb, var(--kl-accent), transparent 82%);
+  border: 1px solid var(--kl-border-strong);
+  border-radius: 38px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
   transform: rotate(3deg);
 }
 .kl-home-orbit {
@@ -5064,9 +5132,11 @@ button { color: inherit; }
   border: 1px solid var(--kl-border);
   border-radius: 15px;
   background: var(--kl-avatar-bg);
+  overflow: hidden;
   font-weight: 850;
   text-transform: uppercase;
 }
+.kl-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
 
 .kl-conversation-main { min-width: 0; }
 .kl-conversation-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -5160,8 +5230,11 @@ button { color: inherit; }
   scrollbar-width: thin;
   scroll-behavior: auto;
   overscroll-behavior: contain;
-  overflow-anchor: auto;
-  contain: layout paint;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+  contain: paint;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 
 .kl-message-row {
@@ -5181,32 +5254,32 @@ button { color: inherit; }
   padding: 10px 13px 8px;
   border: 1px solid color-mix(in srgb, var(--kl-border), var(--kl-accent) 9%);
   border-radius: 17px 17px 17px 5px;
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--kl-accent), transparent 94%), transparent 62%),
-    color-mix(in srgb, var(--kl-surface-2), var(--kl-surface) 18%);
+  background: color-mix(in srgb, var(--kl-surface-2), var(--kl-surface) 18%);
+  overflow: hidden;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-.kl-message-row[data-direction="incoming"] .kl-message-bubble::before {
+.kl-message-bubble::before {
   content: "";
   position: absolute;
-  top: 10px;
-  bottom: 10px;
-  left: 0;
-  width: 2px;
+  top: 0;
+  right: 13px;
+  left: 13px;
+  height: 1px;
   border-radius: 999px;
-  background: linear-gradient(var(--kl-accent), var(--kl-gold));
-  opacity: 0.55;
+  background: linear-gradient(90deg, transparent, var(--kl-accent), transparent);
+  opacity: 0.24;
+  pointer-events: none;
 }
 .kl-message-row[data-direction="outgoing"] .kl-message-bubble {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 28%);
   border-radius: 17px 17px 5px 17px;
-  background: linear-gradient(
-    145deg,
-    color-mix(in srgb, var(--kl-accent), var(--kl-gold) 11%),
-    color-mix(in srgb, var(--kl-accent), #060607 16%)
-  );
+  background: color-mix(in srgb, var(--kl-accent), #070708 16%);
   color: var(--kl-accent-foreground);
+}
+.kl-message-row[data-direction="outgoing"] .kl-message-bubble::before {
+  background: linear-gradient(90deg, transparent, var(--kl-gold), transparent);
+  opacity: 0.2;
 }
 .kl-message-row[data-direction="incoming"][data-group="start"] .kl-message-bubble { border-radius: 17px 17px 17px 9px; }
 .kl-message-row[data-direction="incoming"][data-group="middle"] .kl-message-bubble { border-radius: 9px 17px 17px 9px; }
@@ -5316,7 +5389,7 @@ button { color: inherit; }
 .kl-setting-help { margin-top: 2px; color: var(--kl-muted); font-size: var(--kl-type-sm); }
 .kl-image-upload-settings-options {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   padding: 12px;
   border: 1px solid var(--kl-border);
@@ -5325,7 +5398,10 @@ button { color: inherit; }
 }
 .kl-image-upload-setting-field { min-width: 0; display: grid; gap: 5px; color: var(--kl-muted); font-size: var(--kl-type-xs); font-weight: 750; }
 .kl-image-upload-setting-input { width: 100%; min-width: 0; }
-.kl-image-upload-privacy { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 8px; margin: 1px 0 0; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-image-upload-privacy { display: flex; align-items: flex-start; gap: 8px; margin: 1px 0 0; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-room-badge-offsets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 0 12px; }
+.kl-room-badge-offsets .kl-text-button { grid-column: 1 / -1; justify-self: start; }
+.kl-room-badge-advanced[data-disabled="true"] { opacity: 0.52; }
 .kl-image-upload-privacy .kl-icon { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; color: var(--kl-gold); }
 .kl-inline-link { color: var(--kl-gold); text-underline-offset: 2px; }
 .kl-number-input { width: 90px; height: 44px; padding: 0 10px; border-radius: 11px; }
@@ -5836,9 +5912,13 @@ button { color: inherit; }
 }
 .kl-custom-character-pane {
   display: grid;
-  grid-template-rows: auto auto minmax(190px, 1fr) auto auto;
+  grid-template-rows: auto auto auto minmax(190px, 1fr) auto;
+  align-content: start;
   gap: 7px;
   padding: 14px;
+  overflow-y: auto;
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
 }
 .kl-custom-character-stage {
   position: relative;
@@ -5872,7 +5952,35 @@ button { color: inherit; }
   text-align: center;
   pointer-events: none;
 }
-.kl-custom-slot-select { width: 100%; }
+.kl-custom-slot-select[hidden] { display: none; }
+.kl-custom-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+.kl-custom-slot-choice {
+  min-width: 0;
+  min-height: 31px;
+  padding: 4px 6px;
+  overflow: hidden;
+  border: 1px solid var(--kl-border);
+  border-radius: 9px;
+  background: var(--kl-surface-2);
+  color: var(--kl-muted);
+  font-size: var(--kl-type-xxs);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.kl-custom-slot-choice:hover { border-color: var(--kl-border-strong); color: var(--kl-text); }
+.kl-custom-slot-choice[data-selected="true"] {
+  border-color: var(--kl-accent);
+  background: color-mix(in srgb, var(--kl-accent), transparent 84%);
+  color: var(--kl-text);
+  box-shadow: inset 0 -2px var(--kl-accent);
+}
+.kl-custom-slot-choice:focus-visible { outline: 2px solid var(--kl-accent); outline-offset: 1px; }
 .kl-custom-slot-note { color: var(--kl-meta); font-size: var(--kl-type-xxs); text-align: center; }
 .kl-custom-activity-form {
   display: grid;
@@ -5986,20 +6094,48 @@ button { color: inherit; }
 @media (max-width: 720px) {
   .kl-custom-activity-list { grid-template-columns: minmax(0, 1fr); }
   .kl-custom-activity-intro span:last-child { display: none; }
-  .kl-custom-editor-body { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
-  .kl-custom-character-pane { grid-template-rows: auto auto 300px auto auto; }
+  .kl-custom-editor-body {
+    display: block;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .kl-custom-character-pane {
+    grid-template-rows: auto auto auto 380px auto;
+    margin-bottom: 12px;
+    overflow: visible;
+  }
+  .kl-custom-slot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .kl-custom-slot-choice { min-height: 44px; padding-inline: 8px; font-size: var(--kl-type-xs); }
   .kl-custom-activity-form { overflow: visible; }
-  .kl-custom-image-gallery { grid-template-columns: repeat(3, minmax(70px, 1fr)); }
+  .kl-custom-image-gallery {
+    max-height: none;
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+  }
+  .kl-custom-image-choice { flex: 0 0 88px; scroll-snap-align: start; }
+  .kl-custom-activity-footer { gap: 6px; }
+  .kl-custom-activity-footer .kl-text-button {
+    min-width: 0;
+    flex: 1 1 0;
+    padding-inline: 8px;
+  }
+  .kl-custom-editor-spacer { display: none; }
 }
 
 @media (max-width: 420px) {
   .kl-custom-activity-header { align-items: flex-start; }
+  .kl-custom-activity-header .kl-feature-page-subtitle { display: none; }
   .kl-custom-activities-body { padding: 12px; }
   .kl-custom-activity-card { grid-template-columns: 62px minmax(0, 1fr); }
   .kl-custom-activity-card-icon { width: 62px; height: 62px; }
   .kl-custom-activity-edit-label { display: none; }
   .kl-custom-editor-body { padding: 10px; }
-  .kl-custom-image-gallery { grid-template-columns: repeat(2, minmax(70px, 1fr)); }
+  .kl-custom-character-pane { grid-template-rows: auto auto auto 360px auto; padding: 12px; }
 }
 
 .kl-toast {
@@ -6365,6 +6501,12 @@ select:focus-visible {
 .kl-presence-field { display: grid; gap: 7px; }
 .kl-presence-field-label { font-size: var(--kl-type-sm); font-weight: 800; }
 .kl-presence-message { width: 100%; }
+.kl-profile-avatar-field { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: center; }
+.kl-profile-avatar-preview { width: 64px; height: 64px; border-radius: 20px; font-size: 20px; }
+.kl-presence-avatar-url { width: 100%; }
+.kl-afk-reply-options { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--kl-border); border-radius: 13px; background: var(--kl-surface-2); }
+.kl-afk-reply-options[data-disabled="true"] { opacity: 0.56; }
+.kl-afk-reply-message { min-height: 72px; }
 .kl-presence-caveat {
   display: flex;
   gap: 9px;
@@ -6485,10 +6627,10 @@ select:focus-visible {
 .kl-message-link { color: #efc56c; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor, transparent 48%); text-underline-offset: 2px; }
 .kl-message-row[data-direction="outgoing"] .kl-message-link { color: var(--kl-accent-foreground); }
 .kl-message-media { display: grid; gap: 7px; margin-top: 8px; }
-.kl-image-card { min-width: 210px; margin: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--kl-border-strong), transparent 12%); border-radius: 12px; background: var(--kl-surface); color: var(--kl-text); }
-.kl-image-preview { min-height: 150px; display: grid; place-items: center; align-content: center; gap: 5px; padding: 14px; background: #09090a; color: #d8cec0; text-align: center; }
+.kl-image-card { width: min(360px, 100%); min-width: 210px; margin: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--kl-border-strong), transparent 12%); border-radius: 12px; background: var(--kl-surface); color: var(--kl-text); }
+.kl-image-preview { min-height: 0; aspect-ratio: 16 / 10; display: grid; place-items: center; align-content: center; gap: 5px; overflow: hidden; padding: 14px; background: #09090a; color: #d8cec0; text-align: center; }
 .kl-image-preview[data-state="loading"] { background: linear-gradient(110deg, #101012 30%, #202024 46%, #101012 62%); background-size: 240% 100%; animation: kl-image-loading 1.4s linear infinite; }
-.kl-image-preview img { display: block; width: 100%; max-height: 340px; object-fit: contain; border-radius: 6px; }
+.kl-image-preview img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 6px; }
 .kl-image-placeholder-icon { width: 25px; height: 25px; color: var(--kl-gold); }
 .kl-image-placeholder-title { font-weight: 800; }
 .kl-image-placeholder-help { max-width: 230px; color: #9f978d; font-size: var(--kl-type-xs); }
@@ -6563,6 +6705,176 @@ select:focus-visible {
   *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
 }
 `;
+
+  // src/modules/link-chat/image-upload.ts
+  var MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
+  var MAX_LOCAL_IMAGE_EDGE = 2560;
+  var MAX_LOCAL_IMAGE_PIXELS = 32e6;
+  var MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
+  var IMAGE_UPLOAD_TIMEOUT_MS = 6e4;
+  var LITTERBOX_UPLOAD_ENDPOINT = "https://litterbox.catbox.moe/resources/internals/api.php";
+  var LitterboxImageUploader = class {
+    constructor(request = globalThis.fetch.bind(globalThis)) {
+      this.request = request;
+    }
+    request;
+    prepare(file) {
+      return prepareLocalImage(file);
+    }
+    async upload(image, config) {
+      const normalizedConfig = normalizeLitterboxUploadConfig(config);
+      if (!normalizedConfig) throw new Error("Choose a valid temporary image lifetime");
+      validatePreparedImage(image);
+      const form = new FormData();
+      form.append("reqtype", "fileupload");
+      form.append("time", normalizedConfig.retention);
+      form.append("fileToUpload", preparedImageFile(image));
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
+      try {
+        const response = await this.request(LITTERBOX_UPLOAD_ENDPOINT, {
+          method: "POST",
+          body: form,
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          signal: controller.signal
+        });
+        const payload = (await response.text().catch(() => "")).trim();
+        if (!response.ok) {
+          throw new Error(cleanProviderError(payload) || `Image host returned HTTP ${response.status}`);
+        }
+        const directUrl = normalizeImageUrl(payload);
+        if (!directUrl || !isExpectedLitterboxUrl(directUrl)) {
+          throw new Error("The temporary image host returned an unexpected link");
+        }
+        return directUrl;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          throw new Error("The image upload timed out");
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  };
+  function normalizeLitterboxUploadConfig(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const retention = value.retention;
+    return retention === "1h" || retention === "12h" || retention === "24h" || retention === "72h" ? { retention } : null;
+  }
+  async function prepareLocalImage(file) {
+    await validateLocalImageFile(file);
+    const decoded = await decodeLocalImage(file);
+    try {
+      if (decoded.width <= 0 || decoded.height <= 0 || decoded.width * decoded.height > MAX_LOCAL_IMAGE_PIXELS) {
+        throw new Error("This image has too many pixels to prepare safely");
+      }
+      const scale = Math.min(1, MAX_LOCAL_IMAGE_EDGE / Math.max(decoded.width, decoded.height));
+      const width = Math.max(1, Math.round(decoded.width * scale));
+      const height = Math.max(1, Math.round(decoded.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { alpha: true });
+      if (!context) throw new Error("Your browser could not prepare this image");
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(decoded.source, 0, 0, width, height);
+      const blob = await canvasToWebp(canvas);
+      if (blob.size > MAX_PREPARED_IMAGE_BYTES) {
+        throw new Error("The privacy-prepared image is still larger than 8 MB");
+      }
+      return { blob, width, height, sourceBytes: file.size };
+    } finally {
+      decoded.dispose();
+    }
+  }
+  async function validateLocalImageFile(file) {
+    if (file.size <= 0) throw new Error("Choose a non-empty image file");
+    if (file.size > MAX_LOCAL_IMAGE_BYTES) throw new Error("Choose an image up to 10 MB");
+    const detectedType = detectLocalImageType(await file.slice(0, 16).arrayBuffer());
+    if (!detectedType) throw new Error("Use a real JPG, PNG, or WebP image");
+    if (file.type && file.type.toLocaleLowerCase() !== detectedType) {
+      throw new Error("The file contents do not match its image type");
+    }
+  }
+  function detectLocalImageType(header) {
+    const bytes = new Uint8Array(header);
+    if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
+    if (bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71 && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10) {
+      return "image/png";
+    }
+    if (bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80) {
+      return "image/webp";
+    }
+    return null;
+  }
+  async function decodeLocalImage(file) {
+    if (typeof globalThis.createImageBitmap === "function") {
+      const bitmap = await globalThis.createImageBitmap(file, { imageOrientation: "from-image" });
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        dispose: () => bitmap.close()
+      };
+    }
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.decoding = "async";
+    try {
+      await new Promise((resolve, reject) => {
+        image.addEventListener("load", () => resolve(), { once: true });
+        image.addEventListener("error", () => reject(new Error("This image could not be decoded")), {
+          once: true
+        });
+        image.src = objectUrl;
+      });
+      return {
+        source: image,
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+        dispose: () => URL.revokeObjectURL(objectUrl)
+      };
+    } catch (error) {
+      URL.revokeObjectURL(objectUrl);
+      throw error;
+    }
+  }
+  function canvasToWebp(canvas) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob || blob.type !== "image/webp") {
+            reject(new Error("Your browser could not create a privacy-safe WebP image"));
+            return;
+          }
+          resolve(blob);
+        },
+        "image/webp",
+        0.88
+      );
+    });
+  }
+  function isExpectedLitterboxUrl(value) {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "litter.catbox.moe" && !url.username && !url.password && !url.search && !url.hash && /^\/[a-z0-9_-]+\.webp$/iu.test(url.pathname);
+  }
+  function validatePreparedImage(image) {
+    if (image.blob.type !== "image/webp" || image.blob.size <= 0 || image.blob.size > MAX_PREPARED_IMAGE_BYTES || !Number.isSafeInteger(image.width) || image.width <= 0 || !Number.isSafeInteger(image.height) || image.height <= 0) {
+      throw new Error("The prepared image is invalid");
+    }
+  }
+  function preparedImageFile(image) {
+    return new File([image.blob], "kikilink-image.webp", {
+      type: "image/webp",
+      lastModified: 0
+    });
+  }
+  function cleanProviderError(value) {
+    return value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 180);
+  }
 
   // src/modules/link-chat/icons.ts
   var SVG_NAMESPACE = "http://www.w3.org/2000/svg";
@@ -6734,13 +7046,16 @@ select:focus-visible {
     return svg;
   }
 
+  // design/branding/kikilink-emblem.webp
+  var kikilink_emblem_default = "data:image/webp;base64,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";
+
   // src/modules/link-chat/view.ts
   var LinkChatView = class {
     constructor(adapter, service, settings, version, activities = new LinkActivitiesService(adapter, settings), roster = new LinkRosterService(
       adapter,
       new PeopleRepository(new MemoryKeyValueStorage()),
       settings
-    ), presence, imageUploader = new CloudinaryImageUploader()) {
+    ), presence, imageUploader = new LitterboxImageUploader()) {
       this.adapter = adapter;
       this.service = service;
       this.settings = settings;
@@ -6895,14 +7210,21 @@ select:focus-visible {
     #typingIndicatorsToggle = element("input");
     #imagePreviewSelect = element("select", { className: "kl-select" });
     #imageUploadsToggle = element("input");
-    #cloudinaryCloudNameInput = element("input", {
-      className: "kl-search kl-image-upload-setting-input"
-    });
-    #cloudinaryPresetInput = element("input", {
-      className: "kl-search kl-image-upload-setting-input"
+    #imageUploadRetentionSelect = element("select", {
+      className: "kl-select"
     });
     #imageUploadSettingsOptions = element("div", {
       className: "kl-image-upload-settings-options"
+    });
+    #roomBadgeToggle = element("input");
+    #roomBadgePlacementSelect = element("select", {
+      className: "kl-select"
+    });
+    #roomBadgeOffsetXInput = element("input", {
+      className: "kl-number-input"
+    });
+    #roomBadgeOffsetYInput = element("input", {
+      className: "kl-number-input"
     });
     #retentionInput = element("input", { className: "kl-number-input" });
     #saveSettingsButton = element("button", {
@@ -7002,7 +7324,16 @@ select:focus-visible {
     #presenceOptions = element("div", { className: "kl-presence-options" });
     #presenceEnabledToggle = element("input");
     #presenceMessage = element("input", { className: "kl-search kl-presence-message" });
-    #autoIdleSelect = element("select", { className: "kl-select" });
+    #autoIdleInput = element("input", { className: "kl-number-input" });
+    #presenceAvatarUrl = element("input", {
+      className: "kl-search kl-presence-avatar-url"
+    });
+    #presenceAvatarPreview = element("div", { className: "kl-avatar kl-profile-avatar-preview" });
+    #afkAutoReplyToggle = element("input");
+    #afkAutoReplyMessage = element("textarea", {
+      className: "kl-custom-activity-template kl-afk-reply-message"
+    });
+    #afkAutoReplyOptions = element("div", { className: "kl-afk-reply-options" });
     #imageDialog = element("dialog", { className: "kl-dialog kl-image-dialog" });
     #imageUrlInput = element("input", { className: "kl-search kl-image-url" });
     #imagePreview = element("div", { className: "kl-image-compose-preview" });
@@ -7091,6 +7422,7 @@ select:focus-visible {
     #messageRenderPeer;
     #loadingOlderMessages = false;
     #renderedMessageIds = /* @__PURE__ */ new Set();
+    #allowedAvatarUrls = /* @__PURE__ */ new Set();
     #suppressProfileClickUntil = /* @__PURE__ */ new WeakMap();
     #profileMenuToken = 0;
     #aliasTarget;
@@ -7176,6 +7508,7 @@ select:focus-visible {
       document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
       this.#presenceUnsubscribe?.();
       this.#presenceUnsubscribe = void 0;
+      this.#allowedAvatarUrls.clear();
       this.#host.remove();
       void this.#notificationSounds.destroy();
       this.#mounted = false;
@@ -7909,6 +8242,82 @@ select:focus-visible {
         "Disable panel and control animations.",
         reducedMotionSwitch
       );
+      this.#roomBadgeToggle.type = "checkbox";
+      this.#roomBadgeToggle.setAttribute("aria-label", "Show KikiLink Blossom beside room addon icons");
+      this.#roomBadgeToggle.addEventListener("change", () => this.#renderRoomBadgeSettings());
+      const roomBadgeSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#roomBadgeToggle,
+        element("span", { className: "kl-switch-track" })
+      );
+      this.#roomBadgePlacementSelect.replaceChildren(
+        selectOption2("before-addons", "Before addon icons"),
+        selectOption2("between-addons", "Between WCE and BCX"),
+        selectOption2("after-addons", "After addon icons")
+      );
+      this.#roomBadgePlacementSelect.setAttribute("aria-label", "Room Blossom position");
+      for (const [input, label] of [
+        [this.#roomBadgeOffsetXInput, "Horizontal fine adjustment"],
+        [this.#roomBadgeOffsetYInput, "Vertical fine adjustment"]
+      ]) {
+        input.type = "number";
+        input.min = label.startsWith("Horizontal") ? "-96" : "-40";
+        input.max = label.startsWith("Horizontal") ? "96" : "120";
+        input.step = "1";
+        input.setAttribute("aria-label", label);
+      }
+      const roomBadgeAdvanced = element(
+        "details",
+        { className: "kl-settings-disclosure kl-room-badge-advanced" },
+        element(
+          "summary",
+          {},
+          element("span", { text: "Fine position" }),
+          element("span", { className: "kl-disclosure-meta", text: "Advanced" })
+        ),
+        element(
+          "div",
+          { className: "kl-room-badge-offsets" },
+          element(
+            "label",
+            { className: "kl-image-upload-setting-field" },
+            element("span", { text: "Horizontal" }),
+            this.#roomBadgeOffsetXInput
+          ),
+          element(
+            "label",
+            { className: "kl-image-upload-setting-field" },
+            element("span", { text: "Vertical" }),
+            this.#roomBadgeOffsetYInput
+          ),
+          element("button", {
+            className: "kl-text-button",
+            type: "button",
+            text: "Reset fine position",
+            onClick: () => {
+              this.#roomBadgeOffsetXInput.value = "0";
+              this.#roomBadgeOffsetYInput.value = "0";
+            }
+          })
+        )
+      );
+      const roomBadgeSection = element(
+        "section",
+        { className: "kl-setting-section kl-room-badge-settings" },
+        element("div", { className: "kl-setting-section-title", text: "Room addon badge" }),
+        this.#settingRow(
+          "Show Blossom flower",
+          "A small translucent KikiLink mark beside the other addon icons above your character.",
+          roomBadgeSwitch
+        ),
+        this.#settingRow(
+          "Badge position",
+          "Pick a safe slot in the same top row as WCE and BCX.",
+          this.#roomBadgePlacementSelect
+        ),
+        roomBadgeAdvanced
+      );
       this.#historyToggle.type = "checkbox";
       const historySwitch = element(
         "label",
@@ -7956,11 +8365,11 @@ select:focus-visible {
       this.#imagePreviewSelect.setAttribute("aria-label", "Remote image previews");
       const imagePreviews = this.#settingRow(
         "Image previews",
-        "Remote hosts can see your IP when an image loads. Ask first is the privacy-friendly default.",
+        "Remote hosts can see your IP when an image loads. Ask first adds a one-time Show avatar action to player menus.",
         this.#imagePreviewSelect
       );
       this.#imageUploadsToggle.type = "checkbox";
-      this.#imageUploadsToggle.setAttribute("aria-label", "Enable local image uploads");
+      this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary local image uploads");
       this.#imageUploadsToggle.addEventListener(
         "change",
         () => this.#renderImageUploadSettingsOptions()
@@ -7971,37 +8380,25 @@ select:focus-visible {
         this.#imageUploadsToggle,
         element("span", { className: "kl-switch-track" })
       );
-      this.#cloudinaryCloudNameInput.type = "text";
-      this.#cloudinaryCloudNameInput.maxLength = 64;
-      this.#cloudinaryCloudNameInput.autocomplete = "off";
-      this.#cloudinaryCloudNameInput.spellcheck = false;
-      this.#cloudinaryCloudNameInput.placeholder = "your-cloud-name";
-      this.#cloudinaryCloudNameInput.setAttribute("aria-label", "Cloudinary cloud name");
-      this.#cloudinaryPresetInput.type = "text";
-      this.#cloudinaryPresetInput.maxLength = 128;
-      this.#cloudinaryPresetInput.autocomplete = "off";
-      this.#cloudinaryPresetInput.spellcheck = false;
-      this.#cloudinaryPresetInput.placeholder = "unsigned-upload-preset";
-      this.#cloudinaryPresetInput.setAttribute("aria-label", "Cloudinary unsigned upload preset");
-      const cloudinaryDocs = element("a", {
+      this.#imageUploadRetentionSelect.replaceChildren(
+        selectOption2("1h", "1 hour"),
+        selectOption2("12h", "12 hours"),
+        selectOption2("24h", "24 hours"),
+        selectOption2("72h", "3 days")
+      );
+      this.#imageUploadRetentionSelect.setAttribute("aria-label", "Temporary image lifetime");
+      const litterboxLink = element("a", {
         className: "kl-inline-link",
-        text: "Cloudinary setup guide"
+        text: "Litterbox by Catbox"
       });
-      cloudinaryDocs.href = "https://cloudinary.com/documentation/upload_presets";
-      cloudinaryDocs.target = "_blank";
-      cloudinaryDocs.rel = "noopener noreferrer";
+      litterboxLink.href = "https://litterbox.catbox.moe/";
+      litterboxLink.target = "_blank";
+      litterboxLink.rel = "noopener noreferrer";
       this.#imageUploadSettingsOptions.append(
-        element(
-          "label",
-          { className: "kl-image-upload-setting-field" },
-          element("span", { text: "Cloud name" }),
-          this.#cloudinaryCloudNameInput
-        ),
-        element(
-          "label",
-          { className: "kl-image-upload-setting-field" },
-          element("span", { text: "Unsigned preset" }),
-          this.#cloudinaryPresetInput
+        this.#settingRow(
+          "Link lifetime",
+          "The host removes the temporary file after this period.",
+          this.#imageUploadRetentionSelect
         ),
         element(
           "p",
@@ -8010,9 +8407,9 @@ select:focus-visible {
           element(
             "span",
             {},
-            "Selection stays local. On Upload & send, KikiLink removes the original filename and metadata, resizes to 2560 px, then uploads to your Cloudinary account. The resulting link is public. ",
-            cloudinaryDocs,
-            "."
+            "Only Upload & send makes a network request. KikiLink removes the filename and metadata, resizes to 2560 px, then sends the public file to ",
+            litterboxLink,
+            ". Catbox can see your IP and image; expiration cannot remove copies someone already saved."
           )
         )
       );
@@ -8021,11 +8418,11 @@ select:focus-visible {
         { className: "kl-setting-section kl-image-upload-settings" },
         element("div", {
           className: "kl-setting-section-title",
-          text: "Local images \xB7 optional"
+          text: "Temporary local images"
         }),
         this.#settingRow(
           "Upload local files",
-          "Connect your own Cloudinary unsigned preset. Off by default.",
+          "Upload through Litterbox without creating an account.",
           imageUploadsSwitch
         ),
         this.#imageUploadSettingsOptions
@@ -8055,7 +8452,8 @@ select:focus-visible {
         density,
         textScale,
         homeLayout,
-        reducedMotion
+        reducedMotion,
+        roomBadgeSection
       );
       const resetLauncher = element("button", {
         className: "kl-text-button",
@@ -8631,7 +9029,7 @@ select:focus-visible {
       this.#finderDialog.append(header, body, footer);
     }
     #buildPresenceDialog() {
-      const title = element("div", { className: "kl-dialog-title", text: "Your KikiLink status" });
+      const title = element("div", { className: "kl-dialog-title", text: "Your KikiLink profile" });
       title.id = "kikilink-presence-title";
       this.#presenceDialog.setAttribute("aria-labelledby", title.id);
       const close = element("button", {
@@ -8651,7 +9049,7 @@ select:focus-visible {
           title,
           element("div", {
             className: "kl-dialog-subtitle",
-            text: "Visible to compatible KikiLink users you meet or contact."
+            text: "Avatar, status, Idle, and a quiet AFK auto-reply in one place."
           })
         ),
         close
@@ -8690,15 +9088,37 @@ select:focus-visible {
       this.#presenceMessage.maxLength = 80;
       this.#presenceMessage.placeholder = "Optional: roleplaying, busy, open to chat\u2026";
       this.#presenceMessage.autocomplete = "off";
-      this.#autoIdleSelect.replaceChildren(
-        selectOption2("0", "Never"),
-        selectOption2("5", "After 5 minutes"),
-        selectOption2("10", "After 10 minutes"),
-        selectOption2("15", "After 15 minutes"),
-        selectOption2("30", "After 30 minutes"),
-        selectOption2("60", "After 1 hour")
+      this.#autoIdleInput.type = "number";
+      this.#autoIdleInput.min = "0";
+      this.#autoIdleInput.max = "120";
+      this.#autoIdleInput.step = "1";
+      this.#autoIdleInput.setAttribute("aria-label", "Minutes before automatic Idle");
+      this.#presenceAvatarUrl.type = "url";
+      this.#presenceAvatarUrl.maxLength = 500;
+      this.#presenceAvatarUrl.placeholder = "https://i.imgur.com/avatar.png";
+      this.#presenceAvatarUrl.autocomplete = "off";
+      this.#presenceAvatarUrl.spellcheck = false;
+      this.#presenceAvatarUrl.setAttribute("aria-label", "Direct profile avatar URL");
+      this.#presenceAvatarUrl.addEventListener("input", () => this.#renderOwnAvatarPreview());
+      this.#afkAutoReplyToggle.type = "checkbox";
+      this.#afkAutoReplyToggle.setAttribute("aria-label", "Send an automatic reply while Idle");
+      this.#afkAutoReplyToggle.addEventListener("change", () => this.#renderPresenceDialog());
+      const afkAutoReplySwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#afkAutoReplyToggle,
+        element("span", { className: "kl-switch-track" })
       );
-      this.#autoIdleSelect.setAttribute("aria-label", "Automatic idle delay");
+      this.#afkAutoReplyMessage.maxLength = 500;
+      this.#afkAutoReplyMessage.placeholder = "\u041F\u0440\u0438\u0432\u0435\u0442, \u044F \u0410\u0424\u041A, \u043D\u0430\u043F\u0438\u0448\u0438\u0442\u0435 \u043C\u043D\u0435 \u043F\u043E\u0437\u0436\u0435!";
+      this.#afkAutoReplyOptions.append(
+        element("span", { className: "kl-custom-field-label", text: "AFK message" }),
+        this.#afkAutoReplyMessage,
+        element("span", {
+          className: "kl-custom-field-help",
+          text: "Sent privately at most once per person during an Idle session; your room is never included."
+        })
+      );
       const body = element(
         "div",
         { className: "kl-dialog-body kl-presence-body" },
@@ -8714,11 +9134,32 @@ select:focus-visible {
           element("span", { className: "kl-presence-field-label", text: "Status note" }),
           this.#presenceMessage
         ),
+        element(
+          "section",
+          { className: "kl-profile-avatar-field" },
+          this.#presenceAvatarPreview,
+          element(
+            "label",
+            { className: "kl-presence-field" },
+            element("span", { className: "kl-presence-field-label", text: "Profile avatar" }),
+            this.#presenceAvatarUrl,
+            element("span", {
+              className: "kl-custom-field-help",
+              text: "Use a direct HTTPS JPG, PNG, GIF, WebP, or AVIF link from Imgur, Catbox, or another host. Other players' avatars follow your image-preview privacy setting."
+            })
+          )
+        ),
         this.#settingRow(
           "Automatic Idle",
-          "Only applies while your selected status is Online.",
-          this.#autoIdleSelect
+          "Minutes without a tap or keypress. Enter 0 to disable; maximum 120.",
+          element("label", {}, this.#autoIdleInput, " min")
         ),
+        this.#settingRow(
+          "Reply while AFK",
+          "When Automatic Idle is active, privately answer new Beeps for you.",
+          afkAutoReplySwitch
+        ),
+        this.#afkAutoReplyOptions,
         element(
           "div",
           { className: "kl-presence-caveat" },
@@ -8729,7 +9170,7 @@ select:focus-visible {
       const save = element("button", {
         className: "kl-text-button kl-text-button--primary",
         type: "button",
-        text: "Save status",
+        text: "Save profile",
         onClick: () => this.#savePresencePreferences()
       });
       this.#presenceDialog.append(
@@ -8752,7 +9193,11 @@ select:focus-visible {
       const config = this.settings.get().linkPresence;
       this.#presenceEnabledToggle.checked = config.enabled;
       this.#presenceMessage.value = config.statusMessage;
-      this.#autoIdleSelect.value = config.autoIdleMinutes.toString();
+      this.#presenceAvatarUrl.value = config.avatarUrl;
+      this.#autoIdleInput.value = config.autoIdleMinutes.toString();
+      this.#afkAutoReplyToggle.checked = config.afkAutoReply.enabled;
+      this.#afkAutoReplyMessage.value = config.afkAutoReply.message;
+      this.#renderOwnAvatarPreview();
       this.#renderPresenceDialog();
       if (!this.#presenceDialog.open) this.#presenceDialog.showModal();
       this.#presenceOptions.querySelector('[data-active="true"]')?.focus();
@@ -8769,18 +9214,41 @@ select:focus-visible {
         option.disabled = !enabled;
       }
       this.#presenceMessage.disabled = !enabled;
-      this.#autoIdleSelect.disabled = !enabled;
+      this.#afkAutoReplyMessage.disabled = !this.#afkAutoReplyToggle.checked;
+      this.#afkAutoReplyOptions.dataset.disabled = String(!this.#afkAutoReplyToggle.checked);
     }
     #savePresencePreferences() {
-      const autoIdle = Number(this.#autoIdleSelect.value);
-      this.settings.update((draft) => {
-        draft.linkPresence.autoIdleMinutes = Number.isInteger(autoIdle) ? autoIdle : 10;
+      const autoIdle = Number(this.#autoIdleInput.value);
+      const normalizedAvatarUrl = this.#presenceAvatarUrl.value.trim() ? normalizeImageUrl(this.#presenceAvatarUrl.value) : null;
+      if (this.#presenceAvatarUrl.value.trim() && (!normalizedAvatarUrl || normalizedAvatarUrl.length > 500)) {
+        this.#presenceAvatarUrl.focus();
+        this.#toast("Use a direct HTTPS avatar link up to 500 characters ending in an image extension.", "error");
+        return;
+      }
+      const avatarUrl = normalizedAvatarUrl ?? "";
+      if (!Number.isInteger(autoIdle) || autoIdle < 0 || autoIdle > 120) {
+        this.#autoIdleInput.focus();
+        this.#toast("Automatic Idle must be between 0 and 120 minutes.", "error");
+        return;
+      }
+      if (this.#afkAutoReplyToggle.checked && !this.#afkAutoReplyMessage.value.trim()) {
+        this.#afkAutoReplyMessage.focus();
+        this.#toast("Add a short AFK auto-reply message.", "error");
+        return;
+      }
+      this.presence.setOwnProfile({
+        enabled: this.#presenceEnabledToggle.checked,
+        statusMessage: this.#presenceMessage.value,
+        avatarUrl,
+        autoIdleMinutes: autoIdle,
+        afkAutoReply: {
+          enabled: this.#afkAutoReplyToggle.checked,
+          message: this.#afkAutoReplyMessage.value
+        }
       });
-      this.presence.setEnabled(this.#presenceEnabledToggle.checked);
-      this.presence.setOwnStatusMessage(this.#presenceMessage.value);
       this.#renderOwnPresence();
       this.#presenceDialog.close();
-      this.#toast("KikiLink status saved.");
+      this.#toast("KikiLink profile saved.");
     }
     #buildImageDialog() {
       const title = element("div", { className: "kl-dialog-title", text: "Send an image" });
@@ -8878,7 +9346,7 @@ select:focus-visible {
           { className: "kl-image-upload-note kl-image-file-privacy" },
           kikiIcon("lock"),
           element("span", {
-            text: "Nothing uploads on selection. KikiLink first removes the filename and metadata; Upload & send is the only network action."
+            text: "Nothing uploads on selection. KikiLink first removes the filename and metadata; Upload & send creates a public temporary Litterbox link."
           })
         )
       );
@@ -9062,7 +9530,7 @@ select:focus-visible {
         this.#activeName = displayName;
         this.#activeNativeName = conversation.peerName;
         this.#chatName.textContent = displayName;
-        this.#chatAvatar.textContent = avatarText(displayName);
+        this.#renderAvatar(this.#chatAvatar, displayName, target.memberNumber);
         this.#renderTypingIndicator();
       }
       this.#aliasDialog.close();
@@ -9154,7 +9622,7 @@ select:focus-visible {
     }
     #renderLocalImageComposeState() {
       const settings = this.settings.get().linkChat.imageUploads;
-      const config = settings.enabled ? normalizeCloudinaryUploadConfig(settings) : null;
+      const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
       const setupButton = this.#imageFilePanel.querySelector(
         ".kl-image-upload-setup"
       );
@@ -9183,8 +9651,8 @@ select:focus-visible {
           element(
             "span",
             {},
-            element("strong", { text: "Local upload is off" }),
-            element("small", { text: "Connect your own Cloudinary account once in Chat settings." })
+            element("strong", { text: "Temporary upload is off" }),
+            element("small", { text: "Enable Litterbox uploads once in Chat settings." })
           )
         );
         this.#localImageStatus.dataset.state = "empty";
@@ -9302,7 +9770,7 @@ select:focus-visible {
     async #uploadAndSendLocalImage() {
       const image = this.#preparedLocalImage;
       const uploadSettings = this.settings.get().linkChat.imageUploads;
-      const config = uploadSettings.enabled ? normalizeCloudinaryUploadConfig(uploadSettings) : null;
+      const config = uploadSettings.enabled ? normalizeLitterboxUploadConfig(uploadSettings) : null;
       if (!image || !config || this.#imageUploadBusy) {
         this.#renderLocalImageComposeState();
         return;
@@ -9323,7 +9791,7 @@ select:focus-visible {
           this.#toast("Upload finished. The direct link is kept here so it is not lost.", "error");
           return;
         }
-        this.#toast("Private details removed; image uploaded and sent.");
+        this.#toast(`Private details removed; temporary ${config.retention} link sent.`);
         this.#imageDialog.close();
       } catch (error) {
         if (token !== this.#imageUploadToken) return;
@@ -9791,7 +10259,7 @@ select:focus-visible {
         element(
           "div",
           { className: "kl-avatar-wrap" },
-          element("div", { className: "kl-avatar", text: avatarText(entry.displayName) }),
+          this.#avatar(entry.displayName, entry.memberNumber),
           presenceDot(presence.status)
         ),
         element(
@@ -9856,7 +10324,7 @@ select:focus-visible {
         element(
           "div",
           { className: "kl-avatar-wrap" },
-          element("div", { className: "kl-avatar kl-roster-avatar", text: avatarText(entry.displayName) }),
+          this.#avatar(entry.displayName, entry.memberNumber, "kl-roster-avatar"),
           presenceDot(presence.status)
         ),
         element(
@@ -10179,6 +10647,7 @@ select:focus-visible {
         return;
       }
       const snapshot = this.presence.get(this.#activePeer);
+      this.#renderAvatar(this.#chatAvatar, this.#activeName, this.#activePeer);
       this.#chatPresence.append(
         presenceDot(snapshot.status),
         element("span", { text: presenceLabel(snapshot.status) })
@@ -10273,6 +10742,14 @@ select:focus-visible {
         }
         const description = target.querySelector("[data-presence-description]");
         if (description) description.title = presenceDescription(snapshot);
+        const avatar = target.querySelector("[data-kikilink-avatar]");
+        if (avatar) {
+          this.#renderAvatar(
+            avatar,
+            avatar.dataset.avatarName || this.adapter.getMemberName(memberNumber),
+            memberNumber
+          );
+        }
       }
     }
     async #renderConversations(providedConversations) {
@@ -10289,7 +10766,7 @@ select:focus-visible {
           this.#activeName = displayName;
           this.#activeNativeName = conversation.peerName;
           this.#chatName.textContent = displayName;
-          this.#chatAvatar.textContent = avatarText(displayName);
+          this.#renderAvatar(this.#chatAvatar, displayName, conversation.peerNumber);
         }
       }
       const conversations = allConversations.filter((conversation) => {
@@ -10347,7 +10824,7 @@ select:focus-visible {
         element(
           "div",
           { className: "kl-avatar-wrap" },
-          element("div", { className: "kl-avatar", text: avatarText(displayName) }),
+          this.#avatar(displayName, conversation.peerNumber),
           presenceDot(presence.status)
         ),
         main,
@@ -10383,7 +10860,8 @@ select:focus-visible {
       await this.service.markRead(peerNumber);
       this.#empty.hidden = true;
       this.#chat.hidden = false;
-      this.#chatAvatar.textContent = avatarText(displayName);
+      this.#chatAvatar.dataset.memberNumber = peerNumber.toString();
+      this.#renderAvatar(this.#chatAvatar, displayName, peerNumber);
       this.#chatName.textContent = displayName;
       this.#chatNumber.textContent = `Member ${peerNumber}`;
       this.#messageRenderLimit = 120;
@@ -10527,6 +11005,8 @@ select:focus-visible {
         return;
       }
       const nearBottom = this.#messages.scrollHeight - this.#messages.scrollTop - this.#messages.clientHeight < 96;
+      const shouldFollowMessage = message.direction === "outgoing" || nearBottom;
+      const previousScrollTop = this.#messages.scrollTop;
       this.#messages.querySelector(".kl-empty-copy")?.remove();
       const previous = this.#messages.querySelector(".kl-message-row:last-child");
       const row = this.#messageNode(message);
@@ -10542,16 +11022,17 @@ select:focus-visible {
         }
         const oldest = this.#messages.querySelector(".kl-message-row");
         if (oldest) {
+          const heightBeforeRemoval = this.#messages.scrollHeight;
           if (oldest.dataset.messageId) this.#renderedMessageIds.delete(oldest.dataset.messageId);
           oldest.remove();
           this.#repairFirstMessageGrouping();
+          if (!shouldFollowMessage) {
+            const removedHeight = Math.max(0, heightBeforeRemoval - this.#messages.scrollHeight);
+            this.#messages.scrollTop = Math.max(0, previousScrollTop - removedHeight);
+          }
         }
       }
-      if (message.direction === "outgoing" || nearBottom) {
-        requestAnimationFrame(() => {
-          this.#messages.scrollTop = this.#messages.scrollHeight;
-        });
-      }
+      if (shouldFollowMessage) this.#messages.scrollTop = this.#messages.scrollHeight;
     }
     #syncMessageGrouping() {
       const rows = [...this.#messages.querySelectorAll(".kl-message-row")];
@@ -10803,7 +11284,7 @@ select:focus-visible {
         element(
           "div",
           { className: "kl-avatar-wrap" },
-          element("div", { className: "kl-avatar", text: avatarText(shownName) }),
+          this.#avatar(shownName, memberNumber),
           presenceDot(snapshot.status)
         ),
         element(
@@ -10829,6 +11310,17 @@ select:focus-visible {
         this.#profileMenuAction("chat", "Message", "Open LinkChat", () => {
           void this.openChat(memberNumber, nativeName);
         }),
+        snapshot.avatarUrl && this.settings.get().linkChat.imagePreviews === "ask" && !this.#allowedAvatarUrls.has(snapshot.avatarUrl) ? this.#profileMenuAction(
+          "image",
+          "Show profile avatar",
+          "Load this remote image once",
+          () => {
+            if (!snapshot.avatarUrl) return;
+            this.#allowedAvatarUrls.add(snapshot.avatarUrl);
+            this.#schedulePresenceRender(memberNumber);
+            this.#toast("Profile avatar allowed for this session.");
+          }
+        ) : null,
         this.#profileMenuAction(
           "whisper",
           "Whisper",
@@ -10914,8 +11406,8 @@ select:focus-visible {
       this.#profileMenu.style.left = `${x}px`;
       this.#profileMenu.style.top = `${y}px`;
       const bounds = this.#profileMenu.getBoundingClientRect();
-      this.#profileMenu.style.left = `${clamp(x, 8, Math.max(8, window.innerWidth - bounds.width - 8))}px`;
-      this.#profileMenu.style.top = `${clamp(y, 8, Math.max(8, window.innerHeight - bounds.height - 8))}px`;
+      this.#profileMenu.style.left = `${clamp2(x, 8, Math.max(8, window.innerWidth - bounds.width - 8))}px`;
+      this.#profileMenu.style.top = `${clamp2(y, 8, Math.max(8, window.innerHeight - bounds.height - 8))}px`;
       this.#profileMenu.querySelector(".kl-profile-menu-action:not(:disabled)")?.focus();
     }
     #profileMenuAction(icon, label, help, action, disabled = false, filled = false) {
@@ -11005,7 +11497,7 @@ select:focus-visible {
           element(
             "div",
             { className: "kl-avatar-wrap" },
-            element("div", { className: "kl-avatar", text: avatarText(contact.memberName) }),
+            this.#avatar(contact.memberName, contact.memberNumber),
             presenceDot(presence.status)
           ),
           element(
@@ -11336,9 +11828,13 @@ ${expanded}` : expanded;
       this.#typingIndicatorsToggle.checked = settings.linkChat.typingIndicators;
       this.#imagePreviewSelect.value = settings.linkChat.imagePreviews;
       this.#imageUploadsToggle.checked = settings.linkChat.imageUploads.enabled;
-      this.#cloudinaryCloudNameInput.value = settings.linkChat.imageUploads.cloudName;
-      this.#cloudinaryPresetInput.value = settings.linkChat.imageUploads.uploadPreset;
+      this.#imageUploadRetentionSelect.value = settings.linkChat.imageUploads.retention;
       this.#renderImageUploadSettingsOptions();
+      this.#roomBadgeToggle.checked = settings.ui.roomBadge.enabled;
+      this.#roomBadgePlacementSelect.value = settings.ui.roomBadge.placement;
+      this.#roomBadgeOffsetXInput.value = settings.ui.roomBadge.offsetX.toString();
+      this.#roomBadgeOffsetYInput.value = settings.ui.roomBadge.offsetY.toString();
+      this.#renderRoomBadgeSettings();
       this.#retentionInput.value = settings.linkChat.retentionDays.toString();
       this.#renderQuickActionEditor(settings.linkChat.quickActions);
       this.#rosterEnabledToggle.checked = settings.linkRoster.enabled;
@@ -11378,8 +11874,17 @@ ${expanded}` : expanded;
     #renderImageUploadSettingsOptions() {
       const enabled = this.#imageUploadsToggle.checked;
       this.#imageUploadSettingsOptions.hidden = !enabled;
-      this.#cloudinaryCloudNameInput.disabled = !enabled;
-      this.#cloudinaryPresetInput.disabled = !enabled;
+      this.#imageUploadRetentionSelect.disabled = !enabled;
+    }
+    #renderRoomBadgeSettings() {
+      const enabled = this.#roomBadgeToggle.checked;
+      this.#roomBadgePlacementSelect.disabled = !enabled;
+      this.#roomBadgeOffsetXInput.disabled = !enabled;
+      this.#roomBadgeOffsetYInput.disabled = !enabled;
+      const advanced = this.#settingsPage.querySelector(
+        ".kl-room-badge-advanced"
+      );
+      if (advanced) advanced.dataset.disabled = String(!enabled);
     }
     #updateAccentPresets() {
       for (const swatch of this.#settingsPage.querySelectorAll(".kl-color-swatch")) {
@@ -11395,17 +11900,6 @@ ${expanded}` : expanded;
       const retentionDays = Number(this.#retentionInput.value);
       const reactionRules = this.#readReactionRuleEditor();
       if (!reactionRules) return;
-      const imageUploadConfig = normalizeCloudinaryUploadConfig({
-        cloudName: this.#cloudinaryCloudNameInput.value,
-        uploadPreset: this.#cloudinaryPresetInput.value
-      });
-      if (this.#imageUploadsToggle.checked && !imageUploadConfig) {
-        this.#showSettingsSection("chat", true);
-        if (!this.#cloudinaryCloudNameInput.value.trim()) this.#cloudinaryCloudNameInput.focus();
-        else this.#cloudinaryPresetInput.focus();
-        this.#toast("Enter a valid Cloudinary cloud name and unsigned preset.", "error");
-        return;
-      }
       const currentSettings = this.settings.get();
       const launcherSide = this.#launcherSideSelect.value === "left" ? "left" : "right";
       const settings = this.settings.update((draft) => {
@@ -11417,6 +11911,12 @@ ${expanded}` : expanded;
         draft.ui.launcherSide = launcherSide;
         draft.ui.launcherOpen = this.#launcherOpenSelect.value === "last" || this.#launcherOpenSelect.value === "chat" ? this.#launcherOpenSelect.value : "home";
         if (launcherSide !== currentSettings.ui.launcherSide) draft.ui.launcherPosition = null;
+        draft.ui.roomBadge = {
+          enabled: this.#roomBadgeToggle.checked,
+          placement: this.#roomBadgePlacementSelect.value === "before-addons" || this.#roomBadgePlacementSelect.value === "after-addons" ? this.#roomBadgePlacementSelect.value : "between-addons",
+          offsetX: Number(this.#roomBadgeOffsetXInput.value),
+          offsetY: Number(this.#roomBadgeOffsetYInput.value)
+        };
         draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
         draft.ui.settingsSection = this.#settingsSection;
         draft.linkChat.saveHistory = this.#historyToggle.checked;
@@ -11424,9 +11924,8 @@ ${expanded}` : expanded;
         draft.linkChat.typingIndicators = this.#typingIndicatorsToggle.checked;
         draft.linkChat.imagePreviews = this.#imagePreviewSelect.value === "always" || this.#imagePreviewSelect.value === "never" ? this.#imagePreviewSelect.value : "ask";
         draft.linkChat.imageUploads = {
-          enabled: this.#imageUploadsToggle.checked && imageUploadConfig !== null,
-          cloudName: imageUploadConfig?.cloudName ?? "",
-          uploadPreset: imageUploadConfig?.uploadPreset ?? ""
+          enabled: this.#imageUploadsToggle.checked,
+          retention: this.#imageUploadRetentionSelect.value === "1h" || this.#imageUploadRetentionSelect.value === "12h" || this.#imageUploadRetentionSelect.value === "72h" ? this.#imageUploadRetentionSelect.value : "24h"
         };
         draft.linkChat.quickActions = this.#readQuickActionEditor();
         draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
@@ -11453,6 +11952,7 @@ ${expanded}` : expanded;
         if (Number.isInteger(retentionDays)) draft.linkChat.retentionDays = retentionDays;
       });
       this.#applyTheme(settings);
+      this.#schedulePresenceRender();
       this.activities.syncFromSettings();
       if (settings.linkReactions.sounds.enabled) void this.#notificationSounds.unlock();
       if (!settings.linkChat.typingIndicators) this.#stopLocalTyping();
@@ -11641,8 +12141,8 @@ ${expanded}` : expanded;
       const height = this.#launcher.offsetHeight || 58;
       const maxLeft = Math.max(0, window.innerWidth - width);
       const maxTop = Math.max(0, window.innerHeight - height);
-      const safeLeft = clamp(left, 0, maxLeft);
-      const safeTop = clamp(top, 0, maxTop);
+      const safeLeft = clamp2(left, 0, maxLeft);
+      const safeTop = clamp2(top, 0, maxTop);
       const side = safeLeft + width / 2 < window.innerWidth / 2 ? "left" : "right";
       this.#launcher.style.left = `${Math.round(safeLeft)}px`;
       this.#launcher.style.top = `${Math.round(safeTop)}px`;
@@ -11655,8 +12155,8 @@ ${expanded}` : expanded;
       const rect = this.#launcher.getBoundingClientRect();
       const maxLeft = Math.max(0, window.innerWidth - rect.width);
       const maxTop = Math.max(0, window.innerHeight - rect.height);
-      const x = maxLeft === 0 ? 0.5 : clamp(rect.left / maxLeft, 0, 1);
-      const y = maxTop === 0 ? 0.5 : clamp(rect.top / maxTop, 0, 1);
+      const x = maxLeft === 0 ? 0.5 : clamp2(rect.left / maxLeft, 0, 1);
+      const y = maxTop === 0 ? 0.5 : clamp2(rect.top / maxTop, 0, 1);
       const launcherSide = rect.left + rect.width / 2 < window.innerWidth / 2 ? "left" : "right";
       this.settings.update((draft) => {
         draft.ui.launcherPosition = { x, y };
@@ -11687,11 +12187,59 @@ ${expanded}` : expanded;
     }
     #emblem(className) {
       const image = element("img", { className: "kl-emblem-image" });
-      image.src = kikilink_blossom_default;
+      image.src = kikilink_emblem_default;
       image.alt = "";
       image.decoding = "async";
       image.draggable = false;
       return element("span", { className: `kl-emblem ${className}` }, image);
+    }
+    #avatar(name, memberNumber, extraClass = "") {
+      const avatar = element("div", {
+        className: `kl-avatar${extraClass ? ` ${extraClass}` : ""}`
+      });
+      this.#renderAvatar(avatar, name, memberNumber);
+      return avatar;
+    }
+    #renderAvatar(target, name, memberNumber, explicitUrl) {
+      const own = memberNumber === this.adapter.getOwnMemberNumber();
+      const url = explicitUrl ?? this.presence.get(memberNumber).avatarUrl;
+      const previewPolicy = this.settings.get().linkChat.imagePreviews;
+      const allowedUrl = url && (own || previewPolicy === "always" || previewPolicy === "ask" && this.#allowedAvatarUrls.has(url)) ? url : "";
+      if (target.dataset.avatarName === name && target.dataset.avatarUrl === allowedUrl && target.childNodes.length > 0) {
+        return;
+      }
+      target.dataset.kikilinkAvatar = "true";
+      target.dataset.avatarName = name;
+      target.dataset.avatarUrl = allowedUrl;
+      const fallback = () => {
+        if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
+        target.replaceChildren(document.createTextNode(avatarText(name)));
+        target.dataset.avatarState = "initials";
+      };
+      fallback();
+      if (!allowedUrl) return;
+      const image = document.createElement("img");
+      image.alt = `${name} profile avatar`;
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.referrerPolicy = "no-referrer";
+      image.addEventListener("load", () => {
+        if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
+        target.dataset.avatarState = "image";
+      }, { once: true });
+      image.addEventListener("error", fallback, { once: true });
+      target.replaceChildren(image);
+      target.dataset.avatarState = "loading";
+      image.src = allowedUrl;
+    }
+    #renderOwnAvatarPreview() {
+      const url = normalizeImageUrl(this.#presenceAvatarUrl.value);
+      this.#renderAvatar(
+        this.#presenceAvatarPreview,
+        this.adapter.getOwnName(),
+        this.adapter.getOwnMemberNumber(),
+        url ?? ""
+      );
     }
     #toast(message, kind = "info") {
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
@@ -11767,8 +12315,8 @@ ${expanded}` : expanded;
       {
         section: "appearance",
         title: "Appearance & comfort",
-        detail: "Theme, accent, Super compact spacing, text size, Home style, and motion",
-        keywords: "light dark system color colour guided focused density compact super tiny font scale reduced motion"
+        detail: "Theme, logo comfort, room Blossom position, spacing, text size, and motion",
+        keywords: "light dark system color colour blossom addon badge icon position offset wce bcx guided focused density compact super tiny font scale reduced motion"
       },
       {
         section: "navigation",
@@ -11779,8 +12327,8 @@ ${expanded}` : expanded;
       {
         section: "chat",
         title: "Chat & history",
-        detail: "Typing, image links and uploads, history, retention, and Quick Actions",
-        keywords: "beep messages typing indicator realtime image picture preview upload local cloudinary preset privacy enter send newline save storage days clear wave hug boop template"
+        detail: "Typing, temporary Catbox images, history, retention, and Quick Actions",
+        keywords: "beep messages typing indicator realtime image picture preview upload local catbox litterbox temporary privacy enter send newline save storage days clear wave hug boop template afk idle avatar profile"
       },
       {
         section: "players",
@@ -11968,8 +12516,97 @@ ${expanded}` : expanded;
     });
     return red * 0.2126 + green * 0.7152 + blue * 0.0722;
   }
-  function clamp(value, min, max) {
+  function clamp2(value, min, max) {
     return Math.min(max, Math.max(min, value));
+  }
+
+  // src/modules/link-chat/afk-auto-reply-service.ts
+  var SENDER_COOLDOWN_MS = 30 * 6e4;
+  var GLOBAL_WINDOW_MS = 6e4;
+  var MAX_REPLIES_PER_WINDOW = 5;
+  var MAX_REPLY_LENGTH = 1e3;
+  var AfkAutoReplyService = class {
+    constructor(adapter, callbacks) {
+      this.adapter = adapter;
+      this.callbacks = callbacks;
+      const clock = callbacks.now;
+      this.#now = clock ? () => clock.call(callbacks) : Date.now;
+    }
+    adapter;
+    callbacks;
+    #repliedThisIdle = /* @__PURE__ */ new Set();
+    #lastReplyAt = /* @__PURE__ */ new Map();
+    #recentReplyTimes = [];
+    #now;
+    #idleSessionActive = false;
+    syncStatus() {
+      try {
+        this.#applyStatus(this.callbacks.getStatus());
+      } catch {
+        this.#applyStatus("online");
+      }
+    }
+    handleIncoming(event) {
+      if (event.direction !== "incoming" || !validMemberNumber3(event.peerNumber)) return void 0;
+      let status;
+      let config;
+      try {
+        status = this.callbacks.getStatus();
+        config = this.callbacks.getConfig();
+      } catch {
+        return void 0;
+      }
+      this.#applyStatus(status);
+      if (status !== "idle" || config.enabled !== true) return void 0;
+      const message = normalizeReplyMessage(config.message);
+      if (!message || this.#repliedThisIdle.has(event.peerNumber)) return void 0;
+      const now = this.#safeNow();
+      this.#prune(now);
+      const lastReplyAt = this.#lastReplyAt.get(event.peerNumber);
+      if (lastReplyAt !== void 0 && now - lastReplyAt < SENDER_COOLDOWN_MS) return void 0;
+      if (this.#recentReplyTimes.length >= MAX_REPLIES_PER_WINDOW) return void 0;
+      this.#repliedThisIdle.add(event.peerNumber);
+      try {
+        const sent = this.adapter.sendBeep(event.peerNumber, message, false);
+        this.#lastReplyAt.set(event.peerNumber, now);
+        this.#recentReplyTimes.push(now);
+        return sent;
+      } catch {
+        this.#repliedThisIdle.delete(event.peerNumber);
+        return void 0;
+      }
+    }
+    reset() {
+      this.#idleSessionActive = false;
+      this.#repliedThisIdle.clear();
+      this.#lastReplyAt.clear();
+      this.#recentReplyTimes.splice(0);
+    }
+    #applyStatus(status) {
+      const idle = status === "idle";
+      if (idle === this.#idleSessionActive) return;
+      this.#idleSessionActive = idle;
+      this.#repliedThisIdle.clear();
+    }
+    #safeNow() {
+      const now = this.#now();
+      return Number.isFinite(now) && now >= 0 ? now : Date.now();
+    }
+    #prune(now) {
+      while (this.#recentReplyTimes.length > 0 && now - (this.#recentReplyTimes[0] ?? now) >= GLOBAL_WINDOW_MS) {
+        this.#recentReplyTimes.shift();
+      }
+      for (const [memberNumber, repliedAt] of this.#lastReplyAt) {
+        if (now - repliedAt >= SENDER_COOLDOWN_MS) this.#lastReplyAt.delete(memberNumber);
+      }
+    }
+  };
+  function normalizeReplyMessage(value) {
+    if (typeof value !== "string") return "";
+    return value.trim().slice(0, MAX_REPLY_LENGTH);
+  }
+  function validMemberNumber3(value) {
+    return Number.isSafeInteger(value) && value >= 0;
   }
 
   // src/modules/link-chat/link-chat-module.ts
@@ -11982,6 +12619,7 @@ ${expanded}` : expanded;
     #activities;
     #roster;
     #presence;
+    #afkAutoReply;
     #roomBadge;
     #roomBadgeUnsubscribe;
     #view;
@@ -12006,7 +12644,15 @@ ${expanded}` : expanded;
         context.version
       );
       this.#presence.start();
-      this.#roomBadge = new RoomBlossomBadge(context.adapter, this.#presence);
+      this.#afkAutoReply = new AfkAutoReplyService(context.adapter, {
+        getStatus: () => this.#presence?.getOwnStatus() ?? "online",
+        getConfig: () => context.settings.get().linkPresence.afkAutoReply
+      });
+      this.#afkAutoReply.syncStatus();
+      this.#unsubscribers.push(
+        this.#presence.subscribe(() => this.#afkAutoReply?.syncStatus())
+      );
+      this.#roomBadge = new RoomBlossomBadge(context.adapter, this.#presence, context.settings);
       this.#roomBadgeUnsubscribe = context.adapter.registerCharacterOverlay(
         (character, characterX, characterY, zoom) => this.#roomBadge?.draw(character, characterX, characterY, zoom)
       );
@@ -12054,9 +12700,12 @@ ${expanded}` : expanded;
       this.#activities = void 0;
       this.#roomBadgeUnsubscribe?.();
       this.#roomBadgeUnsubscribe = void 0;
+      this.#roomBadge?.destroy();
       this.#roomBadge = void 0;
       this.#presence?.stop();
       this.#presence = void 0;
+      this.#afkAutoReply?.reset();
+      this.#afkAutoReply = void 0;
       this.#service = void 0;
       this.#roster = void 0;
       this.#context = void 0;
@@ -12078,6 +12727,7 @@ ${expanded}` : expanded;
     }
     async #capture(event) {
       if (!this.#service || !this.#view || !this.#context) return;
+      const automaticReply = event.direction === "incoming" ? this.#afkAutoReply?.handleIncoming(event) : void 0;
       try {
         if (this.#context.settings.get().linkRoster.enabled) {
           this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
@@ -12089,6 +12739,7 @@ ${expanded}` : expanded;
       } catch (error) {
         this.#logger.error("Failed to capture a Beep", error);
       }
+      if (automaticReply) await this.#capture(automaticReply);
     }
     #syncRoster() {
       if (!this.#roster || !this.#view || !this.#context) return;
@@ -12627,6 +13278,7 @@ ${expanded}` : expanded;
     #linkChat = new LinkChatModule();
     #linkReactions = new LinkReactionsModule();
     #adapterStart;
+    #authVisibilityTimer;
     #started = false;
     publicApi() {
       return {
@@ -12655,11 +13307,15 @@ ${expanded}` : expanded;
       this.#adapterStart = this.#adapter.start().catch((error) => {
         this.#logger.error("Bondage Club connection failed", error);
       });
+      this.#syncAuthenticatedVisibility();
+      this.#authVisibilityTimer = setInterval(() => this.#syncAuthenticatedVisibility(), 250);
       this.#logger.info(`KikiLink ${this.version} interface is ready`);
     }
     async destroy() {
       if (!this.#started) return;
       this.#started = false;
+      if (this.#authVisibilityTimer !== void 0) clearInterval(this.#authVisibilityTimer);
+      this.#authVisibilityTimer = void 0;
       this.#adapter.stop();
       await this.#adapterStart;
       this.#adapterStart = void 0;
@@ -12667,6 +13323,12 @@ ${expanded}` : expanded;
       this.#repository.close();
       this.#bus.clear();
       this.#logger.info("Stopped");
+    }
+    #syncAuthenticatedVisibility() {
+      if (typeof document === "undefined") return;
+      const host = document.querySelector("#kikilink-root");
+      if (!host) return;
+      host.hidden = !hasAuthenticatedPlayer();
     }
   };
   async function waitForAuthenticatedPlayer(keepWaiting) {
@@ -12689,7 +13351,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.19.0");
+    const app = new KikiLinkApp("0.20.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

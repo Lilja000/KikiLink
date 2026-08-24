@@ -37,7 +37,16 @@ describe("KikiLink startup", () => {
 
     const host = document.querySelector<HTMLElement>("#kikilink-root");
     expect(host).not.toBeNull();
+    expect(host?.hidden).toBe(false);
     expect(host?.shadowRoot?.querySelector(".kl-launcher")).not.toBeNull();
+
+    loggedIn = false;
+    await vi.advanceTimersByTimeAsync(250);
+    expect(host?.hidden).toBe(true);
+
+    loggedIn = true;
+    await vi.advanceTimersByTimeAsync(250);
+    expect(host?.hidden).toBe(false);
 
     await app.destroy();
     expect(document.querySelector("#kikilink-root")).toBeNull();

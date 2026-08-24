@@ -7,6 +7,7 @@ import { LinkRosterService } from "../link-roster/link-roster-service";
 import { PeopleRepository } from "../../storage/people-repository";
 import { LinkPresenceService } from "../link-presence/link-presence-service";
 import { RoomBlossomBadge } from "./blossom";
+import { AfkAutoReplyService } from "./afk-auto-reply-service";
 
 export class LinkChatModule implements KikiLinkModule {
   readonly id = "link-chat";
@@ -17,6 +18,7 @@ export class LinkChatModule implements KikiLinkModule {
   #activities: LinkActivitiesService | undefined;
   #roster: LinkRosterService | undefined;
   #presence: LinkPresenceService | undefined;
+  #afkAutoReply: AfkAutoReplyService | undefined;
   #roomBadge: RoomBlossomBadge | undefined;
   #roomBadgeUnsubscribe: (() => void) | undefined;
   #view: LinkChatView | undefined;
@@ -43,7 +45,15 @@ export class LinkChatModule implements KikiLinkModule {
       context.version,
     );
     this.#presence.start();
-    this.#roomBadge = new RoomBlossomBadge(context.adapter, this.#presence);
+    this.#afkAutoReply = new AfkAutoReplyService(context.adapter, {
+      getStatus: () => this.#presence?.getOwnStatus() ?? "online",
+      getConfig: () => context.settings.get().linkPresence.afkAutoReply,
+    });
+    this.#afkAutoReply.syncStatus();
+    this.#unsubscribers.push(
+      this.#presence.subscribe(() => this.#afkAutoReply?.syncStatus()),
+    );
+    this.#roomBadge = new RoomBlossomBadge(context.adapter, this.#presence, context.settings);
     this.#roomBadgeUnsubscribe = context.adapter.registerCharacterOverlay(
       (character, characterX, characterY, zoom) =>
         this.#roomBadge?.draw(character, characterX, characterY, zoom),
@@ -92,9 +102,12 @@ export class LinkChatModule implements KikiLinkModule {
     this.#activities = undefined;
     this.#roomBadgeUnsubscribe?.();
     this.#roomBadgeUnsubscribe = undefined;
+    this.#roomBadge?.destroy();
     this.#roomBadge = undefined;
     this.#presence?.stop();
     this.#presence = undefined;
+    this.#afkAutoReply?.reset();
+    this.#afkAutoReply = undefined;
     this.#service = undefined;
     this.#roster = undefined;
     this.#context = undefined;
@@ -122,6 +135,8 @@ export class LinkChatModule implements KikiLinkModule {
 
   async #capture(event: BeepEvent): Promise<void> {
     if (!this.#service || !this.#view || !this.#context) return;
+    const automaticReply =
+      event.direction === "incoming" ? this.#afkAutoReply?.handleIncoming(event) : undefined;
     try {
       if (this.#context.settings.get().linkRoster.enabled) {
         this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
@@ -133,6 +148,7 @@ export class LinkChatModule implements KikiLinkModule {
     } catch (error) {
       this.#logger.error("Failed to capture a Beep", error);
     }
+    if (automaticReply) await this.#capture(automaticReply);
   }
 
   #syncRoster(): void {
