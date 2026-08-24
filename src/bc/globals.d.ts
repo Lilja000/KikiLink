@@ -39,6 +39,29 @@ declare global {
     Message?: string;
   }
 
+  interface BCOnlineFriendInfo {
+    Type: "Friend" | "Submissive" | "Lover";
+    MemberNumber: number;
+    MemberName: string;
+    MemberNickname?: string;
+    ChatRoomSpace?: string | null;
+    ChatRoomName?: string | null;
+    Private?: true;
+  }
+
+  interface BCAccountQueryResponse {
+    Query: string;
+    Result: unknown;
+  }
+
+  interface BCChatRoomMessage {
+    Sender?: number;
+    Target?: number;
+    Content: string;
+    Type: string;
+    Dictionary?: unknown[];
+  }
+
   var Player: BCPlayer;
   var CurrentScreen: string;
   var ChatRoomData: BCChatRoomData | null;
@@ -46,6 +69,9 @@ declare global {
   var FriendListBeepLog: BCFriendListBeepLogMessage[];
 
   function ServerAccountBeep(data: BCServerAccountBeepResponse): void;
+  function ServerAccountQueryResult(data: BCAccountQueryResponse): void;
+  function ChatRoomMessage(data: BCChatRoomMessage): void;
+  function ServerSend(event: string, data: unknown): void;
   function ServerSendBeepMessage(
     target: number,
     message?: string,

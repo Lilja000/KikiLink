@@ -122,4 +122,10 @@ Before a UI release, verify:
 - Destructive actions explain exactly what local data they remove.
 - Notebook imports are bounded, validated, and merge-safe; existing private notes are not overwritten.
 - Encounter retention never removes favorites or records containing notes or tags.
-- No chat, note, identity, or preference data is sent to a KikiLink server.
+- Remote images do not load without the user's chosen preview policy and always use a
+  no-referrer request.
+- Long-press actions cancel when the pointer moves so they do not fight phone scrolling;
+  every action also has a visible or keyboard-accessible path.
+- Presence distinguishes native facts, compatible peer state, and unavailable information.
+- No chat, note, identity, or preference data is sent to a KikiLink server; voluntary
+  presence is shared only through the documented peer compatibility protocol.

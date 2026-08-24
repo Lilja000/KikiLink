@@ -7,7 +7,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 6,
+  schemaVersion: 7,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -27,11 +27,19 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     retentionDays: 90,
     maxMessagesPerConversation: 500,
     openOnIncoming: false,
+    enterToSend: true,
+    imagePreviews: "ask",
     quickActions: [
       { label: "Wave", template: "*waves to {name}*" },
       { label: "Hug", template: "*hugs {name} warmly*" },
       { label: "Boop", template: "*gently boops {name}*" },
     ],
+  },
+  linkPresence: {
+    enabled: true,
+    status: "online",
+    statusMessage: "",
+    autoIdleMinutes: 10,
   },
   linkActivities: {
     enabled: false,
@@ -140,11 +148,12 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const sourceSchema = source.schemaVersion;
   const ui = isRecord(source.ui) ? source.ui : {};
   const linkChat = isRecord(source.linkChat) ? source.linkChat : {};
+  const linkPresence = isRecord(source.linkPresence) ? source.linkPresence : {};
   const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
   const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
 
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -195,7 +204,31 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         linkChat.openOnIncoming,
         DEFAULT_SETTINGS.linkChat.openOnIncoming,
       ),
+      enterToSend: booleanOr(linkChat.enterToSend, DEFAULT_SETTINGS.linkChat.enterToSend),
+      imagePreviews:
+        linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never"
+          ? linkChat.imagePreviews
+          : DEFAULT_SETTINGS.linkChat.imagePreviews,
       quickActions: sanitizeQuickActions(linkChat.quickActions),
+    },
+    linkPresence: {
+      enabled: booleanOr(linkPresence.enabled, DEFAULT_SETTINGS.linkPresence.enabled),
+      status:
+        linkPresence.status === "idle" ||
+        linkPresence.status === "dnd" ||
+        linkPresence.status === "offline"
+          ? linkPresence.status
+          : DEFAULT_SETTINGS.linkPresence.status,
+      statusMessage:
+        typeof linkPresence.statusMessage === "string"
+          ? linkPresence.statusMessage.trim().slice(0, 80)
+          : DEFAULT_SETTINGS.linkPresence.statusMessage,
+      autoIdleMinutes: integerInRange(
+        linkPresence.autoIdleMinutes,
+        0,
+        120,
+        DEFAULT_SETTINGS.linkPresence.autoIdleMinutes,
+      ),
     },
     linkActivities: {
       enabled:

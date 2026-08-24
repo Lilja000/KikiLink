@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.11.0 - 2026-08-24
+
+- Added truthful native Online/Offline state from Bondage Club's online-friends query and
+  current-room membership.
+- Added KikiLink Online, Idle, Do not disturb, and Offline choices, optional status notes,
+  automatic Idle, and a clear switch for disabling presence sharing.
+- Added an original versioned presence protocol using targeted typed Beeps outside rooms and
+  hidden room packets inside rooms; it sends no mass friend heartbeat and creates no native
+  Beep notification for compatibility traffic.
+- Added status indicators to recent chats, the active conversation, known contacts, Players,
+  player details, Home, and the contextual profile menu.
+- Added direct HTTPS image messages with inline previews for JPG, PNG, GIF, WebP, and AVIF.
+  Players without KikiLink receive the same ordinary link.
+- Added privacy controls for remote images: ask before loading by default, always show, or links only.
+- Added a focused image-link composer that clearly distinguishes direct links from future local-file upload.
+- Added right-click, keyboard Context Menu / Shift+F10, and touch hold actions for player profiles.
+- Added one compact action menu for Message, Whisper, native Profile, favorites, notes, pinning,
+  marking unread, and copying member IDs.
+- Added message Reply and Copy actions, compatible plain-text quotes, and optional Enter-to-send.
+- Migrated settings to schema version 7 and expanded presence, protocol, media, privacy,
+  context-menu, and migration coverage to 52 tests.
+
 ## 0.10.0 - 2026-08-24
 
 - Added a third `Super compact` density that reduces decorative chrome and supporting copy

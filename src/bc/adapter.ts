@@ -1,18 +1,28 @@
 import bcModSDK, { type ModSDKModAPI } from "bondage-club-mod-sdk";
 import { Logger } from "../core/logger";
-import type { BeepEvent, KikiLinkEvents, RoomCharacter } from "../core/types";
+import type {
+  BeepEvent,
+  KikiLinkEvents,
+  OnlineFriend,
+  RoomCharacter,
+} from "../core/types";
 import type { EventBus } from "../core/event-bus";
 
 const READY_POLL_MS = 400;
+const KIKILINK_BEEP_TYPE = "KikiLink";
+const KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
+const MAX_PROTOCOL_PAYLOAD = 700;
 
 export class BCAdapter {
   readonly #logger = new Logger("bc");
   readonly #unhooks: Array<() => void> = [];
   readonly #nicknameCache = new Map<number, string>();
+  readonly #onlineFriends = new Map<number, OnlineFriend>();
   #modApi: ModSDKModAPI | undefined;
   #stopped = false;
   #ready = false;
   #sendingViaKikiLink = false;
+  #hasOnlineFriendSnapshot = false;
 
   constructor(
     private readonly bus: EventBus<KikiLinkEvents>,
@@ -39,11 +49,34 @@ export class BCAdapter {
         this.#modApi.hookFunction("ServerAccountBeep", 0, (args, next) => {
           const result = next(args);
           const data = args[0];
+          const protocol = this.#normalizeBeepProtocol(data);
+          if (protocol) this.bus.emit("bc:protocol", protocol);
           const event = this.#normalizeIncoming(data);
           if (event) this.bus.emit("beep:received", event);
           return result;
         }),
       );
+
+      if (typeof ServerAccountQueryResult === "function") {
+        this.#unhooks.push(
+          this.#modApi.hookFunction("ServerAccountQueryResult", 0, (args, next) => {
+            const result = next(args);
+            this.#captureOnlineFriends(args[0]);
+            return result;
+          }),
+        );
+      }
+
+      if (typeof ChatRoomMessage === "function") {
+        this.#unhooks.push(
+          this.#modApi.hookFunction("ChatRoomMessage", 0, (args, next) => {
+            const result = next(args);
+            const protocol = this.#normalizeRoomProtocol(args[0]);
+            if (protocol) this.bus.emit("bc:protocol", protocol);
+            return result;
+          }),
+        );
+      }
 
       this.#unhooks.push(
         this.#modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
@@ -70,6 +103,8 @@ export class BCAdapter {
   stop(): void {
     this.#stopped = true;
     this.#ready = false;
+    this.#onlineFriends.clear();
+    this.#hasOnlineFriendSnapshot = false;
     for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
     this.#modApi?.unload();
     this.#modApi = undefined;
@@ -81,6 +116,73 @@ export class BCAdapter {
 
   canSendBeep(): boolean {
     return typeof ServerSendBeepMessage === "function";
+  }
+
+  canUseKikiLinkProtocol(): boolean {
+    return typeof ServerSend === "function";
+  }
+
+  refreshOnlineFriends(): boolean {
+    if (typeof ServerSend !== "function" || !this.#ready) return false;
+    ServerSend("AccountQuery", { Query: "OnlineFriends" });
+    return true;
+  }
+
+  getOnlineFriends(): OnlineFriend[] {
+    return [...this.#onlineFriends.values()].map((friend) => ({ ...friend }));
+  }
+
+  hasOnlineFriendSnapshot(): boolean {
+    return this.#hasOnlineFriendSnapshot;
+  }
+
+  isKnownFriend(memberNumber: number): boolean {
+    return (
+      typeof Player === "object" &&
+      Player !== null &&
+      Player.FriendNames instanceof Map &&
+      Player.FriendNames.has(memberNumber)
+    );
+  }
+
+  isMemberInCurrentRoom(memberNumber: number): boolean {
+    return this.#findRoomCharacter(memberNumber) !== undefined;
+  }
+
+  sendKikiLinkProtocol(target: number, payload: string): "room" | "beep" {
+    if (!Number.isSafeInteger(target) || target < 0) {
+      throw new Error("A valid non-negative member number is required");
+    }
+    const wire = protocolWire(payload);
+    if (typeof ServerSend !== "function") {
+      throw new Error("The KikiLink compatibility channel is still loading");
+    }
+
+    if (this.isInChatRoom() && this.#findRoomCharacter(target)) {
+      ServerSend("ChatRoomChat", {
+        Type: "Hidden",
+        Content: wire,
+        Target: target,
+      });
+      return "room";
+    }
+
+    ServerSend("AccountBeep", {
+      MemberNumber: target,
+      BeepType: KIKILINK_BEEP_TYPE,
+      Message: wire,
+      IsSecret: true,
+    });
+    return "beep";
+  }
+
+  broadcastKikiLinkProtocol(payload: string): boolean {
+    if (!this.isInChatRoom() || typeof ServerSend !== "function") return false;
+    ServerSend("ChatRoomChat", {
+      Type: "Hidden",
+      Content: protocolWire(payload),
+    });
+    return true;
   }
 
   sendBeep(target: number, content: string, includeRoom: boolean): BeepEvent {
@@ -252,6 +354,13 @@ export class BCAdapter {
       }
     }
 
+    for (const friend of this.#onlineFriends.values()) {
+      contacts.set(
+        friend.memberNumber,
+        this.getMemberNickname(friend.memberNumber) ?? friend.memberName,
+      );
+    }
+
     return [...contacts.entries()]
       .map(([memberNumber, memberName]) => ({ memberNumber, memberName }))
       .sort((left, right) => left.memberName.localeCompare(right.memberName));
@@ -299,6 +408,74 @@ export class BCAdapter {
     };
   }
 
+  #normalizeBeepProtocol(
+    data: BCServerAccountBeepResponse,
+  ): KikiLinkEvents["bc:protocol"] | null {
+    if (
+      !data ||
+      data.BeepType !== KIKILINK_BEEP_TYPE ||
+      !Number.isSafeInteger(data.MemberNumber) ||
+      typeof data.Message !== "string" ||
+      !data.Message.startsWith(KIKILINK_PROTOCOL_PREFIX)
+    ) {
+      return null;
+    }
+    const payload = data.Message.slice(KIKILINK_PROTOCOL_PREFIX.length);
+    if (!payload || payload.length > MAX_PROTOCOL_PAYLOAD) return null;
+    return { senderNumber: data.MemberNumber, payload, channel: "beep" };
+  }
+
+  #normalizeRoomProtocol(data: BCChatRoomMessage): KikiLinkEvents["bc:protocol"] | null {
+    if (
+      !data ||
+      data.Type !== "Hidden" ||
+      typeof data.Sender !== "number" ||
+      !Number.isSafeInteger(data.Sender) ||
+      data.Sender === this.getOwnMemberNumber() ||
+      typeof data.Content !== "string" ||
+      !data.Content.startsWith(KIKILINK_PROTOCOL_PREFIX)
+    ) {
+      return null;
+    }
+    const payload = data.Content.slice(KIKILINK_PROTOCOL_PREFIX.length);
+    if (!payload || payload.length > MAX_PROTOCOL_PAYLOAD) return null;
+    return { senderNumber: data.Sender, payload, channel: "room" };
+  }
+
+  #captureOnlineFriends(data: BCAccountQueryResponse): void {
+    if (!data || data.Query !== "OnlineFriends" || !Array.isArray(data.Result)) return;
+    const friends = data.Result
+      .map((entry): OnlineFriend | null => {
+        if (
+          !entry ||
+          typeof entry !== "object" ||
+          !("MemberNumber" in entry) ||
+          !Number.isSafeInteger(entry.MemberNumber) ||
+          !("MemberName" in entry) ||
+          typeof entry.MemberName !== "string"
+        ) {
+          return null;
+        }
+        const nickname = "MemberNickname" in entry ? cleanName(entry.MemberNickname) : undefined;
+        if (nickname) this.#nicknameCache.set(entry.MemberNumber, nickname);
+        const roomName = "ChatRoomName" in entry ? cleanName(entry.ChatRoomName) : undefined;
+        const roomSpace = "ChatRoomSpace" in entry ? cleanName(entry.ChatRoomSpace) : undefined;
+        return {
+          memberNumber: entry.MemberNumber,
+          memberName: nickname ?? (entry.MemberName.trim() || `Member ${entry.MemberNumber}`),
+          privateRoom: "Private" in entry && entry.Private === true,
+          ...(roomName ? { roomName } : {}),
+          ...(roomSpace ? { roomSpace } : {}),
+        };
+      })
+      .filter((entry): entry is OnlineFriend => entry !== null);
+
+    this.#onlineFriends.clear();
+    for (const friend of friends) this.#onlineFriends.set(friend.memberNumber, friend);
+    this.#hasOnlineFriendSnapshot = true;
+    this.bus.emit("bc:online-friends", { friends: this.getOnlineFriends(), receivedAt: Date.now() });
+  }
+
   #normalizeOutgoing(
     target: number,
     message: string | undefined,
@@ -324,6 +501,14 @@ export class BCAdapter {
       await new Promise<void>((resolve) => setTimeout(resolve, READY_POLL_MS));
     }
   }
+}
+
+function protocolWire(payload: string): string {
+  const value = payload.trim();
+  if (!value || value.length > MAX_PROTOCOL_PAYLOAD) {
+    throw new Error(`KikiLink protocol payload must be 1-${MAX_PROTOCOL_PAYLOAD} characters`);
+  }
+  return `${KIKILINK_PROTOCOL_PREFIX}${value}`;
 }
 
 function cleanName(value: unknown): string | undefined {

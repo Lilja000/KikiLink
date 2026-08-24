@@ -15,6 +15,7 @@ afterEach(() => {
     "ChatRoomSendEmote",
     "ChatRoomSetTarget",
     "InformationSheetLoadCharacter",
+    "ServerSend",
     "CurrentScreen",
   ]) {
     Reflect.deleteProperty(globalThis, key);
@@ -140,5 +141,39 @@ describe("BCAdapter", () => {
 
     adapter.openProfile(123);
     expect(openProfile).toHaveBeenCalledWith(reina);
+  });
+
+  it("uses hidden room packets for KikiLink peers and private typed Beeps elsewhere", () => {
+    const serverSend = vi.fn();
+    globalThis.ServerSend = serverSend;
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      Nickname: "Kiki",
+      FriendNames: new Map([[123, "AccountReina"]]),
+    };
+    globalThis.CurrentScreen = "ChatRoom";
+    globalThis.ChatRoomCharacter = [
+      globalThis.Player,
+      { MemberNumber: 123, Name: "AccountReina", Nickname: "Reina" },
+    ];
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.11.0");
+
+    expect(adapter.sendKikiLinkProtocol(123, '{"t":"pq","i":"one"}')).toBe("room");
+    expect(serverSend).toHaveBeenLastCalledWith(
+      "ChatRoomChat",
+      expect.objectContaining({ Type: "Hidden", Target: 123 }),
+    );
+
+    globalThis.CurrentScreen = "FriendList";
+    expect(adapter.sendKikiLinkProtocol(123, '{"t":"pq","i":"two"}')).toBe("beep");
+    expect(serverSend).toHaveBeenLastCalledWith(
+      "AccountBeep",
+      expect.objectContaining({
+        MemberNumber: 123,
+        BeepType: "KikiLink",
+        IsSecret: true,
+      }),
+    );
   });
 });

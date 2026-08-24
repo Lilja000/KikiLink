@@ -3,6 +3,9 @@ import type {
   BCConnectionState,
   ConversationMeta,
   KikiLinkSettings,
+  LinkMessage,
+  PresenceSnapshot,
+  PresenceStatus,
   QuickAction,
   RoomActivity,
   RoomCharacter,
@@ -10,6 +13,7 @@ import type {
   SettingsSection,
 } from "../../core/types";
 import { MemoryKeyValueStorage, type SettingsStore } from "../../core/settings";
+import { EventBus } from "../../core/event-bus";
 import { debounce, element } from "../../utils/dom";
 import { LinkActivitiesService } from "../link-activities/link-activities-service";
 import {
@@ -19,7 +23,9 @@ import {
 } from "../link-roster/link-roster-service";
 import { PeopleRepository } from "../../storage/people-repository";
 import type { ChatService } from "./chat-service";
+import { LinkPresenceService } from "../link-presence/link-presence-service";
 import { LINK_CHAT_STYLES } from "./styles";
+import { normalizeImageUrl, parseMessageLinks } from "./media";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/references/3929.png";
 
 type WorkspaceView = "home" | "chat" | "roster" | "activities" | "settings";
@@ -35,6 +41,7 @@ type FinderResultKind = "destination" | "conversation" | "player" | "activity" |
 type FinderAction =
   | { kind: "workspace"; target: FeatureTarget }
   | { kind: "new-chat" }
+  | { kind: "presence" }
   | { kind: "conversation"; peerNumber: number; peerName: string }
   | { kind: "player"; memberNumber: number }
   | { kind: "activity"; index: number }
@@ -50,6 +57,11 @@ interface FinderResult {
   keywords: string;
   priority: number;
   action: FinderAction;
+}
+
+interface ProfileTarget {
+  memberNumber: number;
+  displayName: string;
 }
 
 export class LinkChatView {
@@ -119,6 +131,11 @@ export class LinkChatView {
   });
   readonly #homeConnection = element("span", { className: "kl-home-status-value" });
   readonly #homeRoom = element("span", { className: "kl-home-status-value" });
+  readonly #homePresence = element("button", {
+    className: "kl-home-status-value kl-home-presence",
+    type: "button",
+    title: "Change your KikiLink status",
+  });
   readonly #homeChatMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeRosterMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeActivitiesMetric = element("span", { className: "kl-feature-card-metric" });
@@ -142,11 +159,19 @@ export class LinkChatView {
   readonly #chatAvatar = element("div", { className: "kl-avatar" });
   readonly #chatName = element("div", { className: "kl-chat-name" });
   readonly #chatNumber = element("div", { className: "kl-chat-number" });
+  readonly #chatPresence = element("div", { className: "kl-chat-presence" });
   readonly #pinButton = element("button", {
     className: "kl-icon-button",
     type: "button",
     title: "Pin conversation",
     ariaLabel: "Pin conversation",
+  });
+  readonly #profileButton = element("button", {
+    className: "kl-icon-button kl-profile-more",
+    type: "button",
+    text: "•••",
+    title: "Player actions",
+    ariaLabel: "Open player actions",
   });
   readonly #messages = element("div", { className: "kl-messages" });
   readonly #composer = element("textarea", { className: "kl-composer-input" });
@@ -154,6 +179,13 @@ export class LinkChatView {
     className: "kl-text-button kl-text-button--primary kl-send",
     type: "button",
     text: "Send",
+  });
+  readonly #attachImageButton = element("button", {
+    className: "kl-icon-button kl-attach-image",
+    type: "button",
+    text: "▧",
+    title: "Send an image link",
+    ariaLabel: "Send an image link",
   });
   readonly #quickActions = element("div", { className: "kl-quick-actions" });
   readonly #includeRoom = element("input") as HTMLInputElement;
@@ -165,6 +197,8 @@ export class LinkChatView {
   readonly #settingsTabs = element("div", { className: "kl-settings-tabs" });
   readonly #settingsPanels = new Map<SettingsSection, HTMLElement>();
   readonly #historyToggle = element("input") as HTMLInputElement;
+  readonly #enterToSendToggle = element("input") as HTMLInputElement;
+  readonly #imagePreviewSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
   readonly #retentionInput = element("input", { className: "kl-number-input" }) as HTMLInputElement;
   readonly #saveSettingsButton = element("button", {
     className: "kl-text-button kl-text-button--primary",
@@ -253,6 +287,28 @@ export class LinkChatView {
   readonly #finderQuery = element("input", { className: "kl-finder-query" }) as HTMLInputElement;
   readonly #finderResults = element("div", { className: "kl-finder-results" });
   readonly #finderStatus = element("div", { className: "kl-sr-only" });
+  readonly #presenceTrigger = element("button", {
+    className: "kl-presence-trigger",
+    type: "button",
+    title: "Change KikiLink status",
+    ariaLabel: "Change KikiLink status",
+  });
+  readonly #presenceTriggerDot = element("span", { className: "kl-presence-dot" });
+  readonly #presenceTriggerLabel = element("span", { className: "kl-presence-trigger-label" });
+  readonly #presenceDialog = element("dialog", { className: "kl-dialog kl-presence-dialog" });
+  readonly #presenceOptions = element("div", { className: "kl-presence-options" });
+  readonly #presenceEnabledToggle = element("input") as HTMLInputElement;
+  readonly #presenceMessage = element("input", { className: "kl-search kl-presence-message" }) as HTMLInputElement;
+  readonly #autoIdleSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #imageDialog = element("dialog", { className: "kl-dialog kl-image-dialog" });
+  readonly #imageUrlInput = element("input", { className: "kl-search kl-image-url" }) as HTMLInputElement;
+  readonly #imagePreview = element("div", { className: "kl-image-compose-preview" });
+  readonly #sendImageButton = element("button", {
+    className: "kl-text-button kl-text-button--primary",
+    type: "button",
+    text: "Send image",
+  });
+  readonly #profileMenu = element("div", { className: "kl-profile-menu" });
   readonly #backButton = element("button", {
     className: "kl-icon-button kl-back",
     type: "button",
@@ -292,10 +348,20 @@ export class LinkChatView {
       }
     | undefined;
   #suppressLauncherClickUntil = 0;
+  #presenceUnsubscribe: (() => void) | undefined;
+  readonly #suppressProfileClickUntil = new WeakMap<HTMLElement, number>();
+  #profileMenuToken = 0;
+
+  readonly #handleOutsidePointerDown = (event: PointerEvent): void => {
+    if (this.#profileMenu.hidden) return;
+    if (event.composedPath().includes(this.#host)) return;
+    this.#closeProfileMenu();
+  };
 
   readonly #handleViewportResize = (): void => {
     this.#positionLauncher();
     this.#updateSettingsTabOrientation();
+    this.#closeProfileMenu();
   };
 
   readonly #saveDraft = debounce((peerNumber: number, peerName: string, value: string) => {
@@ -313,7 +379,14 @@ export class LinkChatView {
       new PeopleRepository(new MemoryKeyValueStorage()),
       settings,
     ),
-  ) {}
+    presence?: LinkPresenceService,
+  ) {
+    this.presence =
+      presence ??
+      new LinkPresenceService(adapter, settings, new EventBus(), version);
+  }
+
+  private readonly presence: LinkPresenceService;
 
   mount(): void {
     if (this.#mounted) return;
@@ -327,16 +400,31 @@ export class LinkChatView {
     this.#buildPanel();
     this.#buildNewChatDialog();
     this.#buildFinderDialog();
+    this.#buildPresenceDialog();
+    this.#buildImageDialog();
+    this.#profileMenu.hidden = true;
+    this.#profileMenu.setAttribute("role", "menu");
+    this.#profileMenu.setAttribute("aria-label", "Player actions");
     this.#shadow.append(
       style,
       this.#launcher,
       this.#panel,
       this.#newChatDialog,
       this.#finderDialog,
+      this.#presenceDialog,
+      this.#imageDialog,
+      this.#profileMenu,
     );
     document.body.append(this.#host);
     this.#positionLauncher();
     window.addEventListener("resize", this.#handleViewportResize);
+    document.addEventListener("pointerdown", this.#handleOutsidePointerDown);
+    this.#presenceUnsubscribe = this.presence.subscribe((memberNumber) => {
+      if (memberNumber === undefined || memberNumber === this.#activePeer) this.#renderActivePresence();
+      void this.#renderConversations();
+      if (this.#workspaceView === "roster") this.#renderRoster();
+      this.#renderHomeStatus();
+    });
 
     void this.refresh();
   }
@@ -345,7 +433,13 @@ export class LinkChatView {
     if (this.#toastTimer !== undefined) clearTimeout(this.#toastTimer);
     this.#finderDialog.close();
     this.#newChatDialog.close();
+    this.#presenceDialog.close();
+    this.#imageDialog.close();
+    this.#closeProfileMenu();
     window.removeEventListener("resize", this.#handleViewportResize);
+    document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
+    this.#presenceUnsubscribe?.();
+    this.#presenceUnsubscribe = undefined;
     this.#host.remove();
     this.#mounted = false;
   }
@@ -368,6 +462,7 @@ export class LinkChatView {
     this.#homeConnection.dataset.state = state;
     const canSend = this.adapter.canSendBeep();
     this.#sendButton.disabled = !canSend;
+    this.#attachImageButton.disabled = !canSend || this.#activePeer === undefined;
     this.#composer.placeholder = canSend ? "Write a Beep…" : "Connecting to Bondage Club…";
     if (this.#newChatDialog.open) this.#renderKnownContacts();
     if (this.#workspaceView === "activities") this.#renderActivitiesPage();
@@ -402,6 +497,9 @@ export class LinkChatView {
   close(): void {
     if (this.#finderDialog.open) this.#finderDialog.close();
     if (this.#newChatDialog.open) this.#newChatDialog.close();
+    if (this.#presenceDialog.open) this.#presenceDialog.close();
+    if (this.#imageDialog.open) this.#imageDialog.close();
+    this.#closeProfileMenu();
     this.#panel.hidden = true;
     this.#launcher.setAttribute("aria-expanded", "false");
   }
@@ -506,11 +604,15 @@ export class LinkChatView {
     );
     this.#finderTrigger.setAttribute("aria-keyshortcuts", "Control+K Meta+K");
     this.#finderTrigger.addEventListener("click", () => this.#openFinder());
+    this.#presenceTrigger.replaceChildren(this.#presenceTriggerDot, this.#presenceTriggerLabel);
+    this.#presenceTrigger.addEventListener("click", () => this.#openPresenceDialog());
+    this.#renderOwnPresence();
     const topbar = element(
       "header",
       { className: "kl-topbar" },
       brand,
       this.#contextTitle,
+      this.#presenceTrigger,
       this.#finderTrigger,
       this.#topbarSettingsButton,
       close,
@@ -590,9 +692,23 @@ export class LinkChatView {
         this.#openFinder();
         return;
       }
-      if (event.key === "Escape" && !this.#newChatDialog.open && !this.#finderDialog.open) {
+      if (event.key === "Escape" && !this.#profileMenu.hidden) {
+        this.#closeProfileMenu();
+        return;
+      }
+      if (
+        event.key === "Escape" &&
+        !this.#newChatDialog.open &&
+        !this.#finderDialog.open &&
+        !this.#presenceDialog.open &&
+        !this.#imageDialog.open
+      ) {
         this.close();
       }
+    });
+    this.#shadow.addEventListener("pointerdown", (event) => {
+      if (this.#profileMenu.hidden || event.composedPath().includes(this.#profileMenu)) return;
+      this.#closeProfileMenu();
     });
   }
 
@@ -645,6 +761,7 @@ export class LinkChatView {
   }
 
   #buildHome(): void {
+    this.#homePresence.addEventListener("click", () => this.#openPresenceDialog());
     this.#homeActionTitle.id = "kikilink-home-next-title";
     this.#homeActionButton.addEventListener("click", () => void this.#runHomeAction());
     const nextStep = element(
@@ -690,6 +807,7 @@ export class LinkChatView {
           "div",
           { className: "kl-home-statuses" },
           this.#homeStatus("Connection", this.#homeConnection),
+          this.#homeStatus("My status", this.#homePresence),
           this.#homeStatus("Current room", this.#homeRoom),
         ),
       ),
@@ -771,7 +889,7 @@ export class LinkChatView {
       element(
         "span",
         {},
-        "Private by design · chats, notes, favorites, and preferences stay in this browser.",
+        "Private by design · history and notes stay in this browser; presence is shared only with compatible KikiLink users.",
       ),
     );
     this.#home.append(hero, sectionHeading, cards, privacy);
@@ -875,7 +993,12 @@ export class LinkChatView {
     this.#backButton.addEventListener("click", () => this.#showConversationList());
     this.#pinButton.textContent = "◇";
     this.#pinButton.addEventListener("click", () => void this.#togglePin());
-    const person = element("div", { className: "kl-chat-person" }, this.#chatName, this.#chatNumber);
+    const person = element(
+      "div",
+      { className: "kl-chat-person" },
+      this.#chatName,
+      element("div", { className: "kl-chat-subline" }, this.#chatNumber, this.#chatPresence),
+    );
     const header = element(
       "header",
       { className: "kl-chat-header" },
@@ -883,6 +1006,27 @@ export class LinkChatView {
       this.#chatAvatar,
       person,
       this.#pinButton,
+      this.#profileButton,
+    );
+    this.#profileButton.addEventListener("click", () => {
+      if (this.#activePeer === undefined) return;
+      const bounds = this.#profileButton.getBoundingClientRect();
+      void this.#openProfileMenu(
+        this.#activePeer,
+        this.#activeName,
+        bounds.right,
+        bounds.bottom + 6,
+      );
+    });
+    this.#bindProfileMenu(this.#chatAvatar, () =>
+      this.#activePeer === undefined
+        ? undefined
+        : { memberNumber: this.#activePeer, displayName: this.#activeName },
+    );
+    this.#bindProfileMenu(person, () =>
+      this.#activePeer === undefined
+        ? undefined
+        : { memberNumber: this.#activePeer, displayName: this.#activeName },
     );
 
     this.#composer.maxLength = 1000;
@@ -895,12 +1039,18 @@ export class LinkChatView {
       }
     });
     this.#composer.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      const enterToSend = this.settings.get().linkChat.enterToSend;
+      if (
+        event.key === "Enter" &&
+        !event.isComposing &&
+        ((event.ctrlKey || event.metaKey) || (enterToSend && !event.shiftKey && !event.altKey))
+      ) {
         event.preventDefault();
         void this.#send();
       }
     });
     this.#sendButton.addEventListener("click", () => void this.#send());
+    this.#attachImageButton.addEventListener("click", () => this.#openImageDialog());
     this.#includeRoom.type = "checkbox";
     this.#includeRoom.addEventListener("change", () => {
       this.settings.update((draft) => {
@@ -917,7 +1067,13 @@ export class LinkChatView {
       "footer",
       { className: "kl-composer" },
       this.#quickActions,
-      element("div", { className: "kl-composer-row" }, this.#composer, this.#sendButton),
+      element(
+        "div",
+        { className: "kl-composer-row" },
+        this.#attachImageButton,
+        this.#composer,
+        this.#sendButton,
+      ),
       options,
     );
     this.#chat.append(header, this.#messages, composer);
@@ -1076,6 +1232,32 @@ export class LinkChatView {
       "Save message history",
       "Stored only in this browser profile.",
       historySwitch,
+    );
+
+    this.#enterToSendToggle.type = "checkbox";
+    const enterToSendSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#enterToSendToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#enterToSendToggle.setAttribute("aria-label", "Send messages with Enter");
+    const enterToSend = this.#settingRow(
+      "Enter sends",
+      "Press Enter to send and Shift+Enter for a new line. Ctrl+Enter always sends.",
+      enterToSendSwitch,
+    );
+
+    this.#imagePreviewSelect.replaceChildren(
+      selectOption("ask", "Ask before loading"),
+      selectOption("always", "Always show"),
+      selectOption("never", "Links only"),
+    );
+    this.#imagePreviewSelect.setAttribute("aria-label", "Remote image previews");
+    const imagePreviews = this.#settingRow(
+      "Image previews",
+      "Remote hosts can see your IP when an image loads. Ask first is the privacy-friendly default.",
+      this.#imagePreviewSelect,
     );
 
     this.#retentionInput.type = "number";
@@ -1253,6 +1435,8 @@ export class LinkChatView {
       "chat",
       "Chat, history & privacy",
       "Keep Beep history useful, local, and under your control.",
+      enterToSend,
+      imagePreviews,
       history,
       retention,
       quickActionsSection,
@@ -1542,6 +1726,290 @@ export class LinkChatView {
     this.#finderDialog.append(header, body, footer);
   }
 
+  #buildPresenceDialog(): void {
+    const title = element("div", { className: "kl-dialog-title", text: "Your KikiLink status" });
+    title.id = "kikilink-presence-title";
+    this.#presenceDialog.setAttribute("aria-labelledby", title.id);
+    const close = element("button", {
+      className: "kl-icon-button",
+      type: "button",
+      text: "×",
+      title: "Close",
+      ariaLabel: "Close status menu",
+      onClick: () => this.#presenceDialog.close(),
+    });
+    const header = element(
+      "header",
+      { className: "kl-dialog-header" },
+      element(
+        "div",
+        { className: "kl-dialog-heading" },
+        title,
+        element("div", {
+          className: "kl-dialog-subtitle",
+          text: "Visible to compatible KikiLink users you meet or contact.",
+        }),
+      ),
+      close,
+    );
+
+    this.#presenceEnabledToggle.type = "checkbox";
+    this.#presenceEnabledToggle.setAttribute("aria-label", "Share KikiLink presence");
+    this.#presenceEnabledToggle.addEventListener("change", () => this.#renderPresenceDialog());
+    const presenceEnabledSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#presenceEnabledToggle,
+      element("span", { className: "kl-switch-track" }),
+    );
+
+    for (const status of ["online", "idle", "dnd", "offline"] as const) {
+      const option = element(
+        "button",
+        { className: "kl-presence-option", type: "button" },
+        presenceDot(status),
+        element(
+          "span",
+          { className: "kl-presence-option-copy" },
+          element("span", { className: "kl-presence-option-title", text: presenceLabel(status) }),
+          element("span", { className: "kl-presence-option-help", text: presenceHelp(status) }),
+        ),
+        element("span", { className: "kl-presence-option-check", text: "✓" }),
+      );
+      option.dataset.status = status;
+      option.addEventListener("click", () => {
+        this.presence.setOwnStatus(status);
+        this.#renderOwnPresence();
+        this.#renderPresenceDialog();
+      });
+      this.#presenceOptions.append(option);
+    }
+
+    this.#presenceMessage.type = "text";
+    this.#presenceMessage.maxLength = 80;
+    this.#presenceMessage.placeholder = "Optional: roleplaying, busy, open to chat…";
+    this.#presenceMessage.autocomplete = "off";
+    this.#autoIdleSelect.replaceChildren(
+      selectOption("0", "Never"),
+      selectOption("5", "After 5 minutes"),
+      selectOption("10", "After 10 minutes"),
+      selectOption("15", "After 15 minutes"),
+      selectOption("30", "After 30 minutes"),
+      selectOption("60", "After 1 hour"),
+    );
+    this.#autoIdleSelect.setAttribute("aria-label", "Automatic idle delay");
+
+    const body = element(
+      "div",
+      { className: "kl-dialog-body kl-presence-body" },
+      this.#settingRow(
+        "Share presence",
+        "Answer compatible KikiLink status requests and announce inside your current room.",
+        presenceEnabledSwitch,
+      ),
+      this.#presenceOptions,
+      element(
+        "label",
+        { className: "kl-presence-field" },
+        element("span", { className: "kl-presence-field-label", text: "Status note" }),
+        this.#presenceMessage,
+      ),
+      this.#settingRow(
+        "Automatic Idle",
+        "Only applies while your selected status is Online.",
+        this.#autoIdleSelect,
+      ),
+      element(
+        "div",
+        { className: "kl-presence-caveat" },
+        element("span", { text: "◇" }),
+        "Appear Offline changes KikiLink only. Bondage Club can still show your native online state.",
+      ),
+    );
+    const save = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Save status",
+      onClick: () => this.#savePresencePreferences(),
+    });
+    this.#presenceDialog.append(
+      header,
+      body,
+      element(
+        "footer",
+        { className: "kl-dialog-actions" },
+        element("button", {
+          className: "kl-text-button",
+          type: "button",
+          text: "Close",
+          onClick: () => this.#presenceDialog.close(),
+        }),
+        save,
+      ),
+    );
+  }
+
+  #openPresenceDialog(): void {
+    const config = this.settings.get().linkPresence;
+    this.#presenceEnabledToggle.checked = config.enabled;
+    this.#presenceMessage.value = config.statusMessage;
+    this.#autoIdleSelect.value = config.autoIdleMinutes.toString();
+    this.#renderPresenceDialog();
+    if (!this.#presenceDialog.open) this.#presenceDialog.showModal();
+    this.#presenceOptions.querySelector<HTMLButtonElement>('[data-active="true"]')?.focus();
+  }
+
+  #renderPresenceDialog(): void {
+    const selected = this.settings.get().linkPresence.status;
+    const enabled = this.#presenceEnabledToggle.checked;
+    for (const option of this.#presenceOptions.querySelectorAll<HTMLButtonElement>(
+      ".kl-presence-option",
+    )) {
+      const active = option.dataset.status === selected;
+      option.dataset.active = String(active);
+      option.setAttribute("aria-pressed", String(active));
+      option.disabled = !enabled;
+    }
+    this.#presenceMessage.disabled = !enabled;
+    this.#autoIdleSelect.disabled = !enabled;
+  }
+
+  #savePresencePreferences(): void {
+    const autoIdle = Number(this.#autoIdleSelect.value);
+    this.settings.update((draft) => {
+      draft.linkPresence.autoIdleMinutes = Number.isInteger(autoIdle) ? autoIdle : 10;
+    });
+    this.presence.setEnabled(this.#presenceEnabledToggle.checked);
+    this.presence.setOwnStatusMessage(this.#presenceMessage.value);
+    this.#renderOwnPresence();
+    this.#presenceDialog.close();
+    this.#toast("KikiLink status saved.");
+  }
+
+  #buildImageDialog(): void {
+    const title = element("div", { className: "kl-dialog-title", text: "Send an image" });
+    title.id = "kikilink-image-title";
+    this.#imageDialog.setAttribute("aria-labelledby", title.id);
+    const header = element(
+      "header",
+      { className: "kl-dialog-header" },
+      element(
+        "div",
+        { className: "kl-dialog-heading" },
+        title,
+        element("div", {
+          className: "kl-dialog-subtitle",
+          text: "A normal Beep link for everyone; an inline preview for KikiLink.",
+        }),
+      ),
+      element("button", {
+        className: "kl-icon-button",
+        type: "button",
+        text: "×",
+        title: "Close",
+        ariaLabel: "Close image sender",
+        onClick: () => this.#imageDialog.close(),
+      }),
+    );
+    this.#imageUrlInput.type = "url";
+    this.#imageUrlInput.maxLength = 900;
+    this.#imageUrlInput.placeholder = "https://example.com/image.webp";
+    this.#imageUrlInput.autocomplete = "off";
+    this.#imageUrlInput.spellcheck = false;
+    this.#imageUrlInput.addEventListener("input", () => this.#renderImageComposePreview());
+    this.#imageUrlInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      void this.#sendImage();
+    });
+    const body = element(
+      "div",
+      { className: "kl-dialog-body kl-image-body" },
+      element(
+        "label",
+        { className: "kl-presence-field" },
+        element("span", { className: "kl-presence-field-label", text: "Direct HTTPS image link" }),
+        this.#imageUrlInput,
+      ),
+      this.#imagePreview,
+      element("p", {
+        className: "kl-image-upload-note",
+        text: "Supported: JPG, PNG, GIF, WebP, and AVIF. Local file upload needs a privacy-reviewed media service and is not silently sent through Beeps.",
+      }),
+    );
+    this.#sendImageButton.addEventListener("click", () => void this.#sendImage());
+    this.#imageDialog.append(
+      header,
+      body,
+      element(
+        "footer",
+        { className: "kl-dialog-actions" },
+        element("button", {
+          className: "kl-text-button",
+          type: "button",
+          text: "Cancel",
+          onClick: () => this.#imageDialog.close(),
+        }),
+        this.#sendImageButton,
+      ),
+    );
+  }
+
+  #openImageDialog(): void {
+    if (this.#activePeer === undefined) {
+      this.#toast("Choose a conversation first.", "error");
+      return;
+    }
+    this.#imageUrlInput.value = "";
+    this.#renderImageComposePreview();
+    if (!this.#imageDialog.open) this.#imageDialog.showModal();
+    this.#imageUrlInput.focus();
+  }
+
+  #renderImageComposePreview(): void {
+    const url = normalizeImageUrl(this.#imageUrlInput.value);
+    this.#sendImageButton.disabled = !url;
+    if (!this.#imageUrlInput.value.trim()) {
+      this.#imagePreview.replaceChildren(
+        element("span", { className: "kl-image-compose-icon", text: "▧" }),
+        element("span", { text: "Paste a direct image link to check it." }),
+      );
+      this.#imagePreview.dataset.state = "empty";
+      return;
+    }
+    if (!url) {
+      this.#imagePreview.replaceChildren(
+        element("span", { className: "kl-image-compose-icon", text: "!" }),
+        element("span", { text: "Use a direct HTTPS link ending in a supported image extension." }),
+      );
+      this.#imagePreview.dataset.state = "error";
+      return;
+    }
+    const parsed = new URL(url);
+    this.#imagePreview.replaceChildren(
+      element("span", { className: "kl-image-compose-icon", text: "✓" }),
+      element(
+        "span",
+        {},
+        element("strong", { text: "Ready to send" }),
+        element("small", { text: `${parsed.hostname}${parsed.pathname}` }),
+      ),
+    );
+    this.#imagePreview.dataset.state = "ready";
+  }
+
+  async #sendImage(): Promise<void> {
+    const url = normalizeImageUrl(this.#imageUrlInput.value);
+    if (!url) {
+      this.#renderImageComposePreview();
+      return;
+    }
+    const sent = await this.#sendContent(url, false);
+    if (!sent) return;
+    this.#imageDialog.close();
+    this.#toast("Image link sent.");
+  }
+
   async #openFinder(): Promise<void> {
     this.#finderQuery.value = "";
     this.#finderCatalog = [];
@@ -1599,6 +2067,19 @@ export class LinkChatView {
         keywords: "new beep contact member number send message",
         priority: 92,
         action: { kind: "new-chat" },
+      },
+      {
+        id: "change-status",
+        kind: "destination",
+        icon: "●",
+        category: "Action",
+        title: "Change my status",
+        detail: settings.linkPresence.enabled
+          ? presenceLabel(this.presence.get(this.adapter.getOwnMemberNumber()).status)
+          : "Presence sharing is off",
+        keywords: "presence status online idle away dnd do not disturb offline invisible note",
+        priority: 84,
+        action: { kind: "presence" },
       },
       {
         id: "destination-players",
@@ -1852,6 +2333,8 @@ export class LinkChatView {
       this.#activateFeature(action.target);
     } else if (action.kind === "new-chat") {
       this.#openNewChat();
+    } else if (action.kind === "presence") {
+      this.#openPresenceDialog();
     } else if (action.kind === "conversation") {
       await this.openChat(action.peerNumber, action.peerName);
     } else if (action.kind === "player") {
@@ -2025,8 +2508,17 @@ export class LinkChatView {
   }
 
   #rosterEntryButton(entry: RosterEntry): HTMLButtonElement {
+    const presence = this.presence.get(entry.memberNumber);
     const badges = element("div", { className: "kl-roster-entry-badges" });
     if (entry.present) badges.append(element("span", { className: "kl-roster-live", text: "HERE" }));
+    if (presence.status !== "unknown") {
+      const status = element("span", {
+        className: "kl-roster-presence-label",
+        text: presenceLabel(presence.status).toLocaleUpperCase(),
+      });
+      status.dataset.status = presence.status;
+      badges.append(status);
+    }
     if (entry.isFriend) badges.append(element("span", { className: "kl-roster-friend", text: "FRIEND" }));
     if (entry.favorite) badges.append(element("span", { className: "kl-roster-favorite", text: "★" }));
     const preview = entry.tags.length
@@ -2037,7 +2529,12 @@ export class LinkChatView {
     const button = element(
       "button",
       { className: "kl-roster-entry", type: "button" },
-      element("div", { className: "kl-avatar", text: avatarText(entry.displayName) }),
+      element(
+        "div",
+        { className: "kl-avatar-wrap" },
+        element("div", { className: "kl-avatar", text: avatarText(entry.displayName) }),
+        presenceDot(presence.status),
+      ),
       element(
         "div",
         { className: "kl-roster-entry-copy" },
@@ -2063,6 +2560,10 @@ export class LinkChatView {
       this.#notebookDirty = false;
       this.#renderRoster();
     });
+    this.#bindProfileMenu(button, () => ({
+      memberNumber: entry.memberNumber,
+      displayName: entry.displayName,
+    }));
     return button;
   }
 
@@ -2091,10 +2592,16 @@ export class LinkChatView {
         this.#renderRoster();
       },
     });
+    const presence = this.presence.get(entry.memberNumber);
     const identity = element(
       "div",
       { className: "kl-roster-identity" },
-      element("div", { className: "kl-avatar kl-roster-avatar", text: avatarText(entry.displayName) }),
+      element(
+        "div",
+        { className: "kl-avatar-wrap" },
+        element("div", { className: "kl-avatar kl-roster-avatar", text: avatarText(entry.displayName) }),
+        presenceDot(presence.status),
+      ),
       element(
         "div",
         { className: "kl-roster-identity-copy" },
@@ -2103,6 +2610,15 @@ export class LinkChatView {
           className: "kl-roster-number",
           text: `Member ${entry.memberNumber}${entry.present ? " · in this room" : ""}`,
         }),
+        element(
+          "div",
+          { className: "kl-roster-detail-presence", title: presenceDescription(presence) },
+          presenceDot(presence.status),
+          element("span", { text: presenceLabel(presence.status) }),
+          presence.statusMessage
+            ? element("span", { className: "kl-presence-note", text: presence.statusMessage })
+            : null,
+        ),
       ),
       favorite,
     );
@@ -2167,6 +2683,11 @@ export class LinkChatView {
       ),
     );
     this.#rosterDetail.append(identity, quickActions, stats, notebook);
+    this.#bindProfileMenu(identity, () => ({
+      memberNumber: entry.memberNumber,
+      displayName: entry.displayName,
+    }));
+    this.presence.request(entry.memberNumber);
   }
 
   #rosterStat(label: string, value: string): HTMLDivElement {
@@ -2475,6 +2996,10 @@ export class LinkChatView {
         : `${greeting}.`;
 
     const conversations = await this.service.listConversations();
+    const onlineFriendCount =
+      typeof this.adapter.getOnlineFriends === "function"
+        ? this.adapter.getOnlineFriends().length
+        : 0;
     const recent = [...conversations].sort(
       (left, right) => right.lastMessageAt - left.lastMessageAt,
     )[0];
@@ -2484,6 +3009,8 @@ export class LinkChatView {
       this.#homeChatMetric.textContent = `Last with ${recent.peerName} · ${formatRelativeTime(recent.lastMessageAt)}`;
     } else if (conversations.length > 0) {
       this.#homeChatMetric.textContent = `${conversations.length} saved ${conversations.length === 1 ? "chat" : "chats"}`;
+    } else if (onlineFriendCount > 0) {
+      this.#homeChatMetric.textContent = `${onlineFriendCount} ${onlineFriendCount === 1 ? "friend" : "friends"} online`;
     } else {
       this.#homeChatMetric.textContent = "Start your first Beep chat";
     }
@@ -2574,6 +3101,7 @@ export class LinkChatView {
     this.#homeConnection.textContent = this.#connectionText.textContent || "Connecting";
     this.#homeConnection.dataset.state = this.#connectionState;
     this.#homeRoom.textContent = roomName || (inRoom ? "Unnamed room" : "Not in a chat room");
+    this.#renderOwnPresence();
 
     this.#rosterButton.dataset.available = String(settings.linkRoster.enabled);
     this.#homeRosterCard.dataset.available = String(settings.linkRoster.enabled);
@@ -2601,8 +3129,45 @@ export class LinkChatView {
         : settings.ui.theme === "system"
           ? "System theme"
           : "Dark lacquer";
-    const comfortLabel = settings.ui.density === "compact" ? "Compact" : "Comfortable";
+    const comfortLabel =
+      settings.ui.density === "super-compact"
+        ? "Super compact"
+        : settings.ui.density === "compact"
+          ? "Compact"
+          : "Comfortable";
     this.#homeSettingsMetric.textContent = `${themeLabel} · ${comfortLabel} · ${settings.ui.accent.toUpperCase()}`;
+  }
+
+  #renderOwnPresence(): void {
+    const enabled = this.settings.get().linkPresence.enabled;
+    const snapshot = this.presence.get(this.adapter.getOwnMemberNumber());
+    const label = enabled ? presenceLabel(snapshot.status) : "Presence off";
+    this.#presenceTriggerDot.dataset.status = enabled ? snapshot.status : "unknown";
+    this.#presenceTriggerLabel.textContent = label;
+    this.#presenceTrigger.title = snapshot.statusMessage
+      ? `${label} · ${snapshot.statusMessage}`
+      : `KikiLink status: ${label}`;
+    this.#homePresence.replaceChildren(
+      presenceDot(enabled ? snapshot.status : "unknown"),
+      element("span", { text: label }),
+    );
+    this.#homePresence.title = this.#presenceTrigger.title;
+  }
+
+  #renderActivePresence(): void {
+    this.#chatPresence.replaceChildren();
+    if (this.#activePeer === undefined) return;
+    const snapshot = this.presence.get(this.#activePeer);
+    this.#chatPresence.append(
+      presenceDot(snapshot.status),
+      element("span", { text: presenceLabel(snapshot.status) }),
+    );
+    if (snapshot.statusMessage) {
+      this.#chatPresence.append(
+        element("span", { className: "kl-presence-note", text: snapshot.statusMessage }),
+      );
+    }
+    this.#chatPresence.title = presenceDescription(snapshot);
   }
 
   async #renderConversations(): Promise<void> {
@@ -2645,6 +3210,7 @@ export class LinkChatView {
   }
 
   #conversationButton(conversation: ConversationMeta): HTMLButtonElement {
+    const presence = this.presence.get(conversation.peerNumber);
     const nameRow = element(
       "div",
       { className: "kl-conversation-name-row" },
@@ -2652,8 +3218,9 @@ export class LinkChatView {
       conversation.pinned ? element("span", { className: "kl-pin", text: "◆" }) : null,
     );
     const prefix = conversation.lastDirection === "outgoing" ? "You: " : "";
-    const preview = conversation.lastMessage
-      ? `${prefix}${conversation.lastMessage}`
+    const previewText = messagePreview(conversation.lastMessage);
+    const preview = previewText
+      ? `${prefix}${previewText}`
       : `Member ${conversation.peerNumber}`;
     const main = element(
       "div",
@@ -2678,7 +3245,12 @@ export class LinkChatView {
     const button = element(
       "button",
       { className: "kl-conversation", type: "button" },
-      element("div", { className: "kl-avatar", text: avatarText(conversation.peerName) }),
+      element(
+        "div",
+        { className: "kl-avatar-wrap" },
+        element("div", { className: "kl-avatar", text: avatarText(conversation.peerName) }),
+        presenceDot(presence.status),
+      ),
       main,
       side,
     );
@@ -2686,6 +3258,10 @@ export class LinkChatView {
     button.addEventListener("click", () =>
       void this.#selectConversation(conversation.peerNumber, conversation.peerName),
     );
+    this.#bindProfileMenu(button, () => ({
+      memberNumber: conversation.peerNumber,
+      displayName: conversation.peerName,
+    }));
     return button;
   }
 
@@ -2706,10 +3282,13 @@ export class LinkChatView {
     this.#chatAvatar.textContent = avatarText(displayName);
     this.#chatName.textContent = displayName;
     this.#chatNumber.textContent = `Member ${peerNumber}`;
+    this.#renderActivePresence();
+    this.presence.request(peerNumber);
     this.#pinButton.textContent = conversation.pinned ? "◆" : "◇";
     this.#pinButton.title = conversation.pinned ? "Unpin conversation" : "Pin conversation";
     this.#composer.value = conversation.draft;
     this.#includeRoom.checked = this.settings.get().linkChat.includeRoomByDefault;
+    this.#attachImageButton.disabled = !this.adapter.canSendBeep();
     this.#resizeComposer();
     this.#updateCounter();
     await Promise.all([this.#renderMessages(peerNumber), this.refresh()]);
@@ -2730,9 +3309,25 @@ export class LinkChatView {
     }
 
     for (const message of messages) {
-      const body = element("div", {
-        text: message.content || "Beep without a message",
-      });
+      const body = this.#renderMessageBody(message);
+      const actions = element(
+        "div",
+        { className: "kl-message-actions" },
+        element("button", {
+          className: "kl-message-action",
+          type: "button",
+          text: "Reply",
+          title: "Quote this message in your reply",
+          onClick: () => this.#replyToMessage(message),
+        }),
+        element("button", {
+          className: "kl-message-action",
+          type: "button",
+          text: "Copy",
+          title: "Copy message",
+          onClick: () => void this.#copyMessage(message.content),
+        }),
+      );
       const meta = element(
         "div",
         { className: "kl-message-meta" },
@@ -2741,7 +3336,7 @@ export class LinkChatView {
           : null,
         element("time", { text: formatMessageTime(message.sentAt) }),
       );
-      const bubble = element("div", { className: "kl-message-bubble" }, body, meta);
+      const bubble = element("div", { className: "kl-message-bubble" }, body, actions, meta);
       const row = element("div", { className: "kl-message-row" }, bubble);
       row.dataset.direction = message.direction;
       this.#messages.append(row);
@@ -2752,10 +3347,13 @@ export class LinkChatView {
   }
 
   async #send(): Promise<void> {
-    if (this.#activePeer === undefined) return;
     const message = this.#composer.value.trim();
     if (!message) return;
+    await this.#sendContent(message, true);
+  }
 
+  async #sendContent(message: string, clearComposer: boolean): Promise<boolean> {
+    if (this.#activePeer === undefined) return false;
     let sent = false;
     try {
       const event = this.adapter.sendBeep(
@@ -2765,12 +3363,15 @@ export class LinkChatView {
       );
       sent = true;
       await this.service.capture(event, true);
-      this.#composer.value = "";
-      await this.service.setDraft(this.#activePeer, this.#activeName, "");
-      this.#resizeComposer();
-      this.#updateCounter();
+      if (clearComposer) {
+        this.#composer.value = "";
+        await this.service.setDraft(this.#activePeer, this.#activeName, "");
+        this.#resizeComposer();
+        this.#updateCounter();
+      }
       await this.onMessage(this.#activePeer, false);
-      this.#composer.focus();
+      if (clearComposer) this.#composer.focus();
+      return true;
     } catch (error) {
       this.#toast(
         sent
@@ -2780,6 +3381,117 @@ export class LinkChatView {
             : "Unable to send Beep",
         "error",
       );
+      return false;
+    }
+  }
+
+  #renderMessageBody(message: LinkMessage): HTMLElement {
+    const content = message.content || "Beep without a message";
+    const links = parseMessageLinks(content);
+    const body = element("div", { className: "kl-message-content" });
+    let cursor = 0;
+    for (const link of links) {
+      if (link.start > cursor) body.append(document.createTextNode(content.slice(cursor, link.start)));
+      const anchor = element("a", { className: "kl-message-link", text: content.slice(link.start, link.end) });
+      anchor.href = link.url;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer nofollow";
+      anchor.referrerPolicy = "no-referrer";
+      body.append(anchor);
+      cursor = link.end;
+    }
+    if (cursor < content.length) body.append(document.createTextNode(content.slice(cursor)));
+
+    const imageUrls = [...new Set(links.filter((link) => link.image).map((link) => link.url))].slice(0, 2);
+    if (imageUrls.length === 0 || this.settings.get().linkChat.imagePreviews === "never") return body;
+    const media = element("div", { className: "kl-message-media" });
+    for (const url of imageUrls) media.append(this.#imageCard(url));
+    body.append(media);
+    return body;
+  }
+
+  #imageCard(url: string): HTMLElement {
+    const parsed = new URL(url);
+    const preview = element("div", { className: "kl-image-preview" });
+    const open = element("a", { className: "kl-image-open", text: "Open original ↗" });
+    open.href = url;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer nofollow";
+    open.referrerPolicy = "no-referrer";
+    const card = element(
+      "figure",
+      { className: "kl-image-card" },
+      preview,
+      element(
+        "figcaption",
+        { className: "kl-image-caption" },
+        element("span", { className: "kl-image-host", text: parsed.hostname }),
+        open,
+      ),
+    );
+    if (this.settings.get().linkChat.imagePreviews === "always") {
+      this.#loadRemoteImage(preview, url);
+    } else {
+      preview.append(
+        element("span", { className: "kl-image-placeholder-icon", text: "▧" }),
+        element("span", { className: "kl-image-placeholder-title", text: "Remote image" }),
+        element("span", {
+          className: "kl-image-placeholder-help",
+          text: "Load it only when you trust this host.",
+        }),
+        element("button", {
+          className: "kl-text-button kl-image-load",
+          type: "button",
+          text: "Show image",
+          onClick: () => this.#loadRemoteImage(preview, url),
+        }),
+      );
+    }
+    return card;
+  }
+
+  #loadRemoteImage(preview: HTMLElement, url: string): void {
+    const image = document.createElement("img");
+    image.alt = "Image shared in LinkChat";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("load", () => {
+      preview.dataset.state = "loaded";
+    });
+    image.addEventListener("error", () => {
+      preview.dataset.state = "error";
+      preview.replaceChildren(
+        element("span", { className: "kl-image-placeholder-icon", text: "!" }),
+        element("span", { text: "This image could not be loaded. You can still open the original link." }),
+      );
+    });
+    preview.dataset.state = "loading";
+    preview.replaceChildren(image);
+    image.src = url;
+  }
+
+  #replyToMessage(message: LinkMessage): void {
+    const author = message.direction === "incoming" ? this.#activeName : this.adapter.getOwnName();
+    const excerpt = message.content.replace(/\s+/gu, " ").trim().slice(0, 180) || "Beep";
+    const quote = `> ${author}: ${excerpt}\n`;
+    const separator = this.#composer.value && !this.#composer.value.endsWith("\n") ? "\n" : "";
+    if (this.#composer.value.length + separator.length + quote.length > 1000) {
+      this.#toast("That reply would exceed the 1000 character Beep limit.", "error");
+      return;
+    }
+    this.#composer.value += `${separator}${quote}`;
+    this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+    this.#composer.focus();
+    this.#composer.setSelectionRange(this.#composer.value.length, this.#composer.value.length);
+  }
+
+  async #copyMessage(content: string): Promise<void> {
+    try {
+      await copyText(content);
+      this.#toast("Message copied.");
+    } catch {
+      this.#toast("The browser blocked clipboard access.", "error");
     }
   }
 
@@ -2789,6 +3501,240 @@ export class LinkChatView {
     this.#pinButton.textContent = pinned ? "◆" : "◇";
     this.#pinButton.title = pinned ? "Unpin conversation" : "Pin conversation";
     await this.#renderConversations();
+  }
+
+  #bindProfileMenu(target: HTMLElement, profile: () => ProfileTarget | undefined): void {
+    if (!(target instanceof HTMLButtonElement)) {
+      target.tabIndex = 0;
+      target.setAttribute("role", "button");
+    }
+    target.classList.add("kl-profile-menu-target");
+    const existingTitle = target.title.trim();
+    target.title = existingTitle
+      ? `${existingTitle} · Right-click or hold for actions`
+      : "Right-click or hold for player actions";
+
+    target.addEventListener("contextmenu", (event) => {
+      const value = profile();
+      if (!value) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.#openProfileMenu(value.memberNumber, value.displayName, event.clientX, event.clientY);
+    });
+    target.addEventListener("keydown", (event) => {
+      if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
+      const value = profile();
+      if (!value) return;
+      event.preventDefault();
+      const bounds = target.getBoundingClientRect();
+      void this.#openProfileMenu(
+        value.memberNumber,
+        value.displayName,
+        bounds.left + bounds.width / 2,
+        bounds.top + Math.min(bounds.height, 44),
+      );
+    });
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let startX = 0;
+    let startY = 0;
+    const cancel = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    };
+    target.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "mouse" || event.button !== 0) return;
+      const value = profile();
+      if (!value) return;
+      startX = event.clientX;
+      startY = event.clientY;
+      cancel();
+      timer = setTimeout(() => {
+        timer = undefined;
+        this.#suppressProfileClickUntil.set(target, Date.now() + 700);
+        void this.#openProfileMenu(value.memberNumber, value.displayName, startX, startY);
+      }, 520);
+    });
+    target.addEventListener("pointermove", (event) => {
+      if (timer === undefined) return;
+      if (Math.hypot(event.clientX - startX, event.clientY - startY) > 9) cancel();
+    });
+    target.addEventListener("pointerup", cancel);
+    target.addEventListener("pointercancel", cancel);
+    target.addEventListener(
+      "click",
+      (event) => {
+        if (Date.now() >= (this.#suppressProfileClickUntil.get(target) ?? 0)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      },
+      true,
+    );
+  }
+
+  async #openProfileMenu(
+    memberNumber: number,
+    displayName: string,
+    x: number,
+    y: number,
+  ): Promise<void> {
+    const token = ++this.#profileMenuToken;
+    this.presence.request(memberNumber);
+    const [conversation] = await Promise.all([this.service.getConversation(memberNumber)]);
+    if (token !== this.#profileMenuToken) return;
+    const snapshot = this.presence.get(memberNumber);
+    const rosterEntry = this.roster.get(memberNumber, displayName);
+    const inRoom = this.adapter.isMemberInCurrentRoom(memberNumber);
+    const header = element(
+      "header",
+      { className: "kl-profile-menu-header" },
+      element(
+        "div",
+        { className: "kl-avatar-wrap" },
+        element("div", { className: "kl-avatar", text: avatarText(displayName) }),
+        presenceDot(snapshot.status),
+      ),
+      element(
+        "div",
+        { className: "kl-profile-menu-identity" },
+        element("strong", { text: displayName }),
+        element(
+          "span",
+          { title: presenceDescription(snapshot) },
+          presenceDot(snapshot.status),
+          `${presenceLabel(snapshot.status)} · #${memberNumber}`,
+        ),
+        snapshot.statusMessage
+          ? element("small", { className: "kl-presence-note", text: snapshot.statusMessage })
+          : null,
+      ),
+    );
+    const primary = element(
+      "div",
+      { className: "kl-profile-menu-group" },
+      this.#profileMenuAction("↔", "Message", "Open LinkChat", () => {
+        void this.openChat(memberNumber, displayName);
+      }),
+      this.#profileMenuAction(
+        "◖",
+        "Whisper",
+        inRoom ? "Set native Whisper target" : "Available while this player is in your room",
+        () => {
+          try {
+            this.adapter.startWhisper(memberNumber);
+            this.close();
+          } catch (error) {
+            this.#toast(error instanceof Error ? error.message : "Unable to start Whisper", "error");
+          }
+        },
+        !inRoom,
+      ),
+      this.#profileMenuAction(
+        "◎",
+        "Native profile",
+        inRoom ? "Open the Bondage Club profile" : "Available while this player is in your room",
+        () => {
+          try {
+            this.adapter.openProfile(memberNumber);
+            this.close();
+          } catch (error) {
+            this.#toast(error instanceof Error ? error.message : "Unable to open profile", "error");
+          }
+        },
+        !inRoom,
+      ),
+    );
+    const organize = element(
+      "div",
+      { className: "kl-profile-menu-group" },
+      this.#profileMenuAction(
+        rosterEntry.favorite ? "★" : "☆",
+        rosterEntry.favorite ? "Remove favorite" : "Add favorite",
+        "Saved in your private player notebook",
+        () => {
+          this.roster.toggleFavorite(memberNumber, displayName);
+          this.#renderRoster();
+          void this.#renderHome();
+          this.#toast(rosterEntry.favorite ? "Removed from favorites." : "Added to favorites.");
+        },
+      ),
+      this.#profileMenuAction("✎", "Player note", "Open private notes and tags", () => {
+        this.#openRoster(memberNumber);
+      }),
+      conversation
+        ? this.#profileMenuAction(
+            conversation.pinned ? "◇" : "◆",
+            conversation.pinned ? "Unpin chat" : "Pin chat",
+            "Organize your recent chats",
+            () => void this.#toggleConversationPin(memberNumber),
+          )
+        : null,
+      conversation
+        ? this.#profileMenuAction("●", "Mark unread", "Keep this chat in your unread queue", () => {
+            void this.#markConversationUnread(memberNumber);
+          })
+        : null,
+      this.#profileMenuAction("#", "Copy member ID", `Copy ${memberNumber}`, () => {
+        void this.#copyRosterMemberNumber(memberNumber);
+      }),
+    );
+    this.#profileMenu.replaceChildren(header, primary, organize);
+    this.#profileMenu.hidden = false;
+    this.#profileMenu.style.left = `${x}px`;
+    this.#profileMenu.style.top = `${y}px`;
+    const bounds = this.#profileMenu.getBoundingClientRect();
+    this.#profileMenu.style.left = `${clamp(x, 8, Math.max(8, window.innerWidth - bounds.width - 8))}px`;
+    this.#profileMenu.style.top = `${clamp(y, 8, Math.max(8, window.innerHeight - bounds.height - 8))}px`;
+    this.#profileMenu.querySelector<HTMLButtonElement>(".kl-profile-menu-action:not(:disabled)")?.focus();
+  }
+
+  #profileMenuAction(
+    icon: string,
+    label: string,
+    help: string,
+    action: () => void,
+    disabled = false,
+  ): HTMLButtonElement {
+    const button = element(
+      "button",
+      { className: "kl-profile-menu-action", type: "button" },
+      element("span", { className: "kl-profile-menu-icon", text: icon }),
+      element(
+        "span",
+        { className: "kl-profile-menu-copy" },
+        element("span", { className: "kl-profile-menu-label", text: label }),
+        element("span", { className: "kl-profile-menu-help", text: help }),
+      ),
+    );
+    button.setAttribute("role", "menuitem");
+    button.disabled = disabled;
+    button.addEventListener("click", () => {
+      this.#closeProfileMenu();
+      action();
+    });
+    return button;
+  }
+
+  #closeProfileMenu(): void {
+    this.#profileMenuToken += 1;
+    this.#profileMenu.hidden = true;
+    this.#profileMenu.replaceChildren();
+  }
+
+  async #toggleConversationPin(memberNumber: number): Promise<void> {
+    const pinned = await this.service.togglePinned(memberNumber);
+    if (memberNumber === this.#activePeer) {
+      this.#pinButton.textContent = pinned ? "◆" : "◇";
+      this.#pinButton.title = pinned ? "Unpin conversation" : "Pin conversation";
+    }
+    await this.#renderConversations();
+    this.#toast(pinned ? "Chat pinned." : "Chat unpinned.");
+  }
+
+  async #markConversationUnread(memberNumber: number): Promise<void> {
+    await this.service.markUnread(memberNumber);
+    await this.refresh();
+    this.#toast("Chat marked unread.");
   }
 
   #openNewChat(): void {
@@ -2848,10 +3794,16 @@ export class LinkChatView {
     }
 
     for (const contact of contacts) {
+      const presence = this.presence.get(contact.memberNumber);
       const button = element(
         "button",
         { className: "kl-contact", type: "button" },
-        element("div", { className: "kl-avatar", text: avatarText(contact.memberName) }),
+        element(
+          "div",
+          { className: "kl-avatar-wrap" },
+          element("div", { className: "kl-avatar", text: avatarText(contact.memberName) }),
+          presenceDot(presence.status),
+        ),
         element(
           "div",
           { className: "kl-contact-copy" },
@@ -2863,6 +3815,10 @@ export class LinkChatView {
         this.#newChatDialog.close();
         void this.openChat(contact.memberNumber, contact.memberName);
       });
+      this.#bindProfileMenu(button, () => ({
+        memberNumber: contact.memberNumber,
+        displayName: contact.memberName,
+      }));
       this.#newChatResults.append(button);
     }
   }
@@ -3010,6 +3966,8 @@ export class LinkChatView {
     this.#launcherOpenSelect.value = settings.ui.launcherOpen;
     this.#reducedMotionToggle.checked = settings.ui.reducedMotion;
     this.#historyToggle.checked = settings.linkChat.saveHistory;
+    this.#enterToSendToggle.checked = settings.linkChat.enterToSend;
+    this.#imagePreviewSelect.value = settings.linkChat.imagePreviews;
     this.#retentionInput.value = settings.linkChat.retentionDays.toString();
     this.#renderQuickActionEditor(settings.linkChat.quickActions);
     this.#rosterEnabledToggle.checked = settings.linkRoster.enabled;
@@ -3085,6 +4043,11 @@ export class LinkChatView {
       draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
       draft.ui.settingsSection = this.#settingsSection;
       draft.linkChat.saveHistory = this.#historyToggle.checked;
+      draft.linkChat.enterToSend = this.#enterToSendToggle.checked;
+      draft.linkChat.imagePreviews =
+        this.#imagePreviewSelect.value === "always" || this.#imagePreviewSelect.value === "never"
+          ? this.#imagePreviewSelect.value
+          : "ask";
       draft.linkChat.quickActions = this.#readQuickActionEditor();
       draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
       draft.linkRoster.trackEncounters = this.#rosterTrackingToggle.checked;
@@ -3100,6 +4063,7 @@ export class LinkChatView {
     const removedPlayers = this.roster.prune();
     this.#updateNotebookCount();
     this.#renderQuickActions();
+    if (this.#activePeer !== undefined) void this.#renderMessages(this.#activePeer);
     this.#renderHomeStatus();
     void this.#renderHome();
     this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView, settings));
@@ -3124,6 +4088,7 @@ export class LinkChatView {
     await this.service.clearHistory();
     this.#activePeer = undefined;
     this.#activeName = "";
+    this.#attachImageButton.disabled = true;
     this.#chat.hidden = true;
     this.#empty.hidden = false;
     this.#panel.dataset.mobileView = "list";
@@ -3413,8 +4378,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "chat",
       title: "Chat & history",
-      detail: "History, retention, and Quick Actions",
-      keywords: "beep messages save storage days clear wave hug boop template",
+      detail: "Images, Enter-to-send, history, retention, and Quick Actions",
+      keywords: "beep messages image picture preview privacy enter send newline save storage days clear wave hug boop template",
     },
     {
       section: "players",
@@ -3485,6 +4450,51 @@ function selectOption(value: string, label: string): HTMLOptionElement {
   const option = element("option", { text: label });
   option.value = value;
   return option;
+}
+
+function presenceLabel(status: PresenceSnapshot["status"]): string {
+  if (status === "online") return "Online";
+  if (status === "idle") return "Idle";
+  if (status === "dnd") return "Do not disturb";
+  if (status === "offline") return "Offline";
+  return "Status unavailable";
+}
+
+function presenceHelp(status: PresenceStatus): string {
+  if (status === "online") return "Available and ready to chat";
+  if (status === "idle") return "Away for a little while";
+  if (status === "dnd") return "Busy and may reply later";
+  return "Appear offline inside KikiLink";
+}
+
+function presenceDot(status: PresenceSnapshot["status"]): HTMLSpanElement {
+  const dot = element("span", { className: "kl-presence-dot" });
+  dot.dataset.status = status;
+  dot.setAttribute("aria-hidden", "true");
+  return dot;
+}
+
+function presenceDescription(snapshot: PresenceSnapshot): string {
+  const label = presenceLabel(snapshot.status);
+  const source =
+    snapshot.source === "kikilink"
+      ? "shared by KikiLink"
+      : snapshot.source === "room"
+        ? "currently in your room"
+        : snapshot.source === "friend-list"
+          ? "Bondage Club friend list"
+          : "not available for this player";
+  return snapshot.statusMessage
+    ? `${label} · ${snapshot.statusMessage} · ${source}`
+    : `${label} · ${source}`;
+}
+
+function messagePreview(content: string): string {
+  const trimmed = content.trim();
+  const image = parseMessageLinks(trimmed).find(
+    (link) => link.image && link.start === 0 && link.end === trimmed.length,
+  );
+  return image ? "▧ Image" : content;
 }
 
 function avatarText(name: string): string {

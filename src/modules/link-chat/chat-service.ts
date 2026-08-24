@@ -112,6 +112,12 @@ export class ChatService {
     await this.#saveConversation({ ...conversation, unread: 0 });
   }
 
+  async markUnread(peerNumber: number): Promise<void> {
+    const conversation = await this.getConversation(peerNumber);
+    if (!conversation || conversation.unread > 0) return;
+    await this.#saveConversation({ ...conversation, unread: 1 });
+  }
+
   async setPeerName(peerNumber: number, peerName: string): Promise<void> {
     const name = peerName.trim();
     if (!name) return;

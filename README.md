@@ -11,8 +11,8 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.10.0` adds a genuinely quiet Super compact layout plus local Player notebook
-backup, safe restore, and automatic cleanup that never expires notes, tags, or favorites.
+Version `0.11.0` turns LinkChat into a calmer social layer with real BC friend presence,
+four KikiLink statuses, privacy-aware image messages, and right-click/hold player actions.
 
 ## Link Deck
 
@@ -22,6 +22,7 @@ backup, safe restore, and automatic cleanup that never expires notes, tags, or f
 - Four action-first cards use familiar names and visible verbs: Chat, Players, Activities,
   and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
+- Your KikiLink presence is always one quiet top-bar control away
 - Four clear primary destinations: Home, Chat, Players, and Activities
 - Persistent feature rail on desktop and a focused four-item bottom bar on phones
 - Players and Activities now stay inside the workspace instead of opening blocking dialogs
@@ -50,6 +51,7 @@ backup, safe restore, and automatic cleanup that never expires notes, tags, or f
 ## LinkRoster
 
 - Live list of everyone else in the current chat room, using character nicknames first
+- Presence dots and KikiLink status labels in player lists and detail cards
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - Private notes and searchable tags for individual players
 - Favorites that remain easy to find after leaving the room
@@ -71,6 +73,17 @@ browser profile. KikiLink does not upload them to a server.
 - Search by player name, member number, or message text
 - Unread counters and pinned conversations
 - Drafts saved per conversation
+- Real Online/Offline information for BC friends plus Online, Idle, Do not disturb, and
+  Offline status shared between compatible KikiLink users
+- Status notes and optional automatic Idle with an explicit presence on/off control
+- Direct HTTPS image messages that remain ordinary usable links for players without KikiLink
+- Privacy-aware inline image previews: ask before loading, always show, or links only
+- `Reply` and `Copy` actions on messages, with plain-text quotes compatible with native Beeps
+- Enter-to-send with Shift+Enter for a new line, or an optional classic multiline mode
+- Right-click on desktop or hold on touch to open one player action menu from recent chats,
+  the active chat, known contacts, and Players
+- Context actions for Message, Whisper, native Profile, favorites, notes, pinning,
+  marking unread, and copying the member ID
 - New-chat dialog with known-contact search and direct member-number entry
 - Editable Quick Actions with `{name}`, `{member}`, and `{me}` variables
 - Optional room information on outgoing Beeps
@@ -113,9 +126,12 @@ assets from a remote server while the game is running.
 
 Standard Beeps use Bondage Club's own `ServerSendBeepMessage` path. LinkRoster
 uses the game's native Whisper and profile controls, and LinkActivities uses the
-native room-emote path. Other players do not need KikiLink. No remote KikiLink
-server is used; message history, player notes, settings, and custom templates
-remain in the current browser profile.
+native room-emote path. Image messages are ordinary HTTPS links, so other players
+do not need KikiLink to open them. No remote KikiLink server is used; message
+history, player notes, settings, and custom templates remain in the current browser
+profile. Presence uses small validated compatibility packets through Bondage Club:
+one hidden room handshake when needed and a point-to-point request for an opened chat,
+never a background Beep broadcast to every friend.
 
 ## Architecture
 
@@ -125,6 +141,7 @@ src/
   core/               Event bus, settings, lifecycle, module registry
   modules/link-activities/  Activity templates and native room action service
   modules/link-chat/  LinkChat service and Shadow DOM interface
+  modules/link-presence/ Presence state, native-online merge, and compatibility protocol
   modules/link-roster/ Room roster, encounter tracking, and notebook service
   storage/            IndexedDB, player notebook, and in-memory repositories
   utils/              Small dependency-free helpers
@@ -170,7 +187,8 @@ KikiLink.getVersion();
 
 - Activity packs, categories, favorites, and import/export
 - LinkReactions with configurable event rules
-- Command palette and configurable hotkeys
+- Privacy-reviewed optional media upload service for local files
+- Per-conversation notification controls and configurable hotkeys
 - Import/export of settings and activity packs
 - Stable/dev release channels and FUSAM listing
 

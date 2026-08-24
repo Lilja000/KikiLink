@@ -11,6 +11,33 @@ export type TextScalePreference = "normal" | "large" | "extra-large";
 export type HomeLayoutPreference = "showcase" | "compact";
 export type SettingsSection = "appearance" | "navigation" | "chat" | "players" | "activities";
 export type BCConnectionState = "connecting" | "ready" | "error";
+export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
+export type PresenceState = PresenceStatus | "unknown";
+export type PresenceSource = "kikilink" | "room" | "friend-list" | "unknown";
+export type ImagePreviewPreference = "ask" | "always" | "never";
+
+export interface OnlineFriend {
+  memberNumber: number;
+  memberName: string;
+  roomName?: string;
+  roomSpace?: string;
+  privateRoom: boolean;
+}
+
+export interface KikiLinkProtocolEvent {
+  senderNumber: number;
+  payload: string;
+  channel: "beep" | "room";
+}
+
+export interface PresenceSnapshot {
+  memberNumber: number;
+  status: PresenceState;
+  source: PresenceSource;
+  updatedAt: number;
+  statusMessage?: string;
+  roomName?: string;
+}
 
 export interface QuickAction {
   label: string;
@@ -77,12 +104,14 @@ export interface KikiLinkEvents {
   "bc:ready": { memberNumber: number };
   "beep:received": BeepEvent;
   "beep:sent": BeepEvent;
+  "bc:online-friends": { friends: OnlineFriend[]; receivedAt: number };
+  "bc:protocol": KikiLinkProtocolEvent;
   "link-chat:updated": { peerNumber: number };
   "settings:changed": KikiLinkSettings;
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 6;
+  schemaVersion: 7;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -102,7 +131,15 @@ export interface KikiLinkSettings {
     retentionDays: number;
     maxMessagesPerConversation: number;
     openOnIncoming: boolean;
+    enterToSend: boolean;
+    imagePreviews: ImagePreviewPreference;
     quickActions: QuickAction[];
+  };
+  linkPresence: {
+    enabled: boolean;
+    status: PresenceStatus;
+    statusMessage: string;
+    autoIdleMinutes: number;
   };
   linkActivities: {
     enabled: boolean;

@@ -274,6 +274,85 @@ describe("LinkChatView", () => {
     view.destroy();
   });
 
+  it("renders privacy-aware images, presence controls, and contextual player actions", async () => {
+    const sendBeep = vi.fn((peerNumber: number, content: string, includeRoom: boolean) => ({
+      direction: "outgoing" as const,
+      peerNumber,
+      peerName: "Reina",
+      content,
+      sentAt: Date.now(),
+      includeRoom,
+    }));
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => "Reina",
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [
+        { memberNumber: 123, memberName: "Reina", privateRoom: false },
+      ],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => true,
+      getRoomCharacters: () => [
+        { memberNumber: 123, memberName: "Reina", isFriend: true },
+      ],
+      getCurrentRoomName: () => "Moon Garden",
+      isInChatRoom: () => true,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendKikiLinkProtocol: vi.fn(() => "room" as const),
+      broadcastKikiLinkProtocol: vi.fn(() => true),
+      sendBeep,
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 123,
+        peerName: "Reina",
+        content: "https://cdn.example/picture.webp",
+        sentAt: 100,
+        includeRoom: false,
+      },
+      true,
+    );
+    const view = new LinkChatView(adapter, service, settings, "0.11.0");
+    view.mount();
+    await view.openChat(123, "Reina");
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    expect(shadow?.querySelector(".kl-chat-presence")?.textContent).toContain("Online");
+    expect(shadow?.querySelector(".kl-image-load")?.textContent).toBe("Show image");
+
+    shadow?.querySelector<HTMLButtonElement>(".kl-attach-image")?.click();
+    const imageInput = shadow?.querySelector<HTMLInputElement>(".kl-image-url");
+    if (!imageInput) throw new Error("Missing image URL input");
+    imageInput.value = "https://cdn.example/new-image.png";
+    imageInput.dispatchEvent(new Event("input", { bubbles: true }));
+    shadow?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")?.click();
+    await vi.waitFor(() => {
+      expect(sendBeep).toHaveBeenCalledWith(123, "https://cdn.example/new-image.png", false);
+    });
+
+    shadow?.querySelector<HTMLElement>(".kl-chat-person")?.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+    );
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain("Whisper");
+      expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain("Player note");
+    });
+
+    shadow?.querySelector<HTMLButtonElement>(".kl-presence-trigger")?.click();
+    shadow?.querySelector<HTMLButtonElement>('[data-status="dnd"]')?.click();
+    expect(settings.get().linkPresence.status).toBe("dnd");
+    expect(shadow?.querySelector(".kl-presence-trigger")?.textContent).toContain("Do not disturb");
+
+    view.destroy();
+  });
+
   it("prioritizes unread Beeps on Home and opens the suggested conversation", async () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,

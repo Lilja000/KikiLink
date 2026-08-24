@@ -5,6 +5,7 @@ import { LinkChatView } from "./view";
 import { LinkActivitiesService } from "../link-activities/link-activities-service";
 import { LinkRosterService } from "../link-roster/link-roster-service";
 import { PeopleRepository } from "../../storage/people-repository";
+import { LinkPresenceService } from "../link-presence/link-presence-service";
 
 export class LinkChatModule implements KikiLinkModule {
   readonly id = "link-chat";
@@ -13,6 +14,7 @@ export class LinkChatModule implements KikiLinkModule {
   #context: KikiLinkContext | undefined;
   #service: ChatService | undefined;
   #roster: LinkRosterService | undefined;
+  #presence: LinkPresenceService | undefined;
   #view: LinkChatView | undefined;
   #rosterTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -29,6 +31,13 @@ export class LinkChatModule implements KikiLinkModule {
       new PeopleRepository(),
       context.settings,
     );
+    this.#presence = new LinkPresenceService(
+      context.adapter,
+      context.settings,
+      context.bus,
+      context.version,
+    );
+    this.#presence.start();
     this.#roster.prune();
     this.#view = new LinkChatView(
       context.adapter,
@@ -37,6 +46,7 @@ export class LinkChatModule implements KikiLinkModule {
       context.version,
       activities,
       this.#roster,
+      this.#presence,
     );
     this.#view.mount();
 
@@ -63,6 +73,8 @@ export class LinkChatModule implements KikiLinkModule {
     for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
     this.#view?.destroy();
     this.#view = undefined;
+    this.#presence?.stop();
+    this.#presence = undefined;
     this.#service = undefined;
     this.#roster = undefined;
     this.#context = undefined;

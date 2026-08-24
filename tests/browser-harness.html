@@ -53,7 +53,27 @@
       };
       window.ServerIsLoggedIn = () => true;
       window.ServerAccountBeep = () => {};
+      window.ServerAccountQueryResult = () => {};
+      window.ChatRoomMessage = () => {};
       window.ServerSendBeepMessage = () => {};
+      window.ServerSend = (event, data) => {
+        console.log("[Harness server]", event, data);
+        if (event === "AccountQuery" && data?.Query === "OnlineFriends") {
+          window.ServerAccountQueryResult({
+            Query: "OnlineFriends",
+            Result: [
+              {
+                Type: "Friend",
+                MemberNumber: 123456,
+                MemberName: "ReinaAccount",
+                MemberNickname: "Reina",
+                ChatRoomName: "KikiLink Test Room",
+                ChatRoomSpace: "MainHall",
+              },
+            ],
+          });
+        }
+      };
       window.ChatRoomSendEmote = (message) => console.log("[Harness room emote]", message);
       window.ChatRoomSetTarget = (memberNumber) => console.log("[Harness whisper]", memberNumber);
       window.InformationSheetLoadCharacter = (character) =>
