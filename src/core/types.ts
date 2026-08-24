@@ -91,6 +91,8 @@ export interface LinkMessage extends BeepEvent {
 export interface ConversationMeta {
   peerNumber: number;
   peerName: string;
+  localAlias?: string;
+  hiddenAt?: number;
   lastMessage: string;
   lastMessageAt: number;
   lastDirection: MessageDirection;

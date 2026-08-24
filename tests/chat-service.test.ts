@@ -141,4 +141,84 @@ describe("ChatService", () => {
 
     expect(await service.getConversation(77)).toMatchObject({ peerName: "Nickname" });
   });
+
+  it("keeps a private local alias while the native nickname is refreshed", async () => {
+    const { service } = setup();
+    await service.ensureConversation(77, "AccountName");
+    await service.setLocalAlias(77, "  My Reina  ");
+    await service.setPeerName(77, "Reina");
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 77,
+        peerName: "New native nickname",
+        content: "Hello",
+        sentAt: 500,
+        includeRoom: false,
+      },
+      false,
+    );
+
+    expect(await service.getConversation(77)).toMatchObject({
+      peerName: "Reina",
+      localAlias: "My Reina",
+    });
+  });
+
+  it("removes one recent chat and its local messages", async () => {
+    const { service, repository, settings } = setup();
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 77,
+        peerName: "Reina",
+        content: "Remove me",
+        sentAt: 500,
+        includeRoom: false,
+      },
+      false,
+    );
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 88,
+        peerName: "Sidney",
+        content: "Keep me",
+        sentAt: 600,
+        includeRoom: false,
+      },
+      false,
+    );
+
+    await service.removeConversation(77);
+
+    expect(await service.getConversation(77)).toBeUndefined();
+    expect(await service.getMessages(77)).toEqual([]);
+    expect((await service.listConversations()).map((conversation) => conversation.peerNumber)).toEqual([88]);
+
+    const restarted = new ChatService(repository, settings);
+    expect(
+      await restarted.captureRecent({
+        direction: "incoming",
+        peerNumber: 77,
+        peerName: "Reina",
+        content: "Remove me",
+        sentAt: 500,
+        includeRoom: false,
+      }),
+    ).toBe(false);
+    expect(await restarted.listConversations()).toHaveLength(1);
+
+    expect(
+      await restarted.captureRecent({
+        direction: "incoming",
+        peerNumber: 77,
+        peerName: "Reina",
+        content: "A genuinely new message",
+        sentAt: Date.now() + 10,
+        includeRoom: false,
+      }),
+    ).toBe(true);
+    expect((await restarted.listConversations()).map((conversation) => conversation.peerNumber)).toEqual([77, 88]);
+  });
 });

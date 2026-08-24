@@ -6,6 +6,7 @@ export interface ChatRepository {
   getConversation(peerNumber: number): Promise<ConversationMeta | undefined>;
   listConversations(): Promise<ConversationMeta[]>;
   putConversation(conversation: ConversationMeta): Promise<void>;
+  deleteConversation(peerNumber: number): Promise<void>;
   deleteMessagesOlderThan(timestamp: number): Promise<number>;
   trimConversation(peerNumber: number, keepNewest: number): Promise<number>;
   clearAll(): Promise<void>;

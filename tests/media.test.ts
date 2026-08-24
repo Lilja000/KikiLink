@@ -16,6 +16,15 @@ describe("LinkChat media", () => {
     expect(normalizeImageUrl("https://user:secret@cdn.example/image.png")).toBeNull();
   });
 
+  it("extracts only the image URL from clipboard formatting", () => {
+    expect(
+      normalizeImageUrl("[color=#ff66aa]https://cdn.example/image.png[/color]"),
+    ).toBe("https://cdn.example/image.png");
+    expect(
+      normalizeImageUrl("Preview: [image](https://cdn.example/picture.webp), color #ff66aa"),
+    ).toBe("https://cdn.example/picture.webp");
+  });
+
   it("extracts links without swallowing sentence punctuation", () => {
     const links = parseMessageLinks(
       "Look: https://cdn.example/picture.png, then https://example.com/page.",

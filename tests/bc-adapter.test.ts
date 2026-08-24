@@ -22,6 +22,7 @@ afterEach(() => {
     "InformationSheetLoadCharacter",
     "ServerSend",
     "ServerIsLoggedIn",
+    "ServerPlayerIsInChatRoom",
     "CurrentScreen",
   ]) {
     Reflect.deleteProperty(globalThis, key);
@@ -147,6 +148,23 @@ describe("BCAdapter", () => {
 
     adapter.openProfile(123);
     expect(openProfile).toHaveBeenCalledWith(reina);
+  });
+
+  it("keeps the current room while a native room subscreen is open", () => {
+    globalThis.CurrentScreen = "InformationSheet";
+    globalThis.ServerPlayerIsInChatRoom = () => true;
+    globalThis.ChatRoomData = { Name: "Moon Garden" };
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomCharacter = [globalThis.Player];
+
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.13.0");
+
+    expect(adapter.isInChatRoom()).toBe(true);
+    expect(adapter.getCurrentRoomName()).toBe("Moon Garden");
   });
 
   it("uses hidden room packets for KikiLink peers and private typed Beeps elsewhere", () => {

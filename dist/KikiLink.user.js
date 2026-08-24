@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.12.1
+// @version      0.13.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -424,6 +424,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return cleanName(Player.Nickname) ?? cleanName(Player.Name) ?? "me";
     }
     isInChatRoom() {
+      if (typeof ServerPlayerIsInChatRoom === "function") {
+        return ServerPlayerIsInChatRoom();
+      }
       return typeof CurrentScreen === "string" && CurrentScreen === "ChatRoom" && typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter);
     }
     canSendRoomEmote() {
@@ -811,6 +814,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
     async putConversation(conversation) {
       this.#conversations.set(conversation.peerNumber, structuredClone(conversation));
     }
+    async deleteConversation(peerNumber) {
+      this.#conversations.delete(peerNumber);
+      for (const [id, message] of this.#messages) {
+        if (message.peerNumber === peerNumber) this.#messages.delete(id);
+      }
+    }
     async deleteMessagesOlderThan(timestamp) {
       let removed = 0;
       for (const [id, message] of this.#messages) {
@@ -868,10 +877,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
         id: createId("beep"),
         read: event.direction === "outgoing" || activeConversation
       };
-      const previous = await this.getConversation(event.peerNumber);
+      const previous = await this.#getStoredConversation(event.peerNumber);
       const conversation = {
         peerNumber: event.peerNumber,
         peerName: preferredPeerName(previous?.peerName, event.peerName, event.peerNumber),
+        ...previous?.localAlias ? { localAlias: previous.localAlias } : {},
         lastMessage: event.content,
         lastMessageAt: event.sentAt,
         lastDirection: event.direction,
@@ -896,6 +906,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return message;
     }
     async captureRecent(event) {
+      const stored = await this.#getStoredConversation(event.peerNumber);
+      if (stored?.hiddenAt !== void 0 && event.sentAt <= stored.hiddenAt) return false;
       const messages = await this.getMessages(event.peerNumber, 500);
       const duplicate = messages.some(
         (message) => message.direction === event.direction && message.content === event.content && message.roomName === event.roomName && Math.abs(message.sentAt - event.sentAt) <= 2e3
@@ -905,8 +917,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return true;
     }
     async ensureConversation(peerNumber, peerName) {
-      const existing = await this.getConversation(peerNumber);
-      if (existing) return existing;
+      const existing = await this.#getStoredConversation(peerNumber);
+      if (existing && existing.hiddenAt === void 0) return existing;
       const conversation = {
         peerNumber,
         peerName,
@@ -921,6 +933,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return conversation;
     }
     async getConversation(peerNumber) {
+      const conversation = await this.#getStoredConversation(peerNumber);
+      return conversation?.hiddenAt === void 0 ? conversation : void 0;
+    }
+    async #getStoredConversation(peerNumber) {
       const ephemeral = this.#ephemeralConversations.get(peerNumber);
       return ephemeral ? structuredClone(ephemeral) : this.repository.getConversation(peerNumber);
     }
@@ -930,7 +946,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       for (const conversation of this.#ephemeralConversations.values()) {
         merged.set(conversation.peerNumber, structuredClone(conversation));
       }
-      return [...merged.values()].sort(sortConversations);
+      return [...merged.values()].filter((conversation) => conversation.hiddenAt === void 0).sort(sortConversations);
     }
     async getMessages(peerNumber, limit = 300) {
       const persisted = await this.repository.getMessages(peerNumber, limit);
@@ -953,6 +969,35 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const conversation = await this.getConversation(peerNumber);
       if (!conversation || conversation.peerName === name) return;
       await this.#saveConversation({ ...conversation, peerName: name });
+    }
+    async setLocalAlias(peerNumber, value) {
+      const conversation = await this.getConversation(peerNumber);
+      if (!conversation) return void 0;
+      const localAlias = normalizeLocalAlias(value);
+      if (conversation.localAlias === localAlias) return localAlias;
+      const updated = { ...conversation };
+      if (localAlias) updated.localAlias = localAlias;
+      else delete updated.localAlias;
+      await this.#saveConversation(updated);
+      return localAlias;
+    }
+    async removeConversation(peerNumber) {
+      const previous = await this.#getStoredConversation(peerNumber);
+      this.#ephemeralMessages.delete(peerNumber);
+      this.#ephemeralConversations.delete(peerNumber);
+      await this.repository.deleteConversation(peerNumber);
+      if (!previous) return;
+      await this.#saveConversation({
+        peerNumber,
+        peerName: previous.peerName,
+        hiddenAt: Date.now(),
+        lastMessage: "",
+        lastMessageAt: 0,
+        lastDirection: "incoming",
+        unread: 0,
+        pinned: false,
+        draft: ""
+      });
     }
     async setDraft(peerNumber, peerName, draft) {
       const conversation = await this.getConversation(peerNumber) ?? await this.ensureConversation(peerNumber, peerName);
@@ -988,12 +1033,19 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
     }
   };
+  function conversationDisplayName(conversation) {
+    return conversation.localAlias?.trim() || conversation.peerName;
+  }
   function preferredPeerName(previousName, eventName, peerNumber) {
     const fallback = `Member ${peerNumber}`;
     const previous = previousName?.trim();
     const incoming = eventName.trim();
     if (previous && previous !== fallback) return previous;
     return incoming || previous || fallback;
+  }
+  function normalizeLocalAlias(value) {
+    const alias = value.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 40);
+    return alias || void 0;
   }
 
   // src/core/settings.ts
@@ -2242,6 +2294,21 @@ One of mods you are using is using an old version of SDK. It will work for now b
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
+.kl-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.kl-icon[data-filled="true"] .kl-icon-fill { fill: currentColor; }
+.kl-icon-button .kl-icon { width: 18px; height: 18px; }
+
 button,
 input,
 textarea,
@@ -2430,7 +2497,7 @@ button { color: inherit; }
   font-size: var(--kl-type-sm);
 }
 .kl-finder-trigger:hover { color: var(--kl-text); }
-.kl-finder-trigger-icon { color: var(--kl-gold); font-size: 18px; line-height: 1; }
+.kl-finder-trigger-icon { width: 18px; height: 18px; color: var(--kl-gold); }
 .kl-finder-trigger-label { font-weight: 800; }
 .kl-finder-shortcut,
 .kl-finder-keys kbd {
@@ -2571,7 +2638,7 @@ button { color: inherit; }
   box-shadow: inset 3px 0 var(--kl-accent);
 }
 .kl-nav-item[data-available="false"] .kl-nav-icon { opacity: 0.48; }
-.kl-nav-icon { font-size: 20px; line-height: 1; }
+.kl-nav-icon { width: 20px; height: 20px; }
 .kl-nav-label {
   max-width: 100%;
   overflow: hidden;
@@ -2691,10 +2758,9 @@ button { color: inherit; }
 }
 .kl-settings-tab-icon {
   width: 25px;
-  display: grid;
-  place-items: center;
+  height: 18px;
+  padding-inline: 3px;
   color: var(--kl-gold);
-  font-size: 16px;
 }
 .kl-settings-panels { min-width: 0; min-height: 0; overflow: hidden; }
 .kl-settings-panel {
@@ -3003,7 +3069,7 @@ button { color: inherit; }
   border-radius: 15px;
   background: var(--kl-surface-2);
   color: var(--kl-gold);
-  font-size: 22px;
+  padding: 12px;
 }
 .kl-feature-card-copy {
   position: relative;
@@ -3056,7 +3122,7 @@ button { color: inherit; }
   font-size: var(--kl-type-xs);
   text-align: center;
 }
-.kl-home-privacy-icon { color: var(--kl-gold); }
+.kl-home-privacy-icon { width: 17px; height: 17px; color: var(--kl-gold); }
 
 :host([data-home-layout="compact"]) .kl-home-hero {
   min-height: 0;
@@ -3346,7 +3412,7 @@ button { color: inherit; }
 .kl-conversation-main { min-width: 0; }
 .kl-conversation-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .kl-conversation-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 750; }
-.kl-pin { color: var(--kl-gold); font-size: 11px; }
+.kl-pin { width: 13px; height: 13px; color: var(--kl-gold); }
 .kl-conversation-preview { overflow: hidden; color: var(--kl-muted); font-size: var(--kl-type-body); text-overflow: ellipsis; white-space: nowrap; }
 .kl-conversation-side { align-self: stretch; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 5px; }
 .kl-time { color: var(--kl-muted); font-size: var(--kl-type-xs); white-space: nowrap; }
@@ -3424,7 +3490,7 @@ button { color: inherit; }
   font-size: var(--kl-type-sm);
 }
 .kl-chat-room::before { content: "\xB7"; color: var(--kl-meta); }
-.kl-chat-room-icon { flex: 0 0 auto; }
+.kl-chat-room-icon { width: 14px; height: 14px; flex: 0 0 auto; }
 .kl-chat-room-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .kl-messages {
@@ -3439,11 +3505,13 @@ button { color: inherit; }
 
 .kl-message-row {
   display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 7px 0;
   content-visibility: auto;
   contain-intrinsic-size: auto 64px;
 }
-.kl-message-row[data-direction="outgoing"] { justify-content: flex-end; }
+.kl-message-row[data-direction="outgoing"] { flex-direction: row-reverse; }
 .kl-message-bubble {
   max-width: min(72%, 540px);
   padding: 10px 12px 8px;
@@ -3527,7 +3595,8 @@ button { color: inherit; }
   resize: none;
   border-radius: 14px;
 }
-.kl-send { min-width: 76px; height: 44px; }
+.kl-send { min-width: 82px; height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.kl-send .kl-icon { width: 16px; height: 16px; }
 .kl-composer-options { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; color: var(--kl-muted); font-size: var(--kl-type-sm); }
 .kl-check { min-height: 32px; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .kl-check input { accent-color: var(--kl-accent); }
@@ -3654,7 +3723,8 @@ button { color: inherit; }
   top: 50%;
   left: 15px;
   color: var(--kl-gold);
-  font-size: 21px;
+  width: 21px;
+  height: 21px;
   pointer-events: none;
   transform: translateY(-50%);
 }
@@ -3713,9 +3783,8 @@ button { color: inherit; }
   border-radius: 13px;
   background: var(--kl-surface-2);
   color: var(--kl-gold);
-  font-size: 18px;
-  font-weight: 850;
 }
+.kl-finder-result-symbol { width: 20px; height: 20px; }
 .kl-finder-result-copy {
   min-width: 0;
   display: grid;
@@ -3870,7 +3939,7 @@ button { color: inherit; }
 }
 .kl-roster-live { background: rgba(104, 211, 145, 0.14); color: #68d391; }
 .kl-roster-friend { background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
-.kl-roster-favorite { color: var(--kl-gold); font-size: var(--kl-type-sm); }
+.kl-roster-favorite { width: 13px; height: 13px; color: var(--kl-gold); }
 .kl-roster-entry-preview {
   overflow: hidden;
   color: var(--kl-muted);
@@ -4143,8 +4212,8 @@ select:focus-visible {
   .kl-message-bubble { max-width: 88%; }
   .kl-composer { padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); }
   .kl-composer-row { grid-template-columns: minmax(0, 1fr) 48px; }
-  .kl-send { min-width: 48px; width: 48px; font-size: 0; }
-  .kl-send::after { content: "\u27A4"; font-size: 17px; }
+  .kl-send { min-width: 48px; width: 48px; }
+  .kl-send-label { display: none; }
   .kl-setting-row { gap: 14px; }
   .kl-setting-help { max-width: 230px; }
   .kl-action-editor-row { grid-template-columns: 82px minmax(0, 1fr) 40px; }
@@ -4432,6 +4501,7 @@ select:focus-visible {
 .kl-profile-menu-identity { min-width: 0; display: grid; gap: 2px; }
 .kl-profile-menu-identity > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kl-profile-menu-identity > span { display: flex; align-items: center; gap: 5px; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-profile-native-name { overflow: hidden; color: var(--kl-muted); font-size: var(--kl-type-xxs); text-overflow: ellipsis; white-space: nowrap; }
 .kl-profile-menu-group { display: grid; gap: 2px; padding: 6px 0; }
 .kl-profile-menu-group + .kl-profile-menu-group { border-top: 1px solid var(--kl-border); }
 .kl-profile-menu-action {
@@ -4450,7 +4520,10 @@ select:focus-visible {
 }
 .kl-profile-menu-action:hover { background: var(--kl-surface-2); }
 .kl-profile-menu-action:disabled { opacity: 0.42; cursor: not-allowed; }
-.kl-profile-menu-icon { display: grid; place-items: center; color: var(--kl-gold); font-weight: 850; }
+.kl-profile-menu-icon { display: grid; place-items: center; color: var(--kl-gold); }
+.kl-profile-action-icon { width: 17px; height: 17px; }
+.kl-profile-menu-group--danger .kl-profile-menu-action,
+.kl-profile-menu-group--danger .kl-profile-menu-icon { color: var(--kl-danger); }
 .kl-profile-menu-copy { min-width: 0; display: grid; gap: 1px; }
 .kl-profile-menu-label { font-size: var(--kl-type-body); font-weight: 780; }
 .kl-profile-menu-help { overflow: hidden; color: var(--kl-muted); font-size: var(--kl-type-xxs); text-overflow: ellipsis; white-space: nowrap; }
@@ -4481,7 +4554,7 @@ select:focus-visible {
 .kl-image-preview { min-height: 150px; display: grid; place-items: center; align-content: center; gap: 5px; padding: 14px; background: #09090a; color: #d8cec0; text-align: center; }
 .kl-image-preview[data-state="loading"] { background: linear-gradient(110deg, #101012 30%, #202024 46%, #101012 62%); background-size: 240% 100%; animation: kl-image-loading 1.4s linear infinite; }
 .kl-image-preview img { display: block; width: 100%; max-height: 340px; object-fit: contain; border-radius: 6px; }
-.kl-image-placeholder-icon { font-size: 24px; color: var(--kl-gold); }
+.kl-image-placeholder-icon { width: 25px; height: 25px; color: var(--kl-gold); }
 .kl-image-placeholder-title { font-weight: 800; }
 .kl-image-placeholder-help { max-width: 230px; color: #9f978d; font-size: var(--kl-type-xs); }
 .kl-image-load { margin-top: 6px; }
@@ -4489,18 +4562,51 @@ select:focus-visible {
 .kl-image-host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kl-image-open { flex: 0 0 auto; color: var(--kl-gold); text-decoration: none; }
 @keyframes kl-image-loading { to { background-position: -240% 0; } }
-.kl-message-actions { display: flex; justify-content: flex-end; gap: 2px; min-height: 0; margin-top: 4px; opacity: 0; transition: opacity 120ms ease; }
-.kl-message-bubble:hover .kl-message-actions,
-.kl-message-bubble:focus-within .kl-message-actions { opacity: 1; }
-.kl-message-action { padding: 2px 5px; border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: var(--kl-type-xxs); cursor: pointer; opacity: 0.68; }
-.kl-message-action:hover { background: color-mix(in srgb, currentColor, transparent 88%); opacity: 1; }
+.kl-message-side-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transform: translateX(-3px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.kl-message-row[data-direction="outgoing"] .kl-message-side-actions { transform: translateX(3px); }
+.kl-message-row:hover .kl-message-side-actions,
+.kl-message-row:focus-within .kl-message-side-actions { opacity: 1; transform: translateX(0); }
+.kl-message-action {
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--kl-muted);
+  cursor: pointer;
+}
+.kl-message-action .kl-icon { width: 15px; height: 15px; }
+.kl-message-action:hover { border-color: var(--kl-border); background: var(--kl-surface-2); color: var(--kl-gold); }
+
+.kl-alias-dialog { width: min(500px, calc(100vw - 32px)); }
+.kl-alias-body { display: grid; gap: 15px; }
+.kl-local-only-note { display: flex; align-items: flex-start; gap: 9px; margin: 0; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-local-only-note .kl-icon { width: 17px; height: 17px; margin-top: 1px; color: var(--kl-gold); }
+.kl-dialog-actions-spacer { flex: 1 1 auto; }
+.kl-remove-chat-dialog { width: min(480px, calc(100vw - 32px)); }
+.kl-remove-chat-body { display: grid; justify-items: center; gap: 10px; padding-block: 24px; text-align: center; }
+.kl-remove-chat-body p { margin: 0; }
+.kl-remove-chat-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; background: color-mix(in srgb, var(--kl-danger), transparent 88%); color: var(--kl-danger); }
+.kl-remove-chat-icon .kl-icon { width: 23px; height: 23px; }
+.kl-remove-chat-safe { max-width: 360px; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-text-button--danger { border-color: color-mix(in srgb, var(--kl-danger), transparent 50%); background: color-mix(in srgb, var(--kl-danger), transparent 90%); }
 
 @media (max-width: 720px) {
   .kl-presence-trigger { width: 38px; min-height: 38px; justify-content: center; padding: 0; }
   .kl-presence-trigger-label { display: none; }
   .kl-presence-options { grid-template-columns: minmax(0, 1fr); }
   .kl-composer-row { grid-template-columns: 44px minmax(0, 1fr) 48px; gap: 7px; }
-  .kl-message-actions { opacity: 0.64; }
+  .kl-message-side-actions { opacity: 0.66; transform: none; }
   .kl-image-card { min-width: min(210px, 64vw); }
   .kl-chat-presence .kl-presence-note { display: none; }
 }
@@ -4524,7 +4630,7 @@ select:focus-visible {
 `;
 
   // src/modules/link-chat/media.ts
-  var URL_PATTERN = /https:\/\/[^\s<>"']+/giu;
+  var URL_PATTERN = /https:\/\/[^\s<>"'[\]]+/giu;
   var IMAGE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/iu;
   var TRAILING_PUNCTUATION = /[),.;!?\]}]+$/u;
   function parseMessageLinks(message) {
@@ -4544,8 +4650,13 @@ select:focus-visible {
     return links;
   }
   function normalizeImageUrl(value) {
-    const url = normalizeHttpsUrl(value.trim());
-    return url && isDirectImageUrl(url) ? url : null;
+    const direct = normalizeHttpsUrl(value.trim());
+    if (direct && isDirectImageUrl(direct)) return direct;
+    for (const match of value.matchAll(URL_PATTERN)) {
+      const url = normalizeHttpsUrl(trimTrailingPunctuation(match[0]));
+      if (url && isDirectImageUrl(url)) return url;
+    }
+    return null;
   }
   function isDirectImageUrl(value) {
     const url = normalizeHttpsUrl(value);
@@ -4575,6 +4686,171 @@ select:focus-visible {
   }
   function count(value, character) {
     return [...value].filter((candidate) => candidate === character).length;
+  }
+
+  // src/modules/link-chat/icons.ts
+  var SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+  var ICONS = {
+    activities: [
+      ["path", { d: "M12 3.2c.5 3.1 2.1 4.7 5.2 5.2-3.1.5-4.7 2.1-5.2 5.2-.5-3.1-2.1-4.7-5.2-5.2 3.1-.5 4.7-2.1 5.2-5.2Z" }, true],
+      ["path", { d: "M18.2 14.2c.25 1.55 1.05 2.35 2.6 2.6-1.55.25-2.35 1.05-2.6 2.6-.25-1.55-1.05-2.35-2.6-2.6 1.55-.25 2.35-1.05 2.6-2.6Z" }, true],
+      ["path", { d: "M5.7 14.8c.22 1.35.93 2.06 2.28 2.28-1.35.22-2.06.93-2.28 2.28-.22-1.35-.93-2.06-2.28-2.28 1.35-.22 2.06-.93 2.28-2.28Z" }, true]
+    ],
+    appearance: [
+      ["path", { d: "M12 3.2a8.8 8.8 0 1 0 0 17.6c1.4 0 2.1-.75 2.1-1.62 0-.52-.25-.95-.25-1.52 0-1.1.82-1.72 1.92-1.72h1.38c2.22 0 3.65-1.48 3.65-3.74A8.8 8.8 0 0 0 12 3.2Z" }],
+      ["circle", { cx: "7.4", cy: "10.1", r: "0.9" }, true],
+      ["circle", { cx: "10.1", cy: "6.9", r: "0.9" }, true],
+      ["circle", { cx: "14.2", cy: "6.8", r: "0.9" }, true]
+    ],
+    back: [
+      ["path", { d: "m10.2 5.2-6.8 6.8 6.8 6.8" }],
+      ["line", { x1: "4", y1: "12", x2: "20.5", y2: "12" }]
+    ],
+    chat: [
+      ["path", { d: "M4.1 5.2h15.8v10.3H10l-5.3 3.4 1-3.4H4.1V5.2Z" }],
+      ["line", { x1: "8", y1: "9.1", x2: "16", y2: "9.1" }],
+      ["line", { x1: "8", y1: "12.6", x2: "13.5", y2: "12.6" }]
+    ],
+    check: [["polyline", { points: "4.5 12.5 9.5 17.2 19.8 6.8" }]],
+    close: [
+      ["line", { x1: "5.5", y1: "5.5", x2: "18.5", y2: "18.5" }],
+      ["line", { x1: "18.5", y1: "5.5", x2: "5.5", y2: "18.5" }]
+    ],
+    copy: [
+      ["rect", { x: "8", y: "7.5", width: "11.5", height: "12", rx: "2.2" }],
+      ["path", { d: "M16 7.5V6.7a2.2 2.2 0 0 0-2.2-2.2H6.7a2.2 2.2 0 0 0-2.2 2.2v7.1A2.2 2.2 0 0 0 6.7 16H8" }]
+    ],
+    edit: [
+      ["path", { d: "m5 16.7-.7 3 3-.7L18.8 7.5l-2.3-2.3L5 16.7Z" }],
+      ["line", { x1: "14.5", y1: "7.2", x2: "16.8", y2: "9.5" }]
+    ],
+    external: [
+      ["path", { d: "M13 4.5h6.5V11" }],
+      ["line", { x1: "19", y1: "5", x2: "11", y2: "13" }],
+      ["path", { d: "M10 6H6.5a2 2 0 0 0-2 2v9.5a2 2 0 0 0 2 2H16a2 2 0 0 0 2-2V14" }]
+    ],
+    home: [
+      ["path", { d: "m3.4 10.5 8.6-7 8.6 7" }],
+      ["path", { d: "M5.7 9.2v10.3h12.6V9.2" }],
+      ["path", { d: "M10 19.5v-5.8h4v5.8" }]
+    ],
+    id: [
+      ["line", { x1: "9", y1: "4.5", x2: "7", y2: "19.5" }],
+      ["line", { x1: "17", y1: "4.5", x2: "15", y2: "19.5" }],
+      ["line", { x1: "4.5", y1: "9", x2: "19.5", y2: "9" }],
+      ["line", { x1: "3.8", y1: "15", x2: "18.8", y2: "15" }]
+    ],
+    image: [
+      ["rect", { x: "3.5", y: "4.5", width: "17", height: "15", rx: "2.6" }],
+      ["circle", { cx: "8.4", cy: "9.2", r: "1.45" }],
+      ["path", { d: "m5.2 17 4.3-4.4 3.2 3 2.6-2.5 3.5 3.9" }]
+    ],
+    location: [
+      ["path", { d: "M12 21s6.2-5.8 6.2-11A6.2 6.2 0 1 0 5.8 10C5.8 15.2 12 21 12 21Z" }],
+      ["circle", { cx: "12", cy: "10", r: "2.1" }]
+    ],
+    lock: [
+      ["rect", { x: "5", y: "10", width: "14", height: "10", rx: "2.3" }],
+      ["path", { d: "M8 10V7.5a4 4 0 0 1 8 0V10" }],
+      ["line", { x1: "12", y1: "14", x2: "12", y2: "16.5" }]
+    ],
+    more: [
+      ["circle", { cx: "5.3", cy: "12", r: "1" }, true],
+      ["circle", { cx: "12", cy: "12", r: "1" }, true],
+      ["circle", { cx: "18.7", cy: "12", r: "1" }, true]
+    ],
+    navigation: [
+      ["circle", { cx: "12", cy: "12", r: "8.5" }],
+      ["path", { d: "m15.7 8.3-2.1 5.3-5.3 2.1 2.1-5.3 5.3-2.1Z" }, true]
+    ],
+    note: [
+      ["path", { d: "M6 3.8h9.2L19 7.6v12.6H6V3.8Z" }],
+      ["path", { d: "M15 3.8v4h4" }],
+      ["line", { x1: "9", y1: "12", x2: "16", y2: "12" }],
+      ["line", { x1: "9", y1: "15.5", x2: "14", y2: "15.5" }]
+    ],
+    pin: [
+      ["path", { d: "m8 4 8 0-1.5 5 3 3H6.5l3-3L8 4Z" }, true],
+      ["line", { x1: "12", y1: "12", x2: "12", y2: "20" }]
+    ],
+    plus: [
+      ["line", { x1: "12", y1: "4.5", x2: "12", y2: "19.5" }],
+      ["line", { x1: "4.5", y1: "12", x2: "19.5", y2: "12" }]
+    ],
+    profile: [
+      ["rect", { x: "3.5", y: "5", width: "17", height: "14", rx: "2.4" }],
+      ["circle", { cx: "8.5", cy: "10.2", r: "2.1" }],
+      ["path", { d: "M5.8 16c.55-1.75 1.55-2.6 2.7-2.6s2.15.85 2.7 2.6" }],
+      ["line", { x1: "14", y1: "9", x2: "18", y2: "9" }],
+      ["line", { x1: "14", y1: "13", x2: "18", y2: "13" }]
+    ],
+    reply: [
+      ["polyline", { points: "9.5 7 4.2 11.7 9.5 16.4" }],
+      ["path", { d: "M5 11.7h7.4c4.6 0 7.1 2.25 7.1 6.3" }]
+    ],
+    search: [
+      ["circle", { cx: "10.5", cy: "10.5", r: "6.2" }],
+      ["line", { x1: "15.1", y1: "15.1", x2: "20", y2: "20" }]
+    ],
+    send: [
+      ["path", { d: "m3.5 4.2 17 7.8-17 7.8 2.7-6.1L15 12l-8.8-1.7-2.7-6.1Z" }, true]
+    ],
+    settings: [
+      ["line", { x1: "4", y1: "6.5", x2: "20", y2: "6.5" }],
+      ["circle", { cx: "9", cy: "6.5", r: "2" }],
+      ["line", { x1: "4", y1: "12", x2: "20", y2: "12" }],
+      ["circle", { cx: "15", cy: "12", r: "2" }],
+      ["line", { x1: "4", y1: "17.5", x2: "20", y2: "17.5" }],
+      ["circle", { cx: "11", cy: "17.5", r: "2" }]
+    ],
+    star: [["path", { d: "m12 3.3 2.65 5.35 5.9.86-4.28 4.16 1.01 5.88L12 16.77l-5.28 2.78 1.01-5.88-4.28-4.16 5.9-.86L12 3.3Z" }, true]],
+    status: [
+      ["circle", { cx: "12", cy: "12", r: "8" }],
+      ["circle", { cx: "12", cy: "12", r: "2.4" }, true]
+    ],
+    trash: [
+      ["path", { d: "M5.5 7h13l-1 13h-11l-1-13Z" }],
+      ["line", { x1: "4", y1: "7", x2: "20", y2: "7" }],
+      ["path", { d: "M9 7V4.5h6V7" }],
+      ["line", { x1: "10", y1: "10.5", x2: "10.5", y2: "17" }],
+      ["line", { x1: "14", y1: "10.5", x2: "13.5", y2: "17" }]
+    ],
+    unread: [
+      ["circle", { cx: "12", cy: "12", r: "8" }],
+      ["circle", { cx: "12", cy: "12", r: "2.2" }, true]
+    ],
+    users: [
+      ["circle", { cx: "9", cy: "8.5", r: "3" }],
+      ["path", { d: "M3.8 19c.65-3.7 2.35-5.4 5.2-5.4s4.55 1.7 5.2 5.4" }],
+      ["path", { d: "M15.1 6.2a2.8 2.8 0 0 1 0 5.3" }],
+      ["path", { d: "M16 14c2.35.35 3.65 1.95 4.2 5" }]
+    ],
+    warning: [
+      ["path", { d: "M12 3.5 21 20H3L12 3.5Z" }],
+      ["line", { x1: "12", y1: "9", x2: "12", y2: "14" }],
+      ["circle", { cx: "12", cy: "17", r: "0.8" }, true]
+    ],
+    whisper: [
+      ["path", { d: "M4 5.5h16v10H9.8L5 18.8l.8-3.3H4v-10Z" }],
+      ["path", { d: "M8 11.8c1.1-1.7 2.35-2.55 4-2.55s2.9.85 4 2.55" }]
+    ]
+  };
+  function kikiIcon(name, className = "kl-icon", filled = false) {
+    const svg = document.createElementNS(SVG_NAMESPACE, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.setAttribute("class", className === "kl-icon" ? className : `kl-icon ${className}`);
+    if (filled) svg.dataset.filled = "true";
+    for (const [shapeName, attributes, fillable] of ICONS[name]) {
+      const shape = document.createElementNS(SVG_NAMESPACE, shapeName);
+      for (const [attribute, value] of Object.entries(attributes)) {
+        shape.setAttribute(attribute, value);
+      }
+      if (fillable) shape.classList.add("kl-icon-fill");
+      svg.append(shape);
+    }
+    return svg;
   }
 
   // design/references/3929.png
@@ -4634,7 +4910,6 @@ select:focus-visible {
     #topbarSettingsButton = element("button", {
       className: "kl-icon-button kl-topbar-settings",
       type: "button",
-      text: "\u2699",
       title: "KikiLink settings",
       ariaLabel: "Open KikiLink settings"
     });
@@ -4706,7 +4981,6 @@ select:focus-visible {
     #profileButton = element("button", {
       className: "kl-icon-button kl-profile-more",
       type: "button",
-      text: "\u2022\u2022\u2022",
       title: "Player actions",
       ariaLabel: "Open player actions"
     });
@@ -4724,7 +4998,6 @@ select:focus-visible {
     #attachImageButton = element("button", {
       className: "kl-icon-button kl-attach-image",
       type: "button",
-      text: "\u25A7",
       title: "Send an image link",
       ariaLabel: "Send an image link"
     });
@@ -4851,15 +5124,34 @@ select:focus-visible {
       text: "Send image"
     });
     #profileMenu = element("div", { className: "kl-profile-menu" });
+    #aliasDialog = element("dialog", { className: "kl-dialog kl-alias-dialog" });
+    #aliasInput = element("input", { className: "kl-search kl-alias-input" });
+    #saveAliasButton = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Save nickname"
+    });
+    #clearAliasButton = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Use native nickname"
+    });
+    #removeChatDialog = element("dialog", { className: "kl-dialog kl-remove-chat-dialog" });
+    #removeChatName = element("strong", { className: "kl-remove-chat-name" });
+    #removeChatButton = element("button", {
+      className: "kl-text-button kl-text-button--danger",
+      type: "button",
+      text: "Remove chat"
+    });
     #backButton = element("button", {
       className: "kl-icon-button kl-back",
       type: "button",
-      text: "\u2039",
       title: "Back to conversations",
       ariaLabel: "Back to conversations"
     });
     #activePeer;
     #activeName = "";
+    #activeNativeName = "";
     #selectedActivityIndex = 0;
     #selectedActivityTarget;
     #selectedRosterMember;
@@ -4891,6 +5183,8 @@ select:focus-visible {
     #renderedMessageIds = /* @__PURE__ */ new Set();
     #suppressProfileClickUntil = /* @__PURE__ */ new WeakMap();
     #profileMenuToken = 0;
+    #aliasTarget;
+    #removeChatTarget;
     #handleOutsidePointerDown = (event) => {
       if (this.#profileMenu.hidden) return;
       if (event.composedPath().includes(this.#host)) return;
@@ -4918,6 +5212,8 @@ select:focus-visible {
       this.#buildFinderDialog();
       this.#buildPresenceDialog();
       this.#buildImageDialog();
+      this.#buildAliasDialog();
+      this.#buildRemoveChatDialog();
       this.#profileMenu.hidden = true;
       this.#profileMenu.setAttribute("role", "menu");
       this.#profileMenu.setAttribute("aria-label", "Player actions");
@@ -4929,6 +5225,8 @@ select:focus-visible {
         this.#finderDialog,
         this.#presenceDialog,
         this.#imageDialog,
+        this.#aliasDialog,
+        this.#removeChatDialog,
         this.#profileMenu
       );
       document.body.append(this.#host);
@@ -4949,6 +5247,8 @@ select:focus-visible {
       this.#newChatDialog.close();
       this.#presenceDialog.close();
       this.#imageDialog.close();
+      this.#aliasDialog.close();
+      this.#removeChatDialog.close();
       this.#closeProfileMenu();
       window.removeEventListener("resize", this.#handleViewportResize);
       document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
@@ -5004,6 +5304,8 @@ select:focus-visible {
       if (this.#newChatDialog.open) this.#newChatDialog.close();
       if (this.#presenceDialog.open) this.#presenceDialog.close();
       if (this.#imageDialog.open) this.#imageDialog.close();
+      if (this.#aliasDialog.open) this.#aliasDialog.close();
+      if (this.#removeChatDialog.open) this.#removeChatDialog.close();
       this.#closeProfileMenu();
       this.#panel.hidden = true;
       this.#launcher.setAttribute("aria-expanded", "false");
@@ -5014,7 +5316,8 @@ select:focus-visible {
       return view;
     }
     async openChat(memberNumber, memberName) {
-      const name = this.adapter.getMemberNickname(memberNumber) || memberName?.trim() || this.adapter.getMemberName(memberNumber);
+      const existing = await this.service.getConversation(memberNumber);
+      const name = this.adapter.getMemberNickname(memberNumber) || existing?.peerName || memberName?.trim() || this.adapter.getMemberName(memberNumber);
       await this.service.ensureConversation(memberNumber, name);
       await this.#openPanel("chat");
       await this.#selectConversation(memberNumber, name);
@@ -5088,14 +5391,15 @@ select:focus-visible {
       const close = element("button", {
         className: "kl-icon-button",
         type: "button",
-        text: "\xD7",
         title: "Close KikiLink",
         ariaLabel: "Close KikiLink",
         onClick: () => this.close()
       });
+      close.append(kikiIcon("close"));
+      this.#topbarSettingsButton.append(kikiIcon("settings"));
       this.#topbarSettingsButton.addEventListener("click", () => this.#openSettings());
       this.#finderTrigger.replaceChildren(
-        element("span", { className: "kl-finder-trigger-icon", text: "\u2315" }),
+        kikiIcon("search", "kl-finder-trigger-icon"),
         element("span", { className: "kl-finder-trigger-label", text: "Find" }),
         element("kbd", { className: "kl-finder-shortcut", text: "Ctrl K" })
       );
@@ -5131,16 +5435,15 @@ select:focus-visible {
           element("button", {
             className: "kl-sidebar-new-chat",
             type: "button",
-            text: "+",
             title: "New Beep chat",
             ariaLabel: "New Beep chat",
             onClick: () => this.#openNewChat()
-          })
+          }, kikiIcon("plus"))
         ),
         this.#conversationList
       );
       this.#empty.append(
-        element("div", { className: "kl-empty-mark", text: "\u2194" }),
+        element("div", { className: "kl-empty-mark" }, kikiIcon("chat")),
         element("h2", { className: "kl-empty-title", text: "Your Beeps, connected" }),
         element("p", {
           className: "kl-empty-copy",
@@ -5181,7 +5484,7 @@ select:focus-visible {
           this.#closeProfileMenu();
           return;
         }
-        if (event.key === "Escape" && !this.#newChatDialog.open && !this.#finderDialog.open && !this.#presenceDialog.open && !this.#imageDialog.open) {
+        if (event.key === "Escape" && !this.#newChatDialog.open && !this.#finderDialog.open && !this.#presenceDialog.open && !this.#imageDialog.open && !this.#aliasDialog.open && !this.#removeChatDialog.open) {
           this.close();
         }
       });
@@ -5191,11 +5494,11 @@ select:focus-visible {
       });
     }
     #buildFeatureNavigation() {
-      this.#configureNavButton(this.#homeNavButton, "\u2302", "Home", "home");
-      this.#configureNavButton(this.#chatNavButton, "\u2194", "Chat", "chat");
-      this.#configureNavButton(this.#rosterButton, "\u2637", "Players", "roster");
-      this.#configureNavButton(this.#activitiesButton, "\u2726", "Activities", "activities");
-      this.#configureNavButton(this.#settingsNavButton, "\u2699", "Settings", "settings");
+      this.#configureNavButton(this.#homeNavButton, "home", "Home", "home");
+      this.#configureNavButton(this.#chatNavButton, "chat", "Chat", "chat");
+      this.#configureNavButton(this.#rosterButton, "users", "Players", "roster");
+      this.#configureNavButton(this.#activitiesButton, "activities", "Activities", "activities");
+      this.#configureNavButton(this.#settingsNavButton, "settings", "Settings", "settings");
       this.#rosterCount.hidden = true;
       this.#rosterButton.append(this.#rosterCount);
       this.#featureNav.append(
@@ -5209,7 +5512,7 @@ select:focus-visible {
     #configureNavButton(button, icon, label, target) {
       button.dataset.target = target;
       button.replaceChildren(
-        element("span", { className: "kl-nav-icon", text: icon }),
+        kikiIcon(icon, "kl-nav-icon"),
         element("span", { className: "kl-nav-label", text: label })
       );
       button.addEventListener("click", () => this.#activateFeature(target));
@@ -5291,7 +5594,7 @@ select:focus-visible {
       });
       this.#fillFeatureCard(
         chatCard,
-        "\u2194",
+        "chat",
         "START OR CONTINUE",
         "Chat",
         "Read recent Beeps, find conversations, and send a message.",
@@ -5300,7 +5603,7 @@ select:focus-visible {
       );
       this.#fillFeatureCard(
         this.#homeRosterCard,
-        "\u2637",
+        "users",
         "SEE WHO IS HERE",
         "Players",
         "Find people in the room, Whisper, and keep private notes.",
@@ -5310,7 +5613,7 @@ select:focus-visible {
       this.#homeRosterCard.addEventListener("click", () => this.#activateFeature("roster"));
       this.#fillFeatureCard(
         this.#homeActivitiesCard,
-        "\u2726",
+        "activities",
         "EXPRESS YOURSELF",
         "Activities",
         "Choose a reusable room emote and preview it before sending.",
@@ -5326,7 +5629,7 @@ select:focus-visible {
       });
       this.#fillFeatureCard(
         settingsCard,
-        "\u2699",
+        "settings",
         "MAKE IT YOURS",
         "Settings",
         "Adjust the look, comfort, launcher, privacy, and optional tools.",
@@ -5353,7 +5656,7 @@ select:focus-visible {
       const privacy = element(
         "div",
         { className: "kl-home-privacy" },
-        element("span", { className: "kl-home-privacy-icon", text: "\u25C7" }),
+        kikiIcon("lock", "kl-home-privacy-icon"),
         element(
           "span",
           {},
@@ -5372,7 +5675,7 @@ select:focus-visible {
     }
     #fillFeatureCard(card, icon, kicker, title, description, metric, action) {
       card.replaceChildren(
-        element("span", { className: "kl-feature-card-icon", text: icon }),
+        kikiIcon(icon, "kl-feature-card-icon"),
         element(
           "span",
           { className: "kl-feature-card-copy" },
@@ -5435,9 +5738,16 @@ select:focus-visible {
     }
     #buildChat() {
       this.#chat.hidden = true;
+      this.#backButton.append(kikiIcon("back"));
       this.#backButton.addEventListener("click", () => this.#showConversationList());
-      this.#pinButton.textContent = "\u25C7";
+      this.#renderPinButton(false);
       this.#pinButton.addEventListener("click", () => void this.#togglePin());
+      this.#profileButton.append(kikiIcon("more"));
+      this.#attachImageButton.append(kikiIcon("image"));
+      this.#sendButton.replaceChildren(
+        kikiIcon("send"),
+        element("span", { className: "kl-send-label", text: "Send" })
+      );
       const person = element(
         "div",
         { className: "kl-chat-person" },
@@ -5483,7 +5793,7 @@ select:focus-visible {
         this.#resizeComposer();
         this.#updateCounter();
         if (this.#activePeer !== void 0) {
-          this.#saveDraft(this.#activePeer, this.#activeName, this.#composer.value);
+          this.#saveDraft(this.#activePeer, this.#activeNativeName, this.#composer.value);
           this.#updateLocalTyping();
         }
       });
@@ -5957,16 +6267,16 @@ select:focus-visible {
       const tabId = `kikilink-settings-tab-${section}`;
       const panelId = `kikilink-settings-panel-${section}`;
       const labels = {
-        appearance: { icon: "\u25D0", label: "Appearance" },
-        navigation: { icon: "\u2301", label: "Navigation" },
-        chat: { icon: "\u2194", label: "Chat" },
-        players: { icon: "\u2637", label: "Players" },
-        activities: { icon: "\u2726", label: "Activities" }
+        appearance: { icon: "appearance", label: "Appearance" },
+        navigation: { icon: "navigation", label: "Navigation" },
+        chat: { icon: "chat", label: "Chat" },
+        players: { icon: "users", label: "Players" },
+        activities: { icon: "activities", label: "Activities" }
       };
       const tab = element(
         "button",
         { className: "kl-settings-tab", type: "button" },
-        element("span", { className: "kl-settings-tab-icon", text: labels[section].icon }),
+        kikiIcon(labels[section].icon, "kl-settings-tab-icon"),
         element("span", { text: labels[section].label })
       );
       tab.id = tabId;
@@ -6020,11 +6330,11 @@ select:focus-visible {
       const close = element("button", {
         className: "kl-icon-button",
         type: "button",
-        text: "\xD7",
         title: "Close",
         ariaLabel: "Close new chat",
         onClick: () => this.#newChatDialog.close()
       });
+      close.append(kikiIcon("close"));
       const header = element(
         "header",
         { className: "kl-dialog-header" },
@@ -6072,11 +6382,11 @@ select:focus-visible {
       const close = element("button", {
         className: "kl-icon-button",
         type: "button",
-        text: "\xD7",
         title: "Close",
         ariaLabel: "Close LinkFinder",
         onClick: () => this.#finderDialog.close()
       });
+      close.append(kikiIcon("close"));
       const header = element(
         "header",
         { className: "kl-dialog-header" },
@@ -6122,7 +6432,7 @@ select:focus-visible {
         this.#finderQuery.setAttribute("aria-expanded", "false");
         this.#finderQuery.removeAttribute("aria-activedescendant");
       });
-      const searchIcon = element("span", { className: "kl-finder-search-icon", text: "\u2315" });
+      const searchIcon = kikiIcon("search", "kl-finder-search-icon");
       searchIcon.setAttribute("aria-hidden", "true");
       const body = element(
         "div",
@@ -6155,11 +6465,11 @@ select:focus-visible {
       const close = element("button", {
         className: "kl-icon-button",
         type: "button",
-        text: "\xD7",
         title: "Close",
         ariaLabel: "Close status menu",
         onClick: () => this.#presenceDialog.close()
       });
+      close.append(kikiIcon("close"));
       const header = element(
         "header",
         { className: "kl-dialog-header" },
@@ -6240,7 +6550,7 @@ select:focus-visible {
         element(
           "div",
           { className: "kl-presence-caveat" },
-          element("span", { text: "\u25C7" }),
+          kikiIcon("lock"),
           "Appear Offline changes KikiLink only. Bondage Club can still show your native online state."
         )
       );
@@ -6316,14 +6626,7 @@ select:focus-visible {
             text: "A normal Beep link for everyone; an inline preview for KikiLink."
           })
         ),
-        element("button", {
-          className: "kl-icon-button",
-          type: "button",
-          text: "\xD7",
-          title: "Close",
-          ariaLabel: "Close image sender",
-          onClick: () => this.#imageDialog.close()
-        })
+        this.#dialogCloseButton("Close image sender", () => this.#imageDialog.close())
       );
       this.#imageUrlInput.type = "url";
       this.#imageUrlInput.maxLength = 900;
@@ -6368,6 +6671,170 @@ select:focus-visible {
         )
       );
     }
+    #buildAliasDialog() {
+      const title = element("div", { className: "kl-dialog-title", text: "Local nickname" });
+      title.id = "kikilink-alias-title";
+      this.#aliasDialog.setAttribute("aria-labelledby", title.id);
+      this.#aliasInput.type = "text";
+      this.#aliasInput.maxLength = 40;
+      this.#aliasInput.autocomplete = "off";
+      this.#aliasInput.spellcheck = false;
+      this.#aliasInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.isComposing) return;
+        event.preventDefault();
+        void this.#saveLocalAlias(this.#aliasInput.value);
+      });
+      this.#saveAliasButton.addEventListener(
+        "click",
+        () => void this.#saveLocalAlias(this.#aliasInput.value)
+      );
+      this.#clearAliasButton.addEventListener("click", () => void this.#saveLocalAlias(""));
+      this.#aliasDialog.addEventListener("close", () => {
+        this.#aliasTarget = void 0;
+      });
+      this.#aliasDialog.append(
+        element(
+          "header",
+          { className: "kl-dialog-header" },
+          element(
+            "div",
+            { className: "kl-dialog-heading" },
+            title,
+            element("div", {
+              className: "kl-dialog-subtitle",
+              text: "A private label for this KikiLink chat. It is never sent to anyone."
+            })
+          ),
+          this.#dialogCloseButton("Close local nickname", () => this.#aliasDialog.close())
+        ),
+        element(
+          "div",
+          { className: "kl-dialog-body kl-alias-body" },
+          element(
+            "label",
+            { className: "kl-presence-field" },
+            element("span", { className: "kl-presence-field-label", text: "Nickname you will see" }),
+            this.#aliasInput
+          ),
+          element(
+            "p",
+            { className: "kl-local-only-note" },
+            kikiIcon("lock"),
+            element("span", {
+              text: "Bondage Club names, outgoing messages, and the other player's addon stay unchanged."
+            })
+          )
+        ),
+        element(
+          "footer",
+          { className: "kl-dialog-actions kl-alias-actions" },
+          this.#clearAliasButton,
+          element("span", { className: "kl-dialog-actions-spacer" }),
+          element("button", {
+            className: "kl-text-button",
+            type: "button",
+            text: "Cancel",
+            onClick: () => this.#aliasDialog.close()
+          }),
+          this.#saveAliasButton
+        )
+      );
+    }
+    #buildRemoveChatDialog() {
+      const title = element("div", { className: "kl-dialog-title", text: "Remove recent chat?" });
+      title.id = "kikilink-remove-chat-title";
+      this.#removeChatDialog.setAttribute("aria-labelledby", title.id);
+      this.#removeChatDialog.addEventListener("close", () => {
+        this.#removeChatTarget = void 0;
+      });
+      this.#removeChatButton.addEventListener("click", () => void this.#confirmRemoveChat());
+      this.#removeChatDialog.append(
+        element(
+          "header",
+          { className: "kl-dialog-header" },
+          element("div", { className: "kl-dialog-heading" }, title),
+          this.#dialogCloseButton(
+            "Close remove chat confirmation",
+            () => this.#removeChatDialog.close()
+          )
+        ),
+        element(
+          "div",
+          { className: "kl-dialog-body kl-remove-chat-body" },
+          element("div", { className: "kl-remove-chat-icon" }, kikiIcon("trash")),
+          element(
+            "p",
+            {},
+            "Remove ",
+            this.#removeChatName,
+            " from KikiLink recent chats and delete this chat's local KikiLink history?"
+          ),
+          element("p", {
+            className: "kl-remove-chat-safe",
+            text: "This does not unfriend them and does not change Bondage Club's native Beep log."
+          })
+        ),
+        element(
+          "footer",
+          { className: "kl-dialog-actions" },
+          element("button", {
+            className: "kl-text-button",
+            type: "button",
+            text: "Keep chat",
+            onClick: () => this.#removeChatDialog.close()
+          }),
+          this.#removeChatButton
+        )
+      );
+    }
+    #openAliasDialog(conversation) {
+      this.#aliasTarget = {
+        memberNumber: conversation.peerNumber,
+        nativeName: conversation.peerName
+      };
+      this.#aliasInput.value = conversation.localAlias ?? "";
+      this.#aliasInput.placeholder = conversation.peerName;
+      this.#clearAliasButton.hidden = !conversation.localAlias;
+      if (!this.#aliasDialog.open) this.#aliasDialog.showModal();
+      this.#aliasInput.focus();
+      this.#aliasInput.select();
+    }
+    async #saveLocalAlias(value) {
+      const target = this.#aliasTarget;
+      if (!target) return;
+      const alias = await this.service.setLocalAlias(target.memberNumber, value);
+      const conversation = await this.service.getConversation(target.memberNumber);
+      if (!conversation) {
+        this.#aliasDialog.close();
+        return;
+      }
+      if (target.memberNumber === this.#activePeer) {
+        const displayName = conversationDisplayName(conversation);
+        this.#activeName = displayName;
+        this.#activeNativeName = conversation.peerName;
+        this.#chatName.textContent = displayName;
+        this.#chatAvatar.textContent = avatarText(displayName);
+        this.#renderTypingIndicator();
+      }
+      this.#aliasDialog.close();
+      await this.refresh();
+      this.#toast(alias ? `Local nickname set to ${alias}.` : "Using the native nickname again.");
+    }
+    #openRemoveChatDialog(memberNumber, displayName) {
+      this.#removeChatTarget = { memberNumber, displayName };
+      this.#removeChatName.textContent = displayName;
+      if (!this.#removeChatDialog.open) this.#removeChatDialog.showModal();
+      this.#removeChatButton.focus();
+    }
+    async #confirmRemoveChat() {
+      const target = this.#removeChatTarget;
+      if (!target) return;
+      await this.service.removeConversation(target.memberNumber);
+      if (target.memberNumber === this.#activePeer) this.#resetActiveConversation();
+      this.#removeChatDialog.close();
+      await this.refresh();
+      this.#toast(`${target.displayName} removed from recent chats.`);
+    }
     #openImageDialog() {
       if (this.#activePeer === void 0) {
         this.#toast("Choose a conversation first.", "error");
@@ -6383,7 +6850,7 @@ select:focus-visible {
       this.#sendImageButton.disabled = !url;
       if (!this.#imageUrlInput.value.trim()) {
         this.#imagePreview.replaceChildren(
-          element("span", { className: "kl-image-compose-icon", text: "\u25A7" }),
+          element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
           element("span", { text: "Paste a direct image link to check it." })
         );
         this.#imagePreview.dataset.state = "empty";
@@ -6391,7 +6858,7 @@ select:focus-visible {
       }
       if (!url) {
         this.#imagePreview.replaceChildren(
-          element("span", { className: "kl-image-compose-icon", text: "!" }),
+          element("span", { className: "kl-image-compose-icon" }, kikiIcon("warning")),
           element("span", { text: "Use a direct HTTPS link ending in a supported image extension." })
         );
         this.#imagePreview.dataset.state = "error";
@@ -6399,7 +6866,7 @@ select:focus-visible {
       }
       const parsed = new URL(url);
       this.#imagePreview.replaceChildren(
-        element("span", { className: "kl-image-compose-icon", text: "\u2713" }),
+        element("span", { className: "kl-image-compose-icon" }, kikiIcon("check")),
         element(
           "span",
           {},
@@ -6446,7 +6913,7 @@ select:focus-visible {
         {
           id: "destination-home",
           kind: "destination",
-          icon: "\u2302",
+          icon: "home",
           category: "Destination",
           title: "Home",
           detail: "Overview and your suggested next step",
@@ -6457,7 +6924,7 @@ select:focus-visible {
         {
           id: "destination-chat",
           kind: "destination",
-          icon: "\u2194",
+          icon: "chat",
           category: "Destination",
           title: "Chat",
           detail: unread > 0 ? `${unread} unread ${unread === 1 ? "Beep" : "Beeps"}` : "Recent Beep conversations",
@@ -6468,7 +6935,7 @@ select:focus-visible {
         {
           id: "new-chat",
           kind: "destination",
-          icon: "+",
+          icon: "plus",
           category: "Action",
           title: "Start a new chat",
           detail: "Choose a contact or enter a member number",
@@ -6479,7 +6946,7 @@ select:focus-visible {
         {
           id: "change-status",
           kind: "destination",
-          icon: "\u25CF",
+          icon: "status",
           category: "Action",
           title: "Change my status",
           detail: settings.linkPresence.enabled ? presenceLabel(this.presence.get(this.adapter.getOwnMemberNumber()).status) : "Presence sharing is off",
@@ -6490,7 +6957,7 @@ select:focus-visible {
         {
           id: "destination-players",
           kind: "destination",
-          icon: "\u2637",
+          icon: "users",
           category: "Destination",
           title: "Players",
           detail: settings.linkRoster.enabled ? `${currentRoomCount} ${currentRoomCount === 1 ? "person" : "people"} here now` : "Optional player notebook \xB7 currently off",
@@ -6501,7 +6968,7 @@ select:focus-visible {
         {
           id: "destination-activities",
           kind: "destination",
-          icon: "\u2726",
+          icon: "activities",
           category: "Destination",
           title: "Activities",
           detail: settings.linkActivities.enabled ? `${settings.linkActivities.activities.length} saved activities` : "Optional room actions \xB7 currently off",
@@ -6512,7 +6979,7 @@ select:focus-visible {
         {
           id: "destination-settings",
           kind: "destination",
-          icon: "\u2699",
+          icon: "settings",
           category: "Destination",
           title: "Settings",
           detail: "Customize KikiLink",
@@ -6531,9 +6998,9 @@ select:focus-visible {
         results.push({
           id: `conversation-${conversation.peerNumber}`,
           kind: "conversation",
-          icon: "\u2194",
+          icon: "chat",
           category: "Chat",
-          title: conversation.peerName,
+          title: conversationDisplayName(conversation),
           detail: details.join(" \xB7 "),
           keywords: `${conversation.peerNumber} beep message conversation ${conversation.lastMessage}`,
           priority: 120 + Math.min(conversation.unread * 8, 40) + (conversation.pinned ? 12 : 0),
@@ -6556,7 +7023,7 @@ select:focus-visible {
         results.push({
           id: `player-${entry.memberNumber}`,
           kind: "player",
-          icon: entry.favorite ? "\u2605" : "\u2637",
+          icon: entry.favorite ? "star" : "users",
           category: entry.present ? "In room" : "Player",
           title: entry.displayName,
           detail: details.join(" \xB7 "),
@@ -6571,7 +7038,7 @@ select:focus-visible {
         results.push({
           id: `contact-${contact.memberNumber}`,
           kind: "conversation",
-          icon: "\u2194",
+          icon: "chat",
           category: "Contact",
           title: contact.memberName,
           detail: `Known contact \xB7 #${contact.memberNumber}`,
@@ -6588,7 +7055,7 @@ select:focus-visible {
         results.push({
           id: `activity-${index}`,
           kind: "activity",
-          icon: "\u2726",
+          icon: "activities",
           category: "Activity",
           title: activity.label,
           detail: activity.template,
@@ -6624,7 +7091,7 @@ select:focus-visible {
           results.unshift({
             id: `direct-${directNumber}`,
             kind: "conversation",
-            icon: "+",
+            icon: "plus",
             category: "Action",
             title: `Start chat with #${directNumber}`,
             detail: this.adapter.getMemberName(directNumber),
@@ -6658,8 +7125,11 @@ select:focus-visible {
         return;
       }
       results.forEach((result, index) => {
-        const resultIcon = element("span", { className: "kl-finder-result-icon", text: result.icon });
-        resultIcon.setAttribute("aria-hidden", "true");
+        const resultIcon = element(
+          "span",
+          { className: "kl-finder-result-icon" },
+          kikiIcon(result.icon, "kl-finder-result-symbol", result.icon === "star")
+        );
         const option = element(
           "button",
           { className: "kl-finder-result", type: "button" },
@@ -6867,7 +7337,7 @@ select:focus-visible {
       status.hidden = presence.status === "unknown";
       badges.append(status);
       if (entry.isFriend) badges.append(element("span", { className: "kl-roster-friend", text: "FRIEND" }));
-      if (entry.favorite) badges.append(element("span", { className: "kl-roster-favorite", text: "\u2605" }));
+      if (entry.favorite) badges.append(kikiIcon("star", "kl-roster-favorite", true));
       const preview = entry.tags.length ? entry.tags.join(" \xB7 ") : entry.note ? entry.note.replace(/\s+/gu, " ") : entry.lastRoomName || `Member ${entry.memberNumber}`;
       const button = element(
         "button",
@@ -6923,7 +7393,6 @@ select:focus-visible {
       const favorite = element("button", {
         className: "kl-icon-button kl-roster-star",
         type: "button",
-        text: entry.favorite ? "\u2605" : "\u2606",
         title: entry.favorite ? "Remove from favorites" : "Add to favorites",
         ariaLabel: entry.favorite ? "Remove from favorites" : "Add to favorites",
         onClick: () => {
@@ -6933,6 +7402,7 @@ select:focus-visible {
           this.#renderRoster();
         }
       });
+      favorite.append(kikiIcon("star", "kl-favorite-icon", entry.favorite));
       const presence = this.presence.get(entry.memberNumber);
       const identity = element(
         "div",
@@ -7295,6 +7765,17 @@ select:focus-visible {
         control
       );
     }
+    #dialogCloseButton(ariaLabel, onClick) {
+      const button = element("button", {
+        className: "kl-icon-button",
+        type: "button",
+        title: "Close",
+        ariaLabel,
+        onClick
+      });
+      button.append(kikiIcon("close"));
+      return button;
+    }
     async #renderHome() {
       const ownName = this.adapter.getOwnName().trim();
       const greeting = greetingForCurrentTime();
@@ -7307,7 +7788,7 @@ select:focus-visible {
       if (this.#unreadCount > 0) {
         this.#homeChatMetric.textContent = `${this.#unreadCount} unread \xB7 ${conversations.length} chats`;
       } else if (recent && recent.lastMessageAt > 0) {
-        this.#homeChatMetric.textContent = `Last with ${recent.peerName} \xB7 ${formatRelativeTime(recent.lastMessageAt)}`;
+        this.#homeChatMetric.textContent = `Last with ${conversationDisplayName(recent)} \xB7 ${formatRelativeTime(recent.lastMessageAt)}`;
       } else if (conversations.length > 0) {
         this.#homeChatMetric.textContent = `${conversations.length} saved ${conversations.length === 1 ? "chat" : "chats"}`;
       } else if (onlineFriendCount > 0) {
@@ -7334,21 +7815,21 @@ select:focus-visible {
           peerNumber: unread.peerNumber,
           peerName: unread.peerName
         };
-        this.#homeActionIcon.textContent = "\u2194";
+        this.#homeActionIcon.replaceChildren(kikiIcon("chat"));
         this.#homeActionTitle.textContent = `${total} unread ${total === 1 ? "Beep" : "Beeps"}`;
-        this.#homeActionDescription.textContent = total === unread.unread ? `Open the conversation with ${unread.peerName} and continue when you are ready.` : `Start with ${unread.peerName}, then work through the rest at your pace.`;
-        this.#homeActionMeta.textContent = total === unread.unread ? `From ${unread.peerName}` : "Across recent chats";
+        this.#homeActionDescription.textContent = total === unread.unread ? `Open the conversation with ${conversationDisplayName(unread)} and continue when you are ready.` : `Start with ${conversationDisplayName(unread)}, then work through the rest at your pace.`;
+        this.#homeActionMeta.textContent = total === unread.unread ? `From ${conversationDisplayName(unread)}` : "Across recent chats";
         this.#homeActionButton.textContent = total === 1 ? "Read message" : "Read messages";
       } else if (conversations.length === 0) {
         this.#homeAction = { kind: "new-chat" };
-        this.#homeActionIcon.textContent = "+";
+        this.#homeActionIcon.replaceChildren(kikiIcon("plus"));
         this.#homeActionTitle.textContent = "Start your first chat";
         this.#homeActionDescription.textContent = "Choose someone you know or enter a member number. KikiLink keeps the conversation together.";
         this.#homeActionMeta.textContent = "Takes only a moment";
         this.#homeActionButton.textContent = "Start a chat";
       } else if (settings.linkRoster.enabled && inRoom && this.#presentCount > 0) {
         this.#homeAction = { kind: "roster" };
-        this.#homeActionIcon.textContent = "\u2637";
+        this.#homeActionIcon.replaceChildren(kikiIcon("users"));
         this.#homeActionTitle.textContent = roomName ? `See who is in ${roomName}` : "See who is here";
         this.#homeActionDescription.textContent = "Open Players to Whisper, Beep, view a profile, or add a private note.";
         this.#homeActionMeta.textContent = `${this.#presentCount} ${this.#presentCount === 1 ? "person" : "people"} here now`;
@@ -7359,14 +7840,14 @@ select:focus-visible {
           peerNumber: recent.peerNumber,
           peerName: recent.peerName
         };
-        this.#homeActionIcon.textContent = "\u2194";
-        this.#homeActionTitle.textContent = `Continue with ${recent.peerName}`;
+        this.#homeActionIcon.replaceChildren(kikiIcon("chat"));
+        this.#homeActionTitle.textContent = `Continue with ${conversationDisplayName(recent)}`;
         this.#homeActionDescription.textContent = "Pick up your most recent Beep conversation.";
         this.#homeActionMeta.textContent = recent.lastMessageAt > 0 ? formatRelativeTime(recent.lastMessageAt) : "Conversation ready";
         this.#homeActionButton.textContent = "Open chat";
       } else {
         this.#homeAction = { kind: "chat" };
-        this.#homeActionIcon.textContent = "\u2194";
+        this.#homeActionIcon.replaceChildren(kikiIcon("chat"));
         this.#homeActionTitle.textContent = "Open your chats";
         this.#homeActionDescription.textContent = "Find a conversation or start a new Beep.";
         this.#homeActionMeta.textContent = "Recent chats are kept together";
@@ -7426,7 +7907,7 @@ select:focus-visible {
       }
       if (snapshot.roomName) {
         this.#chatRoom.replaceChildren(
-          element("span", { className: "kl-chat-room-icon", text: "\u2302" }),
+          kikiIcon("location", "kl-chat-room-icon"),
           element("span", { className: "kl-chat-room-name", text: snapshot.roomName })
         );
         this.#chatRoom.hidden = false;
@@ -7516,18 +7997,21 @@ select:focus-visible {
       const allConversations = await this.service.listConversations();
       for (const conversation of allConversations) {
         const nickname = this.adapter.getMemberNickname(conversation.peerNumber);
-        if (!nickname || nickname === conversation.peerName) continue;
-        conversation.peerName = nickname;
-        void this.service.setPeerName(conversation.peerNumber, nickname);
+        if (nickname && nickname !== conversation.peerName) {
+          conversation.peerName = nickname;
+          void this.service.setPeerName(conversation.peerNumber, nickname);
+        }
         if (conversation.peerNumber === this.#activePeer) {
-          this.#activeName = nickname;
-          this.#chatName.textContent = nickname;
-          this.#chatAvatar.textContent = avatarText(nickname);
+          const displayName = conversationDisplayName(conversation);
+          this.#activeName = displayName;
+          this.#activeNativeName = conversation.peerName;
+          this.#chatName.textContent = displayName;
+          this.#chatAvatar.textContent = avatarText(displayName);
         }
       }
       const conversations = allConversations.filter((conversation) => {
         if (!query) return true;
-        return conversation.peerName.toLocaleLowerCase().includes(query) || conversation.peerNumber.toString().includes(query) || conversation.lastMessage.toLocaleLowerCase().includes(query);
+        return conversationDisplayName(conversation).toLocaleLowerCase().includes(query) || conversation.peerName.toLocaleLowerCase().includes(query) || conversation.peerNumber.toString().includes(query) || conversation.lastMessage.toLocaleLowerCase().includes(query);
       });
       this.#conversationList.replaceChildren();
       if (conversations.length === 0) {
@@ -7545,11 +8029,12 @@ select:focus-visible {
     }
     #conversationButton(conversation) {
       const presence = this.presence.get(conversation.peerNumber);
+      const displayName = conversationDisplayName(conversation);
       const nameRow = element(
         "div",
         { className: "kl-conversation-name-row" },
-        element("span", { className: "kl-conversation-name", text: conversation.peerName }),
-        conversation.pinned ? element("span", { className: "kl-pin", text: "\u25C6" }) : null
+        element("span", { className: "kl-conversation-name", text: displayName }),
+        conversation.pinned ? kikiIcon("pin", "kl-pin", true) : null
       );
       const prefix = conversation.lastDirection === "outgoing" ? "You: " : "";
       const previewText = messagePreview(conversation.lastMessage);
@@ -7578,7 +8063,7 @@ select:focus-visible {
         element(
           "div",
           { className: "kl-avatar-wrap" },
-          element("div", { className: "kl-avatar", text: avatarText(conversation.peerName) }),
+          element("div", { className: "kl-avatar", text: avatarText(displayName) }),
           presenceDot(presence.status)
         ),
         main,
@@ -7592,7 +8077,7 @@ select:focus-visible {
       );
       this.#bindProfileMenu(button, () => ({
         memberNumber: conversation.peerNumber,
-        displayName: conversation.peerName
+        displayName
       }));
       return button;
     }
@@ -7600,15 +8085,17 @@ select:focus-visible {
       if (this.#activePeer !== void 0 && this.#activePeer !== peerNumber) {
         this.#stopLocalTyping();
       }
-      const displayName = this.adapter.getMemberNickname(peerNumber) ?? peerName;
+      const nativeName = this.adapter.getMemberNickname(peerNumber) ?? peerName;
+      const conversation = await this.service.ensureConversation(peerNumber, nativeName);
+      if (nativeName !== conversation.peerName) {
+        await this.service.setPeerName(peerNumber, nativeName);
+        conversation.peerName = nativeName;
+      }
+      const displayName = conversationDisplayName(conversation);
       this.#activePeer = peerNumber;
       this.#activeName = displayName;
+      this.#activeNativeName = nativeName;
       this.#panel.dataset.mobileView = "chat";
-      const conversation = await this.service.ensureConversation(peerNumber, displayName);
-      if (displayName !== conversation.peerName) {
-        await this.service.setPeerName(peerNumber, displayName);
-        conversation.peerName = displayName;
-      }
       await this.service.markRead(peerNumber);
       this.#empty.hidden = true;
       this.#chat.hidden = false;
@@ -7620,8 +8107,7 @@ select:focus-visible {
       this.#renderedMessageIds.clear();
       this.#renderActivePresence();
       this.presence.request(peerNumber);
-      this.#pinButton.textContent = conversation.pinned ? "\u25C6" : "\u25C7";
-      this.#pinButton.title = conversation.pinned ? "Unpin conversation" : "Pin conversation";
+      this.#renderPinButton(conversation.pinned);
       this.#composer.value = conversation.draft;
       this.#includeRoom.checked = this.settings.get().linkChat.includeRoomByDefault;
       this.#attachImageButton.disabled = !this.adapter.canSendBeep();
@@ -7686,21 +8172,21 @@ select:focus-visible {
       const body = this.#renderMessageBody(message);
       const actions = element(
         "div",
-        { className: "kl-message-actions" },
+        { className: "kl-message-side-actions" },
         element("button", {
           className: "kl-message-action",
           type: "button",
-          text: "Reply",
           title: "Quote this message in your reply",
+          ariaLabel: "Reply to message",
           onClick: () => this.#replyToMessage(message)
-        }),
+        }, kikiIcon("reply")),
         element("button", {
           className: "kl-message-action",
           type: "button",
-          text: "Copy",
           title: "Copy message",
+          ariaLabel: "Copy message",
           onClick: () => void this.#copyMessage(message.content)
-        })
+        }, kikiIcon("copy"))
       );
       const meta = element(
         "div",
@@ -7708,8 +8194,8 @@ select:focus-visible {
         message.roomName ? element("span", { className: "kl-message-room", text: message.roomName }) : null,
         element("time", { text: formatMessageTime(message.sentAt) })
       );
-      const bubble = element("div", { className: "kl-message-bubble" }, body, actions, meta);
-      const row = element("div", { className: "kl-message-row" }, bubble);
+      const bubble = element("div", { className: "kl-message-bubble" }, body, meta);
+      const row = element("div", { className: "kl-message-row" }, bubble, actions);
       row.dataset.direction = message.direction;
       row.dataset.messageId = message.id;
       return row;
@@ -7758,7 +8244,7 @@ select:focus-visible {
         this.#stopLocalTyping();
         if (clearComposer) {
           this.#composer.value = "";
-          await this.service.setDraft(this.#activePeer, this.#activeName, "");
+          await this.service.setDraft(this.#activePeer, this.#activeNativeName, "");
           this.#resizeComposer();
           this.#updateCounter();
         }
@@ -7819,7 +8305,7 @@ select:focus-visible {
         this.#loadRemoteImage(preview, url);
       } else {
         preview.append(
-          element("span", { className: "kl-image-placeholder-icon", text: "\u25A7" }),
+          kikiIcon("image", "kl-image-placeholder-icon"),
           element("span", { className: "kl-image-placeholder-title", text: "Remote image" }),
           element("span", {
             className: "kl-image-placeholder-help",
@@ -7856,7 +8342,7 @@ select:focus-visible {
       image.src = url;
     }
     #replyToMessage(message) {
-      const author = message.direction === "incoming" ? this.#activeName : this.adapter.getOwnName();
+      const author = message.direction === "incoming" ? this.#activeNativeName : this.adapter.getOwnName();
       const excerpt = message.content.replace(/\s+/gu, " ").trim().slice(0, 180) || "Beep";
       const quote = `> ${author}: ${excerpt}
 `;
@@ -7881,9 +8367,17 @@ select:focus-visible {
     async #togglePin() {
       if (this.#activePeer === void 0) return;
       const pinned = await this.service.togglePinned(this.#activePeer);
-      this.#pinButton.textContent = pinned ? "\u25C6" : "\u25C7";
-      this.#pinButton.title = pinned ? "Unpin conversation" : "Pin conversation";
+      this.#renderPinButton(pinned);
       await this.#renderConversations();
+    }
+    #renderPinButton(pinned) {
+      this.#pinButton.replaceChildren(kikiIcon("pin", "kl-pin-button-icon", pinned));
+      this.#pinButton.title = pinned ? "Unpin conversation" : "Pin conversation";
+      this.#pinButton.setAttribute(
+        "aria-label",
+        pinned ? "Unpin conversation" : "Pin conversation"
+      );
+      this.#pinButton.setAttribute("aria-pressed", String(pinned));
     }
     #bindProfileMenu(target, profile) {
       if (!(target instanceof HTMLButtonElement)) {
@@ -7954,8 +8448,10 @@ select:focus-visible {
       this.presence.request(memberNumber);
       const [conversation] = await Promise.all([this.service.getConversation(memberNumber)]);
       if (token !== this.#profileMenuToken) return;
+      const nativeName = conversation?.peerName ?? displayName;
+      const shownName = conversation ? conversationDisplayName(conversation) : displayName;
       const snapshot = this.presence.get(memberNumber);
-      const rosterEntry = this.roster.get(memberNumber, displayName);
+      const rosterEntry = this.roster.get(memberNumber, nativeName);
       const inRoom = this.adapter.isMemberInCurrentRoom(memberNumber);
       const header = element(
         "header",
@@ -7963,30 +8459,34 @@ select:focus-visible {
         element(
           "div",
           { className: "kl-avatar-wrap" },
-          element("div", { className: "kl-avatar", text: avatarText(displayName) }),
+          element("div", { className: "kl-avatar", text: avatarText(shownName) }),
           presenceDot(snapshot.status)
         ),
         element(
           "div",
           { className: "kl-profile-menu-identity" },
-          element("strong", { text: displayName }),
+          element("strong", { text: shownName }),
           element(
             "span",
             { title: presenceDescription(snapshot) },
             presenceDot(snapshot.status),
             `${presenceLabel(snapshot.status)} \xB7 #${memberNumber}`
           ),
-          snapshot.statusMessage ? element("small", { className: "kl-presence-note", text: snapshot.statusMessage }) : null
+          snapshot.statusMessage ? element("small", { className: "kl-presence-note", text: snapshot.statusMessage }) : null,
+          conversation?.localAlias ? element("small", {
+            className: "kl-profile-native-name",
+            text: `Local nickname \xB7 ${conversation.peerName}`
+          }) : null
         )
       );
       const primary = element(
         "div",
         { className: "kl-profile-menu-group" },
-        this.#profileMenuAction("\u2194", "Message", "Open LinkChat", () => {
-          void this.openChat(memberNumber, displayName);
+        this.#profileMenuAction("chat", "Message", "Open LinkChat", () => {
+          void this.openChat(memberNumber, nativeName);
         }),
         this.#profileMenuAction(
-          "\u25D6",
+          "whisper",
           "Whisper",
           inRoom ? "Set native Whisper target" : "Available while this player is in your room",
           () => {
@@ -8000,7 +8500,7 @@ select:focus-visible {
           !inRoom
         ),
         this.#profileMenuAction(
-          "\u25CE",
+          "profile",
           "Native profile",
           inRoom ? "Open the Bondage Club profile" : "Available while this player is in your room",
           () => {
@@ -8018,33 +8518,54 @@ select:focus-visible {
         "div",
         { className: "kl-profile-menu-group" },
         this.#profileMenuAction(
-          rosterEntry.favorite ? "\u2605" : "\u2606",
+          "star",
           rosterEntry.favorite ? "Remove favorite" : "Add favorite",
           "Saved in your private player notebook",
           () => {
-            this.roster.toggleFavorite(memberNumber, displayName);
+            this.roster.toggleFavorite(memberNumber, nativeName);
             this.#renderRoster();
             void this.#renderHome();
             this.#toast(rosterEntry.favorite ? "Removed from favorites." : "Added to favorites.");
-          }
+          },
+          false,
+          rosterEntry.favorite
         ),
-        this.#profileMenuAction("\u270E", "Player note", "Open private notes and tags", () => {
+        this.#profileMenuAction("note", "Player note", "Open private notes and tags", () => {
           this.#openRoster(memberNumber);
         }),
         conversation ? this.#profileMenuAction(
-          conversation.pinned ? "\u25C7" : "\u25C6",
+          "edit",
+          conversation.localAlias ? "Edit local nickname" : "Set local nickname",
+          conversation.localAlias ? `Only you see \u201C${conversation.localAlias}\u201D` : "Cosmetic and visible only to you",
+          () => this.#openAliasDialog(conversation)
+        ) : null,
+        conversation ? this.#profileMenuAction(
+          "pin",
           conversation.pinned ? "Unpin chat" : "Pin chat",
           "Organize your recent chats",
-          () => void this.#toggleConversationPin(memberNumber)
+          () => void this.#toggleConversationPin(memberNumber),
+          false,
+          conversation.pinned
         ) : null,
-        conversation ? this.#profileMenuAction("\u25CF", "Mark unread", "Keep this chat in your unread queue", () => {
+        conversation ? this.#profileMenuAction("unread", "Mark unread", "Keep this chat in your unread queue", () => {
           void this.#markConversationUnread(memberNumber);
         }) : null,
-        this.#profileMenuAction("#", "Copy member ID", `Copy ${memberNumber}`, () => {
+        this.#profileMenuAction("id", "Copy member ID", `Copy ${memberNumber}`, () => {
           void this.#copyRosterMemberNumber(memberNumber);
         })
       );
+      const remove = conversation ? element(
+        "div",
+        { className: "kl-profile-menu-group kl-profile-menu-group--danger" },
+        this.#profileMenuAction(
+          "trash",
+          "Remove from recent chats",
+          "Deletes only this local KikiLink history",
+          () => this.#openRemoveChatDialog(memberNumber, shownName)
+        )
+      ) : null;
       this.#profileMenu.replaceChildren(header, primary, organize);
+      if (remove) this.#profileMenu.append(remove);
       this.#profileMenu.hidden = false;
       this.#profileMenu.style.left = `${x}px`;
       this.#profileMenu.style.top = `${y}px`;
@@ -8053,11 +8574,11 @@ select:focus-visible {
       this.#profileMenu.style.top = `${clamp(y, 8, Math.max(8, window.innerHeight - bounds.height - 8))}px`;
       this.#profileMenu.querySelector(".kl-profile-menu-action:not(:disabled)")?.focus();
     }
-    #profileMenuAction(icon, label, help, action, disabled = false) {
+    #profileMenuAction(icon, label, help, action, disabled = false, filled = false) {
       const button = element(
         "button",
         { className: "kl-profile-menu-action", type: "button" },
-        element("span", { className: "kl-profile-menu-icon", text: icon }),
+        element("span", { className: "kl-profile-menu-icon" }, kikiIcon(icon, "kl-profile-action-icon", filled)),
         element(
           "span",
           { className: "kl-profile-menu-copy" },
@@ -8081,8 +8602,7 @@ select:focus-visible {
     async #toggleConversationPin(memberNumber) {
       const pinned = await this.service.togglePinned(memberNumber);
       if (memberNumber === this.#activePeer) {
-        this.#pinButton.textContent = pinned ? "\u25C6" : "\u25C7";
-        this.#pinButton.title = pinned ? "Unpin conversation" : "Pin conversation";
+        this.#renderPinButton(pinned);
       }
       await this.#renderConversations();
       this.#toast(pinned ? "Chat pinned." : "Chat unpinned.");
@@ -8180,7 +8700,7 @@ select:focus-visible {
     }
     #insertQuickAction(action) {
       if (this.#activePeer === void 0) return;
-      const expanded = action.template.replaceAll("{name}", this.#activeName).replaceAll("{member}", this.#activePeer.toString()).replaceAll("{me}", this.adapter.getOwnName());
+      const expanded = action.template.replaceAll("{name}", this.#activeNativeName).replaceAll("{member}", this.#activePeer.toString()).replaceAll("{me}", this.adapter.getOwnName());
       const current = this.#composer.value.trimEnd();
       const next = current ? `${current}
 ${expanded}` : expanded;
@@ -8214,10 +8734,10 @@ ${expanded}` : expanded;
       const remove = element("button", {
         className: "kl-icon-button kl-remove-action",
         type: "button",
-        text: "\xD7",
         title: "Remove action",
         ariaLabel: "Remove quick action"
       });
+      remove.append(kikiIcon("trash"));
       const row = element("div", { className: "kl-action-editor-row" }, label, template, remove);
       remove.addEventListener("click", () => row.remove());
       this.#quickActionsEditor.append(row);
@@ -8251,10 +8771,10 @@ ${expanded}` : expanded;
       const remove = element("button", {
         className: "kl-icon-button kl-remove-action",
         type: "button",
-        text: "\xD7",
         title: "Remove activity",
         ariaLabel: "Remove room activity"
       });
+      remove.append(kikiIcon("trash"));
       const row = element(
         "div",
         { className: "kl-action-editor-row kl-activity-editor-row" },
@@ -8382,14 +8902,23 @@ ${expanded}` : expanded;
     async #clearHistory() {
       if (!window.confirm("Clear all KikiLink Beep history and conversation drafts?")) return;
       await this.service.clearHistory();
+      this.#resetActiveConversation();
+      await this.refresh();
+      this.#toast("LinkChat history cleared.");
+    }
+    #resetActiveConversation() {
+      this.#stopLocalTyping();
       this.#activePeer = void 0;
       this.#activeName = "";
+      this.#activeNativeName = "";
+      this.#messageRenderPeer = void 0;
+      this.#renderedMessageIds.clear();
+      this.#composer.value = "";
+      this.#messages.replaceChildren();
       this.#attachImageButton.disabled = true;
       this.#chat.hidden = true;
       this.#empty.hidden = false;
       this.#panel.dataset.mobileView = "list";
-      await this.refresh();
-      this.#toast("LinkChat history cleared.");
     }
     #exportNotebook() {
       if (typeof URL.createObjectURL !== "function") {
@@ -8602,7 +9131,6 @@ ${expanded}` : expanded;
       const dismiss = element("button", {
         className: "kl-toast-dismiss",
         type: "button",
-        text: "\xD7",
         title: "Dismiss message",
         ariaLabel: "Dismiss message",
         onClick: () => {
@@ -8611,6 +9139,7 @@ ${expanded}` : expanded;
           toast.remove();
         }
       });
+      dismiss.append(kikiIcon("close"));
       toast.append(dismiss);
       const surface = this.#newChatDialog.open ? this.#newChatDialog : this.#panel;
       surface.append(toast);
@@ -8658,7 +9187,7 @@ ${expanded}` : expanded;
     return definitions.map((definition, index) => ({
       id: `setting-${definition.section}`,
       kind: "setting",
-      icon: "\u2699",
+      icon: "settings",
       category: "Settings",
       title: definition.title,
       detail: definition.detail,
@@ -8727,7 +9256,7 @@ ${expanded}` : expanded;
     const image = parseMessageLinks(trimmed).find(
       (link) => link.image && link.start === 0 && link.end === trimmed.length
     );
-    return image ? "\u25A7 Image" : content;
+    return image ? "Image" : content;
   }
   function avatarText(name) {
     const trimmed = name.trim();
@@ -8995,6 +9524,19 @@ ${expanded}` : expanded;
       transaction.objectStore(CONVERSATION_STORE).put(conversation);
       await done;
     }
+    async deleteConversation(peerNumber) {
+      const database = await this.#database();
+      const transaction = database.transaction([MESSAGE_STORE, CONVERSATION_STORE], "readwrite");
+      const done = transactionDone(transaction);
+      transaction.objectStore(CONVERSATION_STORE).delete(peerNumber);
+      const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
+      const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
+      await iterateCursor(index.openCursor(range), (cursor) => {
+        cursor.delete();
+        return true;
+      });
+      await done;
+    }
     async deleteMessagesOlderThan(timestamp) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
@@ -9116,6 +9658,9 @@ ${expanded}` : expanded;
     }
     putConversation(conversation) {
       return this.#run((repository) => repository.putConversation(conversation));
+    }
+    deleteConversation(peerNumber) {
+      return this.#run((repository) => repository.deleteConversation(peerNumber));
     }
     deleteMessagesOlderThan(timestamp) {
       return this.#run((repository) => repository.deleteMessagesOlderThan(timestamp));
@@ -9249,7 +9794,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.12.1");
+    const app = new KikiLinkApp("0.13.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

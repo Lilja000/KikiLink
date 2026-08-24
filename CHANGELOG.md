@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.0 - 2026-08-24
+
+- Keep the current room and roster available while a native Bondage Club profile or another
+  room subscreen is open by using R131's room-session check instead of `CurrentScreen` alone.
+- Added KikiLink's original dependency-free SVG icon system and applied its shared rounded line
+  language to Home, navigation, Settings, favorites, pins, images, search, dialogs, and actions.
+- Moved Reply and Copy out of message bubbles into a compact Discord-style side action strip with
+  hover, keyboard-focus, touch, title, and accessible-label support.
+- Added private per-conversation nicknames. They affect only local KikiLink presentation and are
+  never substituted into outgoing messages, replies, Quick Actions, or compatibility packets.
+- Added a confirmed `Remove from recent chats` action that deletes only one conversation and its
+  local KikiLink history without changing the friend relationship or native Bondage Club Beep log;
+  old native-log entries stay hidden after reload while a genuinely new message restores the chat.
+- Image sending now extracts one direct HTTPS image URL from pasted prose, Markdown, BBCode, or
+  color wrappers so unrelated formatting codes are not sent with the image.
+- Added storage, room-subscreen, icon-placement, image-sanitization, local-alias privacy, and
+  per-chat deletion coverage, bringing the suite to 63 tests.
+
 ## 0.12.1 - 2026-08-24
 
 - Fixed KikiLink remaining in a false disconnected state when one or more ModSDK hooks could

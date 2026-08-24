@@ -100,6 +100,7 @@ declare global {
   function ChatRoomSetTarget(memberNumber: number): void;
   function InformationSheetLoadCharacter(character: BCCharacter): void;
   function ServerIsLoggedIn(): boolean;
+  function ServerPlayerIsInChatRoom(): boolean;
   function CharacterNickname(character: BCCharacter): string;
 }
 

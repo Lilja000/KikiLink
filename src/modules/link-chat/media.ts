@@ -5,7 +5,7 @@ export interface MessageLink {
   image: boolean;
 }
 
-const URL_PATTERN = /https:\/\/[^\s<>"']+/giu;
+const URL_PATTERN = /https:\/\/[^\s<>"'[\]]+/giu;
 const IMAGE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/iu;
 const TRAILING_PUNCTUATION = /[),.;!?\]}]+$/u;
 
@@ -27,8 +27,16 @@ export function parseMessageLinks(message: string): MessageLink[] {
 }
 
 export function normalizeImageUrl(value: string): string | null {
-  const url = normalizeHttpsUrl(value.trim());
-  return url && isDirectImageUrl(url) ? url : null;
+  const direct = normalizeHttpsUrl(value.trim());
+  if (direct && isDirectImageUrl(direct)) return direct;
+
+  // Clipboard contents can include Markdown, BBCode/color wrappers, or surrounding prose.
+  // Send only the first direct image URL so formatting fragments never leak into a Beep.
+  for (const match of value.matchAll(URL_PATTERN)) {
+    const url = normalizeHttpsUrl(trimTrailingPunctuation(match[0]));
+    if (url && isDirectImageUrl(url)) return url;
+  }
+  return null;
 }
 
 export function isDirectImageUrl(value: string): boolean {
@@ -63,4 +71,3 @@ function trimTrailingPunctuation(value: string): string {
 function count(value: string, character: string): number {
   return [...value].filter((candidate) => candidate === character).length;
 }
-

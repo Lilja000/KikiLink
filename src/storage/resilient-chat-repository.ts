@@ -29,6 +29,10 @@ export class ResilientChatRepository implements ChatRepository {
     return this.#run((repository) => repository.putConversation(conversation));
   }
 
+  deleteConversation(peerNumber: number): Promise<void> {
+    return this.#run((repository) => repository.deleteConversation(peerNumber));
+  }
+
   deleteMessagesOlderThan(timestamp: number): Promise<number> {
     return this.#run((repository) => repository.deleteMessagesOlderThan(timestamp));
   }

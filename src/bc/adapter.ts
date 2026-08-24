@@ -223,6 +223,9 @@ export class BCAdapter {
   }
 
   isInChatRoom(): boolean {
+    if (typeof ServerPlayerIsInChatRoom === "function") {
+      return ServerPlayerIsInChatRoom();
+    }
     return (
       typeof CurrentScreen === "string" &&
       CurrentScreen === "ChatRoom" &&

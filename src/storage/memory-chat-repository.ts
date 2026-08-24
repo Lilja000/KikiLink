@@ -32,6 +32,13 @@ export class MemoryChatRepository implements ChatRepository {
     this.#conversations.set(conversation.peerNumber, structuredClone(conversation));
   }
 
+  async deleteConversation(peerNumber: number): Promise<void> {
+    this.#conversations.delete(peerNumber);
+    for (const [id, message] of this.#messages) {
+      if (message.peerNumber === peerNumber) this.#messages.delete(id);
+    }
+  }
+
   async deleteMessagesOlderThan(timestamp: number): Promise<number> {
     let removed = 0;
     for (const [id, message] of this.#messages) {

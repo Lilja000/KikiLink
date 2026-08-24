@@ -11,9 +11,9 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.12.1` receives Beeps and online-friend state directly from Bondage Club's active
-connection, recovers safely across addon-hook conflicts and reconnects, and keeps the smooth
-bounded message feed introduced in 0.12.0.
+Version `0.13.0` keeps room context while native profiles and other room subscreens are open,
+adds private local chat nicknames and per-chat removal, cleans pasted image links, and introduces
+KikiLink's own unified minimal SVG icon set.
 
 ## Link Deck
 
@@ -80,13 +80,17 @@ browser profile. KikiLink does not upload them to a server.
 - The friend's observable current room beside their identity in the active chat
 - Status notes and optional automatic Idle with an explicit presence on/off control
 - Direct HTTPS image messages that remain ordinary usable links for players without KikiLink
+- Pasted Markdown, BBCode, and color wrappers are reduced to the direct image URL before sending
 - Privacy-aware inline image previews: ask before loading, always show, or links only
-- `Reply` and `Copy` actions on messages, with plain-text quotes compatible with native Beeps
+- Compact `Reply` and `Copy` icons beside messages, with plain-text quotes compatible with native Beeps
+- Private local nicknames for chats that never change outgoing content or another player's view
+- Remove one conversation from KikiLink recents and local history without unfriending the player
+  or changing Bondage Club's native Beep log; a genuinely new message brings the chat back
 - Enter-to-send with Shift+Enter for a new line, or an optional classic multiline mode
 - Right-click on desktop or hold on touch to open one player action menu from recent chats,
   the active chat, known contacts, and Players
-- Context actions for Message, Whisper, native Profile, favorites, notes, pinning,
-  marking unread, and copying the member ID
+- Context actions for Message, Whisper, native Profile, favorites, notes, local nicknames,
+  pinning, marking unread, per-chat removal, and copying the member ID
 - New-chat dialog with known-contact search and direct member-number entry
 - Editable Quick Actions with `{name}`, `{member}`, and `{me}` variables
 - Optional room information on outgoing Beeps
@@ -98,7 +102,7 @@ browser profile. KikiLink does not upload them to a server.
 
 ## LinkActivities
 
-- Optional `✦` Activities destination, disabled by default
+- Optional Activities destination, disabled by default
 - Current-room target picker with nickname and member-number search
 - Five original starter activities with live room preview
 - Editable activity library with up to 20 custom actions
@@ -112,6 +116,8 @@ character's items, pose, permissions, or game state.
 ## Interface
 
 - Embedded KikiLink wolf, red moon, gold ring, and sakura emblem
+- Original dependency-free SVG icons with one consistent rounded line style across navigation,
+  chat controls, favorites, pins, images, dialogs, and player actions
 - Dark lacquer, light paper, and follow-system appearance modes
 - Red and gold design tokens shared by every LinkChat surface
 - Link Deck home with a context-aware next step, live feature status, and clear action labels

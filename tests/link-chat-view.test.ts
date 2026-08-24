@@ -76,6 +76,10 @@ describe("LinkChatView", () => {
     });
 
     expect(sendBeep).toHaveBeenCalledWith(123, "Hello from KikiLink", false);
+    const messageRow = shadow?.querySelector<HTMLElement>(".kl-message-row:last-child");
+    expect(messageRow?.querySelector(".kl-message-side-actions")).not.toBeNull();
+    expect(messageRow?.querySelector(".kl-message-bubble .kl-message-action")).toBeNull();
+    expect(messageRow?.querySelector('[aria-label="Reply to message"] svg')).not.toBeNull();
     expect(shadow?.querySelector(".kl-sidebar-heading span")?.textContent).toBe("Recent chats");
 
     shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
@@ -161,6 +165,7 @@ describe("LinkChatView", () => {
     expect(
       shadow?.querySelectorAll('.kl-feature-nav .kl-nav-item:not([data-target="settings"])'),
     ).toHaveLength(4);
+    expect(shadow?.querySelector('.kl-nav-item[data-target="home"] svg.kl-nav-icon')).not.toBeNull();
 
     shadow?.querySelector<HTMLButtonElement>('button[title="LinkChat"]')?.click();
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
@@ -288,7 +293,7 @@ describe("LinkChatView", () => {
     }));
     const adapter = {
       getMemberName: () => "Reina",
-      getMemberNickname: () => "Reina",
+      getMemberNickname: () => undefined,
       getOwnMemberNumber: () => 999,
       getOwnName: () => "Kiki",
       getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
@@ -339,7 +344,7 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLButtonElement>(".kl-attach-image")?.click();
     const imageInput = shadow?.querySelector<HTMLInputElement>(".kl-image-url");
     if (!imageInput) throw new Error("Missing image URL input");
-    imageInput.value = "https://cdn.example/new-image.png";
+    imageInput.value = "[color=#ff66aa]https://cdn.example/new-image.png[/color]";
     imageInput.dispatchEvent(new Event("input", { bubbles: true }));
     shadow?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")?.click();
     await vi.waitFor(() => {
@@ -358,6 +363,94 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLButtonElement>('[data-status="dnd"]')?.click();
     expect(settings.get().linkPresence.status).toBe("dnd");
     expect(shadow?.querySelector(".kl-presence-trigger")?.textContent).toContain("Do not disturb");
+
+    view.destroy();
+  });
+
+  it("keeps local chat nicknames private and removes only the selected recent chat", async () => {
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => false,
+      getRoomCharacters: () => [],
+      getCurrentRoomName: () => undefined,
+      isInChatRoom: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 123,
+        peerName: "Reina",
+        content: "Hello",
+        sentAt: 100,
+        includeRoom: false,
+      },
+      true,
+    );
+    const view = new LinkChatView(adapter, service, settings, "0.13.0");
+    view.mount();
+    await view.openChat(123, "Reina");
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+
+    shadow?.querySelector<HTMLElement>(".kl-chat-person")?.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+    );
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain(
+        "Set local nickname",
+      );
+    });
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action") ?? [])]
+      .find((button) => button.textContent.includes("Set local nickname"))
+      ?.click();
+    const aliasInput = shadow?.querySelector<HTMLInputElement>(".kl-alias-input");
+    if (!aliasInput) throw new Error("Missing local nickname input");
+    aliasInput.value = "My friend";
+    shadow?.querySelector<HTMLButtonElement>(".kl-alias-dialog .kl-text-button--primary")?.click();
+    await vi.waitFor(async () => {
+      expect(await service.getConversation(123)).toMatchObject({
+        peerName: "Reina",
+        localAlias: "My friend",
+      });
+      expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("My friend");
+    });
+
+    await view.openChat(123, "My friend");
+
+    const composer = shadow?.querySelector<HTMLTextAreaElement>(".kl-composer-input");
+    if (!composer) throw new Error("Missing composer");
+    composer.value = "";
+    shadow?.querySelector<HTMLButtonElement>(".kl-action-chip")?.click();
+    expect(composer.value).toBe("*waves to Reina*");
+
+    shadow?.querySelector<HTMLElement>(".kl-chat-person")?.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+    );
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain(
+        "Remove from recent chats",
+      );
+    });
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action") ?? [])]
+      .find((button) => button.textContent.includes("Remove from recent chats"))
+      ?.click();
+    expect(shadow?.querySelector<HTMLDialogElement>(".kl-remove-chat-dialog")?.open).toBe(true);
+    shadow?.querySelector<HTMLButtonElement>(".kl-remove-chat-dialog .kl-text-button--danger")?.click();
+    await vi.waitFor(async () => {
+      expect(await service.getConversation(123)).toBeUndefined();
+      expect(shadow?.querySelector<HTMLElement>(".kl-chat")?.hidden).toBe(true);
+    });
 
     view.destroy();
   });

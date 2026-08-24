@@ -21,10 +21,11 @@ export class ChatService {
       id: createId("beep"),
       read: event.direction === "outgoing" || activeConversation,
     };
-    const previous = await this.getConversation(event.peerNumber);
+    const previous = await this.#getStoredConversation(event.peerNumber);
     const conversation: ConversationMeta = {
       peerNumber: event.peerNumber,
       peerName: preferredPeerName(previous?.peerName, event.peerName, event.peerNumber),
+      ...(previous?.localAlias ? { localAlias: previous.localAlias } : {}),
       lastMessage: event.content,
       lastMessageAt: event.sentAt,
       lastDirection: event.direction,
@@ -53,6 +54,8 @@ export class ChatService {
   }
 
   async captureRecent(event: BeepEvent): Promise<boolean> {
+    const stored = await this.#getStoredConversation(event.peerNumber);
+    if (stored?.hiddenAt !== undefined && event.sentAt <= stored.hiddenAt) return false;
     const messages = await this.getMessages(event.peerNumber, 500);
     const duplicate = messages.some(
       (message) =>
@@ -67,8 +70,8 @@ export class ChatService {
   }
 
   async ensureConversation(peerNumber: number, peerName: string): Promise<ConversationMeta> {
-    const existing = await this.getConversation(peerNumber);
-    if (existing) return existing;
+    const existing = await this.#getStoredConversation(peerNumber);
+    if (existing && existing.hiddenAt === undefined) return existing;
 
     const conversation: ConversationMeta = {
       peerNumber,
@@ -85,6 +88,11 @@ export class ChatService {
   }
 
   async getConversation(peerNumber: number): Promise<ConversationMeta | undefined> {
+    const conversation = await this.#getStoredConversation(peerNumber);
+    return conversation?.hiddenAt === undefined ? conversation : undefined;
+  }
+
+  async #getStoredConversation(peerNumber: number): Promise<ConversationMeta | undefined> {
     const ephemeral = this.#ephemeralConversations.get(peerNumber);
     return ephemeral ? structuredClone(ephemeral) : this.repository.getConversation(peerNumber);
   }
@@ -95,7 +103,9 @@ export class ChatService {
     for (const conversation of this.#ephemeralConversations.values()) {
       merged.set(conversation.peerNumber, structuredClone(conversation));
     }
-    return [...merged.values()].sort(sortConversations);
+    return [...merged.values()]
+      .filter((conversation) => conversation.hiddenAt === undefined)
+      .sort(sortConversations);
   }
 
   async getMessages(peerNumber: number, limit = 300): Promise<LinkMessage[]> {
@@ -124,6 +134,37 @@ export class ChatService {
     const conversation = await this.getConversation(peerNumber);
     if (!conversation || conversation.peerName === name) return;
     await this.#saveConversation({ ...conversation, peerName: name });
+  }
+
+  async setLocalAlias(peerNumber: number, value: string): Promise<string | undefined> {
+    const conversation = await this.getConversation(peerNumber);
+    if (!conversation) return undefined;
+    const localAlias = normalizeLocalAlias(value);
+    if (conversation.localAlias === localAlias) return localAlias;
+    const updated = { ...conversation };
+    if (localAlias) updated.localAlias = localAlias;
+    else delete updated.localAlias;
+    await this.#saveConversation(updated);
+    return localAlias;
+  }
+
+  async removeConversation(peerNumber: number): Promise<void> {
+    const previous = await this.#getStoredConversation(peerNumber);
+    this.#ephemeralMessages.delete(peerNumber);
+    this.#ephemeralConversations.delete(peerNumber);
+    await this.repository.deleteConversation(peerNumber);
+    if (!previous) return;
+    await this.#saveConversation({
+      peerNumber,
+      peerName: previous.peerName,
+      hiddenAt: Date.now(),
+      lastMessage: "",
+      lastMessageAt: 0,
+      lastDirection: "incoming",
+      unread: 0,
+      pinned: false,
+      draft: "",
+    });
   }
 
   async setDraft(peerNumber: number, peerName: string, draft: string): Promise<void> {
@@ -167,6 +208,10 @@ export class ChatService {
   }
 }
 
+export function conversationDisplayName(conversation: ConversationMeta): string {
+  return conversation.localAlias?.trim() || conversation.peerName;
+}
+
 function preferredPeerName(
   previousName: string | undefined,
   eventName: string,
@@ -177,4 +222,9 @@ function preferredPeerName(
   const incoming = eventName.trim();
   if (previous && previous !== fallback) return previous;
   return incoming || previous || fallback;
+}
+
+function normalizeLocalAlias(value: string): string | undefined {
+  const alias = value.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 40);
+  return alias || undefined;
 }
