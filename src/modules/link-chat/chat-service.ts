@@ -3,8 +3,19 @@ import type { SettingsStore } from "../../core/settings";
 import type { ChatRepository } from "../../storage/chat-repository";
 import { sortConversations } from "../../storage/memory-chat-repository";
 import { createId } from "../../utils/id";
+import { parseMessageLinks } from "./media";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface ChatMediaItem {
+  url: string;
+  provider: "catbox" | "litterbox" | "other";
+  peerNumber: number;
+  peerName: string;
+  direction: LinkMessage["direction"];
+  sentAt: number;
+  messageId: string;
+}
 
 export class ChatService {
   readonly #ephemeralMessages = new Map<number, LinkMessage[]>();
@@ -114,6 +125,38 @@ export class ChatService {
     return [...persisted, ...ephemeral]
       .sort((left, right) => left.sentAt - right.sentAt)
       .slice(-limit);
+  }
+
+  async listMedia(limit = 300): Promise<ChatMediaItem[]> {
+    const conversations = await this.listConversations();
+    const messageGroups = await Promise.all(
+      conversations.map(async (conversation) => ({
+        conversation,
+        messages: await this.getMessages(conversation.peerNumber, 500),
+      })),
+    );
+    const media = new Map<string, ChatMediaItem>();
+    for (const { conversation, messages } of messageGroups) {
+      for (const message of messages) {
+        for (const link of parseMessageLinks(message.content)) {
+          if (!link.image) continue;
+          const item: ChatMediaItem = {
+            url: link.url,
+            provider: mediaProvider(link.url),
+            peerNumber: conversation.peerNumber,
+            peerName: conversationDisplayName(conversation),
+            direction: message.direction,
+            sentAt: message.sentAt,
+            messageId: message.id,
+          };
+          const previous = media.get(item.url);
+          if (!previous || previous.sentAt < item.sentAt) media.set(item.url, item);
+        }
+      }
+    }
+    return [...media.values()]
+      .sort((left, right) => right.sentAt - left.sentAt)
+      .slice(0, Math.max(1, Math.min(1_000, limit)));
   }
 
   async markRead(peerNumber: number): Promise<void> {
@@ -227,4 +270,15 @@ function preferredPeerName(
 function normalizeLocalAlias(value: string): string | undefined {
   const alias = value.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 40);
   return alias || undefined;
+}
+
+function mediaProvider(value: string): ChatMediaItem["provider"] {
+  try {
+    const host = new URL(value).hostname.toLocaleLowerCase();
+    if (host === "files.catbox.moe") return "catbox";
+    if (host === "litter.catbox.moe") return "litterbox";
+  } catch {
+    // parseMessageLinks already validates URLs; keep a harmless fallback for hostile globals.
+  }
+  return "other";
 }

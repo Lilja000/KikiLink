@@ -1,5 +1,6 @@
 declare global {
   interface BCPlayer {
+    ID?: number;
     MemberNumber: number;
     Name: string;
     Nickname?: string;
@@ -83,8 +84,26 @@ declare global {
 
   interface BCChatRoomData {
     Name?: string;
+    Description?: string;
+    Admin?: number[];
+    Whitelist?: number[];
+    Ban?: number[];
+    Background?: string;
+    Limit?: number;
+    Game?: string;
     Space?: string;
     Visibility?: string[];
+    Access?: string[];
+    BlockCategory?: string[];
+    Language?: string;
+    MapData?: unknown;
+    Custom?: {
+      ImageURL?: string;
+      SizeMode?: number;
+      ImageFilter?: string;
+      MusicURL?: string;
+      MusicStart?: number;
+    };
   }
 
   interface BCServerAccountBeepResponse {
@@ -142,6 +161,7 @@ declare global {
   var MainCanvas: CanvasRenderingContext2D | HTMLCanvasElement;
   var ChatRoomHideIconState: number;
   var GameVersion: string;
+  var CurrentTime: number;
   var DialogMenuMode: string | null;
   var DialogActivity: BCItemActivity[];
   var CurrentCharacter: BCCharacter | null;
@@ -227,6 +247,8 @@ declare global {
   function ServerIsLoggedIn(): boolean;
   function ServerPlayerExtensionSettingsSync(dataKeyName: string, force?: boolean): void;
   function ServerPlayerIsInChatRoom(): boolean;
+  function ChatRoomPlayerIsAdmin(): boolean;
+  function ChatRoomGetSettings(room: BCChatRoomData): BCChatRoomData;
   function CharacterNickname(character: BCCharacter): string;
   function ChatRoomDrawCharacterStatusIcons(
     character: BCCharacter,

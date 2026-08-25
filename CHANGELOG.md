@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.21.0 - 2026-08-25
+
+- Added a 0–100 Alerts volume control and local custom notification sounds. Files are validated as
+  browser-readable audio, rejected above five seconds or 10 MB, stored per device/account in
+  IndexedDB, and decoded once per session instead of entering BC account synchronization.
+- Turned Do not disturb into a functional quiet mode: incoming data and unread counts remain intact,
+  while alert toasts, sounds, reaction notices, and automatic chat opening are suppressed. The
+  bounded private auto-reply can now be enabled for both Idle and DND sessions.
+- Made the desktop Link Deck draggable by its title bar with viewport clamping, persisted position,
+  and a Navigation reset action. Reworked dialog layout so profile/avatar Save controls remain fixed
+  and visible on PC.
+- Added native Room Tools for administrators: custom background, all three BC resize modes, music,
+  synchronized playback, Kick, Promote/Demote, and room Whitelist/Unwhitelist. Commands use BC's
+  live admin state and `ChatRoomAdmin` packets; Kick requires explicit confirmation.
+- Added explicit temporary room-music upload for BC-supported MP3/MP4 audio up to 20 MB. The provider
+  receives a generic filename; the UI warns that embedded audio metadata is not stripped.
+- Added a lazy, deduplicated Media Gallery across saved LinkChat conversations, with Catbox and
+  Litterbox labels, privacy-aware full-size cards, source-chat navigation, and one-click selection as
+  a room background. Temporary local image uploads can also populate the room background field.
+- Added focused regressions for device audio duration/storage, custom-sound volume, DND replies,
+  cross-chat media aggregation, and current BC room-admin packet shapes.
+
 ## 0.20.10 - 2026-08-25
 
 - Fixed Custom Activity arousal applying only to the local player. Outgoing actions now include

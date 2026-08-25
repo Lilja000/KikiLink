@@ -20,10 +20,10 @@ export interface AfkAutoReplyCallbacks {
 type BeepSender = Pick<BCAdapter, "sendBeep">;
 
 /**
- * Sends a bounded plain Beep response while the local KikiLink presence is Idle.
+ * Sends a bounded plain Beep response while the local KikiLink presence is Idle or DND.
  *
  * Call `syncStatus` whenever local presence changes. `handleIncoming` also synchronizes status,
- * but the explicit call is what lets the service observe an Online -> Idle transition that occurs
+ * but the explicit call is what lets the service observe an Online -> Idle/DND transition that occurs
  * between incoming messages.
  */
 export class AfkAutoReplyService {
@@ -31,7 +31,7 @@ export class AfkAutoReplyService {
   readonly #lastReplyAt = new Map<number, number>();
   readonly #recentReplyTimes: number[] = [];
   readonly #now: () => number;
-  #idleSessionActive = false;
+  #awaySessionStatus: "idle" | "dnd" | undefined;
 
   constructor(
     private readonly adapter: BeepSender,
@@ -61,7 +61,7 @@ export class AfkAutoReplyService {
       return undefined;
     }
     this.#applyStatus(status);
-    if (status !== "idle" || config.enabled !== true) return undefined;
+    if ((status !== "idle" && status !== "dnd") || config.enabled !== true) return undefined;
 
     const message = normalizeReplyMessage(config.message);
     if (!message || this.#repliedThisIdle.has(event.peerNumber)) return undefined;
@@ -86,16 +86,16 @@ export class AfkAutoReplyService {
   }
 
   reset(): void {
-    this.#idleSessionActive = false;
+    this.#awaySessionStatus = undefined;
     this.#repliedThisIdle.clear();
     this.#lastReplyAt.clear();
     this.#recentReplyTimes.splice(0);
   }
 
   #applyStatus(status: PresenceStatus): void {
-    const idle = status === "idle";
-    if (idle === this.#idleSessionActive) return;
-    this.#idleSessionActive = idle;
+    const away = status === "idle" || status === "dnd" ? status : undefined;
+    if (away === this.#awaySessionStatus) return;
+    this.#awaySessionStatus = away;
     this.#repliedThisIdle.clear();
   }
 

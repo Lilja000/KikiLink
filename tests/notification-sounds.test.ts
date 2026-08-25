@@ -40,6 +40,28 @@ describe("NotificationSoundService", () => {
     await sounds.destroy();
     expect(context.close).toHaveBeenCalledOnce();
   });
+
+  it("decodes a device sound once and applies the configured alert volume", async () => {
+    const context = new FakeAudioContext();
+    Reflect.defineProperty(globalThis, "AudioContext", {
+      configurable: true,
+      value: class {
+        constructor() {
+          return context;
+        }
+      },
+    });
+    const resolver = vi.fn(async () => new Blob([new Uint8Array([1, 2, 3])], { type: "audio/ogg" }));
+    const sounds = new NotificationSoundService(resolver);
+
+    await expect(
+      sounds.play("custom:soft-bell", { volume: 40, now: 1_000 }),
+    ).resolves.toBe(true);
+    expect(resolver).toHaveBeenCalledOnce();
+    expect(context.decodeAudioData).toHaveBeenCalledOnce();
+    expect(context.createBufferSource).toHaveBeenCalledOnce();
+    expect(context.gainParams.at(-1)?.setValueAtTime).toHaveBeenCalledWith(0.4, 2);
+  });
 });
 
 class FakeAudioContext {
@@ -52,6 +74,13 @@ class FakeAudioContext {
   readonly close = vi.fn(async () => {
     this.state = "closed";
   });
+  readonly gainParams: AudioParam[] = [];
+  readonly decodeAudioData = vi.fn(async () => ({ duration: 4.2 }) as AudioBuffer);
+  readonly createBufferSource = vi.fn(() => ({
+    buffer: null,
+    connect: vi.fn(),
+    start: vi.fn(),
+  })) as unknown as AudioContext["createBufferSource"];
   readonly createOscillator = vi.fn(() => ({
     type: "sine" as OscillatorType,
     frequency: fakeAudioParam(),
@@ -59,10 +88,11 @@ class FakeAudioContext {
     start: vi.fn(),
     stop: vi.fn(),
   })) as unknown as AudioContext["createOscillator"];
-  readonly createGain = vi.fn(() => ({
-    gain: fakeAudioParam(),
-    connect: vi.fn(),
-  })) as unknown as AudioContext["createGain"];
+  readonly createGain = vi.fn(() => {
+    const gain = fakeAudioParam();
+    this.gainParams.push(gain);
+    return { gain, connect: vi.fn() };
+  }) as unknown as AudioContext["createGain"];
 }
 
 function fakeAudioParam(): AudioParam {

@@ -11,23 +11,22 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.20.10` makes Custom Activity arousal reach other players through BC's native activity
-metadata while preserving the exact configured amount between current KikiLink clients. It remains
-compatible with 0.20.9 recipients and keeps a native preference-aware fallback when the target does
-not have KikiLink or its hook is unavailable. The running version remains visible as tiny
-translucent digits in the lower-left corner.
+Version `0.21.0` adds a real quiet Do not disturb mode, adjustable alert volume, device-only custom
+sounds up to five seconds, a draggable desktop window, an all-chat media gallery, and native Room
+Tools for administrators. The running version remains visible as tiny translucent digits in the
+lower-left corner.
 
 ## Link Deck
 
 - The floating emblem opens a clear feature home instead of dropping straight into chat
 - Guided Home surfaces one useful next step: read unread Beeps, begin a first chat, view
   the current room, or continue the most recent conversation
-- Four action-first cards use familiar names and visible verbs: Chat, Players, Custom Activities,
+- Action-first cards use familiar names and visible verbs for Chat, Players, Custom Activities,
   and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
 - Your KikiLink presence is always one quiet top-bar control away
-- Four clear primary destinations: Home, Chat, Players, and Custom Activities
-- Persistent feature rail on desktop and a focused four-item bottom bar on phones
+- Five clear primary destinations: Home, Chat, Players, Room, and Custom Activities
+- Persistent feature rail on desktop and a focused five-item bottom bar on phones
 - Players and Custom Activities stay inside the workspace instead of opening blocking dialogs
 - Settings is a full workspace with Appearance, Navigation, Chat, Players, Activities, and Alerts categories
 - Configurable launcher behavior: open Home, the last section, or LinkChat directly
@@ -36,6 +35,7 @@ translucent digits in the lower-left corner.
 - Contrast-aware text on every custom accent color
 - Larger mobile tap targets, visible focus states, current-page semantics, and keyboard-friendly settings
 - A button to reset the launcher position without dragging it
+- Drag the desktop window by its title bar and reset its position from Navigation settings
 - Disabled optional features remain discoverable and lead directly to the correct setting
 
 ## LinkFinder
@@ -85,7 +85,9 @@ so they can follow that same account to another device.
 - The friend's observable current room beside their identity in the active chat
 - Status notes, a direct-link profile avatar, and configurable automatic Idle with an explicit
   presence on/off control
-- Optional editable AFK auto-reply while Idle, limited to one private reply per person per Idle session
+- Do not disturb suppresses local alert toasts and sounds and prevents automatic chat opening while
+  unread messages continue to be stored normally
+- Optional editable auto-reply while Idle or DND, limited to one private reply per person per session
 - Direct HTTPS image messages that remain ordinary usable links for players without KikiLink
 - Pasted Markdown, BBCode, and color wrappers are reduced to the direct image URL before sending
 - Privacy-aware uncropped full-width image previews: ask before loading, always show, or links only
@@ -119,6 +121,17 @@ so they can follow that same account to another device.
 - Responsive desktop and mobile interface
 - Configurable history retention and a clear-history action
 
+## Room Tools & Media Gallery
+
+- A Room destination that reads the current room and enables editing only for native room admins
+- Background URL, native resize mode, music URL, and synchronized playback controls
+- Explicit native Kick, Promote/Demote, and room Whitelist/Unwhitelist actions; Kick asks for confirmation
+- Local image preparation and temporary Litterbox upload can fill the room background field;
+  renamed MP3/MP4 room audio up to 20 MB can fill the music field
+- A lazy all-chat gallery deduplicates direct images across saved conversations and labels Catbox/Litterbox
+- Gallery cards keep full image proportions, expose only `Show original`, reopen the source chat, and
+  can fill the room background field for administrators
+
 ## Custom Activities
 
 - A dedicated Custom Activities destination, visible by default and optional in Settings
@@ -150,7 +163,9 @@ does not process the KikiLink arousal metadata.
 - Dedicated Alerts category with one switch for friends coming online and one for players joining the room
 - Private local notices that remain visible beside the launcher while the panel is closed
 - Optional notification sounds, disabled by default
+- Adjustable 0–100 alert volume for every notification sound
 - Distinct built-in Soft chime, Sakura sparkle, and Gentle pop sounds for chats, friends, and room joins
+- Custom audio files up to five seconds and 10 MB, validated and stored only in this browser's IndexedDB
 - Sound choices and preview controls stay inside a compact optional disclosure
 - The complete event-rule editor remains available inside Advanced instead of filling the main screen
 - Advanced triggers for incoming Beeps, room joins/leaves, and friends online, with scopes, text matching,
@@ -161,8 +176,9 @@ does not process the KikiLink arousal metadata.
   background network polling; the separate AFK profile option is the only guarded auto-reply path
 
 Alert choices and rules belong to the current BC account and use the same bounded account mirror.
-Sounds are synthesized locally with the browser audio API, so KikiLink downloads no audio files. Advanced room-emote rules use the
-same native Bondage Club emote path and are visible to everyone in the room.
+Built-in sounds are synthesized locally. Custom sound files never enter BC account sync and are
+decoded once per session for efficient replay. Advanced room-emote rules use the same native Bondage
+Club emote path and are visible to everyone in the room.
 
 ## Interface
 

@@ -142,6 +142,46 @@ describe("ChatService", () => {
     expect(await service.getConversation(77)).toMatchObject({ peerName: "Nickname" });
   });
 
+  it("builds a newest-first, deduplicated media gallery across all chats", async () => {
+    const { service } = setup();
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 11,
+        peerName: "Catbox friend",
+        content: "https://files.catbox.moe/flower.webp",
+        sentAt: 100,
+        includeRoom: false,
+      },
+      false,
+    );
+    await service.capture(
+      {
+        direction: "outgoing",
+        peerNumber: 22,
+        peerName: "Litterbox friend",
+        content: "Again https://files.catbox.moe/flower.webp and https://litter.catbox.moe/new.png",
+        sentAt: 200,
+        includeRoom: false,
+      },
+      true,
+    );
+
+    expect(await service.listMedia()).toMatchObject([
+      {
+        url: "https://files.catbox.moe/flower.webp",
+        provider: "catbox",
+        peerNumber: 22,
+        direction: "outgoing",
+      },
+      {
+        url: "https://litter.catbox.moe/new.png",
+        provider: "litterbox",
+        peerNumber: 22,
+      },
+    ]);
+  });
+
   it("keeps a private local alias while the native nickname is refreshed", async () => {
     const { service } = setup();
     await service.ensureConversation(77, "AccountName");

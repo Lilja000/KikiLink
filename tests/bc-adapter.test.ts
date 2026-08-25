@@ -38,7 +38,10 @@ afterEach(() => {
     "ServerSend",
     "ServerIsLoggedIn",
     "ServerPlayerIsInChatRoom",
+    "ChatRoomPlayerIsAdmin",
+    "ChatRoomGetSettings",
     "CurrentScreen",
+    "CurrentTime",
     "MainCanvas",
   ]) {
     Reflect.deleteProperty(globalThis, key);
@@ -221,6 +224,75 @@ describe("BCAdapter", () => {
     ]);
     adapter.sendRoomEmote("  bows to Reina.  ");
     expect(nativeEmote).toHaveBeenCalledWith("bows to Reina.");
+  });
+
+  it("uses native room-admin packets for media, roles, whitelist, and kick", () => {
+    const send = vi.fn();
+    globalThis.CurrentScreen = "ChatRoom";
+    globalThis.Player = {
+      ID: 0,
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      Nickname: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = {
+      Name: "Moon Garden",
+      Admin: [999],
+      Whitelist: [123],
+      Custom: {
+        ImageURL: "https://files.catbox.moe/old.webp",
+        MusicURL: "https://cdn.example/old.mp3",
+        SizeMode: 1,
+      },
+    };
+    globalThis.ChatRoomCharacter = [
+      { MemberNumber: 999, Name: "AccountKiki", Nickname: "Kiki" },
+      { MemberNumber: 123, Name: "AccountReina", Nickname: "Reina" },
+    ];
+    globalThis.ChatRoomPlayerIsAdmin = () => true;
+    globalThis.CurrentTime = 123_456;
+    globalThis.ChatRoomGetSettings = (room) => structuredClone(room);
+    globalThis.ServerSend = send;
+
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.21.0");
+    expect(adapter.getRoomAdminSnapshot()).toMatchObject({
+      roomName: "Moon Garden",
+      isAdmin: true,
+      players: [{ memberNumber: 123, admin: false, whitelisted: true }],
+    });
+
+    adapter.updateRoomCustomization({
+      imageUrl: "https://files.catbox.moe/new.webp",
+      musicUrl: "https://cdn.example/new.mp3",
+      sizeMode: 2,
+      musicSync: true,
+    });
+    expect(send).toHaveBeenCalledWith(
+      "ChatRoomAdmin",
+      expect.objectContaining({
+        MemberNumber: 0,
+        Action: "Update",
+        Room: expect.objectContaining({
+          Custom: expect.objectContaining({
+            ImageURL: "https://files.catbox.moe/new.webp",
+            MusicURL: "https://cdn.example/new.mp3",
+            SizeMode: 2,
+            MusicStart: 123_456,
+          }),
+        }),
+      }),
+    );
+    adapter.runRoomMemberAction(123, "promote");
+    adapter.runRoomMemberAction(123, "unwhitelist");
+    adapter.runRoomMemberAction(123, "kick");
+    expect(send).toHaveBeenCalledWith("ChatRoomAdmin", { MemberNumber: 123, Action: "Promote" });
+    expect(send).toHaveBeenCalledWith("ChatRoomAdmin", { MemberNumber: 123, Action: "Unwhitelist" });
+    expect(send).toHaveBeenCalledWith("ChatRoomAdmin", {
+      MemberNumber: 123,
+      Action: "Kick",
+      Publish: true,
+    });
   });
 
   it("opens native Whisper and profile actions for a current-room nickname", () => {

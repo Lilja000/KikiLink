@@ -70,6 +70,27 @@ export interface BCCustomActivityIntegration {
   onRoomMessage(message: BCChatRoomMessage): void;
 }
 
+export interface BCRoomCustomization {
+  imageUrl: string;
+  musicUrl: string;
+  sizeMode: number;
+  musicSync: boolean;
+}
+
+export interface BCRoomAdminPlayer extends RoomCharacter {
+  admin: boolean;
+  whitelisted: boolean;
+}
+
+export interface BCRoomAdminSnapshot {
+  roomName: string;
+  isAdmin: boolean;
+  customization: BCRoomCustomization;
+  players: BCRoomAdminPlayer[];
+}
+
+export type BCRoomMemberAction = "kick" | "promote" | "demote" | "whitelist" | "unwhitelist";
+
 export class BCAdapter {
   readonly #logger = new Logger("bc");
   readonly #unhooks: Array<() => void> = [];
@@ -413,6 +434,111 @@ export class BCAdapter {
     return cleanName(ChatRoomData.Name);
   }
 
+  getRoomAdminSnapshot(): BCRoomAdminSnapshot | undefined {
+    if (!this.isInChatRoom() || typeof ChatRoomData !== "object" || ChatRoomData === null) {
+      return undefined;
+    }
+    try {
+      const admins = Array.isArray(ChatRoomData.Admin) ? ChatRoomData.Admin : [];
+      const whitelist = Array.isArray(ChatRoomData.Whitelist) ? ChatRoomData.Whitelist : [];
+      const custom = ChatRoomData.Custom;
+      return {
+        roomName: cleanName(ChatRoomData.Name) ?? "Current room",
+        isAdmin: this.#isRoomAdmin(admins),
+        customization: {
+          imageUrl: cleanName(custom?.ImageURL) ?? "",
+          musicUrl: cleanName(custom?.MusicURL) ?? "",
+          sizeMode:
+            typeof custom?.SizeMode === "number" &&
+            Number.isInteger(custom.SizeMode) &&
+            custom.SizeMode >= 1 &&
+            custom.SizeMode <= 3
+              ? custom.SizeMode
+              : 1,
+          musicSync: typeof custom?.MusicStart === "number",
+        },
+        players: this.getRoomCharacters().map((character) => ({
+          ...character,
+          admin: admins.includes(character.memberNumber),
+          whitelisted: whitelist.includes(character.memberNumber),
+        })),
+      };
+    } catch (error) {
+      this.#logger.warn("Room administration data was not readable", error);
+      return undefined;
+    }
+  }
+
+  updateRoomCustomization(customization: BCRoomCustomization): void {
+    const snapshot = this.getRoomAdminSnapshot();
+    if (!snapshot) throw new Error("Open a Bondage Club chat room first");
+    if (!snapshot.isAdmin) throw new Error("Only a room administrator can change room media");
+    if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
+    const imageUrl = normalizeRoomMediaUrl(customization.imageUrl, "image");
+    const musicUrl = normalizeRoomMediaUrl(customization.musicUrl, "audio");
+    const sizeMode = Number.isInteger(customization.sizeMode)
+      ? Math.min(3, Math.max(1, customization.sizeMode))
+      : 1;
+    const room =
+      typeof ChatRoomGetSettings === "function"
+        ? ChatRoomGetSettings(ChatRoomData as BCChatRoomData)
+        : { ...(ChatRoomData as BCChatRoomData) };
+    const custom: NonNullable<BCChatRoomData["Custom"]> = {
+      ...(ChatRoomData?.Custom ?? {}),
+      SizeMode: sizeMode,
+    };
+    if (customization.musicSync) {
+      const existingMusicUrl = cleanName(ChatRoomData?.Custom?.MusicURL);
+      const existingMusicStart = ChatRoomData?.Custom?.MusicStart;
+      custom.MusicStart =
+        musicUrl === existingMusicUrl &&
+        typeof existingMusicStart === "number" &&
+        Number.isFinite(existingMusicStart)
+          ? existingMusicStart
+          : typeof CurrentTime === "number" && Number.isFinite(CurrentTime)
+            ? CurrentTime
+            : Date.now();
+    } else {
+      delete custom.MusicStart;
+    }
+    if (imageUrl) custom.ImageURL = imageUrl;
+    else delete custom.ImageURL;
+    if (musicUrl) custom.MusicURL = musicUrl;
+    else delete custom.MusicURL;
+    room.Custom = custom;
+    ServerSend("ChatRoomAdmin", {
+      MemberNumber:
+        typeof Player.ID === "number" && Number.isSafeInteger(Player.ID)
+          ? Player.ID
+          : Player.MemberNumber,
+      Room: room,
+      Action: "Update",
+    });
+  }
+
+  runRoomMemberAction(memberNumber: number, action: BCRoomMemberAction): void {
+    const snapshot = this.getRoomAdminSnapshot();
+    if (!snapshot) throw new Error("Open a Bondage Club chat room first");
+    if (!snapshot.isAdmin) throw new Error("Only a room administrator can manage players");
+    if (!snapshot.players.some((player) => player.memberNumber === memberNumber)) {
+      throw new Error("This player is no longer in the room");
+    }
+    if (memberNumber === this.getOwnMemberNumber()) throw new Error("Choose another player");
+    if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
+    const nativeAction: Record<BCRoomMemberAction, string> = {
+      kick: "Kick",
+      promote: "Promote",
+      demote: "Demote",
+      whitelist: "Whitelist",
+      unwhitelist: "Unwhitelist",
+    };
+    ServerSend("ChatRoomAdmin", {
+      MemberNumber: memberNumber,
+      Action: nativeAction[action],
+      ...(action === "kick" ? { Publish: true } : {}),
+    });
+  }
+
   startWhisper(memberNumber: number): void {
     if (!this.isInChatRoom()) throw new Error("Open a Bondage Club chat room first");
     if (!this.#findRoomCharacter(memberNumber)) {
@@ -442,6 +568,15 @@ export class BCAdapter {
       return undefined;
     }
     return ChatRoomCharacter.find((character) => character.MemberNumber === memberNumber);
+  }
+
+  #isRoomAdmin(admins: number[]): boolean {
+    try {
+      if (typeof ChatRoomPlayerIsAdmin === "function") return ChatRoomPlayerIsAdmin();
+    } catch {
+      // Fall back to the room's public admin list when a replaced native helper throws.
+    }
+    return admins.includes(this.getOwnMemberNumber());
   }
 
   getKnownContacts(): Array<{ memberNumber: number; memberName: string }> {
@@ -1237,6 +1372,34 @@ function cleanName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const name = value.trim();
   return name || undefined;
+}
+
+function normalizeRoomMediaUrl(value: string, kind: "image" | "audio"): string | undefined {
+  const candidate = value.trim();
+  if (!candidate) return undefined;
+  if (candidate.length > 250) throw new Error("Room media links can be at most 250 characters");
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    throw new Error("Enter a valid HTTPS room media link");
+  }
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new Error("Room media must use a public HTTPS link");
+  }
+  const extension = url.pathname.toLocaleLowerCase();
+  const supported =
+    kind === "image"
+      ? /\.(?:jpe?g|png|webp)$/u.test(extension)
+      : /\.(?:mp3|mp4)$/u.test(extension);
+  if (!supported) {
+    throw new Error(
+      kind === "image"
+        ? "Room backgrounds must be JPG, PNG, or WebP files"
+        : "Bondage Club room music links must end in .mp3 or .mp4",
+    );
+  }
+  return url.href;
 }
 
 function incomingFingerprint(event: BeepEvent): string {

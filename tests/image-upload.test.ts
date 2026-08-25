@@ -7,6 +7,7 @@ import {
   LitterboxImageUploader,
   normalizeCloudinaryUploadConfig,
   normalizeLitterboxUploadConfig,
+  uploadLocalRoomAudio,
   validateLocalImageFile,
   type PreparedLocalImage,
 } from "../src/modules/link-chat/image-upload";
@@ -112,6 +113,35 @@ describe("local image uploads", () => {
         "unexpected link",
       );
     }
+  });
+
+  it("uploads renamed room music to an exact temporary audio URL", async () => {
+    const request = vi.fn<typeof fetch>(async () =>
+      new Response("https://litter.catbox.moe/room_song.mp3\n", { status: 200 }),
+    );
+    const file = new File([bytes(1, 2, 3)], "private-scene-name.mp3", {
+      type: "audio/mpeg",
+    });
+
+    await expect(uploadLocalRoomAudio(file, { retention: "72h" }, request)).resolves.toBe(
+      "https://litter.catbox.moe/room_song.mp3",
+    );
+    const form = request.mock.calls[0]?.[1]?.body as FormData;
+    const uploaded = form.get("fileToUpload") as File;
+    expect(uploaded.name).toBe("kikilink-room-music.mp3");
+    expect(form.get("time")).toBe("72h");
+  });
+
+  it("matches Bondage Club's MP3/MP4 room-music allowlist", async () => {
+    const request = vi.fn<typeof fetch>();
+    await expect(
+      uploadLocalRoomAudio(
+        new File([bytes(1, 2, 3)], "unsupported.ogg", { type: "audio/ogg" }),
+        { retention: "1h" },
+        request as typeof fetch,
+      ),
+    ).rejects.toThrow("MP3 or MP4");
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("uploads only the prepared generic WebP and validates the returned direct URL", async () => {

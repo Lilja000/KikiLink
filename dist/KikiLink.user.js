@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.10
+// @version      0.21.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -567,6 +567,87 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (typeof ChatRoomData === "undefined" || ChatRoomData === null) return void 0;
       return cleanName(ChatRoomData.Name);
     }
+    getRoomAdminSnapshot() {
+      if (!this.isInChatRoom() || typeof ChatRoomData !== "object" || ChatRoomData === null) {
+        return void 0;
+      }
+      try {
+        const admins = Array.isArray(ChatRoomData.Admin) ? ChatRoomData.Admin : [];
+        const whitelist = Array.isArray(ChatRoomData.Whitelist) ? ChatRoomData.Whitelist : [];
+        const custom = ChatRoomData.Custom;
+        return {
+          roomName: cleanName(ChatRoomData.Name) ?? "Current room",
+          isAdmin: this.#isRoomAdmin(admins),
+          customization: {
+            imageUrl: cleanName(custom?.ImageURL) ?? "",
+            musicUrl: cleanName(custom?.MusicURL) ?? "",
+            sizeMode: typeof custom?.SizeMode === "number" && Number.isInteger(custom.SizeMode) && custom.SizeMode >= 1 && custom.SizeMode <= 3 ? custom.SizeMode : 1,
+            musicSync: typeof custom?.MusicStart === "number"
+          },
+          players: this.getRoomCharacters().map((character) => ({
+            ...character,
+            admin: admins.includes(character.memberNumber),
+            whitelisted: whitelist.includes(character.memberNumber)
+          }))
+        };
+      } catch (error) {
+        this.#logger.warn("Room administration data was not readable", error);
+        return void 0;
+      }
+    }
+    updateRoomCustomization(customization) {
+      const snapshot = this.getRoomAdminSnapshot();
+      if (!snapshot) throw new Error("Open a Bondage Club chat room first");
+      if (!snapshot.isAdmin) throw new Error("Only a room administrator can change room media");
+      if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
+      const imageUrl = normalizeRoomMediaUrl(customization.imageUrl, "image");
+      const musicUrl = normalizeRoomMediaUrl(customization.musicUrl, "audio");
+      const sizeMode = Number.isInteger(customization.sizeMode) ? Math.min(3, Math.max(1, customization.sizeMode)) : 1;
+      const room = typeof ChatRoomGetSettings === "function" ? ChatRoomGetSettings(ChatRoomData) : { ...ChatRoomData };
+      const custom = {
+        ...ChatRoomData?.Custom ?? {},
+        SizeMode: sizeMode
+      };
+      if (customization.musicSync) {
+        const existingMusicUrl = cleanName(ChatRoomData?.Custom?.MusicURL);
+        const existingMusicStart = ChatRoomData?.Custom?.MusicStart;
+        custom.MusicStart = musicUrl === existingMusicUrl && typeof existingMusicStart === "number" && Number.isFinite(existingMusicStart) ? existingMusicStart : typeof CurrentTime === "number" && Number.isFinite(CurrentTime) ? CurrentTime : Date.now();
+      } else {
+        delete custom.MusicStart;
+      }
+      if (imageUrl) custom.ImageURL = imageUrl;
+      else delete custom.ImageURL;
+      if (musicUrl) custom.MusicURL = musicUrl;
+      else delete custom.MusicURL;
+      room.Custom = custom;
+      ServerSend("ChatRoomAdmin", {
+        MemberNumber: typeof Player.ID === "number" && Number.isSafeInteger(Player.ID) ? Player.ID : Player.MemberNumber,
+        Room: room,
+        Action: "Update"
+      });
+    }
+    runRoomMemberAction(memberNumber, action) {
+      const snapshot = this.getRoomAdminSnapshot();
+      if (!snapshot) throw new Error("Open a Bondage Club chat room first");
+      if (!snapshot.isAdmin) throw new Error("Only a room administrator can manage players");
+      if (!snapshot.players.some((player) => player.memberNumber === memberNumber)) {
+        throw new Error("This player is no longer in the room");
+      }
+      if (memberNumber === this.getOwnMemberNumber()) throw new Error("Choose another player");
+      if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
+      const nativeAction = {
+        kick: "Kick",
+        promote: "Promote",
+        demote: "Demote",
+        whitelist: "Whitelist",
+        unwhitelist: "Unwhitelist"
+      };
+      ServerSend("ChatRoomAdmin", {
+        MemberNumber: memberNumber,
+        Action: nativeAction[action],
+        ...action === "kick" ? { Publish: true } : {}
+      });
+    }
     startWhisper(memberNumber) {
       if (!this.isInChatRoom()) throw new Error("Open a Bondage Club chat room first");
       if (!this.#findRoomCharacter(memberNumber)) {
@@ -593,6 +674,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
         return void 0;
       }
       return ChatRoomCharacter.find((character) => character.MemberNumber === memberNumber);
+    }
+    #isRoomAdmin(admins) {
+      try {
+        if (typeof ChatRoomPlayerIsAdmin === "function") return ChatRoomPlayerIsAdmin();
+      } catch {
+      }
+      return admins.includes(this.getOwnMemberNumber());
     }
     getKnownContacts() {
       const contacts = /* @__PURE__ */ new Map();
@@ -1239,6 +1327,28 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const name = value.trim();
     return name || void 0;
   }
+  function normalizeRoomMediaUrl(value, kind) {
+    const candidate = value.trim();
+    if (!candidate) return void 0;
+    if (candidate.length > 250) throw new Error("Room media links can be at most 250 characters");
+    let url;
+    try {
+      url = new URL(candidate);
+    } catch {
+      throw new Error("Enter a valid HTTPS room media link");
+    }
+    if (url.protocol !== "https:" || url.username || url.password) {
+      throw new Error("Room media must use a public HTTPS link");
+    }
+    const extension = url.pathname.toLocaleLowerCase();
+    const supported = kind === "image" ? /\.(?:jpe?g|png|webp)$/u.test(extension) : /\.(?:mp3|mp4)$/u.test(extension);
+    if (!supported) {
+      throw new Error(
+        kind === "image" ? "Room backgrounds must be JPG, PNG, or WebP files" : "Bondage Club room music links must end in .mp3 or .mp4"
+      );
+    }
+    return url.href;
+  }
   function incomingFingerprint(event) {
     return [event.peerNumber, event.content, event.roomName ?? ""].join("");
   }
@@ -1320,6 +1430,65 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     fallbackCounter += 1;
     return `${prefix}_${Date.now().toString(36)}_${fallbackCounter.toString(36)}`;
+  }
+
+  // src/modules/link-chat/media.ts
+  var URL_PATTERN = /https:\/\/[^\s<>"'[\]]+/giu;
+  var IMAGE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/iu;
+  var TRAILING_PUNCTUATION = /[),.;!?\]}]+$/u;
+  function parseMessageLinks(message) {
+    const links = [];
+    for (const match of message.matchAll(URL_PATTERN)) {
+      if (match.index === void 0) continue;
+      const candidate = trimTrailingPunctuation(match[0]);
+      const url = normalizeHttpsUrl(candidate);
+      if (!url) continue;
+      links.push({
+        start: match.index,
+        end: match.index + candidate.length,
+        url,
+        image: isDirectImageUrl(url)
+      });
+    }
+    return links;
+  }
+  function normalizeImageUrl(value) {
+    const direct = normalizeHttpsUrl(value.trim());
+    if (direct && isDirectImageUrl(direct)) return direct;
+    for (const match of value.matchAll(URL_PATTERN)) {
+      const url = normalizeHttpsUrl(trimTrailingPunctuation(match[0]));
+      if (url && isDirectImageUrl(url)) return url;
+    }
+    return null;
+  }
+  function isDirectImageUrl(value) {
+    const url = normalizeHttpsUrl(value);
+    if (!url) return false;
+    return IMAGE_EXTENSION.test(new URL(url).pathname);
+  }
+  function normalizeHttpsUrl(value) {
+    if (!value || value.length > 900) return null;
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.username || url.password || !url.hostname) return null;
+      return url.href;
+    } catch {
+      return null;
+    }
+  }
+  function trimTrailingPunctuation(value) {
+    let candidate = value;
+    while (TRAILING_PUNCTUATION.test(candidate)) {
+      const final = candidate.at(-1);
+      if (final === ")" && count(candidate, "(") >= count(candidate, ")")) break;
+      if (final === "]" && count(candidate, "[") >= count(candidate, "]")) break;
+      if (final === "}" && count(candidate, "{") >= count(candidate, "}")) break;
+      candidate = candidate.slice(0, -1);
+    }
+    return candidate;
+  }
+  function count(value, character) {
+    return [...value].filter((candidate) => candidate === character).length;
   }
 
   // src/modules/link-chat/chat-service.ts
@@ -1415,6 +1584,35 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const ephemeral = this.#ephemeralMessages.get(peerNumber) ?? [];
       return [...persisted, ...ephemeral].sort((left, right) => left.sentAt - right.sentAt).slice(-limit);
     }
+    async listMedia(limit = 300) {
+      const conversations = await this.listConversations();
+      const messageGroups = await Promise.all(
+        conversations.map(async (conversation) => ({
+          conversation,
+          messages: await this.getMessages(conversation.peerNumber, 500)
+        }))
+      );
+      const media = /* @__PURE__ */ new Map();
+      for (const { conversation, messages } of messageGroups) {
+        for (const message of messages) {
+          for (const link of parseMessageLinks(message.content)) {
+            if (!link.image) continue;
+            const item = {
+              url: link.url,
+              provider: mediaProvider(link.url),
+              peerNumber: conversation.peerNumber,
+              peerName: conversationDisplayName(conversation),
+              direction: message.direction,
+              sentAt: message.sentAt,
+              messageId: message.id
+            };
+            const previous = media.get(item.url);
+            if (!previous || previous.sentAt < item.sentAt) media.set(item.url, item);
+          }
+        }
+      }
+      return [...media.values()].sort((left, right) => right.sentAt - left.sentAt).slice(0, Math.max(1, Math.min(1e3, limit)));
+    }
     async markRead(peerNumber) {
       const conversation = await this.getConversation(peerNumber);
       if (!conversation || conversation.unread === 0) return;
@@ -1508,6 +1706,15 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function normalizeLocalAlias(value) {
     const alias = value.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 40);
     return alias || void 0;
+  }
+  function mediaProvider(value) {
+    try {
+      const host = new URL(value).hostname.toLocaleLowerCase();
+      if (host === "files.catbox.moe") return "catbox";
+      if (host === "litter.catbox.moe") return "litterbox";
+    } catch {
+    }
+    return "other";
   }
 
   // src/modules/link-activities/custom-activity-library.ts
@@ -1715,68 +1922,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
-  // src/modules/link-chat/media.ts
-  var URL_PATTERN = /https:\/\/[^\s<>"'[\]]+/giu;
-  var IMAGE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/iu;
-  var TRAILING_PUNCTUATION = /[),.;!?\]}]+$/u;
-  function parseMessageLinks(message) {
-    const links = [];
-    for (const match of message.matchAll(URL_PATTERN)) {
-      if (match.index === void 0) continue;
-      const candidate = trimTrailingPunctuation(match[0]);
-      const url = normalizeHttpsUrl(candidate);
-      if (!url) continue;
-      links.push({
-        start: match.index,
-        end: match.index + candidate.length,
-        url,
-        image: isDirectImageUrl(url)
-      });
-    }
-    return links;
-  }
-  function normalizeImageUrl(value) {
-    const direct = normalizeHttpsUrl(value.trim());
-    if (direct && isDirectImageUrl(direct)) return direct;
-    for (const match of value.matchAll(URL_PATTERN)) {
-      const url = normalizeHttpsUrl(trimTrailingPunctuation(match[0]));
-      if (url && isDirectImageUrl(url)) return url;
-    }
-    return null;
-  }
-  function isDirectImageUrl(value) {
-    const url = normalizeHttpsUrl(value);
-    if (!url) return false;
-    return IMAGE_EXTENSION.test(new URL(url).pathname);
-  }
-  function normalizeHttpsUrl(value) {
-    if (!value || value.length > 900) return null;
-    try {
-      const url = new URL(value);
-      if (url.protocol !== "https:" || url.username || url.password || !url.hostname) return null;
-      return url.href;
-    } catch {
-      return null;
-    }
-  }
-  function trimTrailingPunctuation(value) {
-    let candidate = value;
-    while (TRAILING_PUNCTUATION.test(candidate)) {
-      const final = candidate.at(-1);
-      if (final === ")" && count(candidate, "(") >= count(candidate, ")")) break;
-      if (final === "]" && count(candidate, "[") >= count(candidate, "]")) break;
-      if (final === "}" && count(candidate, "{") >= count(candidate, "}")) break;
-      candidate = candidate.slice(0, -1);
-    }
-    return candidate;
-  }
-  function count(value, character) {
-    return [...value].filter((candidate) => candidate === character).length;
-  }
-
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 16,
+    schemaVersion: 17,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -1786,6 +1934,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       launcherSide: "right",
       launcherOpen: "home",
       launcherPosition: null,
+      panelPosition: null,
       roomBadge: {
         enabled: true,
         position: null
@@ -1840,6 +1989,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       },
       sounds: {
         enabled: false,
+        volume: 65,
         chat: "chime",
         friendOnline: "sparkle",
         roomJoin: "pop"
@@ -1927,7 +2077,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkRoster = isRecord3(source.linkRoster) ? source.linkRoster : {};
     const linkReactions = isRecord3(source.linkReactions) ? source.linkReactions : {};
     return {
-      schemaVersion: 16,
+      schemaVersion: 17,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -1937,6 +2087,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         launcherSide: ui.launcherSide === "left" ? "left" : "right",
         launcherOpen: ui.launcherOpen === "last" || ui.launcherOpen === "chat" ? ui.launcherOpen : DEFAULT_SETTINGS.ui.launcherOpen,
         launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
+        panelPosition: sanitizeLauncherPosition(ui.panelPosition),
         roomBadge: sanitizeRoomBadge(ui.roomBadge, sourceSchema),
         reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
         settingsSection: isSettingsSection(ui.settingsSection) ? ui.settingsSection : DEFAULT_SETTINGS.ui.settingsSection
@@ -2056,6 +2207,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const source = isRecord3(value) ? value : {};
     return {
       enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.linkReactions.sounds.enabled),
+      volume: integerInRange3(
+        source.volume,
+        0,
+        100,
+        DEFAULT_SETTINGS.linkReactions.sounds.volume
+      ),
       chat: notificationSoundOr(source.chat, DEFAULT_SETTINGS.linkReactions.sounds.chat),
       friendOnline: notificationSoundOr(
         source.friendOnline,
@@ -2068,7 +2225,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     };
   }
   function notificationSoundOr(value, fallback) {
-    return value === "sparkle" || value === "pop" || value === "chime" ? value : fallback;
+    return value === "sparkle" || value === "pop" || value === "chime" || typeof value === "string" && /^custom:[a-z0-9_-]{1,64}$/iu.test(value) ? value : fallback;
   }
   function sanitizeQuickActions(value) {
     if (value === void 0) return structuredClone(DEFAULT_SETTINGS.linkChat.quickActions);
@@ -4302,6 +4459,176 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
   }
 
+  // src/storage/device-notification-sound-store.ts
+  var MAX_NOTIFICATION_SOUND_DURATION_MS = 5e3;
+  var MAX_NOTIFICATION_SOUND_BYTES = 10 * 1024 * 1024;
+  var DATABASE_VERSION = 1;
+  var STORE_NAME = "sounds";
+  var METADATA_TIMEOUT_MS = 12e3;
+  var DeviceNotificationSoundStore = class {
+    constructor(memberNumber) {
+      this.memberNumber = memberNumber;
+    }
+    memberNumber;
+    #memory = /* @__PURE__ */ new Map();
+    #databasePromise;
+    #databaseUnavailable = false;
+    async list() {
+      const database = await this.#database().catch(() => void 0);
+      if (!database) return sortSounds([...this.#memory.values()]);
+      const records = await requestResult(
+        database.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).getAll()
+      );
+      return sortSounds(records);
+    }
+    async get(id) {
+      if (!validSoundId(id)) return void 0;
+      const database = await this.#database().catch(() => void 0);
+      if (!database) return this.#memory.get(id);
+      return await requestResult(
+        database.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(id)
+      );
+    }
+    async add(file) {
+      validateNotificationSoundFile(file);
+      const durationMs = await readAudioDurationMs(file);
+      if (durationMs > MAX_NOTIFICATION_SOUND_DURATION_MS) {
+        throw new Error("Notification sounds can be at most 5 seconds long");
+      }
+      const record = {
+        id: createSoundId(),
+        name: cleanSoundName(file.name),
+        mimeType: file.type,
+        durationMs,
+        createdAt: Date.now(),
+        blob: file.slice(0, file.size, file.type)
+      };
+      const database = await this.#database().catch(() => void 0);
+      if (!database) {
+        this.#memory.set(record.id, record);
+        return record;
+      }
+      const transaction = database.transaction(STORE_NAME, "readwrite");
+      transaction.objectStore(STORE_NAME).put(record);
+      await transactionDone(transaction);
+      return record;
+    }
+    async delete(id) {
+      if (!validSoundId(id)) return;
+      this.#memory.delete(id);
+      const database = await this.#database().catch(() => void 0);
+      if (!database) return;
+      const transaction = database.transaction(STORE_NAME, "readwrite");
+      transaction.objectStore(STORE_NAME).delete(id);
+      await transactionDone(transaction);
+    }
+    close() {
+      void this.#databasePromise?.then((database) => database.close()).catch(() => void 0);
+      this.#databasePromise = void 0;
+    }
+    #database() {
+      if (this.#databaseUnavailable || typeof indexedDB === "undefined") {
+        this.#databaseUnavailable = true;
+        return Promise.reject(new Error("IndexedDB is unavailable"));
+      }
+      this.#databasePromise ??= openDatabase(databaseName(this.memberNumber)).catch((error) => {
+        this.#databaseUnavailable = true;
+        this.#databasePromise = void 0;
+        throw error;
+      });
+      return this.#databasePromise;
+    }
+  };
+  function validateNotificationSoundFile(file) {
+    if (!(file instanceof Blob) || file.size <= 0) throw new Error("Choose a non-empty audio file");
+    if (file.size > MAX_NOTIFICATION_SOUND_BYTES) {
+      throw new Error("Notification sounds must be smaller than 10 MB");
+    }
+    const audioMime = file.type.toLocaleLowerCase().startsWith("audio/");
+    const audioName = /\.(?:aac|flac|m4a|mp3|oga|ogg|opus|wav|webm)$/iu.test(file.name);
+    if (!audioMime && !audioName) {
+      throw new Error("Choose an audio file supported by your browser");
+    }
+  }
+  function readAudioDurationMs(file) {
+    if (typeof Audio !== "function" || typeof URL.createObjectURL !== "function") {
+      return Promise.reject(new Error("This browser cannot inspect local audio files"));
+    }
+    return new Promise((resolve, reject) => {
+      const audio = new Audio();
+      const url = URL.createObjectURL(file);
+      const timer = setTimeout(() => finish(void 0, "The audio file took too long to read"), METADATA_TIMEOUT_MS);
+      const finish = (duration, error) => {
+        clearTimeout(timer);
+        audio.removeEventListener("loadedmetadata", loaded);
+        audio.removeEventListener("error", failed);
+        audio.removeAttribute("src");
+        URL.revokeObjectURL(url);
+        if (duration !== void 0) resolve(duration);
+        else reject(new Error(error ?? "The audio file could not be read"));
+      };
+      const loaded = () => {
+        const milliseconds = Math.round(audio.duration * 1e3);
+        if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
+          finish(void 0, "The audio file has no readable duration");
+          return;
+        }
+        finish(milliseconds);
+      };
+      const failed = () => finish(void 0, "This audio format is not supported by your browser");
+      audio.addEventListener("loadedmetadata", loaded, { once: true });
+      audio.addEventListener("error", failed, { once: true });
+      audio.preload = "metadata";
+      audio.src = url;
+      audio.load();
+    });
+  }
+  function databaseName(memberNumber) {
+    const account = Number.isSafeInteger(memberNumber) && memberNumber > 0 ? memberNumber : "guest";
+    return `kikilink-device-sounds-${account}`;
+  }
+  function openDatabase(name) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(name, DATABASE_VERSION);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains(STORE_NAME)) {
+          database.createObjectStore(STORE_NAME, { keyPath: "id" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Unable to open local sound storage"));
+      request.onblocked = () => reject(new Error("Local sound storage is blocked by another tab"));
+    });
+  }
+  function requestResult(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Local sound storage request failed"));
+    });
+  }
+  function transactionDone(transaction) {
+    return new Promise((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error ?? new Error("Local sound storage failed"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("Local sound storage was cancelled"));
+    });
+  }
+  function sortSounds(sounds) {
+    return sounds.sort((left, right) => right.createdAt - left.createdAt || left.name.localeCompare(right.name));
+  }
+  function createSoundId() {
+    const random = typeof crypto === "object" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    return random.toLocaleLowerCase().replace(/[^a-z0-9_-]/gu, "").slice(0, 64);
+  }
+  function validSoundId(value) {
+    return /^[a-z0-9_-]{1,64}$/iu.test(value);
+  }
+  function cleanSoundName(value) {
+    const name = value.replace(/\.[^.]+$/u, "").replace(/[\u0000-\u001f\u007f]/gu, "").trim();
+    return (name || "Custom sound").slice(0, 60);
+  }
+
   // src/modules/link-presence/link-presence-service.ts
   var NATIVE_REFRESH_MS = 3e4;
   var STATUS_CHECK_MS = 15e3;
@@ -4755,8 +5082,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
   };
   var SOUND_THROTTLE_MS = 350;
   var NotificationSoundService = class {
+    constructor(resolveCustomSound) {
+      this.resolveCustomSound = resolveCustomSound;
+    }
+    resolveCustomSound;
     #context;
     #lastPlayedAt = Number.NEGATIVE_INFINITY;
+    #customBuffers = /* @__PURE__ */ new Map();
     async unlock() {
       const context = this.#getContext();
       if (!context) return false;
@@ -4767,15 +5099,20 @@ One of mods you are using is using an old version of SDK. It will work for now b
         return false;
       }
     }
-    async play(preset, now = Date.now()) {
+    async play(choice, nowOrOptions = {}) {
+      const options = typeof nowOrOptions === "number" ? { now: nowOrOptions } : nowOrOptions;
+      const now = options.now ?? Date.now();
+      const volume = normalizedVolume(options.volume);
       if (now - this.#lastPlayedAt < SOUND_THROTTLE_MS) return false;
+      if (volume === 0) return false;
+      if (!isPreset(choice)) return this.#playCustom(choice.slice("custom:".length), volume, now);
       if (!await this.unlock()) return false;
       const context = this.#context;
       if (!context) return false;
       try {
         const startAt = context.currentTime + 0.01;
-        for (const note of NOTIFICATION_SOUND_PATTERNS[preset]) {
-          scheduleNote(context, startAt, note);
+        for (const note of NOTIFICATION_SOUND_PATTERNS[choice]) {
+          scheduleNote(context, startAt, note, volume / 100);
         }
         this.#lastPlayedAt = now;
         return true;
@@ -4786,6 +5123,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     async destroy() {
       const context = this.#context;
       this.#context = void 0;
+      this.#customBuffers.clear();
       if (context && context.state !== "closed") {
         try {
           await context.close();
@@ -4805,8 +5143,38 @@ One of mods you are using is using an old version of SDK. It will work for now b
         return void 0;
       }
     }
+    async #playCustom(id, volume, now) {
+      if (!this.resolveCustomSound || !await this.unlock()) return false;
+      const context = this.#context;
+      if (!context || typeof context.decodeAudioData !== "function") return false;
+      try {
+        const buffer = await this.#customBuffer(id, context);
+        if (!buffer) return false;
+        const source = context.createBufferSource();
+        const gain = context.createGain();
+        source.buffer = buffer;
+        gain.gain.setValueAtTime(volume / 100, context.currentTime);
+        source.connect(gain);
+        gain.connect(context.destination);
+        source.start(context.currentTime + 0.01);
+        this.#lastPlayedAt = now;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    #customBuffer(id, context) {
+      let pending = this.#customBuffers.get(id);
+      if (!pending) {
+        pending = this.resolveCustomSound(id).then(
+          async (blob) => blob ? context.decodeAudioData(await blob.arrayBuffer()) : void 0
+        ).catch(() => void 0);
+        this.#customBuffers.set(id, pending);
+      }
+      return pending;
+    }
   };
-  function scheduleNote(context, startAt, note) {
+  function scheduleNote(context, startAt, note, volume) {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
     const start = startAt + note.offset;
@@ -4817,12 +5185,23 @@ One of mods you are using is using an old version of SDK. It will work for now b
       oscillator.frequency.exponentialRampToValueAtTime(note.endFrequency, end);
     }
     gain.gain.setValueAtTime(1e-4, start);
-    gain.gain.exponentialRampToValueAtTime(note.gain, start + Math.min(0.018, note.duration / 3));
+    gain.gain.exponentialRampToValueAtTime(
+      Math.max(1e-4, note.gain * volume),
+      start + Math.min(0.018, note.duration / 3)
+    );
     gain.gain.exponentialRampToValueAtTime(1e-4, end);
     oscillator.connect(gain);
     gain.connect(context.destination);
     oscillator.start(start);
     oscillator.stop(end + 0.02);
+  }
+  function normalizedVolume(value) {
+    if (value === void 0) return 100;
+    if (!Number.isFinite(value)) return 100;
+    return Math.min(100, Math.max(0, value));
+  }
+  function isPreset(value) {
+    return value === "chime" || value === "sparkle" || value === "pop";
   }
 
   // src/modules/link-chat/styles.ts
@@ -5110,7 +5489,11 @@ button { color: inherit; }
   gap: 10px;
   min-width: 0;
   margin-right: auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
+.kl-panel[data-dragging="true"] .kl-brand { cursor: grabbing; }
 
 .kl-brand-emblem {
   width: 38px;
@@ -5973,6 +6356,7 @@ button { color: inherit; }
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
+.kl-sidebar-heading-actions { display: flex; align-items: center; gap: 6px; }
 .kl-sidebar-new-chat {
   width: 36px;
   height: 36px;
@@ -6309,18 +6693,20 @@ button { color: inherit; }
   max-height: min(760px, calc(100vh - 32px));
   padding: 0;
   overflow: hidden;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   border: 1px solid var(--kl-border);
   border-radius: 20px;
   background: var(--kl-panel-art), var(--kl-panel-bg);
   color: var(--kl-text);
   box-shadow: var(--kl-shadow);
 }
+.kl-dialog[open] { display: grid; }
 .kl-dialog::backdrop { background: rgba(0, 0, 0, 0.68); }
 .kl-dialog-header { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--kl-border); background: var(--kl-topbar-bg); }
 .kl-dialog-heading { min-width: 0; margin-right: auto; }
 .kl-dialog-title { margin-right: auto; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); font-weight: 700; }
 .kl-dialog-subtitle { margin-top: 2px; color: var(--kl-muted); font-size: var(--kl-type-xs); letter-spacing: 0.035em; }
-.kl-dialog-body { display: grid; gap: 18px; max-height: calc(100vh - 170px); padding: 18px; overflow: auto; }
+.kl-dialog-body { min-height: 0; display: grid; gap: 18px; padding: 18px; overflow: auto; }
 .kl-setting-section { display: grid; gap: 14px; }
 .kl-setting-section + .kl-setting-section { padding-top: 17px; border-top: 1px solid var(--kl-border); }
 .kl-setting-section-title { color: var(--kl-gold); font-size: var(--kl-type-xs); font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
@@ -6379,7 +6765,7 @@ button { color: inherit; }
 .kl-switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff8eb; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24); transition: transform 140ms ease; }
 .kl-switch input:checked + .kl-switch-track { background: var(--kl-accent); }
 .kl-switch input:checked + .kl-switch-track::after { background: var(--kl-accent-foreground); transform: translateX(22px); }
-.kl-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 0 18px 18px; }
+.kl-dialog-actions { position: relative; z-index: 1; display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 9px; padding: 12px 18px 18px; border-top: 1px solid var(--kl-border); background: var(--kl-panel-bg); }
 
 .kl-action-editor { display: grid; gap: 8px; }
 .kl-action-editor-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) 40px; gap: 7px; align-items: center; }
@@ -6401,6 +6787,16 @@ button { color: inherit; }
 .kl-sound-choice-controls { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
 .kl-sound-choice .kl-select { width: 100%; min-width: 0; }
 .kl-sound-preview { min-width: 58px; padding-inline: 10px; }
+.kl-volume-control { min-width: 210px; display: grid; grid-template-columns: minmax(120px, 1fr) 48px; align-items: center; gap: 10px; }
+.kl-volume-input { width: 100%; accent-color: var(--kl-accent); cursor: pointer; }
+.kl-volume-value { color: var(--kl-gold); font-variant-numeric: tabular-nums; font-weight: 800; text-align: right; }
+.kl-custom-sounds-body { display: grid; gap: 10px; padding: 12px; border-top: 1px solid var(--kl-border); }
+.kl-custom-sound-list { display: grid; gap: 7px; }
+.kl-custom-sound { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 9px; border: 1px solid var(--kl-border); border-radius: 12px; background: var(--kl-surface-1); }
+.kl-custom-sound-copy { min-width: 0; display: grid; gap: 2px; }
+.kl-custom-sound-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-custom-sound-copy span,
+.kl-custom-sound-empty { color: var(--kl-muted); font-size: var(--kl-type-xs); }
 .kl-reaction-advanced-content { display: grid; gap: 16px; padding: 12px; border-top: 1px solid var(--kl-border); }
 .kl-reaction-safety { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--kl-gold), transparent 68%); border-radius: 12px; background: color-mix(in srgb, var(--kl-gold), transparent 92%); color: var(--kl-muted); font-size: var(--kl-type-sm); line-height: 1.45; }
 .kl-reaction-safety-icon { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 1px; color: var(--kl-gold); }
@@ -7200,6 +7596,7 @@ select:focus-visible {
     min-height: 0;
     border-radius: 20px;
   }
+  .kl-brand { cursor: default; touch-action: auto; }
 
   .kl-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -7209,7 +7606,7 @@ select:focus-visible {
   .kl-feature-nav {
     grid-row: 2;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 4px;
     padding: 5px 7px calc(5px + env(safe-area-inset-bottom));
     border-top: 1px solid var(--kl-border);
@@ -7278,6 +7675,10 @@ select:focus-visible {
   .kl-sound-choices { grid-template-columns: minmax(0, 1fr); }
   .kl-feature-page-header { padding: 14px 16px 13px; }
   .kl-feature-page-footer { min-height: 60px; padding: 8px 12px; }
+  .kl-room-grid { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .kl-gallery-grid { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .kl-room-player { grid-template-columns: 40px minmax(0, 1fr); }
+  .kl-room-player-actions { grid-column: 1 / -1; justify-content: flex-start; }
   .kl-roster-body {
     min-height: 0;
     grid-template-columns: minmax(0, 1fr);
@@ -7633,6 +8034,43 @@ select:focus-visible {
 .kl-image-caption { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 7px 9px; color: var(--kl-muted); font-size: var(--kl-type-xs); }
 .kl-image-host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kl-image-open { flex: 0 0 auto; color: var(--kl-gold); text-decoration: none; }
+.kl-gallery-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  align-content: start;
+  gap: 14px;
+  padding: 18px;
+  overflow: auto;
+}
+.kl-gallery-item { min-width: 0; display: grid; align-content: start; gap: 8px; padding: 10px; border: 1px solid var(--kl-border); border-radius: 16px; background: var(--kl-surface-1); }
+.kl-gallery-item .kl-image-card { max-width: none; }
+.kl-gallery-meta { min-width: 0; display: flex; justify-content: space-between; gap: 10px; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-gallery-meta strong { color: var(--kl-gold); text-transform: capitalize; }
+.kl-gallery-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-gallery-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.kl-gallery-empty { grid-column: 1 / -1; place-self: center; padding: 32px; color: var(--kl-muted); text-align: center; }
+.kl-room-page { grid-template-rows: auto auto minmax(0, 1fr); }
+.kl-room-admin-status { padding: 10px 20px; border-bottom: 1px solid var(--kl-border); color: var(--kl-muted); font-size: var(--kl-type-sm); }
+.kl-room-admin-status[data-state="admin"] { color: #68d391; }
+.kl-room-admin-status[data-state="readonly"] { color: var(--kl-gold); }
+.kl-room-grid { min-height: 0; display: grid; grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr); gap: 16px; padding: 18px; overflow: auto; }
+.kl-room-media,
+.kl-room-players { min-width: 0; align-content: start; display: grid; gap: 12px; padding: 16px; border: 1px solid var(--kl-border); border-radius: 16px; background: var(--kl-surface-1); }
+.kl-room-media h2,
+.kl-room-players h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); }
+.kl-room-field { display: grid; gap: 6px; color: var(--kl-muted); font-size: var(--kl-type-sm); font-weight: 750; }
+.kl-room-media-note { margin: 0; color: var(--kl-muted); font-size: var(--kl-type-xs); line-height: 1.45; }
+.kl-room-player-list { display: grid; gap: 8px; }
+.kl-room-player { min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px; border: 1px solid var(--kl-border); border-radius: 13px; background: var(--kl-surface); }
+.kl-room-player .kl-avatar { width: 42px; height: 42px; border-radius: 11px; }
+.kl-room-player-copy { min-width: 0; display: grid; gap: 2px; }
+.kl-room-player-copy > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-room-player-copy > span { color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-room-player-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.kl-room-player-badges span { padding: 2px 5px; border-radius: 999px; background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); font-size: 9px; font-weight: 900; }
+.kl-room-player-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.kl-room-player-actions .kl-text-button { min-height: 32px; padding: 4px 7px; font-size: var(--kl-type-xs); }
 @keyframes kl-image-loading { to { background-position: -240% 0; } }
 .kl-message-side-actions {
   display: flex;
@@ -7706,6 +8144,7 @@ select:focus-visible {
   var MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
   var MAX_LOCAL_IMAGE_EDGE = 2560;
   var MAX_LOCAL_IMAGE_PIXELS = 32e6;
+  var MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
   var MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
   var IMAGE_UPLOAD_TIMEOUT_MS = 6e4;
   var LITTERBOX_UPLOAD_ENDPOINT = "https://litterbox.catbox.moe/resources/internals/api.php";
@@ -7754,6 +8193,49 @@ select:focus-visible {
       }
     }
   };
+  async function uploadLocalRoomAudio(file, config, request = globalThis.fetch.bind(globalThis)) {
+    const normalizedConfig = normalizeLitterboxUploadConfig(config);
+    if (!normalizedConfig) throw new Error("Choose a valid temporary music lifetime");
+    if (file.size <= 0) throw new Error("Choose a non-empty audio file");
+    if (file.size > MAX_LOCAL_ROOM_AUDIO_BYTES) throw new Error("Choose room music up to 20 MB");
+    const extension = roomAudioExtension(file);
+    if (!extension) throw new Error("Bondage Club room music must be an MP3 or MP4 file");
+    const form = new FormData();
+    form.append("reqtype", "fileupload");
+    form.append("time", normalizedConfig.retention);
+    form.append(
+      "fileToUpload",
+      new File([file], `kikilink-room-music.${extension}`, {
+        type: file.type || `audio/${extension}`,
+        lastModified: 0
+      })
+    );
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
+    try {
+      const response = await request(LITTERBOX_UPLOAD_ENDPOINT, {
+        method: "POST",
+        body: form,
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        signal: controller.signal
+      });
+      const payload = (await response.text().catch(() => "")).trim();
+      if (!response.ok) {
+        throw new Error(cleanProviderError(payload) || `Audio host returned HTTP ${response.status}`);
+      }
+      const url = normalizeLitterboxAudioUrl(payload);
+      if (!url) throw new Error("The temporary audio host returned an unexpected link");
+      return url;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("The music upload timed out");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   function normalizeLitterboxUploadConfig(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const retention = value.retention;
@@ -7856,6 +8338,28 @@ select:focus-visible {
   function isExpectedLitterboxUrl(value) {
     const url = new URL(value);
     return url.protocol === "https:" && url.hostname === "litter.catbox.moe" && !url.username && !url.password && !url.search && !url.hash && /^\/[a-z0-9_-]+\.webp$/iu.test(url.pathname);
+  }
+  function normalizeLitterboxAudioUrl(value) {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.hostname !== "litter.catbox.moe" || url.username || url.password || url.search || url.hash || !/^\/[a-z0-9_-]+\.(?:mp3|mp4)$/iu.test(url.pathname)) {
+        return null;
+      }
+      return url.href;
+    } catch {
+      return null;
+    }
+  }
+  function roomAudioExtension(file) {
+    const named = file.name.toLocaleLowerCase().match(/\.([a-z0-9]+)$/u)?.[1];
+    if (named && /^(?:mp3|mp4)$/u.test(named)) return named;
+    const mime = file.type.toLocaleLowerCase().split(";", 1)[0];
+    const byMime = {
+      "audio/mp4": "mp4",
+      "audio/mpeg": "mp3",
+      "video/mp4": "mp4"
+    };
+    return mime ? byMime[mime] : void 0;
   }
   function validatePreparedImage(image) {
     if (image.blob.type !== "image/webp" || image.blob.size <= 0 || image.blob.size > MAX_PREPARED_IMAGE_BYTES || !Number.isSafeInteger(image.width) || image.width <= 0 || !Number.isSafeInteger(image.height) || image.height <= 0) {
@@ -8051,7 +8555,9 @@ select:focus-visible {
       adapter,
       new PeopleRepository(new MemoryKeyValueStorage()),
       settings
-    ), presence, imageUploader = new LitterboxImageUploader()) {
+    ), presence, imageUploader = new LitterboxImageUploader(), soundStore = new DeviceNotificationSoundStore(
+      adapter.getOwnMemberNumber()
+    )) {
       this.adapter = adapter;
       this.service = service;
       this.settings = settings;
@@ -8059,8 +8565,12 @@ select:focus-visible {
       this.activities = activities;
       this.roster = roster;
       this.imageUploader = imageUploader;
+      this.soundStore = soundStore;
       this.presence = presence ?? new LinkPresenceService(adapter, settings, new EventBus(), version);
       this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence);
+      this.#notificationSounds = new NotificationSoundService(
+        async (id) => (await this.soundStore.get(id))?.blob
+      );
     }
     adapter;
     service;
@@ -8069,6 +8579,7 @@ select:focus-visible {
     activities;
     roster;
     imageUploader;
+    soundStore;
     #host = document.createElement("div");
     #shadow = this.#host.attachShadow({ mode: "open" });
     #launcher = element("button", {
@@ -8117,6 +8628,12 @@ select:focus-visible {
       title: "LinkChat",
       ariaLabel: "Open LinkChat"
     });
+    #roomNavButton = element("button", {
+      className: "kl-nav-item kl-room-button",
+      type: "button",
+      title: "Room tools",
+      ariaLabel: "Open room tools"
+    });
     #settingsNavButton = element("button", {
       className: "kl-nav-item",
       type: "button",
@@ -8156,6 +8673,12 @@ select:focus-visible {
       title: "Open Custom Activities"
     });
     #conversationList = element("div", { className: "kl-conversations" });
+    #galleryButton = element("button", {
+      className: "kl-sidebar-new-chat",
+      type: "button",
+      title: "Media gallery",
+      ariaLabel: "Open media gallery"
+    });
     #search = element("input", { className: "kl-search" });
     #empty = element("div", { className: "kl-empty" });
     #chat = element("section", { className: "kl-chat" });
@@ -8196,6 +8719,29 @@ select:focus-visible {
     #quickActions = element("div", { className: "kl-quick-actions" });
     #includeRoom = element("input");
     #counter = element("span", { className: "kl-counter" });
+    #galleryPage = element("section", {
+      className: "kl-feature-page kl-gallery-page",
+      ariaLabel: "Chat media gallery"
+    });
+    #gallerySubtitle = element("p", { className: "kl-feature-page-subtitle" });
+    #galleryGrid = element("div", { className: "kl-gallery-grid" });
+    #roomPage = element("section", {
+      className: "kl-feature-page kl-room-page",
+      ariaLabel: "Room tools"
+    });
+    #roomAdminStatus = element("div", { className: "kl-room-admin-status" });
+    #roomImageUrl = element("input", { className: "kl-search" });
+    #roomMusicUrl = element("input", { className: "kl-search" });
+    #roomSizeMode = element("select", { className: "kl-select" });
+    #roomMusicSync = element("input");
+    #roomSaveButton = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Apply room media"
+    });
+    #roomPlayers = element("div", { className: "kl-room-player-list" });
+    #roomImageFileInput = element("input");
+    #roomMusicFileInput = element("input");
     #settingsPage = element("section", {
       className: "kl-settings-page",
       ariaLabel: "KikiLink settings"
@@ -8273,6 +8819,10 @@ select:focus-visible {
     #friendOnlineAlertToggle = element("input");
     #roomJoinAlertToggle = element("input");
     #notificationSoundsToggle = element("input");
+    #soundVolumeInput = element("input", { className: "kl-volume-input" });
+    #soundVolumeValue = element("output", { className: "kl-volume-value" });
+    #customSoundInput = element("input");
+    #customSoundList = element("div", { className: "kl-custom-sound-list" });
     #chatSoundSelect = element("select", { className: "kl-select" });
     #friendOnlineSoundSelect = element("select", {
       className: "kl-select"
@@ -8400,6 +8950,7 @@ select:focus-visible {
     #finderRenderToken = 0;
     #toastTimer;
     #launcherDrag;
+    #panelDrag;
     #suppressLauncherClickUntil = 0;
     #presenceUnsubscribe;
     #presenceRenderFrame;
@@ -8429,6 +8980,7 @@ select:focus-visible {
     };
     #handleViewportResize = () => {
       this.#positionLauncher();
+      this.#positionPanel();
       this.#updateSettingsTabOrientation();
       this.#closeProfileMenu();
     };
@@ -8437,7 +8989,7 @@ select:focus-visible {
     }, 250);
     presence;
     #roomBadge;
-    #notificationSounds = new NotificationSoundService();
+    #notificationSounds;
     mount() {
       if (this.#mounted) return;
       this.#mounted = true;
@@ -8471,6 +9023,7 @@ select:focus-visible {
       document.body.append(this.#host);
       this.#roomBadge.mount();
       this.#positionLauncher();
+      this.#positionPanel();
       window.addEventListener("resize", this.#handleViewportResize);
       document.addEventListener("pointerdown", this.#handleOutsidePointerDown);
       this.#presenceUnsubscribe = this.presence.subscribe(
@@ -8502,6 +9055,7 @@ select:focus-visible {
       this.#roomBadge.destroy();
       this.#host.remove();
       void this.#notificationSounds.destroy();
+      this.soundStore.close();
       this.#mounted = false;
     }
     isActiveConversation(peerNumber) {
@@ -8521,9 +9075,10 @@ select:focus-visible {
       if (this.#newChatDialog.open) this.#renderKnownContacts();
       if (this.#workspaceView === "activities") this.#renderActivitiesPage();
       if (this.#workspaceView === "roster") this.#renderRoster();
+      if (this.#workspaceView === "room") void this.#renderRoomTools(true);
     }
     async onMessage(peerNumber, incoming, message) {
-      if (incoming && this.settings.get().linkChat.openOnIncoming) {
+      if (incoming && this.presence.getOwnStatus() !== "dnd" && this.settings.get().linkChat.openOnIncoming) {
         await this.openChat(peerNumber, this.adapter.getMemberName(peerNumber));
         return;
       }
@@ -8534,16 +9089,18 @@ select:focus-visible {
       await this.refresh();
     }
     onReaction(reaction) {
+      if (this.presence.getOwnStatus() === "dnd") return;
       this.#toast(
         reaction.action === "room-emote" ? `Reaction \u201C${reaction.ruleLabel}\u201D sent: ${reaction.message}` : reaction.message
       );
     }
     onNotification(notification) {
+      if (this.presence.getOwnStatus() === "dnd") return;
       if (notification.showToast) this.#toast(notification.message);
       const sounds = this.settings.get().linkReactions.sounds;
       if (!sounds.enabled) return;
       const preset = notification.kind === "chat" ? sounds.chat : notification.kind === "friend-online" ? sounds.friendOnline : sounds.roomJoin;
-      void this.#notificationSounds.play(preset);
+      void this.#notificationSounds.play(preset, { volume: sounds.volume });
     }
     async open() {
       const settings = this.settings.get();
@@ -8553,6 +9110,7 @@ select:focus-visible {
     }
     async #openPanel(view) {
       this.#panel.hidden = false;
+      this.#positionPanel();
       this.#launcher.setAttribute("aria-expanded", "true");
       this.#showWorkspace(view);
       await this.refresh();
@@ -8651,6 +9209,11 @@ select:focus-visible {
           )
         )
       );
+      brand.setAttribute("title", "Drag to move KikiLink");
+      brand.addEventListener("pointerdown", (event) => this.#startPanelDrag(event));
+      brand.addEventListener("pointermove", (event) => this.#movePanel(event));
+      brand.addEventListener("pointerup", (event) => this.#finishPanelDrag(event));
+      brand.addEventListener("pointercancel", (event) => this.#cancelPanelDrag(event));
       const close = element("button", {
         className: "kl-icon-button",
         type: "button",
@@ -8687,6 +9250,15 @@ select:focus-visible {
       this.#search.placeholder = "Search chats";
       this.#search.autocomplete = "off";
       this.#search.addEventListener("input", () => void this.#renderConversations());
+      this.#galleryButton.append(kikiIcon("image"));
+      this.#galleryButton.addEventListener("click", () => void this.#openGallery());
+      const newChatButton = element("button", {
+        className: "kl-sidebar-new-chat",
+        type: "button",
+        title: "New Beep chat",
+        ariaLabel: "New Beep chat",
+        onClick: () => this.#openNewChat()
+      }, kikiIcon("plus"));
       const sidebar = element(
         "aside",
         { className: "kl-sidebar" },
@@ -8695,13 +9267,7 @@ select:focus-visible {
           "div",
           { className: "kl-sidebar-heading" },
           element("span", { text: "Recent chats" }),
-          element("button", {
-            className: "kl-sidebar-new-chat",
-            type: "button",
-            title: "New Beep chat",
-            ariaLabel: "New Beep chat",
-            onClick: () => this.#openNewChat()
-          }, kikiIcon("plus"))
+          element("div", { className: "kl-sidebar-heading-actions" }, this.#galleryButton, newChatButton)
         ),
         this.#conversationList
       );
@@ -8723,12 +9289,16 @@ select:focus-visible {
       const main = element("main", { className: "kl-main" }, this.#empty, this.#chat);
       this.#chatLayout.append(sidebar, main);
       this.#buildRosterPage();
+      this.#buildGalleryPage();
+      this.#buildRoomPage();
       this.#buildActivitiesPage();
       this.#buildSettingsPage();
       this.#workspace.append(
         this.#home,
         this.#chatLayout,
+        this.#galleryPage,
         this.#rosterPage,
+        this.#roomPage,
         this.#activitiesPage,
         this.#settingsPage
       );
@@ -8760,6 +9330,7 @@ select:focus-visible {
       this.#configureNavButton(this.#homeNavButton, "home", "Home", "home");
       this.#configureNavButton(this.#chatNavButton, "chat", "Chat", "chat");
       this.#configureNavButton(this.#rosterButton, "users", "Players", "roster");
+      this.#configureNavButton(this.#roomNavButton, "location", "Room", "room");
       this.#configureNavButton(this.#activitiesButton, "activities", "Custom", "activities");
       this.#configureNavButton(this.#settingsNavButton, "settings", "Settings", "settings");
       this.#rosterCount.hidden = true;
@@ -8768,6 +9339,7 @@ select:focus-visible {
         this.#homeNavButton,
         this.#chatNavButton,
         this.#rosterButton,
+        this.#roomNavButton,
         this.#activitiesButton,
         this.#settingsNavButton
       );
@@ -8792,6 +9364,14 @@ select:focus-visible {
       }
       if (target === "activities") {
         this.#openActivities();
+        return;
+      }
+      if (target === "room") {
+        void this.#openRoomTools();
+        return;
+      }
+      if (target === "gallery") {
+        void this.#openGallery();
         return;
       }
       this.#openSettings();
@@ -8977,18 +9557,20 @@ select:focus-visible {
       this.#panel.dataset.workspace = view;
       this.#home.hidden = view !== "home";
       this.#chatLayout.hidden = view !== "chat";
+      this.#galleryPage.hidden = view !== "gallery";
       this.#rosterPage.hidden = view !== "roster";
+      this.#roomPage.hidden = view !== "room";
       this.#activitiesPage.hidden = view !== "activities";
       this.#settingsPage.hidden = view !== "settings";
       if (view === "chat" && this.#activePeer === void 0) {
         this.#panel.dataset.mobileView = "list";
       }
-      this.#contextTitle.textContent = view === "home" ? "Home" : view === "chat" ? "Chat" : view === "roster" ? "Players" : view === "activities" ? "Custom Activities" : "Settings";
+      this.#contextTitle.textContent = view === "home" ? "Home" : view === "chat" ? "Chat" : view === "gallery" ? "Media Gallery" : view === "roster" ? "Players" : view === "room" ? "Room Tools" : view === "activities" ? "Custom Activities" : "Settings";
       this.#updateNavigation();
     }
     #updateNavigation() {
       for (const button of this.#featureNav.querySelectorAll(".kl-nav-item")) {
-        const active = button.dataset.target === this.#workspaceView;
+        const active = button.dataset.target === this.#workspaceView || this.#workspaceView === "gallery" && button.dataset.target === "chat";
         button.dataset.active = String(active);
         if (active) button.setAttribute("aria-current", "page");
         else button.removeAttribute("aria-current");
@@ -9420,6 +10002,12 @@ select:focus-visible {
         text: "Reset launcher position",
         onClick: () => this.#resetLauncherPosition()
       });
+      const resetPanel = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Reset window position",
+        onClick: () => this.#resetPanelPosition()
+      });
       const navigationSection = this.#createSettingsPanel(
         "navigation",
         "Navigation & launcher",
@@ -9439,6 +10027,20 @@ select:focus-visible {
             })
           ),
           resetLauncher
+        ),
+        element(
+          "div",
+          { className: "kl-setting-action-row" },
+          element(
+            "div",
+            { className: "kl-setting-copy" },
+            element("div", { className: "kl-setting-name", text: "Window position" }),
+            element("div", {
+              className: "kl-setting-help",
+              text: "Drag the KikiLink title bar on desktop, or return the window to its default corner."
+            })
+          ),
+          resetPanel
         )
       );
       this.#rosterEnabledToggle.type = "checkbox";
@@ -9639,6 +10241,24 @@ select:focus-visible {
         "Use a different gentle sound for chats and the alerts above.",
         notificationSoundsSwitch
       );
+      this.#soundVolumeInput.type = "range";
+      this.#soundVolumeInput.min = "0";
+      this.#soundVolumeInput.max = "100";
+      this.#soundVolumeInput.step = "1";
+      this.#soundVolumeInput.setAttribute("aria-label", "Alert volume");
+      this.#soundVolumeInput.addEventListener("input", () => {
+        this.#soundVolumeValue.textContent = `${this.#soundVolumeInput.value}%`;
+      });
+      const soundVolume = this.#settingRow(
+        "Alert volume",
+        "Applies to built-in and local custom notification sounds.",
+        element(
+          "label",
+          { className: "kl-volume-control" },
+          this.#soundVolumeInput,
+          this.#soundVolumeValue
+        )
+      );
       const soundEntries = Object.entries(NOTIFICATION_SOUND_LABELS);
       for (const select of [
         this.#chatSoundSelect,
@@ -9665,7 +10285,9 @@ select:focus-visible {
             type: "button",
             text: "Play",
             ariaLabel: `Preview ${label.toLocaleLowerCase()} sound`,
-            onClick: () => void this.#notificationSounds.play(soundPresetOr(select.value, "chime"))
+            onClick: () => void this.#notificationSounds.play(soundChoiceOr(select.value, "chime"), {
+              volume: Number(this.#soundVolumeInput.value)
+            })
           })
         )
       );
@@ -9684,6 +10306,37 @@ select:focus-visible {
           soundChoice("Incoming chat", this.#chatSoundSelect),
           soundChoice("Friend online", this.#friendOnlineSoundSelect),
           soundChoice("Room join", this.#roomJoinSoundSelect)
+        )
+      );
+      this.#customSoundInput.type = "file";
+      this.#customSoundInput.accept = "audio/*";
+      this.#customSoundInput.hidden = true;
+      this.#customSoundInput.addEventListener("change", () => void this.#addCustomSound());
+      const addCustomSound = element("button", {
+        className: "kl-text-button kl-text-button--primary",
+        type: "button",
+        text: "Add local sound",
+        onClick: () => this.#customSoundInput.click()
+      });
+      const customSounds = element(
+        "details",
+        { className: "kl-settings-disclosure kl-custom-sounds" },
+        element(
+          "summary",
+          {},
+          element("span", { text: "My sounds" }),
+          element("span", { className: "kl-disclosure-meta", text: "Device only" })
+        ),
+        element(
+          "div",
+          { className: "kl-custom-sounds-body" },
+          element("p", {
+            className: "kl-setting-help",
+            text: "Audio must be 5 seconds or shorter and under 10 MB. The file stays in this browser and is never synchronized."
+          }),
+          addCustomSound,
+          this.#customSoundInput,
+          this.#customSoundList
         )
       );
       this.#reactionsToggle.type = "checkbox";
@@ -9754,7 +10407,9 @@ select:focus-visible {
         friendOnlineAlerts,
         roomJoinAlerts,
         notificationSounds,
+        soundVolume,
         soundChoices,
+        customSounds,
         advancedReactions
       );
       const panels = element(
@@ -10008,7 +10663,7 @@ select:focus-visible {
           title,
           element("div", {
             className: "kl-dialog-subtitle",
-            text: "Avatar, status, Idle, and a quiet AFK auto-reply in one place."
+            text: "Avatar, status, quiet DND, and a bounded auto-reply in one place."
           })
         ),
         close
@@ -10060,7 +10715,7 @@ select:focus-visible {
       this.#presenceAvatarUrl.setAttribute("aria-label", "Direct profile avatar URL");
       this.#presenceAvatarUrl.addEventListener("input", () => this.#renderOwnAvatarPreview());
       this.#afkAutoReplyToggle.type = "checkbox";
-      this.#afkAutoReplyToggle.setAttribute("aria-label", "Send an automatic reply while Idle");
+      this.#afkAutoReplyToggle.setAttribute("aria-label", "Send an automatic reply while Idle or DND");
       this.#afkAutoReplyToggle.addEventListener("change", () => this.#renderPresenceDialog());
       const afkAutoReplySwitch = element(
         "label",
@@ -10075,7 +10730,7 @@ select:focus-visible {
         this.#afkAutoReplyMessage,
         element("span", {
           className: "kl-custom-field-help",
-          text: "Sent privately at most once per person during an Idle session; your room is never included."
+          text: "Sent privately at most once per person during each Idle or DND session; your room is never included."
         })
       );
       const body = element(
@@ -10114,8 +10769,8 @@ select:focus-visible {
           element("label", {}, this.#autoIdleInput, " min")
         ),
         this.#settingRow(
-          "Reply while AFK",
-          "When Automatic Idle is active, privately answer new Beeps for you.",
+          "Reply while Idle / DND",
+          "Privately answer new Beeps while you are Idle or in Do not disturb.",
           afkAutoReplySwitch
         ),
         this.#afkAutoReplyOptions,
@@ -10839,6 +11494,28 @@ select:focus-visible {
           action: { kind: "workspace", target: "roster" }
         },
         {
+          id: "destination-room",
+          kind: "destination",
+          icon: "location",
+          category: "Destination",
+          title: "Room Tools",
+          detail: this.adapter.isInChatRoom() ? "Background, music, players, and roles" : "Enter a room first",
+          keywords: "room admin background music kick promote whitelist roles customization",
+          priority: 72,
+          action: { kind: "workspace", target: "room" }
+        },
+        {
+          id: "destination-gallery",
+          kind: "destination",
+          icon: "image",
+          category: "Destination",
+          title: "Media Gallery",
+          detail: "Images from every saved LinkChat conversation",
+          keywords: "gallery images pictures catbox litterbox media all chats",
+          priority: 70,
+          action: { kind: "workspace", target: "gallery" }
+        },
+        {
           id: "destination-activities",
           kind: "destination",
           icon: "activities",
@@ -10950,6 +11627,8 @@ select:focus-visible {
           "new-chat",
           featuredConversation ? void 0 : "destination-chat",
           "destination-players",
+          "destination-room",
+          "destination-gallery",
           "destination-activities",
           "destination-settings"
         ].filter((id) => Boolean(id));
@@ -11064,6 +11743,385 @@ select:focus-visible {
         this.#openActivities(action.index);
       } else {
         this.#openSettings(action.section);
+      }
+    }
+    #buildGalleryPage() {
+      const refresh = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Refresh",
+        onClick: () => void this.#renderGallery()
+      });
+      const header = element(
+        "header",
+        { className: "kl-feature-page-header" },
+        element(
+          "div",
+          { className: "kl-feature-page-heading" },
+          element("div", { className: "kl-feature-page-eyebrow", text: "ALL CHATS" }),
+          element("h1", { className: "kl-feature-page-title", text: "Media Gallery" }),
+          this.#gallerySubtitle
+        ),
+        refresh
+      );
+      this.#galleryPage.append(header, this.#galleryGrid);
+    }
+    async #openGallery() {
+      this.#showWorkspace("gallery");
+      await this.#renderGallery();
+    }
+    async #renderGallery() {
+      this.#galleryGrid.setAttribute("aria-busy", "true");
+      this.#galleryGrid.replaceChildren(
+        element("div", { className: "kl-gallery-empty", text: "Collecting images from LinkChat\u2026" })
+      );
+      try {
+        const items = await this.service.listMedia(400);
+        this.#gallerySubtitle.textContent = items.length ? `${items.length} unique image${items.length === 1 ? "" : "s"} from saved conversations.` : "Images shared in saved conversations will appear here.";
+        if (items.length === 0) {
+          this.#galleryGrid.replaceChildren(
+            element("div", {
+              className: "kl-gallery-empty",
+              text: "No Catbox, Litterbox, or other direct image links are saved yet."
+            })
+          );
+          return;
+        }
+        this.#galleryGrid.replaceChildren(...items.map((item) => this.#galleryItem(item)));
+      } catch (error) {
+        this.#galleryGrid.replaceChildren(
+          element("div", {
+            className: "kl-gallery-empty",
+            text: error instanceof Error ? error.message : "The media gallery could not be loaded."
+          })
+        );
+      } finally {
+        this.#galleryGrid.setAttribute("aria-busy", "false");
+      }
+    }
+    #galleryItem(item) {
+      const roomAdmin = this.adapter.getRoomAdminSnapshot()?.isAdmin === true;
+      const actions = element(
+        "div",
+        { className: "kl-gallery-actions" },
+        element("button", {
+          className: "kl-text-button",
+          type: "button",
+          text: "Open chat",
+          onClick: () => void this.openChat(item.peerNumber, item.peerName)
+        })
+      );
+      if (roomAdmin) {
+        actions.append(
+          element("button", {
+            className: "kl-text-button kl-text-button--primary",
+            type: "button",
+            text: "Use as room background",
+            onClick: () => {
+              this.#roomImageUrl.value = item.url;
+              void this.#openRoomTools(false);
+              this.#toast("Image selected. Review it, then apply the room media.");
+            }
+          })
+        );
+      }
+      return element(
+        "article",
+        { className: "kl-gallery-item" },
+        this.#imageCard(item.url),
+        element(
+          "div",
+          { className: "kl-gallery-meta" },
+          element("strong", { text: item.provider === "other" ? "Image" : item.provider }),
+          element("span", {
+            text: `${item.direction === "outgoing" ? "Sent to" : "From"} ${item.peerName} \xB7 ${formatMessageTime(item.sentAt)}`
+          })
+        ),
+        actions
+      );
+    }
+    #buildRoomPage() {
+      const refresh = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Refresh room",
+        onClick: () => void this.#renderRoomTools(true)
+      });
+      const header = element(
+        "header",
+        { className: "kl-feature-page-header" },
+        element(
+          "div",
+          { className: "kl-feature-page-heading" },
+          element("div", { className: "kl-feature-page-eyebrow", text: "CURRENT ROOM" }),
+          element("h1", { className: "kl-feature-page-title", text: "Room Tools" }),
+          element("p", {
+            className: "kl-feature-page-subtitle",
+            text: "Background, music, and native room administration without leaving the Link Deck."
+          })
+        ),
+        refresh
+      );
+      this.#roomImageUrl.type = "url";
+      this.#roomImageUrl.placeholder = "https://\u2026/background.webp";
+      this.#roomImageUrl.maxLength = 250;
+      this.#roomMusicUrl.type = "url";
+      this.#roomMusicUrl.placeholder = "https://\u2026/music.mp3";
+      this.#roomMusicUrl.maxLength = 250;
+      this.#roomSizeMode.replaceChildren(
+        selectOption2("1", "Fill / stretch"),
+        selectOption2("2", "Fill & crop (keep ratio)"),
+        selectOption2("3", "Show full image (keep ratio)")
+      );
+      this.#roomMusicSync.type = "checkbox";
+      const syncSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#roomMusicSync,
+        element("span", { className: "kl-switch-track" })
+      );
+      this.#roomImageFileInput.type = "file";
+      this.#roomImageFileInput.accept = "image/*";
+      this.#roomImageFileInput.hidden = true;
+      this.#roomImageFileInput.addEventListener("change", () => void this.#uploadRoomBackground());
+      this.#roomMusicFileInput.type = "file";
+      this.#roomMusicFileInput.accept = "audio/mpeg,audio/mp4,video/mp4,.mp3,.mp4";
+      this.#roomMusicFileInput.hidden = true;
+      this.#roomMusicFileInput.addEventListener("change", () => void this.#uploadRoomMusic());
+      const gallery = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Choose from gallery",
+        onClick: () => void this.#openGallery()
+      });
+      const upload = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Upload image",
+        onClick: () => this.#roomImageFileInput.click()
+      });
+      const uploadMusic = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Upload music",
+        onClick: () => this.#roomMusicFileInput.click()
+      });
+      this.#roomSaveButton.addEventListener("click", () => this.#saveRoomCustomization());
+      const mediaForm = element(
+        "section",
+        { className: "kl-room-media" },
+        element("h2", { text: "Room media" }),
+        element(
+          "label",
+          { className: "kl-room-field" },
+          element("span", { text: "Background image" }),
+          this.#roomImageUrl
+        ),
+        element(
+          "div",
+          { className: "kl-inline-actions" },
+          gallery,
+          upload,
+          this.#roomImageFileInput
+        ),
+        element(
+          "label",
+          { className: "kl-room-field" },
+          element("span", { text: "Background layout" }),
+          this.#roomSizeMode
+        ),
+        element(
+          "label",
+          { className: "kl-room-field" },
+          element("span", { text: "Music URL" }),
+          this.#roomMusicUrl
+        ),
+        element("div", { className: "kl-inline-actions" }, uploadMusic, this.#roomMusicFileInput),
+        this.#settingRow(
+          "Synchronize music",
+          "Ask compatible BC clients to keep room playback aligned.",
+          syncSwitch
+        ),
+        element("p", {
+          className: "kl-room-media-note",
+          text: "Uploaded backgrounds and music use your temporary Litterbox lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use permanent HTTPS links."
+        }),
+        this.#roomSaveButton
+      );
+      const players = element(
+        "section",
+        { className: "kl-room-players" },
+        element("h2", { text: "Players & roles" }),
+        element("p", {
+          className: "kl-setting-help",
+          text: "Kick, Admin, and room Whitelist buttons call Bondage Club's native room commands."
+        }),
+        this.#roomPlayers
+      );
+      this.#roomPage.append(header, this.#roomAdminStatus, element("div", { className: "kl-room-grid" }, mediaForm, players));
+    }
+    async #openRoomTools(refreshFields = true) {
+      this.#showWorkspace("room");
+      await this.#renderRoomTools(refreshFields);
+    }
+    async #renderRoomTools(refreshFields) {
+      const snapshot = this.adapter.getRoomAdminSnapshot();
+      if (!snapshot) {
+        this.#roomAdminStatus.textContent = "Enter a chat room to use Room Tools.";
+        this.#roomAdminStatus.dataset.state = "empty";
+        this.#roomPlayers.replaceChildren(
+          element("div", { className: "kl-gallery-empty", text: "No active room." })
+        );
+        this.#setRoomControlsEnabled(false);
+        return;
+      }
+      this.#roomAdminStatus.textContent = snapshot.isAdmin ? `${snapshot.roomName} \xB7 You are a room administrator` : `${snapshot.roomName} \xB7 View only (administrator rights required to make changes)`;
+      this.#roomAdminStatus.dataset.state = snapshot.isAdmin ? "admin" : "readonly";
+      this.#setRoomControlsEnabled(snapshot.isAdmin);
+      if (refreshFields) {
+        this.#roomImageUrl.value = snapshot.customization.imageUrl;
+        this.#roomMusicUrl.value = snapshot.customization.musicUrl;
+        this.#roomSizeMode.value = snapshot.customization.sizeMode.toString();
+        this.#roomMusicSync.checked = snapshot.customization.musicSync;
+      }
+      this.#roomPlayers.replaceChildren(
+        ...snapshot.players.map((player) => this.#roomPlayerRow(player, snapshot.isAdmin))
+      );
+      if (snapshot.players.length === 0) {
+        this.#roomPlayers.append(
+          element("div", { className: "kl-gallery-empty", text: "No other players are in this room." })
+        );
+      }
+    }
+    #setRoomControlsEnabled(enabled) {
+      for (const control of [
+        this.#roomImageUrl,
+        this.#roomMusicUrl,
+        this.#roomSizeMode,
+        this.#roomMusicSync,
+        this.#roomSaveButton,
+        this.#roomImageFileInput,
+        this.#roomMusicFileInput
+      ]) {
+        control.disabled = !enabled;
+      }
+      for (const button of this.#roomPage.querySelectorAll(
+        ".kl-room-media .kl-inline-actions button"
+      )) {
+        button.disabled = !enabled;
+      }
+    }
+    #roomPlayerRow(player, canManage) {
+      const actions = element("div", { className: "kl-room-player-actions" });
+      if (canManage) {
+        actions.append(
+          this.#roomActionButton(player, player.admin ? "demote" : "promote", player.admin ? "Remove admin" : "Make admin"),
+          this.#roomActionButton(
+            player,
+            player.whitelisted ? "unwhitelist" : "whitelist",
+            player.whitelisted ? "Remove whitelist" : "Whitelist"
+          ),
+          this.#roomActionButton(player, "kick", "Kick", true)
+        );
+      }
+      const badges = element("div", { className: "kl-room-player-badges" });
+      if (player.admin) badges.append(element("span", { text: "ADMIN" }));
+      if (player.whitelisted) badges.append(element("span", { text: "WHITELIST" }));
+      return element(
+        "article",
+        { className: "kl-room-player" },
+        this.#avatar(player.memberName, player.memberNumber),
+        element(
+          "div",
+          { className: "kl-room-player-copy" },
+          element("strong", { text: player.memberName }),
+          element("span", { text: `#${player.memberNumber}` }),
+          badges
+        ),
+        actions
+      );
+    }
+    #roomActionButton(player, action, label, danger = false) {
+      return element("button", {
+        className: `kl-text-button${danger ? " kl-text-button--danger" : ""}`,
+        type: "button",
+        text: label,
+        onClick: () => void this.#runRoomMemberAction(player, action)
+      });
+    }
+    async #runRoomMemberAction(player, action) {
+      if (action === "kick" && typeof confirm === "function" && !confirm(`Kick ${player.memberName} from the room?`)) {
+        return;
+      }
+      try {
+        this.adapter.runRoomMemberAction(player.memberNumber, action);
+        this.#toast(`${roomActionPastTense(action)} ${player.memberName}.`);
+        setTimeout(() => void this.#renderRoomTools(true), 700);
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "The room action failed.", "error");
+      }
+    }
+    #saveRoomCustomization() {
+      try {
+        this.adapter.updateRoomCustomization({
+          imageUrl: this.#roomImageUrl.value,
+          musicUrl: this.#roomMusicUrl.value,
+          sizeMode: Number(this.#roomSizeMode.value),
+          musicSync: this.#roomMusicSync.checked
+        });
+        this.#toast("Room background and music update sent to Bondage Club.");
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "Room media could not be updated.", "error");
+      }
+    }
+    async #uploadRoomBackground() {
+      const file = this.#roomImageFileInput.files?.[0];
+      this.#roomImageFileInput.value = "";
+      if (!file) return;
+      const settings = this.settings.get().linkChat.imageUploads;
+      const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+      if (!config) {
+        this.#toast("Enable temporary local image uploads in Chat settings first.", "error");
+        this.#openSettings("chat");
+        return;
+      }
+      try {
+        this.#roomAdminStatus.textContent = "Preparing and uploading the room background\u2026";
+        const prepared = await this.imageUploader.prepare(file);
+        const url = await this.imageUploader.upload(prepared, config);
+        this.#roomImageUrl.value = url;
+        await this.#renderRoomTools(false);
+        this.#toast("Background uploaded. Apply room media when ready.");
+      } catch (error) {
+        this.#toast(
+          error instanceof Error ? error.message : "The room background could not be uploaded.",
+          "error"
+        );
+        await this.#renderRoomTools(false);
+      }
+    }
+    async #uploadRoomMusic() {
+      const file = this.#roomMusicFileInput.files?.[0];
+      this.#roomMusicFileInput.value = "";
+      if (!file) return;
+      const settings = this.settings.get().linkChat.imageUploads;
+      const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+      if (!config) {
+        this.#toast("Enable temporary local uploads in Chat settings first.", "error");
+        this.#openSettings("chat");
+        return;
+      }
+      try {
+        this.#roomAdminStatus.textContent = "Uploading temporary room music\u2026";
+        this.#roomMusicUrl.value = await uploadLocalRoomAudio(file, config);
+        await this.#renderRoomTools(false);
+        this.#toast("Music uploaded. Apply room media when ready.");
+      } catch (error) {
+        this.#toast(
+          error instanceof Error ? error.message : "The room music could not be uploaded.",
+          "error"
+        );
+        await this.#renderRoomTools(false);
       }
     }
     #buildRosterPage() {
@@ -12840,9 +13898,12 @@ ${expanded}` : expanded;
       this.#friendOnlineAlertToggle.checked = settings.linkReactions.quickAlerts.friendOnline;
       this.#roomJoinAlertToggle.checked = settings.linkReactions.quickAlerts.roomJoin;
       this.#notificationSoundsToggle.checked = settings.linkReactions.sounds.enabled;
+      this.#soundVolumeInput.value = settings.linkReactions.sounds.volume.toString();
+      this.#soundVolumeValue.textContent = `${settings.linkReactions.sounds.volume}%`;
       this.#chatSoundSelect.value = settings.linkReactions.sounds.chat;
       this.#friendOnlineSoundSelect.value = settings.linkReactions.sounds.friendOnline;
       this.#roomJoinSoundSelect.value = settings.linkReactions.sounds.roomJoin;
+      void this.#refreshCustomSounds(settings.linkReactions.sounds);
       this.#reactionsToggle.checked = settings.linkReactions.enabled;
       this.#renderReactionRuleEditor(settings.linkReactions.rules);
       this.#showWorkspace("settings", false);
@@ -12870,6 +13931,107 @@ ${expanded}` : expanded;
       const enabled = this.#imageUploadsToggle.checked;
       this.#imageUploadSettingsOptions.hidden = !enabled;
       this.#imageUploadRetentionSelect.disabled = !enabled;
+    }
+    async #refreshCustomSounds(selected = {
+      ...this.settings.get().linkReactions.sounds,
+      chat: soundChoiceOr(this.#chatSoundSelect.value, "chime"),
+      friendOnline: soundChoiceOr(this.#friendOnlineSoundSelect.value, "sparkle"),
+      roomJoin: soundChoiceOr(this.#roomJoinSoundSelect.value, "pop")
+    }) {
+      let sounds;
+      try {
+        sounds = await this.soundStore.list();
+      } catch {
+        sounds = [];
+      }
+      const builtIns = Object.entries(NOTIFICATION_SOUND_LABELS);
+      const available = new Set(sounds.map((sound) => `custom:${sound.id}`));
+      const selections = [
+        [this.#chatSoundSelect, selected.chat, "chime"],
+        [this.#friendOnlineSoundSelect, selected.friendOnline, "sparkle"],
+        [this.#roomJoinSoundSelect, selected.roomJoin, "pop"]
+      ];
+      for (const [select, choice, fallback] of selections) {
+        select.replaceChildren(
+          ...builtIns.map(([value, label]) => selectOption2(value, label)),
+          ...sounds.map((sound) => selectOption2(`custom:${sound.id}`, `My \xB7 ${sound.name}`))
+        );
+        if (choice.startsWith("custom:") && !available.has(choice)) {
+          const unavailable = selectOption2(choice, "Custom sound unavailable on this device");
+          unavailable.disabled = true;
+          select.append(unavailable);
+        }
+        select.value = choice || fallback;
+      }
+      if (sounds.length === 0) {
+        this.#customSoundList.replaceChildren(
+          element("div", {
+            className: "kl-custom-sound-empty",
+            text: "No local sounds saved on this device."
+          })
+        );
+        return;
+      }
+      this.#customSoundList.replaceChildren(
+        ...sounds.map(
+          (sound) => element(
+            "div",
+            { className: "kl-custom-sound" },
+            element(
+              "div",
+              { className: "kl-custom-sound-copy" },
+              element("strong", { text: sound.name }),
+              element("span", { text: `${(sound.durationMs / 1e3).toFixed(1)} s \xB7 local` })
+            ),
+            element("button", {
+              className: "kl-text-button kl-sound-preview",
+              type: "button",
+              text: "Play",
+              onClick: () => void this.#notificationSounds.play(`custom:${sound.id}`, {
+                volume: Number(this.#soundVolumeInput.value)
+              })
+            }),
+            element("button", {
+              className: "kl-icon-button kl-text-button--danger",
+              type: "button",
+              title: `Delete ${sound.name}`,
+              ariaLabel: `Delete ${sound.name}`,
+              onClick: () => void this.#deleteCustomSound(sound)
+            }, kikiIcon("trash"))
+          )
+        )
+      );
+    }
+    async #addCustomSound() {
+      const file = this.#customSoundInput.files?.[0];
+      this.#customSoundInput.value = "";
+      if (!file) return;
+      try {
+        const sound = await this.soundStore.add(file);
+        const current = this.settings.get().linkReactions.sounds;
+        await this.#refreshCustomSounds({ ...current, chat: `custom:${sound.id}` });
+        this.#chatSoundSelect.value = `custom:${sound.id}`;
+        this.#toast(`Saved \u201C${sound.name}\u201D locally. Choose Save changes to use it.`);
+      } catch (error) {
+        this.#toast(
+          error instanceof Error ? error.message : "That local sound could not be saved.",
+          "error"
+        );
+      }
+    }
+    async #deleteCustomSound(sound) {
+      if (typeof confirm === "function" && !confirm(`Delete the local sound \u201C${sound.name}\u201D?`)) return;
+      await this.soundStore.delete(sound.id);
+      const choice = `custom:${sound.id}`;
+      const settings = this.settings.update((draft) => {
+        if (draft.linkReactions.sounds.chat === choice) draft.linkReactions.sounds.chat = "chime";
+        if (draft.linkReactions.sounds.friendOnline === choice) {
+          draft.linkReactions.sounds.friendOnline = "sparkle";
+        }
+        if (draft.linkReactions.sounds.roomJoin === choice) draft.linkReactions.sounds.roomJoin = "pop";
+      });
+      await this.#refreshCustomSounds(settings.linkReactions.sounds);
+      this.#toast(`Deleted \u201C${sound.name}\u201D from this device.`);
     }
     #updateAccentPresets() {
       for (const swatch of this.#settingsPage.querySelectorAll(".kl-color-swatch")) {
@@ -12921,12 +14083,13 @@ ${expanded}` : expanded;
         draft.linkReactions.quickAlerts.friendOnline = this.#friendOnlineAlertToggle.checked;
         draft.linkReactions.quickAlerts.roomJoin = this.#roomJoinAlertToggle.checked;
         draft.linkReactions.sounds.enabled = this.#notificationSoundsToggle.checked;
-        draft.linkReactions.sounds.chat = soundPresetOr(this.#chatSoundSelect.value, "chime");
-        draft.linkReactions.sounds.friendOnline = soundPresetOr(
+        draft.linkReactions.sounds.volume = Math.round(Number(this.#soundVolumeInput.value));
+        draft.linkReactions.sounds.chat = soundChoiceOr(this.#chatSoundSelect.value, "chime");
+        draft.linkReactions.sounds.friendOnline = soundChoiceOr(
           this.#friendOnlineSoundSelect.value,
           "sparkle"
         );
-        draft.linkReactions.sounds.roomJoin = soundPresetOr(
+        draft.linkReactions.sounds.roomJoin = soundChoiceOr(
           this.#roomJoinSoundSelect.value,
           "pop"
         );
@@ -12958,6 +14121,13 @@ ${expanded}` : expanded;
       });
       this.#applyTheme(settings);
       this.#toast("Launcher returned to its default corner.");
+    }
+    #resetPanelPosition() {
+      this.settings.update((draft) => {
+        draft.ui.panelPosition = null;
+      });
+      this.#positionPanel();
+      this.#toast("KikiLink window returned to its default corner.");
     }
     #resetRoomBadgePosition() {
       this.#roomBadge.resetPosition();
@@ -13181,6 +14351,95 @@ ${expanded}` : expanded;
         ui.launcherPosition.y * Math.max(0, window.innerHeight - height)
       );
     }
+    #startPanelDrag(event) {
+      if (event.button !== 0 || this.#isMobileLayout()) return;
+      const rect = this.#panel.getBoundingClientRect();
+      this.#panelDrag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startLeft: rect.left,
+        startTop: rect.top,
+        moved: false
+      };
+      try {
+        event.currentTarget?.setPointerCapture(event.pointerId);
+      } catch {
+      }
+    }
+    #movePanel(event) {
+      const drag = this.#panelDrag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const deltaX = event.clientX - drag.startX;
+      const deltaY = event.clientY - drag.startY;
+      if (!drag.moved && Math.hypot(deltaX, deltaY) < 5) return;
+      drag.moved = true;
+      event.preventDefault();
+      this.#panel.dataset.dragging = "true";
+      this.#placePanel(drag.startLeft + deltaX, drag.startTop + deltaY);
+    }
+    #finishPanelDrag(event) {
+      const drag = this.#panelDrag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      this.#panelDrag = void 0;
+      this.#panel.dataset.dragging = "false";
+      try {
+        event.currentTarget?.releasePointerCapture(event.pointerId);
+      } catch {
+      }
+      if (drag.moved) this.#savePanelPosition();
+    }
+    #cancelPanelDrag(event) {
+      if (!this.#panelDrag || this.#panelDrag.pointerId !== event.pointerId) return;
+      this.#panelDrag = void 0;
+      this.#panel.dataset.dragging = "false";
+      this.#positionPanel();
+    }
+    #placePanel(left, top) {
+      if (this.#isMobileLayout()) return;
+      const rect = this.#panel.getBoundingClientRect();
+      const width = rect.width || Math.min(1040, Math.max(320, window.innerWidth - 40));
+      const height = rect.height || Math.min(680, Math.max(420, window.innerHeight - 130));
+      const margin = 8;
+      const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+      const maxTop = Math.max(margin, window.innerHeight - height - margin);
+      this.#panel.style.left = `${Math.round(clamp2(left, margin, maxLeft))}px`;
+      this.#panel.style.top = `${Math.round(clamp2(top, margin, maxTop))}px`;
+      this.#panel.style.right = "auto";
+      this.#panel.style.bottom = "auto";
+    }
+    #savePanelPosition() {
+      const rect = this.#panel.getBoundingClientRect();
+      const margin = 8;
+      const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+      const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+      const x = maxLeft === margin ? 0.5 : clamp2((rect.left - margin) / (maxLeft - margin), 0, 1);
+      const y = maxTop === margin ? 0.5 : clamp2((rect.top - margin) / (maxTop - margin), 0, 1);
+      this.settings.update((draft) => {
+        draft.ui.panelPosition = { x, y };
+      });
+    }
+    #positionPanel() {
+      const position = this.settings.get().ui.panelPosition;
+      if (!position || this.#isMobileLayout()) {
+        this.#panel.style.removeProperty("left");
+        this.#panel.style.removeProperty("top");
+        this.#panel.style.removeProperty("right");
+        this.#panel.style.removeProperty("bottom");
+        return;
+      }
+      const rect = this.#panel.getBoundingClientRect();
+      const width = rect.width || Math.min(1040, Math.max(320, window.innerWidth - 40));
+      const height = rect.height || Math.min(680, Math.max(420, window.innerHeight - 130));
+      const margin = 8;
+      this.#placePanel(
+        margin + position.x * Math.max(0, window.innerWidth - width - margin * 2),
+        margin + position.y * Math.max(0, window.innerHeight - height - margin * 2)
+      );
+    }
+    #isMobileLayout() {
+      return window.innerWidth <= 720;
+    }
     #showConversationList() {
       this.#panel.dataset.mobileView = "list";
       this.#search.focus();
@@ -13307,8 +14566,15 @@ ${expanded}` : expanded;
     const random = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID().slice(0, 12) : Math.random().toString(36).slice(2, 14);
     return `reaction-${Date.now().toString(36)}-${random}`;
   }
-  function soundPresetOr(value, fallback) {
-    return value === "sparkle" || value === "pop" || value === "chime" ? value : fallback;
+  function soundChoiceOr(value, fallback) {
+    return value === "sparkle" || value === "pop" || value === "chime" || /^custom:[a-z0-9_-]{1,64}$/iu.test(value) ? value : fallback;
+  }
+  function roomActionPastTense(action) {
+    if (action === "kick") return "Kicked";
+    if (action === "promote") return "Promoted";
+    if (action === "demote") return "Removed admin from";
+    if (action === "whitelist") return "Whitelisted";
+    return "Removed from room whitelist";
   }
   function finderSettingResults() {
     const definitions = [
@@ -13416,7 +14682,7 @@ ${expanded}` : expanded;
   function presenceHelp(status) {
     if (status === "online") return "Available and ready to chat";
     if (status === "idle") return "Away for a little while";
-    if (status === "dnd") return "Busy and may reply later";
+    if (status === "dnd") return "Silences local alerts and stops chat auto-open";
     return "Appear offline inside KikiLink";
   }
   function presenceDot(status) {
@@ -13552,7 +14818,7 @@ ${expanded}` : expanded;
     #lastReplyAt = /* @__PURE__ */ new Map();
     #recentReplyTimes = [];
     #now;
-    #idleSessionActive = false;
+    #awaySessionStatus;
     syncStatus() {
       try {
         this.#applyStatus(this.callbacks.getStatus());
@@ -13571,7 +14837,7 @@ ${expanded}` : expanded;
         return void 0;
       }
       this.#applyStatus(status);
-      if (status !== "idle" || config.enabled !== true) return void 0;
+      if (status !== "idle" && status !== "dnd" || config.enabled !== true) return void 0;
       const message = normalizeReplyMessage(config.message);
       if (!message || this.#repliedThisIdle.has(event.peerNumber)) return void 0;
       const now = this.#safeNow();
@@ -13591,15 +14857,15 @@ ${expanded}` : expanded;
       }
     }
     reset() {
-      this.#idleSessionActive = false;
+      this.#awaySessionStatus = void 0;
       this.#repliedThisIdle.clear();
       this.#lastReplyAt.clear();
       this.#recentReplyTimes.splice(0);
     }
     #applyStatus(status) {
-      const idle = status === "idle";
-      if (idle === this.#idleSessionActive) return;
-      this.#idleSessionActive = idle;
+      const away = status === "idle" || status === "dnd" ? status : void 0;
+      if (away === this.#awaySessionStatus) return;
+      this.#awaySessionStatus = away;
       this.#repliedThisIdle.clear();
     }
     #safeNow() {
@@ -14439,28 +15705,28 @@ ${expanded}` : expanded;
 
   // src/storage/indexeddb-chat-repository.ts
   var DATABASE_NAME = "kikilink";
-  var DATABASE_VERSION = 1;
+  var DATABASE_VERSION2 = 1;
   var MESSAGE_STORE = "messages";
   var CONVERSATION_STORE = "conversations";
   var PEER_TIME_INDEX = "peer-time";
   var TIME_INDEX = "time";
   var IndexedDbChatRepository = class {
-    constructor(databaseName = DATABASE_NAME) {
-      this.databaseName = databaseName;
+    constructor(databaseName2 = DATABASE_NAME) {
+      this.databaseName = databaseName2;
     }
     databaseName;
     #databasePromise;
     async addMessage(message) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
-      const done = transactionDone(transaction);
+      const done = transactionDone2(transaction);
       transaction.objectStore(MESSAGE_STORE).put(message);
       await done;
     }
     async getMessages(peerNumber, limit = 200) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readonly");
-      const done = transactionDone(transaction);
+      const done = transactionDone2(transaction);
       const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
       const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
       const messages = [];
@@ -14474,8 +15740,8 @@ ${expanded}` : expanded;
     async getConversation(peerNumber) {
       const database = await this.#database();
       const transaction = database.transaction(CONVERSATION_STORE, "readonly");
-      const done = transactionDone(transaction);
-      const value = await requestResult(
+      const done = transactionDone2(transaction);
+      const value = await requestResult2(
         transaction.objectStore(CONVERSATION_STORE).get(peerNumber)
       );
       await done;
@@ -14484,8 +15750,8 @@ ${expanded}` : expanded;
     async listConversations() {
       const database = await this.#database();
       const transaction = database.transaction(CONVERSATION_STORE, "readonly");
-      const done = transactionDone(transaction);
-      const values = await requestResult(
+      const done = transactionDone2(transaction);
+      const values = await requestResult2(
         transaction.objectStore(CONVERSATION_STORE).getAll()
       );
       await done;
@@ -14494,14 +15760,14 @@ ${expanded}` : expanded;
     async putConversation(conversation) {
       const database = await this.#database();
       const transaction = database.transaction(CONVERSATION_STORE, "readwrite");
-      const done = transactionDone(transaction);
+      const done = transactionDone2(transaction);
       transaction.objectStore(CONVERSATION_STORE).put(conversation);
       await done;
     }
     async deleteConversation(peerNumber) {
       const database = await this.#database();
       const transaction = database.transaction([MESSAGE_STORE, CONVERSATION_STORE], "readwrite");
-      const done = transactionDone(transaction);
+      const done = transactionDone2(transaction);
       transaction.objectStore(CONVERSATION_STORE).delete(peerNumber);
       const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
       const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
@@ -14514,7 +15780,7 @@ ${expanded}` : expanded;
     async deleteMessagesOlderThan(timestamp) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
-      const done = transactionDone(transaction);
+      const done = transactionDone2(transaction);
       const index = transaction.objectStore(MESSAGE_STORE).index(TIME_INDEX);
       const range = IDBKeyRange.upperBound(timestamp, true);
       let removed = 0;
@@ -14529,7 +15795,7 @@ ${expanded}` : expanded;
     async trimConversation(peerNumber, keepNewest) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
-      const done = transactionDone(transaction);
+      const done = transactionDone2(transaction);
       const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
       const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
       let visited = 0;
@@ -14548,7 +15814,7 @@ ${expanded}` : expanded;
     async clearAll() {
       const database = await this.#database();
       const transaction = database.transaction([MESSAGE_STORE, CONVERSATION_STORE], "readwrite");
-      const done = transactionDone(transaction);
+      const done = transactionDone2(transaction);
       transaction.objectStore(MESSAGE_STORE).clear();
       transaction.objectStore(CONVERSATION_STORE).clear();
       await done;
@@ -14559,13 +15825,13 @@ ${expanded}` : expanded;
       this.#databasePromise = void 0;
     }
     #database() {
-      this.#databasePromise ??= openDatabase(this.databaseName);
+      this.#databasePromise ??= openDatabase2(this.databaseName);
       return this.#databasePromise;
     }
   };
-  function openDatabase(databaseName) {
+  function openDatabase2(databaseName2) {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(databaseName, DATABASE_VERSION);
+      const request = indexedDB.open(databaseName2, DATABASE_VERSION2);
       request.onerror = () => reject(request.error ?? new Error("Unable to open KikiLink storage"));
       request.onblocked = () => reject(new Error("KikiLink storage upgrade is blocked"));
       request.onupgradeneeded = () => {
@@ -14582,13 +15848,13 @@ ${expanded}` : expanded;
       request.onsuccess = () => resolve(request.result);
     });
   }
-  function requestResult(request) {
+  function requestResult2(request) {
     return new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("KikiLink storage request failed"));
     });
   }
-  function transactionDone(transaction) {
+  function transactionDone2(transaction) {
     return new Promise((resolve, reject) => {
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(transaction.error ?? new Error("KikiLink transaction aborted"));
@@ -14892,7 +16158,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.10");
+    const app = new KikiLinkApp("0.21.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

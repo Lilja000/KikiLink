@@ -31,6 +31,7 @@ export type ReactionTrigger =
 export type ReactionScope = "anyone" | "friends" | "members";
 export type ReactionAction = "notice" | "room-emote";
 export type NotificationSoundPreset = "chime" | "sparkle" | "pop";
+export type NotificationSoundChoice = NotificationSoundPreset | `custom:${string}`;
 export type LinkNotificationKind = "chat" | "friend-online" | "room-join";
 
 export interface OnlineFriend {
@@ -199,7 +200,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 16;
+  schemaVersion: 17;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -209,6 +210,7 @@ export interface KikiLinkSettings {
     launcherSide: "left" | "right";
     launcherOpen: LauncherOpenPreference;
     launcherPosition: { x: number; y: number } | null;
+    panelPosition: { x: number; y: number } | null;
     roomBadge: {
       enabled: boolean;
       /** Normalized offset inside the character's 500x1000 canvas frame. */
@@ -260,9 +262,10 @@ export interface KikiLinkSettings {
     };
     sounds: {
       enabled: boolean;
-      chat: NotificationSoundPreset;
-      friendOnline: NotificationSoundPreset;
-      roomJoin: NotificationSoundPreset;
+      volume: number;
+      chat: NotificationSoundChoice;
+      friendOnline: NotificationSoundChoice;
+      roomJoin: NotificationSoundChoice;
     };
     enabled: boolean;
     rules: ReactionRule[];

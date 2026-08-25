@@ -1,4 +1,8 @@
-import type { BCAdapter } from "../../bc/adapter";
+import type {
+  BCAdapter,
+  BCRoomAdminPlayer,
+  BCRoomMemberAction,
+} from "../../bc/adapter";
 import type {
   BCConnectionState,
   ConversationMeta,
@@ -6,6 +10,7 @@ import type {
   LinkNotification,
   LinkReactionFired,
   LinkMessage,
+  NotificationSoundChoice,
   NotificationSoundPreset,
   PlayerRelationship,
   PresenceSnapshot,
@@ -26,7 +31,16 @@ import {
   type RosterSyncResult,
 } from "../link-roster/link-roster-service";
 import { PeopleRepository } from "../../storage/people-repository";
-import { conversationDisplayName, type ChatService } from "./chat-service";
+import {
+  DeviceNotificationSoundStore,
+  type DeviceNotificationSound,
+  type NotificationSoundStore,
+} from "../../storage/device-notification-sound-store";
+import {
+  conversationDisplayName,
+  type ChatMediaItem,
+  type ChatService,
+} from "./chat-service";
 import { LinkPresenceService } from "../link-presence/link-presence-service";
 import {
   createDefaultReactionRule,
@@ -43,6 +57,7 @@ import { normalizeImageUrl, parseMessageLinks } from "./media";
 import {
   LitterboxImageUploader,
   normalizeLitterboxUploadConfig,
+  uploadLocalRoomAudio,
   type LitterboxUploadConfig,
   type LocalImageUploader,
   type PreparedLocalImage,
@@ -51,7 +66,7 @@ import { kikiIcon, type KikiLinkIconName } from "./icons";
 import { RoomBlossomBadge } from "./blossom";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/branding/kikilink-emblem.webp";
 
-type WorkspaceView = "home" | "chat" | "roster" | "activities" | "settings";
+type WorkspaceView = "home" | "chat" | "gallery" | "roster" | "room" | "activities" | "settings";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
 type FeatureTarget = WorkspaceView;
 type HomeAction =
@@ -137,6 +152,12 @@ export class LinkChatView {
     title: "LinkChat",
     ariaLabel: "Open LinkChat",
   });
+  readonly #roomNavButton = element("button", {
+    className: "kl-nav-item kl-room-button",
+    type: "button",
+    title: "Room tools",
+    ariaLabel: "Open room tools",
+  });
   readonly #settingsNavButton = element("button", {
     className: "kl-nav-item",
     type: "button",
@@ -176,6 +197,12 @@ export class LinkChatView {
     title: "Open Custom Activities",
   });
   readonly #conversationList = element("div", { className: "kl-conversations" });
+  readonly #galleryButton = element("button", {
+    className: "kl-sidebar-new-chat",
+    type: "button",
+    title: "Media gallery",
+    ariaLabel: "Open media gallery",
+  });
   readonly #search = element("input", { className: "kl-search" });
   readonly #empty = element("div", { className: "kl-empty" });
   readonly #chat = element("section", { className: "kl-chat" });
@@ -216,6 +243,29 @@ export class LinkChatView {
   readonly #quickActions = element("div", { className: "kl-quick-actions" });
   readonly #includeRoom = element("input") as HTMLInputElement;
   readonly #counter = element("span", { className: "kl-counter" });
+  readonly #galleryPage = element("section", {
+    className: "kl-feature-page kl-gallery-page",
+    ariaLabel: "Chat media gallery",
+  });
+  readonly #gallerySubtitle = element("p", { className: "kl-feature-page-subtitle" });
+  readonly #galleryGrid = element("div", { className: "kl-gallery-grid" });
+  readonly #roomPage = element("section", {
+    className: "kl-feature-page kl-room-page",
+    ariaLabel: "Room tools",
+  });
+  readonly #roomAdminStatus = element("div", { className: "kl-room-admin-status" });
+  readonly #roomImageUrl = element("input", { className: "kl-search" }) as HTMLInputElement;
+  readonly #roomMusicUrl = element("input", { className: "kl-search" }) as HTMLInputElement;
+  readonly #roomSizeMode = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #roomMusicSync = element("input") as HTMLInputElement;
+  readonly #roomSaveButton = element("button", {
+    className: "kl-text-button kl-text-button--primary",
+    type: "button",
+    text: "Apply room media",
+  });
+  readonly #roomPlayers = element("div", { className: "kl-room-player-list" });
+  readonly #roomImageFileInput = element("input") as HTMLInputElement;
+  readonly #roomMusicFileInput = element("input") as HTMLInputElement;
   readonly #settingsPage = element("section", {
     className: "kl-settings-page",
     ariaLabel: "KikiLink settings",
@@ -293,6 +343,10 @@ export class LinkChatView {
   readonly #friendOnlineAlertToggle = element("input") as HTMLInputElement;
   readonly #roomJoinAlertToggle = element("input") as HTMLInputElement;
   readonly #notificationSoundsToggle = element("input") as HTMLInputElement;
+  readonly #soundVolumeInput = element("input", { className: "kl-volume-input" }) as HTMLInputElement;
+  readonly #soundVolumeValue = element("output", { className: "kl-volume-value" });
+  readonly #customSoundInput = element("input") as HTMLInputElement;
+  readonly #customSoundList = element("div", { className: "kl-custom-sound-list" });
   readonly #chatSoundSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
   readonly #friendOnlineSoundSelect = element("select", {
     className: "kl-select",
@@ -429,6 +483,16 @@ export class LinkChatView {
         moved: boolean;
       }
     | undefined;
+  #panelDrag:
+    | {
+        pointerId: number;
+        startX: number;
+        startY: number;
+        startLeft: number;
+        startTop: number;
+        moved: boolean;
+      }
+    | undefined;
   #suppressLauncherClickUntil = 0;
   #presenceUnsubscribe: (() => void) | undefined;
   #presenceRenderFrame: number | undefined;
@@ -460,6 +524,7 @@ export class LinkChatView {
 
   readonly #handleViewportResize = (): void => {
     this.#positionLauncher();
+    this.#positionPanel();
     this.#updateSettingsTabOrientation();
     this.#closeProfileMenu();
   };
@@ -481,16 +546,22 @@ export class LinkChatView {
     ),
     presence?: LinkPresenceService,
     private readonly imageUploader: LocalImageUploader<LitterboxUploadConfig> = new LitterboxImageUploader(),
+    private readonly soundStore: NotificationSoundStore = new DeviceNotificationSoundStore(
+      adapter.getOwnMemberNumber(),
+    ),
   ) {
     this.presence =
       presence ??
       new LinkPresenceService(adapter, settings, new EventBus(), version);
     this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence);
+    this.#notificationSounds = new NotificationSoundService(async (id) =>
+      (await this.soundStore.get(id))?.blob,
+    );
   }
 
   private readonly presence: LinkPresenceService;
   readonly #roomBadge: RoomBlossomBadge;
-  readonly #notificationSounds = new NotificationSoundService();
+  readonly #notificationSounds: NotificationSoundService;
 
   mount(): void {
     if (this.#mounted) return;
@@ -526,6 +597,7 @@ export class LinkChatView {
     document.body.append(this.#host);
     this.#roomBadge.mount();
     this.#positionLauncher();
+    this.#positionPanel();
     window.addEventListener("resize", this.#handleViewportResize);
     document.addEventListener("pointerdown", this.#handleOutsidePointerDown);
     this.#presenceUnsubscribe = this.presence.subscribe((memberNumber) =>
@@ -559,6 +631,7 @@ export class LinkChatView {
     this.#roomBadge.destroy();
     this.#host.remove();
     void this.#notificationSounds.destroy();
+    this.soundStore.close();
     this.#mounted = false;
   }
 
@@ -585,6 +658,7 @@ export class LinkChatView {
     if (this.#newChatDialog.open) this.#renderKnownContacts();
     if (this.#workspaceView === "activities") this.#renderActivitiesPage();
     if (this.#workspaceView === "roster") this.#renderRoster();
+    if (this.#workspaceView === "room") void this.#renderRoomTools(true);
   }
 
   async onMessage(
@@ -592,7 +666,11 @@ export class LinkChatView {
     incoming: boolean,
     message?: LinkMessage,
   ): Promise<void> {
-    if (incoming && this.settings.get().linkChat.openOnIncoming) {
+    if (
+      incoming &&
+      this.presence.getOwnStatus() !== "dnd" &&
+      this.settings.get().linkChat.openOnIncoming
+    ) {
       await this.openChat(peerNumber, this.adapter.getMemberName(peerNumber));
       return;
     }
@@ -605,6 +683,7 @@ export class LinkChatView {
   }
 
   onReaction(reaction: LinkReactionFired): void {
+    if (this.presence.getOwnStatus() === "dnd") return;
     this.#toast(
       reaction.action === "room-emote"
         ? `Reaction “${reaction.ruleLabel}” sent: ${reaction.message}`
@@ -613,6 +692,7 @@ export class LinkChatView {
   }
 
   onNotification(notification: LinkNotification): void {
+    if (this.presence.getOwnStatus() === "dnd") return;
     if (notification.showToast) this.#toast(notification.message);
     const sounds = this.settings.get().linkReactions.sounds;
     if (!sounds.enabled) return;
@@ -622,7 +702,7 @@ export class LinkChatView {
         : notification.kind === "friend-online"
           ? sounds.friendOnline
           : sounds.roomJoin;
-    void this.#notificationSounds.play(preset);
+    void this.#notificationSounds.play(preset, { volume: sounds.volume });
   }
 
   async open(): Promise<void> {
@@ -635,6 +715,7 @@ export class LinkChatView {
 
   async #openPanel(view: WorkspaceView): Promise<void> {
     this.#panel.hidden = false;
+    this.#positionPanel();
     this.#launcher.setAttribute("aria-expanded", "true");
     this.#showWorkspace(view);
     await this.refresh();
@@ -751,6 +832,11 @@ export class LinkChatView {
         ),
       ),
     );
+    brand.setAttribute("title", "Drag to move KikiLink");
+    brand.addEventListener("pointerdown", (event) => this.#startPanelDrag(event));
+    brand.addEventListener("pointermove", (event) => this.#movePanel(event));
+    brand.addEventListener("pointerup", (event) => this.#finishPanelDrag(event));
+    brand.addEventListener("pointercancel", (event) => this.#cancelPanelDrag(event));
     const close = element("button", {
       className: "kl-icon-button",
       type: "button",
@@ -789,6 +875,15 @@ export class LinkChatView {
     this.#search.placeholder = "Search chats";
     this.#search.autocomplete = "off";
     this.#search.addEventListener("input", () => void this.#renderConversations());
+    this.#galleryButton.append(kikiIcon("image"));
+    this.#galleryButton.addEventListener("click", () => void this.#openGallery());
+    const newChatButton = element("button", {
+      className: "kl-sidebar-new-chat",
+      type: "button",
+      title: "New Beep chat",
+      ariaLabel: "New Beep chat",
+      onClick: () => this.#openNewChat(),
+    }, kikiIcon("plus"));
     const sidebar = element(
       "aside",
       { className: "kl-sidebar" },
@@ -797,13 +892,7 @@ export class LinkChatView {
         "div",
         { className: "kl-sidebar-heading" },
         element("span", { text: "Recent chats" }),
-        element("button", {
-          className: "kl-sidebar-new-chat",
-          type: "button",
-          title: "New Beep chat",
-          ariaLabel: "New Beep chat",
-          onClick: () => this.#openNewChat(),
-        }, kikiIcon("plus")),
+        element("div", { className: "kl-sidebar-heading-actions" }, this.#galleryButton, newChatButton),
       ),
       this.#conversationList,
     );
@@ -827,12 +916,16 @@ export class LinkChatView {
     const main = element("main", { className: "kl-main" }, this.#empty, this.#chat);
     this.#chatLayout.append(sidebar, main);
     this.#buildRosterPage();
+    this.#buildGalleryPage();
+    this.#buildRoomPage();
     this.#buildActivitiesPage();
     this.#buildSettingsPage();
     this.#workspace.append(
       this.#home,
       this.#chatLayout,
+      this.#galleryPage,
       this.#rosterPage,
+      this.#roomPage,
       this.#activitiesPage,
       this.#settingsPage,
     );
@@ -881,6 +974,7 @@ export class LinkChatView {
     this.#configureNavButton(this.#homeNavButton, "home", "Home", "home");
     this.#configureNavButton(this.#chatNavButton, "chat", "Chat", "chat");
     this.#configureNavButton(this.#rosterButton, "users", "Players", "roster");
+    this.#configureNavButton(this.#roomNavButton, "location", "Room", "room");
     this.#configureNavButton(this.#activitiesButton, "activities", "Custom", "activities");
     this.#configureNavButton(this.#settingsNavButton, "settings", "Settings", "settings");
     this.#rosterCount.hidden = true;
@@ -889,6 +983,7 @@ export class LinkChatView {
       this.#homeNavButton,
       this.#chatNavButton,
       this.#rosterButton,
+      this.#roomNavButton,
       this.#activitiesButton,
       this.#settingsNavButton,
     );
@@ -920,6 +1015,14 @@ export class LinkChatView {
     }
     if (target === "activities") {
       this.#openActivities();
+      return;
+    }
+    if (target === "room") {
+      void this.#openRoomTools();
+      return;
+    }
+    if (target === "gallery") {
+      void this.#openGallery();
       return;
     }
     this.#openSettings();
@@ -1120,7 +1223,9 @@ export class LinkChatView {
     this.#panel.dataset.workspace = view;
     this.#home.hidden = view !== "home";
     this.#chatLayout.hidden = view !== "chat";
+    this.#galleryPage.hidden = view !== "gallery";
     this.#rosterPage.hidden = view !== "roster";
+    this.#roomPage.hidden = view !== "room";
     this.#activitiesPage.hidden = view !== "activities";
     this.#settingsPage.hidden = view !== "settings";
     if (view === "chat" && this.#activePeer === undefined) {
@@ -1131,17 +1236,23 @@ export class LinkChatView {
         ? "Home"
         : view === "chat"
           ? "Chat"
-          : view === "roster"
-            ? "Players"
-            : view === "activities"
-              ? "Custom Activities"
-              : "Settings";
+          : view === "gallery"
+            ? "Media Gallery"
+            : view === "roster"
+              ? "Players"
+              : view === "room"
+                ? "Room Tools"
+                : view === "activities"
+                  ? "Custom Activities"
+                  : "Settings";
     this.#updateNavigation();
   }
 
   #updateNavigation(): void {
     for (const button of this.#featureNav.querySelectorAll<HTMLButtonElement>(".kl-nav-item")) {
-      const active = button.dataset.target === this.#workspaceView;
+      const active =
+        button.dataset.target === this.#workspaceView ||
+        (this.#workspaceView === "gallery" && button.dataset.target === "chat");
       button.dataset.active = String(active);
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
@@ -1598,6 +1709,12 @@ export class LinkChatView {
       text: "Reset launcher position",
       onClick: () => this.#resetLauncherPosition(),
     });
+    const resetPanel = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Reset window position",
+      onClick: () => this.#resetPanelPosition(),
+    });
     const navigationSection = this.#createSettingsPanel(
       "navigation",
       "Navigation & launcher",
@@ -1617,6 +1734,20 @@ export class LinkChatView {
           }),
         ),
         resetLauncher,
+      ),
+      element(
+        "div",
+        { className: "kl-setting-action-row" },
+        element(
+          "div",
+          { className: "kl-setting-copy" },
+          element("div", { className: "kl-setting-name", text: "Window position" }),
+          element("div", {
+            className: "kl-setting-help",
+            text: "Drag the KikiLink title bar on desktop, or return the window to its default corner.",
+          }),
+        ),
+        resetPanel,
       ),
     );
 
@@ -1824,6 +1955,25 @@ export class LinkChatView {
       notificationSoundsSwitch,
     );
 
+    this.#soundVolumeInput.type = "range";
+    this.#soundVolumeInput.min = "0";
+    this.#soundVolumeInput.max = "100";
+    this.#soundVolumeInput.step = "1";
+    this.#soundVolumeInput.setAttribute("aria-label", "Alert volume");
+    this.#soundVolumeInput.addEventListener("input", () => {
+      this.#soundVolumeValue.textContent = `${this.#soundVolumeInput.value}%`;
+    });
+    const soundVolume = this.#settingRow(
+      "Alert volume",
+      "Applies to built-in and local custom notification sounds.",
+      element(
+        "label",
+        { className: "kl-volume-control" },
+        this.#soundVolumeInput,
+        this.#soundVolumeValue,
+      ),
+    );
+
     const soundEntries = Object.entries(NOTIFICATION_SOUND_LABELS) as Array<
       [NotificationSoundPreset, string]
     >;
@@ -1854,7 +2004,9 @@ export class LinkChatView {
             text: "Play",
             ariaLabel: `Preview ${label.toLocaleLowerCase()} sound`,
             onClick: () =>
-              void this.#notificationSounds.play(soundPresetOr(select.value, "chime")),
+              void this.#notificationSounds.play(soundChoiceOr(select.value, "chime"), {
+                volume: Number(this.#soundVolumeInput.value),
+              }),
           }),
         ),
       );
@@ -1873,6 +2025,38 @@ export class LinkChatView {
         soundChoice("Incoming chat", this.#chatSoundSelect),
         soundChoice("Friend online", this.#friendOnlineSoundSelect),
         soundChoice("Room join", this.#roomJoinSoundSelect),
+      ),
+    );
+
+    this.#customSoundInput.type = "file";
+    this.#customSoundInput.accept = "audio/*";
+    this.#customSoundInput.hidden = true;
+    this.#customSoundInput.addEventListener("change", () => void this.#addCustomSound());
+    const addCustomSound = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Add local sound",
+      onClick: () => this.#customSoundInput.click(),
+    });
+    const customSounds = element(
+      "details",
+      { className: "kl-settings-disclosure kl-custom-sounds" },
+      element(
+        "summary",
+        {},
+        element("span", { text: "My sounds" }),
+        element("span", { className: "kl-disclosure-meta", text: "Device only" }),
+      ),
+      element(
+        "div",
+        { className: "kl-custom-sounds-body" },
+        element("p", {
+          className: "kl-setting-help",
+          text: "Audio must be 5 seconds or shorter and under 10 MB. The file stays in this browser and is never synchronized.",
+        }),
+        addCustomSound,
+        this.#customSoundInput,
+        this.#customSoundList,
       ),
     );
 
@@ -1944,7 +2128,9 @@ export class LinkChatView {
       friendOnlineAlerts,
       roomJoinAlerts,
       notificationSounds,
+      soundVolume,
       soundChoices,
+      customSounds,
       advancedReactions,
     );
 
@@ -2222,7 +2408,7 @@ export class LinkChatView {
         title,
         element("div", {
           className: "kl-dialog-subtitle",
-          text: "Avatar, status, Idle, and a quiet AFK auto-reply in one place.",
+          text: "Avatar, status, quiet DND, and a bounded auto-reply in one place.",
         }),
       ),
       close,
@@ -2279,7 +2465,7 @@ export class LinkChatView {
     this.#presenceAvatarUrl.addEventListener("input", () => this.#renderOwnAvatarPreview());
 
     this.#afkAutoReplyToggle.type = "checkbox";
-    this.#afkAutoReplyToggle.setAttribute("aria-label", "Send an automatic reply while Idle");
+    this.#afkAutoReplyToggle.setAttribute("aria-label", "Send an automatic reply while Idle or DND");
     this.#afkAutoReplyToggle.addEventListener("change", () => this.#renderPresenceDialog());
     const afkAutoReplySwitch = element(
       "label",
@@ -2294,7 +2480,7 @@ export class LinkChatView {
       this.#afkAutoReplyMessage,
       element("span", {
         className: "kl-custom-field-help",
-        text: "Sent privately at most once per person during an Idle session; your room is never included.",
+        text: "Sent privately at most once per person during each Idle or DND session; your room is never included.",
       }),
     );
 
@@ -2334,8 +2520,8 @@ export class LinkChatView {
         element("label", {}, this.#autoIdleInput, " min"),
       ),
       this.#settingRow(
-        "Reply while AFK",
-        "When Automatic Idle is active, privately answer new Beeps for you.",
+        "Reply while Idle / DND",
+        "Privately answer new Beeps while you are Idle or in Do not disturb.",
         afkAutoReplySwitch,
       ),
       this.#afkAutoReplyOptions,
@@ -3104,6 +3290,28 @@ export class LinkChatView {
         action: { kind: "workspace", target: "roster" },
       },
       {
+        id: "destination-room",
+        kind: "destination",
+        icon: "location",
+        category: "Destination",
+        title: "Room Tools",
+        detail: this.adapter.isInChatRoom() ? "Background, music, players, and roles" : "Enter a room first",
+        keywords: "room admin background music kick promote whitelist roles customization",
+        priority: 72,
+        action: { kind: "workspace", target: "room" },
+      },
+      {
+        id: "destination-gallery",
+        kind: "destination",
+        icon: "image",
+        category: "Destination",
+        title: "Media Gallery",
+        detail: "Images from every saved LinkChat conversation",
+        keywords: "gallery images pictures catbox litterbox media all chats",
+        priority: 70,
+        action: { kind: "workspace", target: "gallery" },
+      },
+      {
         id: "destination-activities",
         kind: "destination",
         icon: "activities",
@@ -3225,6 +3433,8 @@ export class LinkChatView {
         "new-chat",
         featuredConversation ? undefined : "destination-chat",
         "destination-players",
+        "destination-room",
+        "destination-gallery",
         "destination-activities",
         "destination-settings",
       ].filter((id): id is string => Boolean(id));
@@ -3355,6 +3565,414 @@ export class LinkChatView {
       this.#openActivities(action.index);
     } else {
       this.#openSettings(action.section);
+    }
+  }
+
+  #buildGalleryPage(): void {
+    const refresh = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Refresh",
+      onClick: () => void this.#renderGallery(),
+    });
+    const header = element(
+      "header",
+      { className: "kl-feature-page-header" },
+      element(
+        "div",
+        { className: "kl-feature-page-heading" },
+        element("div", { className: "kl-feature-page-eyebrow", text: "ALL CHATS" }),
+        element("h1", { className: "kl-feature-page-title", text: "Media Gallery" }),
+        this.#gallerySubtitle,
+      ),
+      refresh,
+    );
+    this.#galleryPage.append(header, this.#galleryGrid);
+  }
+
+  async #openGallery(): Promise<void> {
+    this.#showWorkspace("gallery");
+    await this.#renderGallery();
+  }
+
+  async #renderGallery(): Promise<void> {
+    this.#galleryGrid.setAttribute("aria-busy", "true");
+    this.#galleryGrid.replaceChildren(
+      element("div", { className: "kl-gallery-empty", text: "Collecting images from LinkChat…" }),
+    );
+    try {
+      const items = await this.service.listMedia(400);
+      this.#gallerySubtitle.textContent = items.length
+        ? `${items.length} unique image${items.length === 1 ? "" : "s"} from saved conversations.`
+        : "Images shared in saved conversations will appear here.";
+      if (items.length === 0) {
+        this.#galleryGrid.replaceChildren(
+          element("div", {
+            className: "kl-gallery-empty",
+            text: "No Catbox, Litterbox, or other direct image links are saved yet.",
+          }),
+        );
+        return;
+      }
+      this.#galleryGrid.replaceChildren(...items.map((item) => this.#galleryItem(item)));
+    } catch (error) {
+      this.#galleryGrid.replaceChildren(
+        element("div", {
+          className: "kl-gallery-empty",
+          text: error instanceof Error ? error.message : "The media gallery could not be loaded.",
+        }),
+      );
+    } finally {
+      this.#galleryGrid.setAttribute("aria-busy", "false");
+    }
+  }
+
+  #galleryItem(item: ChatMediaItem): HTMLElement {
+    const roomAdmin = this.adapter.getRoomAdminSnapshot()?.isAdmin === true;
+    const actions = element(
+      "div",
+      { className: "kl-gallery-actions" },
+      element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Open chat",
+        onClick: () => void this.openChat(item.peerNumber, item.peerName),
+      }),
+    );
+    if (roomAdmin) {
+      actions.append(
+        element("button", {
+          className: "kl-text-button kl-text-button--primary",
+          type: "button",
+          text: "Use as room background",
+          onClick: () => {
+            this.#roomImageUrl.value = item.url;
+            void this.#openRoomTools(false);
+            this.#toast("Image selected. Review it, then apply the room media.");
+          },
+        }),
+      );
+    }
+    return element(
+      "article",
+      { className: "kl-gallery-item" },
+      this.#imageCard(item.url),
+      element(
+        "div",
+        { className: "kl-gallery-meta" },
+        element("strong", { text: item.provider === "other" ? "Image" : item.provider }),
+        element("span", {
+          text: `${item.direction === "outgoing" ? "Sent to" : "From"} ${item.peerName} · ${formatMessageTime(item.sentAt)}`,
+        }),
+      ),
+      actions,
+    );
+  }
+
+  #buildRoomPage(): void {
+    const refresh = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Refresh room",
+      onClick: () => void this.#renderRoomTools(true),
+    });
+    const header = element(
+      "header",
+      { className: "kl-feature-page-header" },
+      element(
+        "div",
+        { className: "kl-feature-page-heading" },
+        element("div", { className: "kl-feature-page-eyebrow", text: "CURRENT ROOM" }),
+        element("h1", { className: "kl-feature-page-title", text: "Room Tools" }),
+        element("p", {
+          className: "kl-feature-page-subtitle",
+          text: "Background, music, and native room administration without leaving the Link Deck.",
+        }),
+      ),
+      refresh,
+    );
+
+    this.#roomImageUrl.type = "url";
+    this.#roomImageUrl.placeholder = "https://…/background.webp";
+    this.#roomImageUrl.maxLength = 250;
+    this.#roomMusicUrl.type = "url";
+    this.#roomMusicUrl.placeholder = "https://…/music.mp3";
+    this.#roomMusicUrl.maxLength = 250;
+    this.#roomSizeMode.replaceChildren(
+      selectOption("1", "Fill / stretch"),
+      selectOption("2", "Fill & crop (keep ratio)"),
+      selectOption("3", "Show full image (keep ratio)"),
+    );
+    this.#roomMusicSync.type = "checkbox";
+    const syncSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#roomMusicSync,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#roomImageFileInput.type = "file";
+    this.#roomImageFileInput.accept = "image/*";
+    this.#roomImageFileInput.hidden = true;
+    this.#roomImageFileInput.addEventListener("change", () => void this.#uploadRoomBackground());
+    this.#roomMusicFileInput.type = "file";
+    this.#roomMusicFileInput.accept = "audio/mpeg,audio/mp4,video/mp4,.mp3,.mp4";
+    this.#roomMusicFileInput.hidden = true;
+    this.#roomMusicFileInput.addEventListener("change", () => void this.#uploadRoomMusic());
+    const gallery = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Choose from gallery",
+      onClick: () => void this.#openGallery(),
+    });
+    const upload = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Upload image",
+      onClick: () => this.#roomImageFileInput.click(),
+    });
+    const uploadMusic = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Upload music",
+      onClick: () => this.#roomMusicFileInput.click(),
+    });
+    this.#roomSaveButton.addEventListener("click", () => this.#saveRoomCustomization());
+
+    const mediaForm = element(
+      "section",
+      { className: "kl-room-media" },
+      element("h2", { text: "Room media" }),
+      element(
+        "label",
+        { className: "kl-room-field" },
+        element("span", { text: "Background image" }),
+        this.#roomImageUrl,
+      ),
+      element(
+        "div",
+        { className: "kl-inline-actions" },
+        gallery,
+        upload,
+        this.#roomImageFileInput,
+      ),
+      element(
+        "label",
+        { className: "kl-room-field" },
+        element("span", { text: "Background layout" }),
+        this.#roomSizeMode,
+      ),
+      element(
+        "label",
+        { className: "kl-room-field" },
+        element("span", { text: "Music URL" }),
+        this.#roomMusicUrl,
+      ),
+      element("div", { className: "kl-inline-actions" }, uploadMusic, this.#roomMusicFileInput),
+      this.#settingRow(
+        "Synchronize music",
+        "Ask compatible BC clients to keep room playback aligned.",
+        syncSwitch,
+      ),
+      element("p", {
+        className: "kl-room-media-note",
+        text: "Uploaded backgrounds and music use your temporary Litterbox lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use permanent HTTPS links.",
+      }),
+      this.#roomSaveButton,
+    );
+    const players = element(
+      "section",
+      { className: "kl-room-players" },
+      element("h2", { text: "Players & roles" }),
+      element("p", {
+        className: "kl-setting-help",
+        text: "Kick, Admin, and room Whitelist buttons call Bondage Club's native room commands.",
+      }),
+      this.#roomPlayers,
+    );
+    this.#roomPage.append(header, this.#roomAdminStatus, element("div", { className: "kl-room-grid" }, mediaForm, players));
+  }
+
+  async #openRoomTools(refreshFields = true): Promise<void> {
+    this.#showWorkspace("room");
+    await this.#renderRoomTools(refreshFields);
+  }
+
+  async #renderRoomTools(refreshFields: boolean): Promise<void> {
+    const snapshot = this.adapter.getRoomAdminSnapshot();
+    if (!snapshot) {
+      this.#roomAdminStatus.textContent = "Enter a chat room to use Room Tools.";
+      this.#roomAdminStatus.dataset.state = "empty";
+      this.#roomPlayers.replaceChildren(
+        element("div", { className: "kl-gallery-empty", text: "No active room." }),
+      );
+      this.#setRoomControlsEnabled(false);
+      return;
+    }
+    this.#roomAdminStatus.textContent = snapshot.isAdmin
+      ? `${snapshot.roomName} · You are a room administrator`
+      : `${snapshot.roomName} · View only (administrator rights required to make changes)`;
+    this.#roomAdminStatus.dataset.state = snapshot.isAdmin ? "admin" : "readonly";
+    this.#setRoomControlsEnabled(snapshot.isAdmin);
+    if (refreshFields) {
+      this.#roomImageUrl.value = snapshot.customization.imageUrl;
+      this.#roomMusicUrl.value = snapshot.customization.musicUrl;
+      this.#roomSizeMode.value = snapshot.customization.sizeMode.toString();
+      this.#roomMusicSync.checked = snapshot.customization.musicSync;
+    }
+    this.#roomPlayers.replaceChildren(
+      ...snapshot.players.map((player) => this.#roomPlayerRow(player, snapshot.isAdmin)),
+    );
+    if (snapshot.players.length === 0) {
+      this.#roomPlayers.append(
+        element("div", { className: "kl-gallery-empty", text: "No other players are in this room." }),
+      );
+    }
+  }
+
+  #setRoomControlsEnabled(enabled: boolean): void {
+    for (const control of [
+      this.#roomImageUrl,
+      this.#roomMusicUrl,
+      this.#roomSizeMode,
+      this.#roomMusicSync,
+      this.#roomSaveButton,
+      this.#roomImageFileInput,
+      this.#roomMusicFileInput,
+    ]) {
+      control.disabled = !enabled;
+    }
+    for (const button of this.#roomPage.querySelectorAll<HTMLButtonElement>(
+      ".kl-room-media .kl-inline-actions button",
+    )) {
+      button.disabled = !enabled;
+    }
+  }
+
+  #roomPlayerRow(player: BCRoomAdminPlayer, canManage: boolean): HTMLElement {
+    const actions = element("div", { className: "kl-room-player-actions" });
+    if (canManage) {
+      actions.append(
+        this.#roomActionButton(player, player.admin ? "demote" : "promote", player.admin ? "Remove admin" : "Make admin"),
+        this.#roomActionButton(
+          player,
+          player.whitelisted ? "unwhitelist" : "whitelist",
+          player.whitelisted ? "Remove whitelist" : "Whitelist",
+        ),
+        this.#roomActionButton(player, "kick", "Kick", true),
+      );
+    }
+    const badges = element("div", { className: "kl-room-player-badges" });
+    if (player.admin) badges.append(element("span", { text: "ADMIN" }));
+    if (player.whitelisted) badges.append(element("span", { text: "WHITELIST" }));
+    return element(
+      "article",
+      { className: "kl-room-player" },
+      this.#avatar(player.memberName, player.memberNumber),
+      element(
+        "div",
+        { className: "kl-room-player-copy" },
+        element("strong", { text: player.memberName }),
+        element("span", { text: `#${player.memberNumber}` }),
+        badges,
+      ),
+      actions,
+    );
+  }
+
+  #roomActionButton(
+    player: BCRoomAdminPlayer,
+    action: BCRoomMemberAction,
+    label: string,
+    danger = false,
+  ): HTMLButtonElement {
+    return element("button", {
+      className: `kl-text-button${danger ? " kl-text-button--danger" : ""}`,
+      type: "button",
+      text: label,
+      onClick: () => void this.#runRoomMemberAction(player, action),
+    });
+  }
+
+  async #runRoomMemberAction(player: BCRoomAdminPlayer, action: BCRoomMemberAction): Promise<void> {
+    if (
+      action === "kick" &&
+      typeof confirm === "function" &&
+      !confirm(`Kick ${player.memberName} from the room?`)
+    ) {
+      return;
+    }
+    try {
+      this.adapter.runRoomMemberAction(player.memberNumber, action);
+      this.#toast(`${roomActionPastTense(action)} ${player.memberName}.`);
+      setTimeout(() => void this.#renderRoomTools(true), 700);
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "The room action failed.", "error");
+    }
+  }
+
+  #saveRoomCustomization(): void {
+    try {
+      this.adapter.updateRoomCustomization({
+        imageUrl: this.#roomImageUrl.value,
+        musicUrl: this.#roomMusicUrl.value,
+        sizeMode: Number(this.#roomSizeMode.value),
+        musicSync: this.#roomMusicSync.checked,
+      });
+      this.#toast("Room background and music update sent to Bondage Club.");
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "Room media could not be updated.", "error");
+    }
+  }
+
+  async #uploadRoomBackground(): Promise<void> {
+    const file = this.#roomImageFileInput.files?.[0];
+    this.#roomImageFileInput.value = "";
+    if (!file) return;
+    const settings = this.settings.get().linkChat.imageUploads;
+    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+    if (!config) {
+      this.#toast("Enable temporary local image uploads in Chat settings first.", "error");
+      this.#openSettings("chat");
+      return;
+    }
+    try {
+      this.#roomAdminStatus.textContent = "Preparing and uploading the room background…";
+      const prepared = await this.imageUploader.prepare(file);
+      const url = await this.imageUploader.upload(prepared, config);
+      this.#roomImageUrl.value = url;
+      await this.#renderRoomTools(false);
+      this.#toast("Background uploaded. Apply room media when ready.");
+    } catch (error) {
+      this.#toast(
+        error instanceof Error ? error.message : "The room background could not be uploaded.",
+        "error",
+      );
+      await this.#renderRoomTools(false);
+    }
+  }
+
+  async #uploadRoomMusic(): Promise<void> {
+    const file = this.#roomMusicFileInput.files?.[0];
+    this.#roomMusicFileInput.value = "";
+    if (!file) return;
+    const settings = this.settings.get().linkChat.imageUploads;
+    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+    if (!config) {
+      this.#toast("Enable temporary local uploads in Chat settings first.", "error");
+      this.#openSettings("chat");
+      return;
+    }
+    try {
+      this.#roomAdminStatus.textContent = "Uploading temporary room music…";
+      this.#roomMusicUrl.value = await uploadLocalRoomAudio(file, config);
+      await this.#renderRoomTools(false);
+      this.#toast("Music uploaded. Apply room media when ready.");
+    } catch (error) {
+      this.#toast(
+        error instanceof Error ? error.message : "The room music could not be uploaded.",
+        "error",
+      );
+      await this.#renderRoomTools(false);
     }
   }
 
@@ -5420,9 +6038,12 @@ export class LinkChatView {
     this.#friendOnlineAlertToggle.checked = settings.linkReactions.quickAlerts.friendOnline;
     this.#roomJoinAlertToggle.checked = settings.linkReactions.quickAlerts.roomJoin;
     this.#notificationSoundsToggle.checked = settings.linkReactions.sounds.enabled;
+    this.#soundVolumeInput.value = settings.linkReactions.sounds.volume.toString();
+    this.#soundVolumeValue.textContent = `${settings.linkReactions.sounds.volume}%`;
     this.#chatSoundSelect.value = settings.linkReactions.sounds.chat;
     this.#friendOnlineSoundSelect.value = settings.linkReactions.sounds.friendOnline;
     this.#roomJoinSoundSelect.value = settings.linkReactions.sounds.roomJoin;
+    void this.#refreshCustomSounds(settings.linkReactions.sounds);
     this.#reactionsToggle.checked = settings.linkReactions.enabled;
     this.#renderReactionRuleEditor(settings.linkReactions.rules);
     this.#showWorkspace("settings", false);
@@ -5454,6 +6075,116 @@ export class LinkChatView {
     const enabled = this.#imageUploadsToggle.checked;
     this.#imageUploadSettingsOptions.hidden = !enabled;
     this.#imageUploadRetentionSelect.disabled = !enabled;
+  }
+
+  async #refreshCustomSounds(
+    selected: KikiLinkSettings["linkReactions"]["sounds"] = {
+      ...this.settings.get().linkReactions.sounds,
+      chat: soundChoiceOr(this.#chatSoundSelect.value, "chime"),
+      friendOnline: soundChoiceOr(this.#friendOnlineSoundSelect.value, "sparkle"),
+      roomJoin: soundChoiceOr(this.#roomJoinSoundSelect.value, "pop"),
+    },
+  ): Promise<void> {
+    let sounds: DeviceNotificationSound[];
+    try {
+      sounds = await this.soundStore.list();
+    } catch {
+      sounds = [];
+    }
+    const builtIns = Object.entries(NOTIFICATION_SOUND_LABELS) as Array<
+      [NotificationSoundPreset, string]
+    >;
+    const available = new Set(sounds.map((sound) => `custom:${sound.id}`));
+    const selections = [
+      [this.#chatSoundSelect, selected.chat, "chime"],
+      [this.#friendOnlineSoundSelect, selected.friendOnline, "sparkle"],
+      [this.#roomJoinSoundSelect, selected.roomJoin, "pop"],
+    ] as const;
+    for (const [select, choice, fallback] of selections) {
+      select.replaceChildren(
+        ...builtIns.map(([value, label]) => selectOption(value, label)),
+        ...sounds.map((sound) => selectOption(`custom:${sound.id}`, `My · ${sound.name}`)),
+      );
+      if (choice.startsWith("custom:") && !available.has(choice)) {
+        const unavailable = selectOption(choice, "Custom sound unavailable on this device");
+        unavailable.disabled = true;
+        select.append(unavailable);
+      }
+      select.value = choice || fallback;
+    }
+
+    if (sounds.length === 0) {
+      this.#customSoundList.replaceChildren(
+        element("div", {
+          className: "kl-custom-sound-empty",
+          text: "No local sounds saved on this device.",
+        }),
+      );
+      return;
+    }
+    this.#customSoundList.replaceChildren(
+      ...sounds.map((sound) =>
+        element(
+          "div",
+          { className: "kl-custom-sound" },
+          element(
+            "div",
+            { className: "kl-custom-sound-copy" },
+            element("strong", { text: sound.name }),
+            element("span", { text: `${(sound.durationMs / 1_000).toFixed(1)} s · local` }),
+          ),
+          element("button", {
+            className: "kl-text-button kl-sound-preview",
+            type: "button",
+            text: "Play",
+            onClick: () =>
+              void this.#notificationSounds.play(`custom:${sound.id}`, {
+                volume: Number(this.#soundVolumeInput.value),
+              }),
+          }),
+          element("button", {
+            className: "kl-icon-button kl-text-button--danger",
+            type: "button",
+            title: `Delete ${sound.name}`,
+            ariaLabel: `Delete ${sound.name}`,
+            onClick: () => void this.#deleteCustomSound(sound),
+          }, kikiIcon("trash")),
+        ),
+      ),
+    );
+  }
+
+  async #addCustomSound(): Promise<void> {
+    const file = this.#customSoundInput.files?.[0];
+    this.#customSoundInput.value = "";
+    if (!file) return;
+    try {
+      const sound = await this.soundStore.add(file);
+      const current = this.settings.get().linkReactions.sounds;
+      await this.#refreshCustomSounds({ ...current, chat: `custom:${sound.id}` });
+      this.#chatSoundSelect.value = `custom:${sound.id}`;
+      this.#toast(`Saved “${sound.name}” locally. Choose Save changes to use it.`);
+    } catch (error) {
+      this.#toast(
+        error instanceof Error ? error.message : "That local sound could not be saved.",
+        "error",
+      );
+    }
+  }
+
+  async #deleteCustomSound(sound: DeviceNotificationSound): Promise<void> {
+    if (typeof confirm === "function" && !confirm(`Delete the local sound “${sound.name}”?`)) return;
+    await this.soundStore.delete(sound.id);
+    const choice: NotificationSoundChoice = `custom:${sound.id}`;
+    const settings = this.settings.update((draft) => {
+      if (draft.linkReactions.sounds.chat === choice) draft.linkReactions.sounds.chat = "chime";
+      if (draft.linkReactions.sounds.friendOnline === choice) {
+        draft.linkReactions.sounds.friendOnline = "sparkle";
+      }
+      if (draft.linkReactions.sounds.roomJoin === choice) draft.linkReactions.sounds.roomJoin = "pop";
+    });
+    await this.#refreshCustomSounds(settings.linkReactions.sounds);
+    this.#toast(`Deleted “${sound.name}” from this device.`);
   }
 
   #updateAccentPresets(): void {
@@ -5530,12 +6261,13 @@ export class LinkChatView {
       draft.linkReactions.quickAlerts.friendOnline = this.#friendOnlineAlertToggle.checked;
       draft.linkReactions.quickAlerts.roomJoin = this.#roomJoinAlertToggle.checked;
       draft.linkReactions.sounds.enabled = this.#notificationSoundsToggle.checked;
-      draft.linkReactions.sounds.chat = soundPresetOr(this.#chatSoundSelect.value, "chime");
-      draft.linkReactions.sounds.friendOnline = soundPresetOr(
+      draft.linkReactions.sounds.volume = Math.round(Number(this.#soundVolumeInput.value));
+      draft.linkReactions.sounds.chat = soundChoiceOr(this.#chatSoundSelect.value, "chime");
+      draft.linkReactions.sounds.friendOnline = soundChoiceOr(
         this.#friendOnlineSoundSelect.value,
         "sparkle",
       );
-      draft.linkReactions.sounds.roomJoin = soundPresetOr(
+      draft.linkReactions.sounds.roomJoin = soundChoiceOr(
         this.#roomJoinSoundSelect.value,
         "pop",
       );
@@ -5570,6 +6302,14 @@ export class LinkChatView {
     });
     this.#applyTheme(settings);
     this.#toast("Launcher returned to its default corner.");
+  }
+
+  #resetPanelPosition(): void {
+    this.settings.update((draft) => {
+      draft.ui.panelPosition = null;
+    });
+    this.#positionPanel();
+    this.#toast("KikiLink window returned to its default corner.");
   }
 
   #resetRoomBadgePosition(): void {
@@ -5824,6 +6564,105 @@ export class LinkChatView {
     );
   }
 
+  #startPanelDrag(event: PointerEvent): void {
+    if (event.button !== 0 || this.#isMobileLayout()) return;
+    const rect = this.#panel.getBoundingClientRect();
+    this.#panelDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: rect.left,
+      startTop: rect.top,
+      moved: false,
+    };
+    try {
+      (event.currentTarget as HTMLElement | null)?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is optional.
+    }
+  }
+
+  #movePanel(event: PointerEvent): void {
+    const drag = this.#panelDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - drag.startX;
+    const deltaY = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(deltaX, deltaY) < 5) return;
+    drag.moved = true;
+    event.preventDefault();
+    this.#panel.dataset.dragging = "true";
+    this.#placePanel(drag.startLeft + deltaX, drag.startTop + deltaY);
+  }
+
+  #finishPanelDrag(event: PointerEvent): void {
+    const drag = this.#panelDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    this.#panelDrag = undefined;
+    this.#panel.dataset.dragging = "false";
+    try {
+      (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
+    } catch {
+      // The browser may have released it already.
+    }
+    if (drag.moved) this.#savePanelPosition();
+  }
+
+  #cancelPanelDrag(event: PointerEvent): void {
+    if (!this.#panelDrag || this.#panelDrag.pointerId !== event.pointerId) return;
+    this.#panelDrag = undefined;
+    this.#panel.dataset.dragging = "false";
+    this.#positionPanel();
+  }
+
+  #placePanel(left: number, top: number): void {
+    if (this.#isMobileLayout()) return;
+    const rect = this.#panel.getBoundingClientRect();
+    const width = rect.width || Math.min(1_040, Math.max(320, window.innerWidth - 40));
+    const height = rect.height || Math.min(680, Math.max(420, window.innerHeight - 130));
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - height - margin);
+    this.#panel.style.left = `${Math.round(clamp(left, margin, maxLeft))}px`;
+    this.#panel.style.top = `${Math.round(clamp(top, margin, maxTop))}px`;
+    this.#panel.style.right = "auto";
+    this.#panel.style.bottom = "auto";
+  }
+
+  #savePanelPosition(): void {
+    const rect = this.#panel.getBoundingClientRect();
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+    const x = maxLeft === margin ? 0.5 : clamp((rect.left - margin) / (maxLeft - margin), 0, 1);
+    const y = maxTop === margin ? 0.5 : clamp((rect.top - margin) / (maxTop - margin), 0, 1);
+    this.settings.update((draft) => {
+      draft.ui.panelPosition = { x, y };
+    });
+  }
+
+  #positionPanel(): void {
+    const position = this.settings.get().ui.panelPosition;
+    if (!position || this.#isMobileLayout()) {
+      this.#panel.style.removeProperty("left");
+      this.#panel.style.removeProperty("top");
+      this.#panel.style.removeProperty("right");
+      this.#panel.style.removeProperty("bottom");
+      return;
+    }
+    const rect = this.#panel.getBoundingClientRect();
+    const width = rect.width || Math.min(1_040, Math.max(320, window.innerWidth - 40));
+    const height = rect.height || Math.min(680, Math.max(420, window.innerHeight - 130));
+    const margin = 8;
+    this.#placePanel(
+      margin + position.x * Math.max(0, window.innerWidth - width - margin * 2),
+      margin + position.y * Math.max(0, window.innerHeight - height - margin * 2),
+    );
+  }
+
+  #isMobileLayout(): boolean {
+    return window.innerWidth <= 720;
+  }
+
   #showConversationList(): void {
     this.#panel.dataset.mobileView = "list";
     this.#search.focus();
@@ -5986,11 +6825,24 @@ function createReactionRuleId(): string {
   return `reaction-${Date.now().toString(36)}-${random}`;
 }
 
-function soundPresetOr(
+function soundChoiceOr(
   value: string,
   fallback: NotificationSoundPreset,
-): NotificationSoundPreset {
-  return value === "sparkle" || value === "pop" || value === "chime" ? value : fallback;
+): NotificationSoundChoice {
+  return value === "sparkle" ||
+    value === "pop" ||
+    value === "chime" ||
+    /^custom:[a-z0-9_-]{1,64}$/iu.test(value)
+    ? value as NotificationSoundChoice
+    : fallback;
+}
+
+function roomActionPastTense(action: BCRoomMemberAction): string {
+  if (action === "kick") return "Kicked";
+  if (action === "promote") return "Promoted";
+  if (action === "demote") return "Removed admin from";
+  if (action === "whitelist") return "Whitelisted";
+  return "Removed from room whitelist";
 }
 
 function finderSettingResults(): FinderResult[] {
@@ -6123,7 +6975,7 @@ function presenceLabel(status: PresenceSnapshot["status"]): string {
 function presenceHelp(status: PresenceStatus): string {
   if (status === "online") return "Available and ready to chat";
   if (status === "idle") return "Away for a little while";
-  if (status === "dnd") return "Busy and may reply later";
+  if (status === "dnd") return "Silences local alerts and stops chat auto-open";
   return "Appear offline inside KikiLink";
 }
 

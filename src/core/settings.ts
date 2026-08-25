@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 16,
+  schemaVersion: 17,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     launcherSide: "right",
     launcherOpen: "home",
     launcherPosition: null,
+    panelPosition: null,
     roomBadge: {
       enabled: true,
       position: null,
@@ -77,6 +78,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     },
     sounds: {
       enabled: false,
+      volume: 65,
       chat: "chime",
       friendOnline: "sparkle",
       roomJoin: "pop",
@@ -185,7 +187,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
 
   return {
-    schemaVersion: 16,
+    schemaVersion: 17,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -208,6 +210,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? ui.launcherOpen
           : DEFAULT_SETTINGS.ui.launcherOpen,
       launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
+      panelPosition: sanitizeLauncherPosition(ui.panelPosition),
       roomBadge: sanitizeRoomBadge(ui.roomBadge, sourceSchema),
       reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
       settingsSection: isSettingsSection(ui.settingsSection)
@@ -375,6 +378,12 @@ function sanitizeNotificationSounds(
   const source = isRecord(value) ? value : {};
   return {
     enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.linkReactions.sounds.enabled),
+    volume: integerInRange(
+      source.volume,
+      0,
+      100,
+      DEFAULT_SETTINGS.linkReactions.sounds.volume,
+    ),
     chat: notificationSoundOr(source.chat, DEFAULT_SETTINGS.linkReactions.sounds.chat),
     friendOnline: notificationSoundOr(
       source.friendOnline,
@@ -391,7 +400,12 @@ function notificationSoundOr(
   value: unknown,
   fallback: KikiLinkSettings["linkReactions"]["sounds"]["chat"],
 ): KikiLinkSettings["linkReactions"]["sounds"]["chat"] {
-  return value === "sparkle" || value === "pop" || value === "chime" ? value : fallback;
+  return value === "sparkle" ||
+    value === "pop" ||
+    value === "chime" ||
+    (typeof value === "string" && /^custom:[a-z0-9_-]{1,64}$/iu.test(value))
+    ? value as KikiLinkSettings["linkReactions"]["sounds"]["chat"]
+    : fallback;
 }
 
 function sanitizeQuickActions(value: unknown): QuickAction[] {

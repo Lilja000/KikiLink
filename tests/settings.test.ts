@@ -27,12 +27,15 @@ describe("SettingsStore", () => {
       draft.ui.launcherSide = "left";
       draft.ui.launcherOpen = "last";
       draft.ui.launcherPosition = { x: 0.25, y: 0.6 };
+      draft.ui.panelPosition = { x: 0.4, y: 0.2 };
       draft.ui.density = "super-compact";
       draft.ui.textScale = "large";
       draft.ui.homeLayout = "compact";
       draft.ui.settingsSection = "navigation";
       draft.linkChat.retentionDays = 30;
       draft.linkRoster.retentionDays = 180;
+      draft.linkReactions.sounds.volume = 42;
+      draft.linkReactions.sounds.chat = "custom:soft-bell";
     });
 
     const second = new SettingsStore(storage);
@@ -40,12 +43,17 @@ describe("SettingsStore", () => {
     expect(second.get().ui.launcherSide).toBe("left");
     expect(second.get().ui.launcherOpen).toBe("last");
     expect(second.get().ui.launcherPosition).toEqual({ x: 0.25, y: 0.6 });
+    expect(second.get().ui.panelPosition).toEqual({ x: 0.4, y: 0.2 });
     expect(second.get().ui.density).toBe("super-compact");
     expect(second.get().ui.textScale).toBe("large");
     expect(second.get().ui.homeLayout).toBe("compact");
     expect(second.get().ui.settingsSection).toBe("navigation");
     expect(second.get().linkChat.retentionDays).toBe(30);
     expect(second.get().linkRoster.retentionDays).toBe(180);
+    expect(second.get().linkReactions.sounds).toMatchObject({
+      volume: 42,
+      chat: "custom:soft-bell",
+    });
   });
 
   it("rejects invalid persisted values", () => {
@@ -132,7 +140,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(16);
+    expect(settings.schemaVersion).toBe(17);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -256,7 +264,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(16);
+    expect(settings.schemaVersion).toBe(17);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -280,7 +288,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(16);
+    expect(settings.schemaVersion).toBe(17);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -346,7 +354,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(16);
+    expect(settings.schemaVersion).toBe(17);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -354,6 +362,7 @@ describe("SettingsStore", () => {
       },
       sounds: {
         enabled: false,
+        volume: 65,
         chat: "chime",
         friendOnline: "sparkle",
         roomJoin: "pop",
@@ -396,6 +405,7 @@ describe("SettingsStore", () => {
     });
     expect(settings.linkReactions.sounds).toEqual({
       enabled: true,
+      volume: 65,
       chat: "sparkle",
       friendOnline: "sparkle",
       roomJoin: "chime",
@@ -520,7 +530,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(16);
+    expect(settings.schemaVersion).toBe(17);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,

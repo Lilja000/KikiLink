@@ -1,4 +1,4 @@
-import type { NotificationSoundPreset } from "../../core/types";
+import type { NotificationSoundChoice, NotificationSoundPreset } from "../../core/types";
 
 interface SoundNote {
   offset: number;
@@ -52,9 +52,19 @@ const SOUND_THROTTLE_MS = 350;
 
 type AudioContextConstructor = new () => AudioContext;
 
+export interface NotificationSoundPlayOptions {
+  volume?: number;
+  now?: number;
+}
+
+export type CustomNotificationSoundResolver = (id: string) => Promise<Blob | undefined>;
+
 export class NotificationSoundService {
   #context: AudioContext | undefined;
   #lastPlayedAt = Number.NEGATIVE_INFINITY;
+  readonly #customBuffers = new Map<string, Promise<AudioBuffer | undefined>>();
+
+  constructor(private readonly resolveCustomSound?: CustomNotificationSoundResolver) {}
 
   async unlock(): Promise<boolean> {
     const context = this.#getContext();
@@ -67,16 +77,24 @@ export class NotificationSoundService {
     }
   }
 
-  async play(preset: NotificationSoundPreset, now = Date.now()): Promise<boolean> {
+  async play(
+    choice: NotificationSoundChoice,
+    nowOrOptions: number | NotificationSoundPlayOptions = {},
+  ): Promise<boolean> {
+    const options = typeof nowOrOptions === "number" ? { now: nowOrOptions } : nowOrOptions;
+    const now = options.now ?? Date.now();
+    const volume = normalizedVolume(options.volume);
     if (now - this.#lastPlayedAt < SOUND_THROTTLE_MS) return false;
+    if (volume === 0) return false;
+    if (!isPreset(choice)) return this.#playCustom(choice.slice("custom:".length), volume, now);
     if (!(await this.unlock())) return false;
     const context = this.#context;
     if (!context) return false;
 
     try {
       const startAt = context.currentTime + 0.01;
-      for (const note of NOTIFICATION_SOUND_PATTERNS[preset]) {
-        scheduleNote(context, startAt, note);
+      for (const note of NOTIFICATION_SOUND_PATTERNS[choice]) {
+        scheduleNote(context, startAt, note, volume / 100);
       }
       this.#lastPlayedAt = now;
       return true;
@@ -88,6 +106,7 @@ export class NotificationSoundService {
   async destroy(): Promise<void> {
     const context = this.#context;
     this.#context = undefined;
+    this.#customBuffers.clear();
     if (context && context.state !== "closed") {
       try {
         await context.close();
@@ -111,9 +130,48 @@ export class NotificationSoundService {
       return undefined;
     }
   }
+
+  async #playCustom(id: string, volume: number, now: number): Promise<boolean> {
+    if (!this.resolveCustomSound || !(await this.unlock())) return false;
+    const context = this.#context;
+    if (!context || typeof context.decodeAudioData !== "function") return false;
+    try {
+      const buffer = await this.#customBuffer(id, context);
+      if (!buffer) return false;
+      const source = context.createBufferSource();
+      const gain = context.createGain();
+      source.buffer = buffer;
+      gain.gain.setValueAtTime(volume / 100, context.currentTime);
+      source.connect(gain);
+      gain.connect(context.destination);
+      source.start(context.currentTime + 0.01);
+      this.#lastPlayedAt = now;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  #customBuffer(id: string, context: AudioContext): Promise<AudioBuffer | undefined> {
+    let pending = this.#customBuffers.get(id);
+    if (!pending) {
+      pending = this.resolveCustomSound!(id)
+        .then(async (blob) =>
+          blob ? context.decodeAudioData(await blob.arrayBuffer()) : undefined,
+        )
+        .catch(() => undefined);
+      this.#customBuffers.set(id, pending);
+    }
+    return pending;
+  }
 }
 
-function scheduleNote(context: AudioContext, startAt: number, note: SoundNote): void {
+function scheduleNote(
+  context: AudioContext,
+  startAt: number,
+  note: SoundNote,
+  volume: number,
+): void {
   const oscillator = context.createOscillator();
   const gain = context.createGain();
   const start = startAt + note.offset;
@@ -125,10 +183,23 @@ function scheduleNote(context: AudioContext, startAt: number, note: SoundNote): 
     oscillator.frequency.exponentialRampToValueAtTime(note.endFrequency, end);
   }
   gain.gain.setValueAtTime(0.0001, start);
-  gain.gain.exponentialRampToValueAtTime(note.gain, start + Math.min(0.018, note.duration / 3));
+  gain.gain.exponentialRampToValueAtTime(
+    Math.max(0.0001, note.gain * volume),
+    start + Math.min(0.018, note.duration / 3),
+  );
   gain.gain.exponentialRampToValueAtTime(0.0001, end);
   oscillator.connect(gain);
   gain.connect(context.destination);
   oscillator.start(start);
   oscillator.stop(end + 0.02);
+}
+
+function normalizedVolume(value: number | undefined): number {
+  if (value === undefined) return 100;
+  if (!Number.isFinite(value)) return 100;
+  return Math.min(100, Math.max(0, value));
+}
+
+function isPreset(value: NotificationSoundChoice): value is NotificationSoundPreset {
+  return value === "chime" || value === "sparkle" || value === "pop";
 }

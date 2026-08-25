@@ -3,6 +3,7 @@ import { normalizeImageUrl } from "./media";
 export const MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_LOCAL_IMAGE_EDGE = 2_560;
 export const MAX_LOCAL_IMAGE_PIXELS = 32_000_000;
+export const MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
 
 const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
 const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
@@ -90,6 +91,55 @@ export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploa
     } finally {
       clearTimeout(timer);
     }
+  }
+}
+
+export async function uploadLocalRoomAudio(
+  file: File,
+  config: LitterboxUploadConfig,
+  request: typeof fetch = globalThis.fetch.bind(globalThis),
+): Promise<string> {
+  const normalizedConfig = normalizeLitterboxUploadConfig(config);
+  if (!normalizedConfig) throw new Error("Choose a valid temporary music lifetime");
+  if (file.size <= 0) throw new Error("Choose a non-empty audio file");
+  if (file.size > MAX_LOCAL_ROOM_AUDIO_BYTES) throw new Error("Choose room music up to 20 MB");
+  const extension = roomAudioExtension(file);
+  if (!extension) throw new Error("Bondage Club room music must be an MP3 or MP4 file");
+
+  const form = new FormData();
+  form.append("reqtype", "fileupload");
+  form.append("time", normalizedConfig.retention);
+  form.append(
+    "fileToUpload",
+    new File([file], `kikilink-room-music.${extension}`, {
+      type: file.type || `audio/${extension}`,
+      lastModified: 0,
+    }),
+  );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
+  try {
+    const response = await request(LITTERBOX_UPLOAD_ENDPOINT, {
+      method: "POST",
+      body: form,
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    });
+    const payload = (await response.text().catch(() => "")).trim();
+    if (!response.ok) {
+      throw new Error(cleanProviderError(payload) || `Audio host returned HTTP ${response.status}`);
+    }
+    const url = normalizeLitterboxAudioUrl(payload);
+    if (!url) throw new Error("The temporary audio host returned an unexpected link");
+    return url;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("The music upload timed out");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -316,6 +366,38 @@ function isExpectedLitterboxUrl(value: string): boolean {
     !url.hash &&
     /^\/[a-z0-9_-]+\.webp$/iu.test(url.pathname)
   );
+}
+
+function normalizeLitterboxAudioUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "litter.catbox.moe" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !/^\/[a-z0-9_-]+\.(?:mp3|mp4)$/iu.test(url.pathname)
+    ) {
+      return null;
+    }
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function roomAudioExtension(file: File): string | undefined {
+  const named = file.name.toLocaleLowerCase().match(/\.([a-z0-9]+)$/u)?.[1];
+  if (named && /^(?:mp3|mp4)$/u.test(named)) return named;
+  const mime = file.type.toLocaleLowerCase().split(";", 1)[0];
+  const byMime: Record<string, string> = {
+    "audio/mp4": "mp4",
+    "audio/mpeg": "mp3",
+    "video/mp4": "mp4",
+  };
+  return mime ? byMime[mime] : undefined;
 }
 
 function validatePreparedImage(image: PreparedLocalImage): void {

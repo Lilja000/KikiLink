@@ -19,6 +19,7 @@ import { PeopleRepository } from "../src/storage/people-repository";
 
 afterEach(() => {
   document.body.replaceChildren();
+  vi.unstubAllGlobals();
 });
 
 describe("LinkChatView", () => {
@@ -171,6 +172,96 @@ describe("LinkChatView", () => {
     expect(document.querySelector("#kikilink-root")).toBeNull();
   });
 
+  it("renders native Room Tools and an all-chat image gallery", async () => {
+    const updateRoomCustomization = vi.fn();
+    const runRoomMemberAction = vi.fn();
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getRoomCharacters: () => [
+        { memberNumber: 123, memberName: "Reina", accountName: "AccountReina", isFriend: true },
+      ],
+      getRoomAdminSnapshot: () => ({
+        roomName: "Moon Garden",
+        isAdmin: true,
+        customization: {
+          imageUrl: "https://files.catbox.moe/old.webp",
+          musicUrl: "https://cdn.example/old.mp3",
+          sizeMode: 2,
+          musicSync: false,
+        },
+        players: [
+          {
+            memberNumber: 123,
+            memberName: "Reina",
+            accountName: "AccountReina",
+            isFriend: true,
+            admin: false,
+            whitelisted: true,
+          },
+        ],
+      }),
+      updateRoomCustomization,
+      runRoomMemberAction,
+      canSendBeep: () => true,
+      isReady: () => true,
+      isInChatRoom: () => true,
+      getCurrentRoomName: () => "Moon Garden",
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 123,
+        peerName: "Reina",
+        content: "https://files.catbox.moe/gallery.webp",
+        sentAt: 1_000,
+        includeRoom: false,
+      },
+      false,
+    );
+    const view = new LinkChatView(adapter, service, settings, "0.21.0");
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    view.mount();
+    await view.open();
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+
+    shadow?.querySelector<HTMLButtonElement>('[data-target="room"]')?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLElement>(".kl-room-page")?.hidden).toBe(false);
+      expect(shadow?.querySelector(".kl-room-admin-status")?.textContent).toContain(
+        "room administrator",
+      );
+    });
+    const imageUrl = shadow?.querySelector<HTMLInputElement>(".kl-room-media input[type=url]");
+    if (!imageUrl) throw new Error("Missing room background control");
+    imageUrl.value = "https://files.catbox.moe/new.webp";
+    shadow?.querySelector<HTMLButtonElement>(".kl-room-media .kl-text-button--primary")?.click();
+    expect(updateRoomCustomization).toHaveBeenCalledWith(
+      expect.objectContaining({ imageUrl: "https://files.catbox.moe/new.webp", sizeMode: 2 }),
+    );
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-room-player-actions button") ?? [])]
+      .find((button) => button.textContent === "Make admin")
+      ?.click();
+    expect(runRoomMemberAction).toHaveBeenCalledWith(123, "promote");
+
+    shadow?.querySelector<HTMLButtonElement>('.kl-nav-item[data-target="chat"]')?.click();
+    shadow?.querySelector<HTMLButtonElement>(".kl-sidebar-heading-actions button")?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLElement>(".kl-gallery-page")?.hidden).toBe(false);
+      expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("catbox");
+      expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("Show original");
+    });
+
+    view.destroy();
+    vi.unstubAllGlobals();
+  });
+
   it("opens a feature deck by default and lets the launcher behavior and accent be customized", async () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
@@ -227,7 +318,7 @@ describe("LinkChatView", () => {
     );
     expect(
       shadow?.querySelectorAll('.kl-feature-nav .kl-nav-item:not([data-target="settings"])'),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
     expect(shadow?.querySelector('.kl-nav-item[data-target="home"] svg.kl-nav-icon')).not.toBeNull();
 
     shadow?.querySelector<HTMLButtonElement>('button[title="LinkChat"]')?.click();
@@ -687,13 +778,21 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLButtonElement>('[data-status="dnd"]')?.click();
     expect(settings.get().linkPresence.status).toBe("dnd");
     expect(shadow?.querySelector(".kl-presence-trigger")?.textContent).toContain("Do not disturb");
+    view.onNotification({
+      kind: "chat",
+      message: "This DND alert must stay silent",
+      showToast: true,
+      memberNumber: 123,
+      occurredAt: Date.now(),
+    });
+    expect(shadow?.textContent).not.toContain("This DND alert must stay silent");
 
     const avatarUrl = shadow?.querySelector<HTMLInputElement>(".kl-presence-avatar-url");
     const idleMinutes = shadow?.querySelector<HTMLInputElement>(
       'input[aria-label="Minutes before automatic Idle"]',
     );
     const afkToggle = shadow?.querySelector<HTMLInputElement>(
-      'input[aria-label="Send an automatic reply while Idle"]',
+      'input[aria-label="Send an automatic reply while Idle or DND"]',
     );
     const afkMessage = shadow?.querySelector<HTMLTextAreaElement>(".kl-afk-reply-message");
     if (!avatarUrl || !idleMinutes || !afkToggle || !afkMessage) {
@@ -985,7 +1084,7 @@ describe("LinkChatView", () => {
     const query = shadow?.querySelector<HTMLInputElement>(".kl-finder-query");
     await vi.waitFor(() => {
       expect(finder?.open).toBe(true);
-      expect(shadow?.querySelectorAll(".kl-finder-result")).toHaveLength(5);
+      expect(shadow?.querySelectorAll(".kl-finder-result")).toHaveLength(7);
     });
     expect(query?.getAttribute("role")).toBe("combobox");
     expect(query?.getAttribute("aria-expanded")).toBe("true");

@@ -59,7 +59,7 @@ function setup() {
 }
 
 describe("AfkAutoReplyService", () => {
-  it("replies only to incoming Beeps while both Idle and enabled", () => {
+  it("replies only to incoming Beeps while Idle or DND and enabled", () => {
     const state = setup();
     state.setStatus("online");
     expect(state.service.handleIncoming(incoming(123))).toBeUndefined();
@@ -77,6 +77,12 @@ describe("AfkAutoReplyService", () => {
       includeRoom: false,
     });
     expect(state.sendBeep).toHaveBeenCalledWith(123, "Away for now", false);
+
+    state.setStatus("dnd");
+    expect(state.service.handleIncoming(incoming(456))).toMatchObject({
+      peerNumber: 456,
+      content: "Away for now",
+    });
 
     expect(
       state.service.handleIncoming({ ...incoming(456), direction: "outgoing" }),
