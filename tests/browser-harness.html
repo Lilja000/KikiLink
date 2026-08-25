@@ -54,7 +54,11 @@
       window.ChatRoomDrawCharacterStatusIcons = () => {};
       window.ChatRoomHideIconState = 0;
       window.MainCanvas = document.getElementById("MainCanvas").getContext("2d");
-      window.DrawImageResize = () => true;
+      window.__KIKILINK_NATIVE_DRAWS__ = [];
+      window.DrawImageResize = (...args) => {
+        window.__KIKILINK_NATIVE_DRAWS__.push(args);
+        return true;
+      };
       window.FriendListBeepLog = [
         {
           MemberNumber: 123456,
@@ -100,7 +104,7 @@
       window.InformationSheetLoadCharacter = (character) =>
         console.log("[Harness profile]", character.MemberNumber);
 
-      window.GameVersion = "R129";
+      window.GameVersion = "R131";
       window.AssetGroup = [
         { Name: "ItemArms", Description: "Arms", Category: "Item" },
       ];
@@ -189,14 +193,16 @@
         const blossom = document.querySelector(".kl-room-blossom");
         const version = document.getElementById("kikilink-version");
         const custom = window.DialogActivity.find((item) => item.Activity.Name.startsWith("KikiLinkCustom_"));
+        const activityMark = document.querySelector("[data-kikilink-activity-mark]");
         const result = {
           publicApi: window.KikiLink?.getVersion?.() || null,
           versionBadge: version?.textContent || null,
-          blossomVisible: !!blossom && !blossom.hidden && blossom.style.display !== "none",
-          blossomLeft: blossom?.style.left || null,
+          blossomNativeDraw: window.__KIKILINK_NATIVE_DRAWS__.length > 0,
+          blossomDomHidden: !!blossom && blossom.hidden && blossom.style.display === "none",
           customActivityInRegistry: window.ActivityFemale3DCG.some((activity) => activity.Name.startsWith("KikiLinkCustom_")),
           customActivityInDialog: !!custom,
           customActivityButton: !!document.querySelector("#activity-grid [data-activity^='KikiLinkCustom_']"),
+          customActivityMark: activityMark?.style.width === "14px" && activityMark?.style.right === "1px",
         };
         window.__KIKILINK_HARNESS_RESULT__ = result;
         const passed = Object.values(result).every(Boolean);

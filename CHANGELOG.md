@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.20.7 - 2026-08-25
+
+- Removed the Firefox cross-realm `unsafeWindow` bridge introduced in 0.20.6. KikiLink now runs as
+  one raw page-realm userscript and never passes sandbox callbacks or arrays into the shared BC
+  ModSDK chain, eliminating the `Permission denied to access object` crash seen with Echo, BCX,
+  WCE, and AFC installed together.
+- Stopped the normal-play DOM Blossom and its continuous
+  `ChatRoomCharacterViewLoopCharacters` polling. Blossom now draws only through the same native
+  `ChatRoomDrawCharacterStatusIcons` ModSDK entrypoint used by Echo, so it disappears naturally on
+  profiles and vanilla menus; the DOM flower exists only while `Move flower` is explicitly armed.
+- Moved the default room Blossom slightly below and left of the crowded addon row while retaining
+  the settings-only drag control and respecting Bondage Club's native hidden-icon state.
+- Reduced the Custom Activity Blossom from 24 px to 14 px and locked it to the true 1 px
+  lower-right corner so Bondage Club's mobile activity-card styles cannot enlarge or displace it.
+- Added a deterministic shared-router regression covering Echo-, AFC-, native-, and KikiLink-style
+  status-icon handlers, plus a full R131 built-userscript test with ModSDK registration rejected.
+
 ## 0.20.6 - 2026-08-25
 
 - Fixed the shared real-browser failure behind both missing integrations: when browser CSP or a

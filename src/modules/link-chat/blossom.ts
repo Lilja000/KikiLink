@@ -9,8 +9,6 @@ const CHARACTER_HEIGHT = 1_000;
 const BADGE_SIZE = 35;
 const BADGE_OPACITY = 0.78;
 const BADGE_DRAG_THRESHOLD = 5;
-const DOM_SYNC_INTERVAL_MS = 33;
-const CANVAS_FALLBACK_GRACE_MS = 250;
 
 export interface NormalizedRoomBadgePosition {
   x: number;
@@ -40,10 +38,10 @@ interface RoomBadgeDrag {
 
 type RoomBadgeConfig = KikiLinkSettings["ui"]["roomBadge"];
 
-/** The same small character-relative icon row used by BCX and native status icons. */
+/** Slightly below the crowded native addon-icon row, clear of Echo/WCE/BCX status marks. */
 export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
-  x: 0.84,
-  y: 0.005,
+  x: 0.78,
+  y: 0.045,
 });
 
 export { BLOSSOM_ICON_DATA_URL };
@@ -94,8 +92,6 @@ export class RoomBlossomBadge {
   #previousTouchAction = "";
   #settingsUnsubscribe: (() => void) | undefined;
   #unregisterOverlay: (() => void) | undefined;
-  #domSyncTimer: ReturnType<typeof setInterval> | undefined;
-  #ownCanvasRenderedAt = 0;
   #placementActive = false;
   #mounted = false;
   #destroyed = false;
@@ -106,9 +102,7 @@ export class RoomBlossomBadge {
     if (own) {
       this.#ownFrame = { x, y, zoom };
       if (this.#config.enabled && this.#iconsAreVisible()) {
-        if (this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame))) {
-          this.#ownCanvasRenderedAt = Date.now();
-        }
+        this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame));
       }
       this.#syncOwnElement();
       return;
@@ -245,7 +239,6 @@ export class RoomBlossomBadge {
     if (typeof this.#adapter.registerCharacterOverlay === "function") {
       this.#unregisterOverlay = this.#adapter.registerCharacterOverlay(this.#renderer);
     }
-    this.#domSyncTimer = setInterval(() => this.#syncOwnElement(), DOM_SYNC_INTERVAL_MS);
     this.#syncOwnElement();
     window.addEventListener("keydown", this.#handleKeyDown);
   }
@@ -279,6 +272,7 @@ export class RoomBlossomBadge {
     this.#drag = undefined;
     this.#previewPosition = undefined;
     this.#setPlacement(false);
+    this.#syncOwnElement();
   }
 
   resetPosition(): void {
@@ -298,8 +292,6 @@ export class RoomBlossomBadge {
     this.#settingsUnsubscribe = undefined;
     this.#unregisterOverlay?.();
     this.#unregisterOverlay = undefined;
-    if (this.#domSyncTimer !== undefined) clearInterval(this.#domSyncTimer);
-    this.#domSyncTimer = undefined;
     this.#element.remove();
     this.#ownFrame = undefined;
     this.#mounted = false;
@@ -309,7 +301,7 @@ export class RoomBlossomBadge {
     const context = mainCanvasContext();
     if (!context) return false;
     try {
-      // Echo and current BC R129 both use DrawImageResize for this exact character icon row.
+      // Echo and current BC R131 both use DrawImageResize for this character status-icon area.
       if (typeof DrawImageResize === "function") {
         return DrawImageResize(
           BLOSSOM_ICON_DATA_URL,
@@ -349,6 +341,14 @@ export class RoomBlossomBadge {
 
   #syncOwnElement(): void {
     if (this.#destroyed || !this.#mounted) return;
+    // Normal play is canvas-only, exactly like native and Echo status icons. The DOM image exists
+    // solely as the explicit settings-armed drag handle, so it cannot float over profiles, vanilla
+    // menus, or other screens after the room renderer has stopped.
+    if (!this.#placementActive) {
+      this.#element.hidden = true;
+      this.#element.style.display = "none";
+      return;
+    }
     const inRoom =
       typeof this.#adapter.isInChatRoom === "function" && this.#adapter.isInChatRoom();
     if (!this.#config.enabled || !this.#iconsAreVisible() || !inRoom) {
@@ -377,16 +377,6 @@ export class RoomBlossomBadge {
       this.#previewPosition ?? this.#config.position,
       frame,
     );
-    // The native canvas icon is authoritative. The fixed DOM copy is only a resilient fallback
-    // (or the explicit one-drag handle), so normal rendering never doubles the flower.
-    if (
-      !this.#placementActive &&
-      Date.now() - this.#ownCanvasRenderedAt <= CANVAS_FALLBACK_GRACE_MS
-    ) {
-      this.#element.hidden = true;
-      this.#element.style.display = "none";
-      return;
-    }
     const scaleX = rect.width / canvas.width;
     const scaleY = rect.height / canvas.height;
     this.#element.hidden = false;

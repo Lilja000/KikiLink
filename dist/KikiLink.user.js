@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.6
+// @version      0.20.7
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -15,8 +15,8 @@
 // @match        https://*.bondage-asia.com/*
 // @run-at       document-end
 // @inject-into  page
-// @sandbox      JavaScript
-// @grant        unsafeWindow
+// @sandbox      raw
+// @grant        none
 // ==/UserScript==
 "use strict";
 (() => {
@@ -270,92 +270,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return keys.length === 2 && keys.includes("messageType") && keys.includes("messageColor") && metadata.messageType === "Message" && typeof metadata.messageColor === "string" && /^#[0-9a-f]{6}$/iu.test(metadata.messageColor);
   }
 
-  // src/bc/page-context.ts
-  function getBCPageWindow() {
-    try {
-      if (typeof unsafeWindow === "object" && unsafeWindow !== null) {
-        return unsafeWindow;
-      }
-    } catch {
-    }
-    return window;
-  }
-  function installBCPageContextBridge() {
-    const page = getBCPageWindow();
-    const locals = /* @__PURE__ */ new Set([
-      globalThis,
-      window
-    ]);
-    for (const local of locals) {
-      if (local === page) continue;
-      for (const name of BC_PAGE_GLOBALS) {
-        try {
-          const descriptor = Object.getOwnPropertyDescriptor(local, name);
-          if (descriptor && descriptor.configurable === false) continue;
-          Object.defineProperty(local, name, {
-            configurable: true,
-            enumerable: descriptor?.enumerable ?? false,
-            get: () => page[name],
-            set: (value) => {
-              page[name] = value;
-            }
-          });
-        } catch {
-        }
-      }
-    }
-    return page;
-  }
-  var BC_PAGE_GLOBALS = [
-    "ActivityAllowedForGroup",
-    "ActivityDictionaryText",
-    "ActivityEffectFlat",
-    "ActivityFemale3DCG",
-    "ActivityFemale3DCGOrdering",
-    "ActivityRun",
-    "AssetGroup",
-    "CharacterGetCurrent",
-    "CharacterNickname",
-    "ChatRoomCharacter",
-    "ChatRoomCharacterDrawlist",
-    "ChatRoomCharacterViewDrawOverlay",
-    "ChatRoomCharacterViewLoopCharacters",
-    "ChatRoomData",
-    "ChatRoomDrawCharacterStatusIcons",
-    "ChatRoomHideIconState",
-    "ChatRoomMessage",
-    "ChatRoomPublishCustomAction",
-    "ChatRoomSendEmote",
-    "ChatRoomSetTarget",
-    "CurrentCharacter",
-    "CurrentScreen",
-    "DialogActivity",
-    "DialogBuildActivities",
-    "DialogMenuMapping",
-    "DialogMenuMode",
-    "DrawCharacter",
-    "DrawImageCanvas",
-    "DrawImageResize",
-    "ElementButton",
-    "FriendListBeepLog",
-    "FriendListLoadFriendList",
-    "GameVersion",
-    "InformationSheetLoadCharacter",
-    "LZString",
-    "MainCanvas",
-    "Player",
-    "PreferenceGetActivityFactor",
-    "ServerAccountBeep",
-    "ServerAccountQueryResult",
-    "ServerIsLoggedIn",
-    "ServerPlayerExtensionSettingsSync",
-    "ServerPlayerIsInChatRoom",
-    "ServerSend",
-    "ServerSendBeepMessage",
-    "ServerSocket",
-    "bcModSdk"
-  ];
-
   // src/bc/adapter.ts
   var READY_POLL_MS = 400;
   var ACTIVITY_HOOK_RETRY_MS = 500;
@@ -367,6 +281,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
   var MAX_PROTOCOL_PAYLOAD = 700;
   var CUSTOM_ACTIVITY_HOOK_COUNT = 6;
+  var CHARACTER_OVERLAY_HOOK_NAME = "ChatRoomDrawCharacterStatusIcons";
   var BCAdapter = class {
     constructor(bus, version) {
       this.bus = bus;
@@ -400,6 +315,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #sendingViaKikiLink = false;
     #hasOnlineFriendSnapshot = false;
     #onlineFriendSignature;
+    #compatibilityHooksInitialized = false;
+    #roomMessageHookInstalled = false;
     #socketBeepListener = (data) => {
       this.#captureIncomingPayload(data);
     };
@@ -447,6 +364,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
       for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
       this.#modApi?.unload();
       this.#modApi = void 0;
+      this.#compatibilityHooksInitialized = false;
+      this.#roomMessageHookInstalled = false;
       this.#installedActivityHooks.clear();
       this.#resilientHooks.clear();
       this.#directHookRegistrations.clear();
@@ -465,12 +384,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     registerCharacterOverlay(renderer) {
       this.#characterOverlayRenderers.add(renderer);
-      this.#ensureCharacterOverlayHook();
+      if (this.#compatibilityHooksInitialized) this.#ensureCharacterOverlayHook();
       return () => this.#characterOverlayRenderers.delete(renderer);
     }
     registerCustomActivityIntegration(integration) {
       this.#customActivityIntegrations.add(integration);
-      this.#ensureActivityHooks();
+      if (this.#compatibilityHooksInitialized) this.#ensureActivityHooks();
       return () => this.#customActivityIntegrations.delete(integration);
     }
     refreshOnlineFriends() {
@@ -693,6 +612,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#modApi = void 0;
         this.#logger.warn("ModSDK hooks unavailable; direct Bondage Club hooks remain active", error);
       }
+      this.#compatibilityHooksInitialized = true;
       if (modApi) {
         this.#tryInstallHook(
           "ServerAccountBeep",
@@ -747,35 +667,31 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
     }
     #ensureCharacterOverlayHook() {
-      for (const name of this.#characterOverlayHookNames) {
-        const hook = this.#resilientHooks.get(name);
-        if (hook) this.#ensureDirectHook(name, hook);
-      }
-      if (this.#characterOverlayHookNames.has("ChatRoomCharacterViewDrawOverlay") && this.#characterOverlayHookNames.has("ChatRoomDrawCharacterStatusIcons")) {
+      if (!this.#compatibilityHooksInitialized) return;
+      const name = CHARACTER_OVERLAY_HOOK_NAME;
+      const existing = this.#resilientHooks.get(name);
+      if (this.#characterOverlayHookNames.has(name)) {
+        if (!this.#modApi && existing) this.#ensureDirectHook(name, existing);
         return;
       }
-      const candidates = [
-        ["ChatRoomCharacterViewDrawOverlay", typeof ChatRoomCharacterViewDrawOverlay === "function"],
-        ["ChatRoomDrawCharacterStatusIcons", typeof ChatRoomDrawCharacterStatusIcons === "function"]
-      ];
-      for (const [name, available] of candidates) {
-        if (!available || this.#characterOverlayHookNames.has(name)) continue;
-        const hook = (args, next) => {
-          const result = next(args);
-          this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
-          return result;
-        };
-        this.#resilientHooks.set(name, hook);
-        const installed = this.#ensureDirectHook(name, hook);
-        if (installed) this.#characterOverlayHookNames.add(name);
-        else this.#resilientHooks.delete(name);
+      if (typeof ChatRoomDrawCharacterStatusIcons !== "function") return;
+      const hook = (args, next) => {
+        const result = next(args);
+        this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
+        return result;
+      };
+      if (this.#installIntegrationHook(name, 10, hook)) {
+        this.#characterOverlayHookNames.add(name);
       }
     }
     #ensureActivityHooks() {
+      if (!this.#compatibilityHooksInitialized) return;
       this.#ensureRoomMessageHook();
-      for (const name of this.#installedActivityHooks) {
-        const hook = this.#resilientHooks.get(name);
-        if (hook) this.#ensureDirectHook(name, hook);
+      if (!this.#modApi) {
+        for (const name of this.#installedActivityHooks) {
+          const hook = this.#resilientHooks.get(name);
+          if (hook) this.#ensureDirectHook(name, hook);
+        }
       }
       if (this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT) return;
       const allowedHook = (args, next) => {
@@ -786,6 +702,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "ActivityAllowedForGroup",
         typeof ActivityAllowedForGroup === "function",
+        10,
         allowedHook
       );
       const dialogBuildHook = (args, next) => {
@@ -820,6 +737,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "DialogBuildActivities",
         typeof DialogBuildActivities === "function",
+        -10,
         dialogBuildHook
       );
       const dictionaryHook = (args, next) => {
@@ -836,6 +754,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "ActivityDictionaryText",
         typeof ActivityDictionaryText === "function",
+        10,
         dictionaryHook
       );
       const runHook = (args, next) => {
@@ -851,6 +770,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "ActivityRun",
         typeof ActivityRun === "function",
+        10,
         runHook
       );
       const activityButtonHook = (args, next) => {
@@ -879,6 +799,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "ElementButton.CreateForActivity",
         typeof ElementButton === "object" && ElementButton !== null && typeof ElementButton.CreateForActivity === "function",
+        10,
         activityButtonHook
       );
       const preferenceHook = (args, next) => {
@@ -895,32 +816,35 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "PreferenceGetActivityFactor",
         typeof PreferenceGetActivityFactor === "function",
+        10,
         preferenceHook
       );
     }
-    #tryInstallActivityHook(name, available, hook) {
+    #tryInstallActivityHook(name, available, priority, hook) {
       if (!available || this.#installedActivityHooks.has(name)) return;
-      this.#resilientHooks.set(name, hook);
-      if (this.#ensureDirectHook(name, hook)) {
+      if (this.#installIntegrationHook(name, priority, hook)) {
         this.#installedActivityHooks.add(name);
-      } else {
-        this.#resilientHooks.delete(name);
       }
     }
     #ensureRoomMessageHook() {
       const name = "ChatRoomMessage";
-      if (typeof ChatRoomMessage !== "function") return;
-      let hook = this.#resilientHooks.get(name);
-      if (!hook) {
-        hook = (args, next) => {
-          const protocol = this.#normalizeRoomProtocol(args[0]);
-          if (protocol) this.bus.emit("bc:protocol", protocol);
-          this.#notifyCustomActivityMessage(args[0]);
-          return next(args);
-        };
-        this.#resilientHooks.set(name, hook);
+      if (this.#roomMessageHookInstalled) {
+        if (!this.#modApi) {
+          const existing = this.#resilientHooks.get(name);
+          if (existing) this.#ensureDirectHook(name, existing);
+        }
+        return;
       }
-      this.#ensureDirectHook(name, hook);
+      if (typeof ChatRoomMessage !== "function") return;
+      const hook = (args, next) => {
+        const protocol = this.#normalizeRoomProtocol(args[0]);
+        if (protocol) this.bus.emit("bc:protocol", protocol);
+        this.#notifyCustomActivityMessage(args[0]);
+        return next(args);
+      };
+      if (this.#installIntegrationHook(name, 0, hook)) {
+        this.#roomMessageHookInstalled = true;
+      }
     }
     #renderCharacterOverlays(character, characterX, characterY, zoom) {
       const signature = `${character?.MemberNumber ?? "?"}:${characterX}:${characterY}:${zoom}`;
@@ -968,13 +892,22 @@ One of mods you are using is using an old version of SDK. It will work for now b
         return void 0;
       }
     }
+    #installIntegrationHook(name, priority, hook) {
+      this.#resilientHooks.set(name, hook);
+      const installed = this.#modApi ? this.#tryInstallHook(
+        name,
+        () => this.#modApi.hookFunction(name, priority, hook)
+      ) : this.#ensureDirectHook(name, hook);
+      if (!installed) this.#resilientHooks.delete(name);
+      return installed;
+    }
     #tryInstallHook(name, install) {
       try {
         const sdkUnhook = install();
         this.#unhooks.push(sdkUnhook);
         return true;
       } catch (error) {
-        this.#logger.warn(`${name} hook unavailable; keeping native fallback`, error);
+        this.#logger.warn(`${name} hook unavailable; retrying after native load`, error);
         return false;
       }
     }
@@ -990,7 +923,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     #installDirectHook(name, hook) {
       const path = name.split(".");
-      let context = getBCPageWindow();
+      let context = window;
       for (const key of path.slice(0, -1)) {
         const next = context[key];
         if (!next || typeof next !== "object" && typeof next !== "function") return void 0;
@@ -1209,7 +1142,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return typeof document !== "undefined" && document.body !== null && typeof Player === "object" && Player !== null && Number.isSafeInteger(Player.MemberNumber) && Player.MemberNumber > 0 && typeof ServerSendBeepMessage === "function";
   }
   function currentModSdk() {
-    const sdk = getBCPageWindow().bcModSdk;
+    const sdk = window.bcModSdk;
     if (!sdk || typeof sdk.registerMod !== "function") {
       throw new Error("Bondage Club ModSDK is unavailable");
     }
@@ -2164,11 +2097,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var BADGE_SIZE = 35;
   var BADGE_OPACITY = 0.78;
   var BADGE_DRAG_THRESHOLD = 5;
-  var DOM_SYNC_INTERVAL_MS = 33;
-  var CANVAS_FALLBACK_GRACE_MS = 250;
   var DEFAULT_ROOM_BADGE_POSITION = Object.freeze({
-    x: 0.84,
-    y: 5e-3
+    x: 0.78,
+    y: 0.045
   });
   function resolveRoomBadgePosition(position, frame) {
     const normalized = sanitizePosition(position) ?? DEFAULT_ROOM_BADGE_POSITION;
@@ -2201,8 +2132,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #previousTouchAction = "";
     #settingsUnsubscribe;
     #unregisterOverlay;
-    #domSyncTimer;
-    #ownCanvasRenderedAt = 0;
     #placementActive = false;
     #mounted = false;
     #destroyed = false;
@@ -2212,9 +2141,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (own) {
         this.#ownFrame = { x, y, zoom };
         if (this.#config.enabled && this.#iconsAreVisible()) {
-          if (this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame))) {
-            this.#ownCanvasRenderedAt = Date.now();
-          }
+          this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame));
         }
         this.#syncOwnElement();
         return;
@@ -2330,7 +2257,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (typeof this.#adapter.registerCharacterOverlay === "function") {
         this.#unregisterOverlay = this.#adapter.registerCharacterOverlay(this.#renderer);
       }
-      this.#domSyncTimer = setInterval(() => this.#syncOwnElement(), DOM_SYNC_INTERVAL_MS);
       this.#syncOwnElement();
       window.addEventListener("keydown", this.#handleKeyDown);
     }
@@ -2355,6 +2281,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#drag = void 0;
       this.#previewPosition = void 0;
       this.#setPlacement(false);
+      this.#syncOwnElement();
     }
     resetPosition() {
       if (this.#destroyed) return;
@@ -2372,8 +2299,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#settingsUnsubscribe = void 0;
       this.#unregisterOverlay?.();
       this.#unregisterOverlay = void 0;
-      if (this.#domSyncTimer !== void 0) clearInterval(this.#domSyncTimer);
-      this.#domSyncTimer = void 0;
       this.#element.remove();
       this.#ownFrame = void 0;
       this.#mounted = false;
@@ -2418,6 +2343,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     #syncOwnElement() {
       if (this.#destroyed || !this.#mounted) return;
+      if (!this.#placementActive) {
+        this.#element.hidden = true;
+        this.#element.style.display = "none";
+        return;
+      }
       const inRoom = typeof this.#adapter.isInChatRoom === "function" && this.#adapter.isInChatRoom();
       if (!this.#config.enabled || !this.#iconsAreVisible() || !inRoom) {
         this.#element.hidden = true;
@@ -2443,11 +2373,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#previewPosition ?? this.#config.position,
         frame
       );
-      if (!this.#placementActive && Date.now() - this.#ownCanvasRenderedAt <= CANVAS_FALLBACK_GRACE_MS) {
-        this.#element.hidden = true;
-        this.#element.style.display = "none";
-        return;
-      }
       const scaleX = rect.width / canvas.width;
       const scaleY = rect.height / canvas.height;
       this.#element.hidden = false;
@@ -2859,15 +2784,26 @@ One of mods you are using is using an old version of SDK. It will work for now b
       mark.dataset.kikilinkActivityMark = "true";
       Object.assign(mark.style, {
         position: "absolute",
-        bottom: "4px",
-        right: "4px",
-        width: "24px",
-        height: "24px",
-        opacity: "0.88",
+        bottom: "1px",
+        right: "1px",
+        width: "14px",
+        height: "14px",
+        opacity: "0.82",
         pointerEvents: "none",
         filter: "drop-shadow(0 1px 3px rgba(0,0,0,.75))",
         zIndex: "2"
       });
+      for (const [property, value] of [
+        ["position", "absolute"],
+        ["top", "auto"],
+        ["left", "auto"],
+        ["right", "1px"],
+        ["bottom", "1px"],
+        ["width", "14px"],
+        ["height", "14px"]
+      ]) {
+        mark.style.setProperty(property, value, "important");
+      }
       if (!button.style.position) button.style.position = "relative";
       button.append(mark);
     }
@@ -14622,13 +14558,10 @@ ${expanded}` : expanded;
 
   // src/index.ts
   async function bootstrap() {
-    const page = installBCPageContextBridge();
-    const previous = page.KikiLink ?? window.KikiLink;
+    const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.6");
-    const api = app.publicApi();
-    window.KikiLink = api;
-    page.KikiLink = api;
+    const app = new KikiLinkApp("0.20.7");
+    window.KikiLink = app.publicApi();
     try {
       await app.start();
     } catch (error) {

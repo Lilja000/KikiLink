@@ -24,8 +24,8 @@ const userscriptHeader = `// ==UserScript==
 // @match        https://*.bondage-asia.com/*
 // @run-at       document-end
 // @inject-into  page
-// @sandbox      JavaScript
-// @grant        unsafeWindow
+// @sandbox      raw
+// @grant        none
 // ==/UserScript==`;
 
 await rm(outDir, { recursive: true, force: true });
