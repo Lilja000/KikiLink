@@ -419,23 +419,23 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     mark.dataset.kikilinkActivityMark = "true";
     Object.assign(mark.style, {
       position: "absolute",
-      bottom: "1px",
-      right: "1px",
+      top: "0px",
+      left: "0px",
       width: "14px",
       height: "14px",
-      opacity: "0.82",
+      opacity: "0.96",
       pointerEvents: "none",
       filter: "drop-shadow(0 1px 3px rgba(0,0,0,.75))",
       zIndex: "2",
     });
     // BC's activity-card stylesheet also targets descendant images. Lock only the small marker's
-    // geometry so it stays in the true lower-right corner at mobile zoom levels.
+    // geometry so it stays in the true upper-left corner at mobile zoom levels.
     for (const [property, value] of [
       ["position", "absolute"],
-      ["top", "auto"],
-      ["left", "auto"],
-      ["right", "1px"],
-      ["bottom", "1px"],
+      ["top", "0px"],
+      ["left", "0px"],
+      ["right", "auto"],
+      ["bottom", "auto"],
       ["width", "14px"],
       ["height", "14px"],
     ] as const) {

@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe("CustomActivitiesView", () => {
-  it("shows every body slot as a radio choice and keeps the image gallery canonical", () => {
+  it("keeps the selected body slot compact, expands all choices, and keeps images canonical", async () => {
     globalThis.ActivityFemale3DCG = [
       {
         Name: "Caress",
@@ -70,6 +70,15 @@ describe("CustomActivitiesView", () => {
     view.open();
     root.querySelector<HTMLButtonElement>(".kl-custom-activity-empty button")?.click();
 
+    const picker = root.querySelector<HTMLDetailsElement>(".kl-custom-slot-picker");
+    const currentSlot = root.querySelector<HTMLElement>(".kl-custom-slot-current");
+    expect(picker?.open).toBe(false);
+    expect(currentSlot?.textContent).toBe("Arms");
+    expect(root.querySelectorAll(".kl-custom-slot-choice")).toHaveLength(0);
+
+    if (!picker) throw new Error("Missing compact body slot picker");
+    picker.open = true;
+    picker.dispatchEvent(new Event("toggle"));
     const slots = [...root.querySelectorAll<HTMLButtonElement>(".kl-custom-slot-choice")];
     expect(slots.map((button) => button.dataset.slot)).toEqual(["ItemArms", "ItemHands"]);
     expect(slots.every((button) => button.getAttribute("role") === "radio")).toBe(true);
@@ -82,8 +91,26 @@ describe("CustomActivitiesView", () => {
     expect(new Set(images.map((button) => button.title))).toHaveLength(VANILLA_ACTIVITY_IMAGES.length);
     expect(images.map((button) => button.title)).not.toContain("LSCG_Choke");
     expect(images.map((button) => button.title)).not.toContain("Pet");
+    expect(
+      images.every((button) => button.querySelector<HTMLImageElement>("img")?.loading === "lazy"),
+    ).toBe(true);
+
+    const imageSearch = root.querySelector<HTMLInputElement>(".kl-custom-image-search");
+    const bite = images.find((button) => button.title === "Bite");
+    if (!imageSearch || !bite) throw new Error("Missing optimized vanilla image picker");
+    imageSearch.value = "bite";
+    imageSearch.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(images.filter((button) => !button.hidden).map((button) => button.title)).toEqual([
+      "Bite",
+    ]);
+    bite.click();
+    expect(root.querySelector<HTMLButtonElement>('[title="Bite"]')).toBe(bite);
+    expect(bite.getAttribute("aria-pressed")).toBe("true");
 
     slots.find((button) => button.dataset.slot === "ItemHands")?.click();
+    expect(picker.open).toBe(false);
+    expect(currentSlot?.textContent).toBe("Hands");
     expect(slots.find((button) => button.dataset.slot === "ItemHands")?.getAttribute("aria-checked")).toBe(
       "true",
     );
@@ -97,7 +124,7 @@ describe("CustomActivitiesView", () => {
     expect(settings.get().linkActivities.customActivities[0]).toMatchObject({
       name: "Hold hands",
       targetGroup: "ItemHands",
-      image: "Caress",
+      image: "Bite",
     });
   });
 });

@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter, BCCharacterOverlayRenderer } from "../src/bc/adapter";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
@@ -23,6 +25,10 @@ interface BadgeFixture {
 }
 
 const activeBadges = new Set<RoomBlossomBadge>();
+const blossomSvg = readFileSync(
+  resolve(process.cwd(), "design/branding/kikilink-blossom.svg"),
+  "utf8",
+);
 
 function fixture(options: { inRoom?: boolean } = {}): BadgeFixture {
   const canvas = document.createElement("canvas");
@@ -100,6 +106,13 @@ afterEach(() => {
 });
 
 describe("room Blossom character positioning", () => {
+  it("uses the upright outlined cartoon artwork at every Blossom integration", () => {
+    expect(blossomSvg).not.toContain("rotate(");
+    expect(blossomSvg).toContain('stroke="#5f1b2a"');
+    expect(blossomSvg).toContain('fill="#f3b63f"');
+    expect(BLOSSOM_ICON_DATA_URL).toContain("data:image/svg+xml");
+  });
+
   it("resolves and normalizes offsets inside the native 500x1000 character frame", () => {
     const frame = { x: 120, y: 30, zoom: 0.75 };
     expect(resolveRoomBadgePosition(null, frame)).toEqual({

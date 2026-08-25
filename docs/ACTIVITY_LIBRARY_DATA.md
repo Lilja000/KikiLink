@@ -46,8 +46,8 @@ Bondage Club to rebuild that grid immediately; otherwise the next ordinary menu 
 
 The activity uses `MaxProgress: 0`; optional arousal is not delegated to the vanilla activity cap.
 KikiLink intercepts only its own runtime names, reuses the chosen vanilla picture, and appends the
-lower-right Blossom marker after Bondage Club creates the native button. Other activities and hook handlers keep
-their normal chain.
+upper-left Blossom marker after Bondage Club creates the native button. Other activities and hook
+handlers keep their normal chain.
 
 ## Visible action and optional effect
 

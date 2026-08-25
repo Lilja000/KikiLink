@@ -279,13 +279,13 @@ describe("native Custom Activities", () => {
     const blossom = button.querySelector<HTMLImageElement>("[data-kikilink-activity-mark]");
     expect(blossom?.alt).toBe("KikiLink custom activity");
     expect(blossom?.src).toContain("data:image/svg+xml");
-    expect(blossom?.style.bottom).toBe("1px");
-    expect(blossom?.style.right).toBe("1px");
+    expect(blossom?.style.top).toBe("0px");
+    expect(blossom?.style.left).toBe("0px");
     expect(blossom?.style.width).toBe("14px");
     expect(blossom?.style.height).toBe("14px");
-    expect(blossom?.style.top).toBe("auto");
-    expect(blossom?.style.left).toBe("auto");
-    expect(blossom?.style.getPropertyPriority("right")).toBe("important");
+    expect(blossom?.style.right).toBe("auto");
+    expect(blossom?.style.bottom).toBe("auto");
+    expect(blossom?.style.getPropertyPriority("left")).toBe("important");
 
     service.stop();
     expect(globalThis.ActivityFemale3DCG.map((activity) => activity.Name)).toEqual(["Caress"]);

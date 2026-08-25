@@ -104,14 +104,17 @@ export class CustomActivitiesView {
   }
 
   #activityCard(activity: CustomActivityDefinition): HTMLElement {
+    const vanillaIcon = element("img", {
+      className: "kl-custom-activity-vanilla-icon",
+      src: activityImageUrl(activity.image),
+      alt: "",
+    });
+    vanillaIcon.loading = "lazy";
+    vanillaIcon.decoding = "async";
     const iconWrap = element(
       "div",
       { className: "kl-custom-activity-card-icon" },
-      element("img", {
-        className: "kl-custom-activity-vanilla-icon",
-        src: activityImageUrl(activity.image),
-        alt: "",
-      }),
+      vanillaIcon,
       element("img", {
         className: "kl-custom-activity-blossom",
         src: BLOSSOM_ICON_DATA_URL,
@@ -214,10 +217,45 @@ export class CustomActivitiesView {
       slotSelect.append(option);
     }
     slotSelect.value = draft.targetGroup;
+    const slotsByName = new Map(slots.map((slot) => [slot.name, slot]));
     const slotButtons = new Map<string, HTMLButtonElement>();
+    const selectedSlotLabel = element("span", {
+      className: "kl-custom-slot-current",
+      text: slotsByName.get(draft.targetGroup)?.label ?? draft.targetGroup,
+    });
+    const slotSummaryAction = element("span", {
+      className: "kl-custom-slot-action",
+      text: "Show all",
+    });
+    const slotSummary = element(
+      "summary",
+      { className: "kl-custom-slot-summary" },
+      selectedSlotLabel,
+      slotSummaryAction,
+    );
+    const slotGrid = element("div", {
+      className: "kl-custom-slot-grid",
+      ariaLabel: "Body slots",
+    });
+    slotGrid.setAttribute("role", "radiogroup");
+    const slotPicker = element(
+      "details",
+      { className: "kl-custom-slot-picker" },
+      slotSummary,
+      slotGrid,
+    ) as HTMLDetailsElement;
+    let slotButtonsBuilt = false;
     let redrawCharacter = (): void => undefined;
-    const selectSlot = (groupName: string): void => {
-      if (!slotButtons.has(groupName)) return;
+    const updateSlotSummary = (groupName: string): void => {
+      const label = slotsByName.get(groupName)?.label ?? groupName;
+      selectedSlotLabel.textContent = label;
+      slotSummary.setAttribute(
+        "aria-label",
+        `Selected body slot: ${label}. ${slotPicker.open ? "Hide" : "Show all"} body slots`,
+      );
+    };
+    const selectSlot = (groupName: string, collapsePicker = false): void => {
+      if (!slotsByName.has(groupName)) return;
       draft.targetGroup = groupName;
       slotSelect.value = groupName;
       for (const [name, button] of slotButtons) {
@@ -225,29 +263,41 @@ export class CustomActivitiesView {
         button.dataset.selected = String(selected);
         button.setAttribute("aria-checked", String(selected));
       }
+      updateSlotSummary(groupName);
+      if (collapsePicker && slotPicker.open) {
+        slotPicker.open = false;
+        slotSummaryAction.textContent = "Show all";
+      }
       redrawCharacter();
     };
-    const slotGrid = element("div", {
-      className: "kl-custom-slot-grid",
-      ariaLabel: "Body slots",
+    const buildSlotButtons = (): void => {
+      if (slotButtonsBuilt) return;
+      slotButtonsBuilt = true;
+      const fragment = document.createDocumentFragment();
+      for (const slot of slots) {
+        const button = element("button", {
+          className: "kl-custom-slot-choice",
+          type: "button",
+          text: slot.label,
+          title: slot.label,
+          ariaLabel: `Use ${slot.label} body slot`,
+          onClick: () => selectSlot(slot.name, true),
+        });
+        button.dataset.slot = slot.name;
+        button.dataset.selected = String(slot.name === draft.targetGroup);
+        button.setAttribute("role", "radio");
+        button.setAttribute("aria-checked", String(slot.name === draft.targetGroup));
+        slotButtons.set(slot.name, button);
+        fragment.append(button);
+      }
+      slotGrid.append(fragment);
+    };
+    updateSlotSummary(draft.targetGroup);
+    slotPicker.addEventListener("toggle", () => {
+      slotSummaryAction.textContent = slotPicker.open ? "Hide" : "Show all";
+      updateSlotSummary(draft.targetGroup);
+      if (slotPicker.open) buildSlotButtons();
     });
-    slotGrid.setAttribute("role", "radiogroup");
-    for (const slot of slots) {
-      const button = element("button", {
-        className: "kl-custom-slot-choice",
-        type: "button",
-        text: slot.label,
-        title: slot.label,
-        ariaLabel: `Use ${slot.label} body slot`,
-        onClick: () => selectSlot(slot.name),
-      });
-      button.dataset.slot = slot.name;
-      button.dataset.selected = String(slot.name === draft.targetGroup);
-      button.setAttribute("role", "radio");
-      button.setAttribute("aria-checked", String(slot.name === draft.targetGroup));
-      slotButtons.set(slot.name, button);
-      slotGrid.append(button);
-    }
     slotSelect.addEventListener("change", () => selectSlot(slotSelect.value));
 
     const name = element("input", {
@@ -310,40 +360,65 @@ export class CustomActivitiesView {
       className: "kl-custom-image-gallery",
       ariaLabel: "Vanilla activity pictures",
     });
-    const renderImages = (): void => {
-      const query = imageSearch.value.trim().toLocaleLowerCase();
-      imageGallery.replaceChildren();
-      const images = this.service
-        .getVanillaImages()
-        .filter((image) => !query || image.toLocaleLowerCase().includes(query));
-      for (const image of images) {
-        const button = element(
-          "button",
-          {
-            className: "kl-custom-image-choice",
-            type: "button",
-            title: image,
-            ariaLabel: `Use ${image} picture`,
-            onClick: () => {
-              draft.image = canonicalVanillaActivityImage(image);
-              renderImages();
-            },
-          },
-          element("img", { src: activityImageUrl(image), alt: "" }),
-          element("span", { text: humanizeActivityName(image) }),
-        );
-        button.dataset.selected = String(image === draft.image);
-        button.setAttribute("aria-pressed", String(image === draft.image));
-        imageGallery.append(button);
-      }
-      if (images.length === 0) {
-        imageGallery.append(
-          element("div", { className: "kl-contact-empty", text: "No vanilla pictures match." }),
-        );
-      }
+    const imageButtons = new Map<string, HTMLButtonElement>();
+    const noImageMatches = element("div", {
+      className: "kl-contact-empty",
+      text: "No vanilla pictures match.",
+    });
+    noImageMatches.hidden = true;
+    const imageFragment = document.createDocumentFragment();
+    const selectImage = (image: string): void => {
+      const canonical = canonicalVanillaActivityImage(image);
+      if (canonical === draft.image) return;
+      const previous = imageButtons.get(draft.image);
+      previous?.setAttribute("aria-pressed", "false");
+      if (previous) previous.dataset.selected = "false";
+      draft.image = canonical;
+      const selected = imageButtons.get(canonical);
+      selected?.setAttribute("aria-pressed", "true");
+      if (selected) selected.dataset.selected = "true";
     };
-    imageSearch.addEventListener("input", renderImages);
-    renderImages();
+    for (const image of this.service.getVanillaImages()) {
+      const previewImage = element("img", { src: activityImageUrl(image), alt: "" });
+      previewImage.loading = "lazy";
+      previewImage.decoding = "async";
+      const button = element(
+        "button",
+        {
+          className: "kl-custom-image-choice",
+          type: "button",
+          title: image,
+          ariaLabel: `Use ${image} picture`,
+          onClick: () => selectImage(image),
+        },
+        previewImage,
+        element("span", { text: humanizeActivityName(image) }),
+      );
+      button.dataset.search = image.toLocaleLowerCase();
+      button.dataset.selected = String(image === draft.image);
+      button.setAttribute("aria-pressed", String(image === draft.image));
+      imageButtons.set(image, button);
+      imageFragment.append(button);
+    }
+    imageGallery.append(imageFragment, noImageMatches);
+    const filterImages = (): void => {
+      const query = imageSearch.value.trim().toLocaleLowerCase();
+      let visible = 0;
+      for (const button of imageButtons.values()) {
+        const matches = !query || button.dataset.search?.includes(query) === true;
+        button.hidden = !matches;
+        if (matches) visible += 1;
+      }
+      noImageMatches.hidden = visible !== 0;
+    };
+    let imageFilterFrame: number | undefined;
+    imageSearch.addEventListener("input", () => {
+      if (imageFilterFrame !== undefined) return;
+      imageFilterFrame = requestAnimationFrame(() => {
+        imageFilterFrame = undefined;
+        if (imageGallery.isConnected) filterImages();
+      });
+    });
 
     const arousalToggle = element("input") as HTMLInputElement;
     arousalToggle.type = "checkbox";
@@ -445,9 +520,9 @@ export class CustomActivitiesView {
       element("div", { className: "kl-custom-field-label", text: "Body slot" }),
       element("div", {
         className: "kl-custom-field-help",
-        text: "Tap your character or use one of the always-visible slots below.",
+        text: "Tap your character or open the compact picker to change it.",
       }),
-      slotGrid,
+      slotPicker,
       element("div", { className: "kl-custom-character-stage" }, canvas, canvasFallback),
       slotSelect,
       element("div", {
@@ -466,10 +541,6 @@ export class CustomActivitiesView {
       });
     };
     redrawCharacter = redraw;
-    const redrawImmediately = (): void => {
-      const drawn = this.service.drawPlayer(canvas, slotSelect.value, this.#hoveredGroup);
-      canvasFallback.hidden = drawn;
-    };
     canvas.addEventListener("pointermove", (event) => {
       if (event.pointerType && event.pointerType !== "mouse") return;
       const point = canvasPoint(canvas, event);
@@ -489,8 +560,6 @@ export class CustomActivitiesView {
       if (!slot) return;
       selectSlot(slot.name);
     });
-    redrawImmediately();
-
     const save = element("button", {
       className: "kl-text-button kl-text-button--primary kl-custom-activity-save",
       type: "button",

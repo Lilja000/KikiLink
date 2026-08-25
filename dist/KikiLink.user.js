@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.7
+// @version      0.20.8
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -2089,7 +2089,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   }
 
   // design/branding/kikilink-blossom.svg
-  var kikilink_blossom_default = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KikiLink blossom">%0A  <g transform="rotate(-18 32 32)" fill="%23e82142" fill-opacity=".62" stroke="%23ff93a3" stroke-opacity=".52" stroke-width="1">%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(72 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(144 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(216 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(288 32 32)"/>%0A  </g>%0A  <g transform="rotate(-18 32 32)" fill="none" stroke="%23ffd9df" stroke-linecap="round" stroke-opacity=".24" stroke-width="1.1">%0A    <path d="M32 31V10"/>%0A    <path d="M32 31V10" transform="rotate(72 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(144 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(216 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(288 32 32)"/>%0A  </g>%0A  <circle cx="32" cy="32" r="6.2" fill="%238d0921" fill-opacity=".92" stroke="%23ff8b9c" stroke-opacity=".48" stroke-width="1"/>%0A  <circle cx="32" cy="32" r="3.1" fill="%23efb34e" fill-opacity=".9"/>%0A</svg>%0A';
+  var kikilink_blossom_default = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KikiLink blossom">%0A  <g fill="%23ef6078" stroke="%235f1b2a" stroke-linejoin="round" stroke-width="3">%0A    <path d="M32 33C24 28 22 18 26 10c2-4 10-4 12 0 4 8 2 18-6 23Z"/>%0A    <path d="M33 32c2-9 9-16 18-15 6 1 8 8 4 13-5 7-14 8-22 2Z"/>%0A    <path d="M34 34c9-2 18 2 21 10 2 6-4 11-10 9-8-3-13-10-11-19Z"/>%0A    <path d="M30 34c-9-2-18 2-21 10-2 6 4 11 10 9 8-3 13-10 11-19Z"/>%0A    <path d="M31 32c-2-9-9-16-18-15-6 1-8 8-4 13 5 7 14 8 22 2Z"/>%0A  </g>%0A  <g fill="none" stroke="%23ffb2bf" stroke-linecap="round" stroke-width="2">%0A    <path d="M30 12c-2 3-2 7-1 10"/>%0A    <path d="M48 21c-4 0-7 2-9 5"/>%0A    <path d="M48 44c-3-2-7-3-10-2"/>%0A  </g>%0A  <circle cx="32" cy="33" r="8" fill="%23f3b63f" stroke="%235f1b2a" stroke-width="3"/>%0A  <circle cx="29.5" cy="30.5" r="2" fill="%23ffe6a1"/>%0A</svg>%0A';
 
   // src/modules/link-chat/blossom.ts
   var CHARACTER_WIDTH = 500;
@@ -2784,21 +2784,21 @@ One of mods you are using is using an old version of SDK. It will work for now b
       mark.dataset.kikilinkActivityMark = "true";
       Object.assign(mark.style, {
         position: "absolute",
-        bottom: "1px",
-        right: "1px",
+        top: "0px",
+        left: "0px",
         width: "14px",
         height: "14px",
-        opacity: "0.82",
+        opacity: "0.96",
         pointerEvents: "none",
         filter: "drop-shadow(0 1px 3px rgba(0,0,0,.75))",
         zIndex: "2"
       });
       for (const [property, value] of [
         ["position", "absolute"],
-        ["top", "auto"],
-        ["left", "auto"],
-        ["right", "1px"],
-        ["bottom", "1px"],
+        ["top", "0px"],
+        ["left", "0px"],
+        ["right", "auto"],
+        ["bottom", "auto"],
         ["width", "14px"],
         ["height", "14px"]
       ]) {
@@ -3190,14 +3190,17 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.root.replaceChildren(header, body);
     }
     #activityCard(activity) {
+      const vanillaIcon = element("img", {
+        className: "kl-custom-activity-vanilla-icon",
+        src: activityImageUrl(activity.image),
+        alt: ""
+      });
+      vanillaIcon.loading = "lazy";
+      vanillaIcon.decoding = "async";
       const iconWrap = element(
         "div",
         { className: "kl-custom-activity-card-icon" },
-        element("img", {
-          className: "kl-custom-activity-vanilla-icon",
-          src: activityImageUrl(activity.image),
-          alt: ""
-        }),
+        vanillaIcon,
         element("img", {
           className: "kl-custom-activity-blossom",
           src: kikilink_blossom_default,
@@ -3292,10 +3295,45 @@ One of mods you are using is using an old version of SDK. It will work for now b
         slotSelect.append(option);
       }
       slotSelect.value = draft.targetGroup;
+      const slotsByName = new Map(slots.map((slot) => [slot.name, slot]));
       const slotButtons = /* @__PURE__ */ new Map();
+      const selectedSlotLabel = element("span", {
+        className: "kl-custom-slot-current",
+        text: slotsByName.get(draft.targetGroup)?.label ?? draft.targetGroup
+      });
+      const slotSummaryAction = element("span", {
+        className: "kl-custom-slot-action",
+        text: "Show all"
+      });
+      const slotSummary = element(
+        "summary",
+        { className: "kl-custom-slot-summary" },
+        selectedSlotLabel,
+        slotSummaryAction
+      );
+      const slotGrid = element("div", {
+        className: "kl-custom-slot-grid",
+        ariaLabel: "Body slots"
+      });
+      slotGrid.setAttribute("role", "radiogroup");
+      const slotPicker = element(
+        "details",
+        { className: "kl-custom-slot-picker" },
+        slotSummary,
+        slotGrid
+      );
+      let slotButtonsBuilt = false;
       let redrawCharacter = () => void 0;
-      const selectSlot = (groupName) => {
-        if (!slotButtons.has(groupName)) return;
+      const updateSlotSummary = (groupName) => {
+        const label = slotsByName.get(groupName)?.label ?? groupName;
+        selectedSlotLabel.textContent = label;
+        slotSummary.setAttribute(
+          "aria-label",
+          `Selected body slot: ${label}. ${slotPicker.open ? "Hide" : "Show all"} body slots`
+        );
+      };
+      const selectSlot = (groupName, collapsePicker = false) => {
+        if (!slotsByName.has(groupName)) return;
         draft.targetGroup = groupName;
         slotSelect.value = groupName;
         for (const [name2, button] of slotButtons) {
@@ -3303,29 +3341,41 @@ One of mods you are using is using an old version of SDK. It will work for now b
           button.dataset.selected = String(selected);
           button.setAttribute("aria-checked", String(selected));
         }
+        updateSlotSummary(groupName);
+        if (collapsePicker && slotPicker.open) {
+          slotPicker.open = false;
+          slotSummaryAction.textContent = "Show all";
+        }
         redrawCharacter();
       };
-      const slotGrid = element("div", {
-        className: "kl-custom-slot-grid",
-        ariaLabel: "Body slots"
+      const buildSlotButtons = () => {
+        if (slotButtonsBuilt) return;
+        slotButtonsBuilt = true;
+        const fragment = document.createDocumentFragment();
+        for (const slot of slots) {
+          const button = element("button", {
+            className: "kl-custom-slot-choice",
+            type: "button",
+            text: slot.label,
+            title: slot.label,
+            ariaLabel: `Use ${slot.label} body slot`,
+            onClick: () => selectSlot(slot.name, true)
+          });
+          button.dataset.slot = slot.name;
+          button.dataset.selected = String(slot.name === draft.targetGroup);
+          button.setAttribute("role", "radio");
+          button.setAttribute("aria-checked", String(slot.name === draft.targetGroup));
+          slotButtons.set(slot.name, button);
+          fragment.append(button);
+        }
+        slotGrid.append(fragment);
+      };
+      updateSlotSummary(draft.targetGroup);
+      slotPicker.addEventListener("toggle", () => {
+        slotSummaryAction.textContent = slotPicker.open ? "Hide" : "Show all";
+        updateSlotSummary(draft.targetGroup);
+        if (slotPicker.open) buildSlotButtons();
       });
-      slotGrid.setAttribute("role", "radiogroup");
-      for (const slot of slots) {
-        const button = element("button", {
-          className: "kl-custom-slot-choice",
-          type: "button",
-          text: slot.label,
-          title: slot.label,
-          ariaLabel: `Use ${slot.label} body slot`,
-          onClick: () => selectSlot(slot.name)
-        });
-        button.dataset.slot = slot.name;
-        button.dataset.selected = String(slot.name === draft.targetGroup);
-        button.setAttribute("role", "radio");
-        button.setAttribute("aria-checked", String(slot.name === draft.targetGroup));
-        slotButtons.set(slot.name, button);
-        slotGrid.append(button);
-      }
       slotSelect.addEventListener("change", () => selectSlot(slotSelect.value));
       const name = element("input", {
         className: "kl-search kl-custom-activity-name",
@@ -3385,38 +3435,65 @@ One of mods you are using is using an old version of SDK. It will work for now b
         className: "kl-custom-image-gallery",
         ariaLabel: "Vanilla activity pictures"
       });
-      const renderImages = () => {
-        const query = imageSearch.value.trim().toLocaleLowerCase();
-        imageGallery.replaceChildren();
-        const images = this.service.getVanillaImages().filter((image) => !query || image.toLocaleLowerCase().includes(query));
-        for (const image of images) {
-          const button = element(
-            "button",
-            {
-              className: "kl-custom-image-choice",
-              type: "button",
-              title: image,
-              ariaLabel: `Use ${image} picture`,
-              onClick: () => {
-                draft.image = canonicalVanillaActivityImage(image);
-                renderImages();
-              }
-            },
-            element("img", { src: activityImageUrl(image), alt: "" }),
-            element("span", { text: humanizeActivityName(image) })
-          );
-          button.dataset.selected = String(image === draft.image);
-          button.setAttribute("aria-pressed", String(image === draft.image));
-          imageGallery.append(button);
-        }
-        if (images.length === 0) {
-          imageGallery.append(
-            element("div", { className: "kl-contact-empty", text: "No vanilla pictures match." })
-          );
-        }
+      const imageButtons = /* @__PURE__ */ new Map();
+      const noImageMatches = element("div", {
+        className: "kl-contact-empty",
+        text: "No vanilla pictures match."
+      });
+      noImageMatches.hidden = true;
+      const imageFragment = document.createDocumentFragment();
+      const selectImage = (image) => {
+        const canonical = canonicalVanillaActivityImage(image);
+        if (canonical === draft.image) return;
+        const previous = imageButtons.get(draft.image);
+        previous?.setAttribute("aria-pressed", "false");
+        if (previous) previous.dataset.selected = "false";
+        draft.image = canonical;
+        const selected = imageButtons.get(canonical);
+        selected?.setAttribute("aria-pressed", "true");
+        if (selected) selected.dataset.selected = "true";
       };
-      imageSearch.addEventListener("input", renderImages);
-      renderImages();
+      for (const image of this.service.getVanillaImages()) {
+        const previewImage = element("img", { src: activityImageUrl(image), alt: "" });
+        previewImage.loading = "lazy";
+        previewImage.decoding = "async";
+        const button = element(
+          "button",
+          {
+            className: "kl-custom-image-choice",
+            type: "button",
+            title: image,
+            ariaLabel: `Use ${image} picture`,
+            onClick: () => selectImage(image)
+          },
+          previewImage,
+          element("span", { text: humanizeActivityName(image) })
+        );
+        button.dataset.search = image.toLocaleLowerCase();
+        button.dataset.selected = String(image === draft.image);
+        button.setAttribute("aria-pressed", String(image === draft.image));
+        imageButtons.set(image, button);
+        imageFragment.append(button);
+      }
+      imageGallery.append(imageFragment, noImageMatches);
+      const filterImages = () => {
+        const query = imageSearch.value.trim().toLocaleLowerCase();
+        let visible = 0;
+        for (const button of imageButtons.values()) {
+          const matches = !query || button.dataset.search?.includes(query) === true;
+          button.hidden = !matches;
+          if (matches) visible += 1;
+        }
+        noImageMatches.hidden = visible !== 0;
+      };
+      let imageFilterFrame;
+      imageSearch.addEventListener("input", () => {
+        if (imageFilterFrame !== void 0) return;
+        imageFilterFrame = requestAnimationFrame(() => {
+          imageFilterFrame = void 0;
+          if (imageGallery.isConnected) filterImages();
+        });
+      });
       const arousalToggle = element("input");
       arousalToggle.type = "checkbox";
       arousalToggle.checked = draft.arousal > 0;
@@ -3514,9 +3591,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
         element("div", { className: "kl-custom-field-label", text: "Body slot" }),
         element("div", {
           className: "kl-custom-field-help",
-          text: "Tap your character or use one of the always-visible slots below."
+          text: "Tap your character or open the compact picker to change it."
         }),
-        slotGrid,
+        slotPicker,
         element("div", { className: "kl-custom-character-stage" }, canvas, canvasFallback),
         slotSelect,
         element("div", {
@@ -3535,10 +3612,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
         });
       };
       redrawCharacter = redraw;
-      const redrawImmediately = () => {
-        const drawn = this.service.drawPlayer(canvas, slotSelect.value, this.#hoveredGroup);
-        canvasFallback.hidden = drawn;
-      };
       canvas.addEventListener("pointermove", (event) => {
         if (event.pointerType && event.pointerType !== "mouse") return;
         const point = canvasPoint(canvas, event);
@@ -3558,7 +3631,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
         if (!slot) return;
         selectSlot(slot.name);
       });
-      redrawImmediately();
       const save = element("button", {
         className: "kl-text-button kl-text-button--primary kl-custom-activity-save",
         type: "button",
@@ -6591,8 +6663,8 @@ button { color: inherit; }
 .kl-custom-activity-vanilla-icon { width: 100%; height: 100%; display: block; object-fit: cover; }
 .kl-custom-activity-blossom {
   position: absolute;
-  top: 3px;
-  right: 3px;
+  top: 2px;
+  left: 2px;
   width: 23px;
   height: 23px;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.75));
@@ -6670,10 +6742,51 @@ button { color: inherit; }
   pointer-events: none;
 }
 .kl-custom-slot-select[hidden] { display: none; }
+.kl-custom-slot-picker {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--kl-border);
+  border-radius: 11px;
+  background: var(--kl-surface-2);
+}
+.kl-custom-slot-picker > summary {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  color: var(--kl-text);
+  cursor: pointer;
+  list-style: none;
+}
+.kl-custom-slot-picker > summary::-webkit-details-marker { display: none; }
+.kl-custom-slot-picker > summary:hover { background: var(--kl-surface-hover); }
+.kl-custom-slot-picker[open] > summary { border-bottom: 1px solid var(--kl-border); }
+.kl-custom-slot-current {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--kl-type-sm);
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kl-custom-slot-action {
+  flex: 0 0 auto;
+  color: var(--kl-gold);
+  font-size: var(--kl-type-xxs);
+  font-weight: 850;
+  text-transform: uppercase;
+}
 .kl-custom-slot-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 5px;
+  max-height: 154px;
+  padding: 6px;
+  overflow-y: auto;
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
 }
 .kl-custom-slot-choice {
   min-width: 0;
@@ -6774,6 +6887,7 @@ button { color: inherit; }
   font-size: var(--kl-type-xxs);
   cursor: pointer;
 }
+.kl-custom-image-choice[hidden] { display: none; }
 .kl-custom-image-choice:hover { background: var(--kl-surface-hover); color: var(--kl-text); }
 .kl-custom-image-choice[data-selected="true"] {
   border-color: var(--kl-accent);
@@ -6822,7 +6936,11 @@ button { color: inherit; }
     margin-bottom: 12px;
     overflow: visible;
   }
-  .kl-custom-slot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .kl-custom-slot-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    max-height: 206px;
+  }
   .kl-custom-slot-choice { min-height: 44px; padding-inline: 8px; font-size: var(--kl-type-xs); }
   .kl-custom-activity-form { overflow: visible; }
   .kl-custom-image-gallery {
@@ -14560,7 +14678,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.7");
+    const app = new KikiLinkApp("0.20.8");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

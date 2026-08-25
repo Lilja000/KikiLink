@@ -1986,8 +1986,8 @@ button { color: inherit; }
 .kl-custom-activity-vanilla-icon { width: 100%; height: 100%; display: block; object-fit: cover; }
 .kl-custom-activity-blossom {
   position: absolute;
-  top: 3px;
-  right: 3px;
+  top: 2px;
+  left: 2px;
   width: 23px;
   height: 23px;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.75));
@@ -2065,10 +2065,51 @@ button { color: inherit; }
   pointer-events: none;
 }
 .kl-custom-slot-select[hidden] { display: none; }
+.kl-custom-slot-picker {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--kl-border);
+  border-radius: 11px;
+  background: var(--kl-surface-2);
+}
+.kl-custom-slot-picker > summary {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  color: var(--kl-text);
+  cursor: pointer;
+  list-style: none;
+}
+.kl-custom-slot-picker > summary::-webkit-details-marker { display: none; }
+.kl-custom-slot-picker > summary:hover { background: var(--kl-surface-hover); }
+.kl-custom-slot-picker[open] > summary { border-bottom: 1px solid var(--kl-border); }
+.kl-custom-slot-current {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--kl-type-sm);
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kl-custom-slot-action {
+  flex: 0 0 auto;
+  color: var(--kl-gold);
+  font-size: var(--kl-type-xxs);
+  font-weight: 850;
+  text-transform: uppercase;
+}
 .kl-custom-slot-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 5px;
+  max-height: 154px;
+  padding: 6px;
+  overflow-y: auto;
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
 }
 .kl-custom-slot-choice {
   min-width: 0;
@@ -2169,6 +2210,7 @@ button { color: inherit; }
   font-size: var(--kl-type-xxs);
   cursor: pointer;
 }
+.kl-custom-image-choice[hidden] { display: none; }
 .kl-custom-image-choice:hover { background: var(--kl-surface-hover); color: var(--kl-text); }
 .kl-custom-image-choice[data-selected="true"] {
   border-color: var(--kl-accent);
@@ -2217,7 +2259,11 @@ button { color: inherit; }
     margin-bottom: 12px;
     overflow: visible;
   }
-  .kl-custom-slot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .kl-custom-slot-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    max-height: 206px;
+  }
   .kl-custom-slot-choice { min-height: 44px; padding-inline: 8px; font-size: var(--kl-type-xs); }
   .kl-custom-activity-form { overflow: visible; }
   .kl-custom-image-gallery {

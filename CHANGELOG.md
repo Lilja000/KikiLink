@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.8 - 2026-08-25
+
+- Redrew Blossom from scratch as an upright cartoon flower with a clean burgundy outline, solid
+  pink petals, and a gold center. The new minimal SVG has no rotation or translucent overlapping
+  ellipses and remains legible at both the 14 px activity-marker size and the native room-icon size.
+- Moved the native Custom Activity marker flush to the upper-left corner and locked its 14 px
+  geometry with inline priorities so Bondage Club's mobile activity-card rules cannot displace it.
+- Replaced the always-expanded body-slot wall with a compact selected-slot summary. `Show all`
+  lazily creates the full accessible radio grid, selecting a slot collapses it again, and tapping
+  the character continues to update the same selection.
+- Reduced editor work without changing its layout: the character canvas no longer performs a
+  discarded pre-mount draw, vanilla picture nodes are built once instead of recreated on every
+  click/search input, rapid searches are coalesced per frame, and offscreen pictures decode lazily.
+
 ## 0.20.7 - 2026-08-25
 
 - Removed the Firefox cross-realm `unsafeWindow` bridge introduced in 0.20.6. KikiLink now runs as

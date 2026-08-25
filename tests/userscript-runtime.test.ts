@@ -409,8 +409,8 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.20.7");
-    expect(version?.textContent).toBe("0.20.7");
+    expect(api.getVersion()).toBe("0.20.8");
+    expect(version?.textContent).toBe("0.20.8");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
@@ -431,8 +431,8 @@ describe("published userscript runtime", () => {
     expect(grid.querySelector(`[data-activity^="${CUSTOM_ACTIVITY_PREFIX}"]`)).not.toBeNull();
     expect(activityMark?.style.width).toBe("14px");
     expect(activityMark?.style.height).toBe("14px");
-    expect(activityMark?.style.right).toBe("1px");
-    expect(activityMark?.style.bottom).toBe("1px");
+    expect(activityMark?.style.left).toBe("0px");
+    expect(activityMark?.style.top).toBe("0px");
 
     await getGlobal<{ destroy(): Promise<void> }>("KikiLink").destroy();
     expect(document.querySelector("#kikilink-version")).toBeNull();

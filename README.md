@@ -11,10 +11,11 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.20.7` runs entirely in Bondage Club's page realm and joins the existing ModSDK chain
-without cross-realm callbacks. Blossom uses BC's native status-icon renderer and disappears with
-the other addon icons on vanilla menus; Custom Activities enter the live native registries and
-dialog, and the running version remains visible as tiny translucent digits in the lower-left corner.
+Version `0.20.8` introduces the upright cartoon Blossom, a compact expandable body-slot picker,
+and a lower-churn vanilla picture gallery. Blossom uses BC's native status-icon renderer and
+disappears with the other addon icons on vanilla menus; Custom Activities enter the live native
+registries and dialog, and the running version remains visible as tiny translucent digits in the
+lower-left corner.
 
 ## Link Deck
 
@@ -120,18 +121,18 @@ so they can follow that same account to another device.
 
 - A dedicated Custom Activities destination, visible by default and optional in Settings
 - An intentionally empty starting library: KikiLink does not make choices for the player
-- A focused creator that renders the current character and keeps every body slot visible in a
-  tap-friendly selection grid
+- A focused creator that renders the current character and keeps the selected body slot in one
+  compact row; `Show all` expands the complete tap-friendly selection grid only when needed
 - A canonical set of 33 unique vanilla Bondage Club activity pictures, without LSCG assets,
   item-action icons, or visual duplicates
-- Mobile layouts keep the character, two-column slot grid, horizontally scrolling picture gallery,
-  and save controls usable inside one predictable scroll area
+- Mobile layouts keep the character, expandable two-column slot grid, horizontally scrolling
+  picture gallery, and save controls usable inside one predictable scroll area
 - Quick `{me}`, `{target}`, `{target's}`, and `{target's gender}` variables with a live preview
 - Other-character targeting by default; self-only and both modes live inside `Advanced`
 - Optional arousal is off by default and exposes a bounded `1–20` base-amount slider only when enabled
 - Saved actions wait for Bondage Club's live registry and stay registered beside vanilla activities
   on the selected body slot even if the game rebuilds that registry
-- Every native custom-activity button carries KikiLink's translucent Blossom marker in its lower-right corner
+- Every native custom-activity button carries KikiLink's 14 px cartoon Blossom marker in its upper-left corner
 - Other players receive one ordinary finished action sentence, including players without KikiLink
 - Compatible KikiLink recipients validate sender, target, body group, amount, and nonce before handing
   optional arousal to Bondage Club's own preference-aware activity system
@@ -164,7 +165,7 @@ same native Bondage Club emote path and are visible to everyone in the room.
 ## Interface
 
 - The original wolf-and-red-moon KikiLink emblem is restored in the launcher and workspace
-- A separate translucent Blossom uses the native character canvas at a small 35-unit scale,
+- A separate upright cartoon Blossom uses the native character canvas at a small 35-unit scale,
   follows each character's position and zoom, and respects hidden icons and vanilla subscreens
 - The flower ignores ordinary gameplay input and can be dragged only after choosing `Move flower`
   in Appearance while the authenticated character is visible in a room
