@@ -11,9 +11,9 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.20.4` isolates every KikiLink by Bondage Club account, keeps native hooks alive when BC
-or another addon replaces a cached entrypoint, registers saved Custom Activities in the live native
-grid, and draws the small Blossom in the real character addon-icon row.
+Version `0.20.5` keeps Blossom and Custom Activities working without ModSDK, repairs the currently
+open native activity grid directly, anchors the player's flower to the displayed character canvas,
+and shows the running version as tiny translucent digits in the lower-left corner.
 
 ## Link Deck
 

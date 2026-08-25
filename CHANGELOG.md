@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.20.5 - 2026-08-25
+
+- Removed ModSDK as a dependency of the two critical UI integrations. Blossom and all six native
+  Custom Activity entrypoints now use live direct wrappers with a health watchdog, including when
+  ModSDK registration itself is rejected by an older addon or duplicate SDK instance.
+- Fixed the built userscript's ModSDK CommonJS interop so its remaining noncritical hooks resolve
+  the actual live `window.bcModSdk` API instead of a module wrapper with no `registerMod` method.
+- Added a passive DOM Blossom for the authenticated character, positioned from BC's real
+  `ChatRoomCharacterViewLoopCharacters` frame and the displayed `MainCanvas` rectangle. It remains
+  visible and movable even if every character-overlay hook is unavailable; compatible peers still
+  use the native canvas row.
+- Added an independent open-dialog watchdog that repairs the exact live `DialogActivity` array and
+  native button grid, plus support for BC groups that mirror another group's activities.
+- Added a 7 px, 18% opacity version number in the lower-left corner so the actually running
+  userscript release is always identifiable without opening KikiLink.
+- Added a real-bundle browser harness that deliberately rejects ModSDK registration and verifies the
+  visible Blossom, native registry entry, native dialog button, public API version, and corner badge.
+
 ## 0.20.4 - 2026-08-25
 
 - Fixed the real runtime failure shared by Blossom and Custom Activities: ModSDK can retain a stale

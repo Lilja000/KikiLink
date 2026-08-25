@@ -8,8 +8,8 @@ const CHARACTER_WIDTH = 500;
 const CHARACTER_HEIGHT = 1_000;
 const BADGE_SIZE = 30;
 const BADGE_OPACITY = 0.78;
-const BADGE_HIT_PADDING = 12;
 const BADGE_DRAG_THRESHOLD = 5;
+const DOM_SYNC_INTERVAL_MS = 33;
 
 export interface NormalizedRoomBadgePosition {
   x: number;
@@ -82,6 +82,7 @@ export class RoomBlossomBadge {
   readonly #settings: SettingsStore;
   readonly #adapter: BCAdapter;
   readonly #presence: LinkPresenceService;
+  readonly #element = document.createElement("img");
   readonly #fallbackImage = typeof Image === "function" ? new Image() : undefined;
   #config: RoomBadgeConfig;
   #ownFrame: CharacterCanvasFrame | undefined;
@@ -92,6 +93,7 @@ export class RoomBlossomBadge {
   #previousTouchAction = "";
   #settingsUnsubscribe: (() => void) | undefined;
   #unregisterOverlay: (() => void) | undefined;
+  #domSyncTimer: ReturnType<typeof setInterval> | undefined;
   #placementActive = false;
   #mounted = false;
   #destroyed = false;
@@ -99,15 +101,16 @@ export class RoomBlossomBadge {
   readonly #renderer: BCCharacterOverlayRenderer = (character, x, y, zoom) => {
     if (!character || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) return;
     const own = character.MemberNumber === this.#adapter.getOwnMemberNumber();
-    if (own) this.#ownFrame = { x, y, zoom };
+    if (own) {
+      this.#ownFrame = { x, y, zoom };
+      this.#syncOwnElement();
+      return;
+    }
     if (!this.#config.enabled || !this.#iconsAreVisible()) return;
-    if (!own && !this.#presence.hasCompatiblePeer(character.MemberNumber)) return;
+    if (!this.#presence.hasCompatiblePeer(character.MemberNumber)) return;
 
-    const position = resolveRoomBadgePosition(
-      own && this.#previewPosition ? this.#previewPosition : this.#config.position,
-      { x, y, zoom },
-    );
-    this.#draw(position, own && this.#placementActive);
+    const position = resolveRoomBadgePosition(this.#config.position, { x, y, zoom });
+    this.#draw(position);
   };
 
   readonly #handlePointerDown = (event: PointerEvent): void => {
@@ -126,15 +129,6 @@ export class RoomBlossomBadge {
       this.#previewPosition ?? this.#config.position,
       this.#ownFrame,
     );
-    const padding = Math.max(BADGE_HIT_PADDING * this.#ownFrame.zoom, 4);
-    if (
-      point.x < position.left - padding ||
-      point.x > position.left + position.size + padding ||
-      point.y < position.top - padding ||
-      point.y > position.top + position.size + padding
-    ) {
-      return;
-    }
 
     this.#drag = {
       pointerId: event.pointerId,
@@ -146,7 +140,7 @@ export class RoomBlossomBadge {
     };
     this.#consumePointer(event);
     try {
-      this.#canvas.setPointerCapture(event.pointerId);
+      this.#element.setPointerCapture(event.pointerId);
     } catch {
       // Window listeners below still keep the deliberate drag working.
     }
@@ -172,6 +166,7 @@ export class RoomBlossomBadge {
       point.y - drag.offsetY,
       frame,
     );
+    this.#syncOwnElement();
     this.#consumePointer(event);
   };
 
@@ -189,6 +184,7 @@ export class RoomBlossomBadge {
     });
     this.#previewPosition = undefined;
     this.#setPlacement(false);
+    this.#syncOwnElement();
   };
 
   readonly #handlePointerCancel = (event: PointerEvent): void => {
@@ -197,6 +193,7 @@ export class RoomBlossomBadge {
     this.#releasePointer(event.pointerId);
     this.#drag = undefined;
     this.#previewPosition = undefined;
+    this.#syncOwnElement();
   };
 
   readonly #handleKeyDown = (event: KeyboardEvent): void => {
@@ -211,17 +208,38 @@ export class RoomBlossomBadge {
     this.#presence = presence;
     this.#config = settings.get().ui.roomBadge;
     if (this.#fallbackImage) this.#fallbackImage.src = BLOSSOM_ICON_DATA_URL;
+    this.#element.className = "kl-room-blossom";
+    this.#element.src = BLOSSOM_ICON_DATA_URL;
+    this.#element.alt = "";
+    this.#element.draggable = false;
+    this.#element.hidden = true;
+    this.#element.setAttribute("aria-hidden", "true");
+    Object.assign(this.#element.style, {
+      position: "fixed",
+      display: "none",
+      pointerEvents: "none",
+      opacity: String(BADGE_OPACITY),
+      zIndex: "2147483000",
+      userSelect: "none",
+      touchAction: "none",
+      filter: "drop-shadow(0 1px 3px rgba(0, 0, 0, .75))",
+    });
     this.#settingsUnsubscribe = settings.subscribe((next) => {
       this.#config = next.ui.roomBadge;
       if (!this.#config.enabled) this.cancelPlacement();
+      this.#syncOwnElement();
     });
   }
 
   mount(): void {
     if (this.#destroyed || this.#mounted) return;
     this.#mounted = true;
-    if (typeof this.#adapter.registerCharacterOverlay !== "function") return;
-    this.#unregisterOverlay = this.#adapter.registerCharacterOverlay(this.#renderer);
+    document.body.append(this.#element);
+    if (typeof this.#adapter.registerCharacterOverlay === "function") {
+      this.#unregisterOverlay = this.#adapter.registerCharacterOverlay(this.#renderer);
+    }
+    this.#domSyncTimer = setInterval(() => this.#syncOwnElement(), DOM_SYNC_INTERVAL_MS);
+    this.#syncOwnElement();
     window.addEventListener("keydown", this.#handleKeyDown);
   }
 
@@ -229,6 +247,7 @@ export class RoomBlossomBadge {
   beginPlacement(): boolean {
     const liveFrame = visibleCharacterFrame(this.#adapter.getOwnMemberNumber());
     if (liveFrame) this.#ownFrame = liveFrame;
+    this.#syncOwnElement();
     if (
       this.#destroyed ||
       !this.#mounted ||
@@ -271,11 +290,14 @@ export class RoomBlossomBadge {
     this.#settingsUnsubscribe = undefined;
     this.#unregisterOverlay?.();
     this.#unregisterOverlay = undefined;
+    if (this.#domSyncTimer !== undefined) clearInterval(this.#domSyncTimer);
+    this.#domSyncTimer = undefined;
+    this.#element.remove();
     this.#ownFrame = undefined;
     this.#mounted = false;
   }
 
-  #draw(position: RoomBadgeCanvasPosition, placement: boolean): void {
+  #draw(position: RoomBadgeCanvasPosition): void {
     const context = mainCanvasContext();
     if (!context) return;
     try {
@@ -297,19 +319,6 @@ export class RoomBlossomBadge {
         );
         context.restore();
       }
-      if (placement) {
-        context.save();
-        context.strokeStyle = "rgba(255, 135, 153, 0.9)";
-        context.lineWidth = Math.max(1.5, position.size / 15);
-        context.setLineDash([Math.max(2, position.size / 5), Math.max(2, position.size / 6)]);
-        context.strokeRect(
-          position.left - 4,
-          position.top - 4,
-          position.size + 8,
-          position.size + 8,
-        );
-        context.restore();
-      }
     } catch {
       // A canvas can be replaced between room frames; the next overlay render retries naturally.
     }
@@ -319,26 +328,70 @@ export class RoomBlossomBadge {
     return typeof ChatRoomHideIconState !== "number" || ChatRoomHideIconState === 0;
   }
 
+  #syncOwnElement(): void {
+    if (this.#destroyed || !this.#mounted) return;
+    const inRoom =
+      typeof this.#adapter.isInChatRoom === "function" && this.#adapter.isInChatRoom();
+    if (!this.#config.enabled || !this.#iconsAreVisible() || !inRoom) {
+      this.#element.hidden = true;
+      this.#element.style.display = "none";
+      return;
+    }
+
+    const liveFrame = visibleCharacterFrame(this.#adapter.getOwnMemberNumber());
+    if (liveFrame) this.#ownFrame = liveFrame;
+    const frame = this.#ownFrame;
+    const canvas = mainCanvasElement();
+    if (!frame || !canvas) {
+      this.#element.hidden = true;
+      this.#element.style.display = "none";
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || canvas.width <= 0 || canvas.height <= 0) {
+      this.#element.hidden = true;
+      this.#element.style.display = "none";
+      return;
+    }
+
+    const position = resolveRoomBadgePosition(
+      this.#previewPosition ?? this.#config.position,
+      frame,
+    );
+    const scaleX = rect.width / canvas.width;
+    const scaleY = rect.height / canvas.height;
+    this.#element.hidden = false;
+    this.#element.style.display = "block";
+    this.#element.style.left = `${rect.left + position.left * scaleX}px`;
+    this.#element.style.top = `${rect.top + position.top * scaleY}px`;
+    this.#element.style.width = `${position.size * scaleX}px`;
+    this.#element.style.height = `${position.size * scaleY}px`;
+  }
+
   #setPlacement(active: boolean): void {
     if (active === this.#placementActive) return;
     this.#placementActive = active;
     const canvas = this.#canvas;
     if (active && canvas) {
-      this.#previousCursor = canvas.style.cursor;
-      this.#previousTouchAction = canvas.style.touchAction;
-      canvas.style.cursor = "grab";
-      canvas.style.touchAction = "none";
-      canvas.addEventListener("pointerdown", this.#handlePointerDown, true);
+      this.#previousCursor = this.#element.style.cursor;
+      this.#previousTouchAction = this.#element.style.touchAction;
+      this.#element.style.cursor = "grab";
+      this.#element.style.touchAction = "none";
+      this.#element.style.pointerEvents = "auto";
+      this.#element.style.outline = "1px dashed rgba(255, 135, 153, .9)";
+      this.#element.style.outlineOffset = "3px";
+      this.#element.addEventListener("pointerdown", this.#handlePointerDown, true);
       window.addEventListener("pointermove", this.#handlePointerMove, true);
       window.addEventListener("pointerup", this.#handlePointerUp, true);
       window.addEventListener("pointercancel", this.#handlePointerCancel, true);
       return;
     }
-    if (canvas) {
-      canvas.removeEventListener("pointerdown", this.#handlePointerDown, true);
-      canvas.style.cursor = this.#previousCursor;
-      canvas.style.touchAction = this.#previousTouchAction;
-    }
+    this.#element.removeEventListener("pointerdown", this.#handlePointerDown, true);
+    this.#element.style.cursor = this.#previousCursor;
+    this.#element.style.touchAction = this.#previousTouchAction;
+    this.#element.style.pointerEvents = "none";
+    this.#element.style.outline = "";
+    this.#element.style.outlineOffset = "";
     window.removeEventListener("pointermove", this.#handlePointerMove, true);
     window.removeEventListener("pointerup", this.#handlePointerUp, true);
     window.removeEventListener("pointercancel", this.#handlePointerCancel, true);
@@ -351,11 +404,10 @@ export class RoomBlossomBadge {
   }
 
   #releasePointer(pointerId: number | undefined): void {
-    const canvas = this.#canvas;
-    if (pointerId === undefined || !canvas) return;
+    if (pointerId === undefined) return;
     try {
-      if (!canvas.hasPointerCapture || canvas.hasPointerCapture(pointerId)) {
-        canvas.releasePointerCapture(pointerId);
+      if (!this.#element.hasPointerCapture || this.#element.hasPointerCapture(pointerId)) {
+        this.#element.releasePointerCapture(pointerId);
       }
     } catch {
       // The browser may already have released capture.

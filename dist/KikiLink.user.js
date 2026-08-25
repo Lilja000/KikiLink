@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.4
+// @version      0.20.5
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -592,8 +592,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return FriendListBeepLog.slice(-Math.max(0, limit)).map((entry) => this.#normalizeBeepLogEntry(entry)).filter((event) => event !== null).sort((left, right) => left.sentAt - right.sentAt);
     }
     #installCompatibilityHooks() {
+      let modApi;
       try {
-        this.#modApi = import_bondage_club_mod_sdk.default.registerMod(
+        modApi = currentModSdk().registerMod(
           {
             name: "KikiLink",
             fullName: "KikiLink",
@@ -601,44 +602,46 @@ One of mods you are using is using an old version of SDK. It will work for now b
           },
           { allowReplace: true }
         );
+        this.#modApi = modApi;
       } catch (error) {
-        this.#logger.warn("ModSDK hooks unavailable; using direct Bondage Club events", error);
-        return;
+        this.#modApi = void 0;
+        this.#logger.warn("ModSDK hooks unavailable; direct Bondage Club hooks remain active", error);
       }
-      const modApi = this.#modApi;
-      this.#tryInstallHook(
-        "ServerAccountBeep",
-        () => modApi.hookFunction("ServerAccountBeep", 0, (args, next) => {
-          this.#captureIncomingPayload(args[0]);
-          return next(args);
-        })
-      );
-      if (typeof ServerAccountQueryResult === "function") {
+      if (modApi) {
         this.#tryInstallHook(
-          "ServerAccountQueryResult",
-          () => modApi.hookFunction("ServerAccountQueryResult", 0, (args, next) => {
-            this.#captureOnlineFriends(args[0]);
+          "ServerAccountBeep",
+          () => modApi.hookFunction("ServerAccountBeep", 0, (args, next) => {
+            this.#captureIncomingPayload(args[0]);
             return next(args);
           })
         );
-      }
-      if (typeof FriendListLoadFriendList === "function") {
+        if (typeof ServerAccountQueryResult === "function") {
+          this.#tryInstallHook(
+            "ServerAccountQueryResult",
+            () => modApi.hookFunction("ServerAccountQueryResult", 0, (args, next) => {
+              this.#captureOnlineFriends(args[0]);
+              return next(args);
+            })
+          );
+        }
+        if (typeof FriendListLoadFriendList === "function") {
+          this.#tryInstallHook(
+            "FriendListLoadFriendList",
+            () => modApi.hookFunction("FriendListLoadFriendList", 0, (args, next) => {
+              this.#captureOnlineFriends(args[0]);
+              return next(args);
+            })
+          );
+        }
         this.#tryInstallHook(
-          "FriendListLoadFriendList",
-          () => modApi.hookFunction("FriendListLoadFriendList", 0, (args, next) => {
-            this.#captureOnlineFriends(args[0]);
-            return next(args);
-          })
-        );
-      }
-      if (typeof ChatRoomMessage === "function") {
-        this.#tryInstallHook(
-          "ChatRoomMessage",
-          () => modApi.hookFunction("ChatRoomMessage", 0, (args, next) => {
-            const protocol = this.#normalizeRoomProtocol(args[0]);
-            if (protocol) this.bus.emit("bc:protocol", protocol);
-            this.#notifyCustomActivityMessage(args[0]);
-            return next(args);
+          "ServerSendBeepMessage",
+          () => modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
+            const result = next(args);
+            if (this.#sendingViaKikiLink) return result;
+            const [target, message, options] = args;
+            const event = this.#normalizeOutgoing(target, message, options);
+            if (event) this.bus.emit("beep:sent", event);
+            return result;
           })
         );
       }
@@ -649,17 +652,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
           ACTIVITY_HOOK_RETRY_MS
         );
       }
-      this.#tryInstallHook(
-        "ServerSendBeepMessage",
-        () => modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
-          const result = next(args);
-          if (this.#sendingViaKikiLink) return result;
-          const [target, message, options] = args;
-          const event = this.#normalizeOutgoing(target, message, options);
-          if (event) this.bus.emit("beep:sent", event);
-          return result;
-        })
-      );
       this.#ensureCharacterOverlayHook();
       if (this.#characterOverlayHookRetryTimer === void 0) {
         this.#characterOverlayHookRetryTimer = setInterval(
@@ -669,11 +661,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
     }
     #ensureCharacterOverlayHook() {
-      const modApi = this.#modApi;
-      if (!modApi) return;
       for (const name of this.#characterOverlayHookNames) {
         const hook = this.#resilientHooks.get(name);
-        if (hook) this.#ensureDirectFallback(name, hook);
+        if (hook) this.#ensureDirectHook(name, hook);
       }
       if (this.#characterOverlayHookNames.has("ChatRoomCharacterViewDrawOverlay") && this.#characterOverlayHookNames.has("ChatRoomDrawCharacterStatusIcons")) {
         return;
@@ -689,20 +679,17 @@ One of mods you are using is using an old version of SDK. It will work for now b
           this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
           return result;
         };
-        const installed = this.#tryInstallHook(
-          name,
-          () => modApi.hookFunction(name, -10, hook),
-          hook
-        );
+        this.#resilientHooks.set(name, hook);
+        const installed = this.#ensureDirectHook(name, hook);
         if (installed) this.#characterOverlayHookNames.add(name);
+        else this.#resilientHooks.delete(name);
       }
     }
     #ensureActivityHooks() {
-      const modApi = this.#modApi;
-      if (!modApi) return;
+      this.#ensureRoomMessageHook();
       for (const name of this.#installedActivityHooks) {
         const hook = this.#resilientHooks.get(name);
-        if (hook) this.#ensureDirectFallback(name, hook);
+        if (hook) this.#ensureDirectHook(name, hook);
       }
       if (this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT) return;
       const allowedHook = (args, next) => {
@@ -713,7 +700,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "ActivityAllowedForGroup",
         typeof ActivityAllowedForGroup === "function",
-        10,
         allowedHook
       );
       const dialogBuildHook = (args, next) => {
@@ -748,7 +734,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "DialogBuildActivities",
         typeof DialogBuildActivities === "function",
-        -10,
         dialogBuildHook
       );
       const dictionaryHook = (args, next) => {
@@ -765,7 +750,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "ActivityDictionaryText",
         typeof ActivityDictionaryText === "function",
-        10,
         dictionaryHook
       );
       const runHook = (args, next) => {
@@ -781,7 +765,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "ActivityRun",
         typeof ActivityRun === "function",
-        10,
         runHook
       );
       const activityButtonHook = (args, next) => {
@@ -810,7 +793,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "ElementButton.CreateForActivity",
         typeof ElementButton === "object" && ElementButton !== null && typeof ElementButton.CreateForActivity === "function",
-        10,
         activityButtonHook
       );
       const preferenceHook = (args, next) => {
@@ -827,21 +809,32 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#tryInstallActivityHook(
         "PreferenceGetActivityFactor",
         typeof PreferenceGetActivityFactor === "function",
-        10,
         preferenceHook
       );
     }
-    #tryInstallActivityHook(name, available, priority, hook) {
+    #tryInstallActivityHook(name, available, hook) {
       if (!available || this.#installedActivityHooks.has(name)) return;
-      const modApi = this.#modApi;
-      if (!modApi) return;
-      if (this.#tryInstallHook(
-        name,
-        () => modApi.hookFunction(name, priority, hook),
-        hook
-      )) {
+      this.#resilientHooks.set(name, hook);
+      if (this.#ensureDirectHook(name, hook)) {
         this.#installedActivityHooks.add(name);
+      } else {
+        this.#resilientHooks.delete(name);
       }
+    }
+    #ensureRoomMessageHook() {
+      const name = "ChatRoomMessage";
+      if (typeof ChatRoomMessage !== "function") return;
+      let hook = this.#resilientHooks.get(name);
+      if (!hook) {
+        hook = (args, next) => {
+          const protocol = this.#normalizeRoomProtocol(args[0]);
+          if (protocol) this.bus.emit("bc:protocol", protocol);
+          this.#notifyCustomActivityMessage(args[0]);
+          return next(args);
+        };
+        this.#resilientHooks.set(name, hook);
+      }
+      this.#ensureDirectHook(name, hook);
     }
     #renderCharacterOverlays(character, characterX, characterY, zoom) {
       const signature = `${character?.MemberNumber ?? "?"}:${characterX}:${characterY}:${zoom}`;
@@ -889,43 +882,25 @@ One of mods you are using is using an old version of SDK. It will work for now b
         return void 0;
       }
     }
-    #tryInstallHook(name, install, resilientHook) {
+    #tryInstallHook(name, install) {
       try {
         const sdkUnhook = install();
         this.#unhooks.push(sdkUnhook);
-        if (resilientHook) {
-          this.#resilientHooks.set(name, resilientHook);
-          if (!this.#ensureDirectFallback(name, resilientHook)) {
-            this.#resilientHooks.delete(name);
-            this.#unhooks.pop();
-            sdkUnhook();
-            return false;
-          }
-        }
         return true;
       } catch (error) {
         this.#logger.warn(`${name} hook unavailable; keeping native fallback`, error);
         return false;
       }
     }
-    #ensureDirectFallback(name, hook) {
-      if (this.#sdkEntrypointIsCurrent(name)) return true;
+    #ensureDirectHook(name, hook) {
       const existing = this.#directHookRegistrations.get(name);
       if (existing?.isCurrent()) return true;
       const registration = this.#installDirectHook(name, hook);
       if (!registration) return false;
       this.#directHookRegistrations.set(name, registration);
       this.#unhooks.push(registration.unhook);
-      this.#logger.warn(`${name} was replaced after ModSDK cached it; direct fallback installed`);
+      this.#logger.info(`${name} live hook installed`);
       return true;
-    }
-    #sdkEntrypointIsCurrent(name) {
-      try {
-        const info = import_bondage_club_mod_sdk.default.getPatchingInfo().get(name);
-        return Boolean(info?.sdkEntrypoint && info.currentEntrypoint === info.sdkEntrypoint);
-      } catch {
-        return false;
-      }
     }
     #installDirectHook(name, hook) {
       const path = name.split(".");
@@ -1146,6 +1121,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
   }
   function isBondageClubReady() {
     return typeof document !== "undefined" && document.body !== null && typeof Player === "object" && Player !== null && Number.isSafeInteger(Player.MemberNumber) && Player.MemberNumber > 0 && typeof ServerSendBeepMessage === "function";
+  }
+  function currentModSdk() {
+    const sdk = window.bcModSdk;
+    if (!sdk || typeof sdk.registerMod !== "function") {
+      throw new Error("Bondage Club ModSDK is unavailable");
+    }
+    return sdk;
   }
 
   // src/storage/memory-chat-repository.ts
@@ -2095,8 +2077,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var CHARACTER_HEIGHT = 1e3;
   var BADGE_SIZE = 30;
   var BADGE_OPACITY = 0.78;
-  var BADGE_HIT_PADDING = 12;
   var BADGE_DRAG_THRESHOLD = 5;
+  var DOM_SYNC_INTERVAL_MS = 33;
   var DEFAULT_ROOM_BADGE_POSITION = Object.freeze({
     x: 0.87,
     y: 5e-3
@@ -2121,6 +2103,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #settings;
     #adapter;
     #presence;
+    #element = document.createElement("img");
     #fallbackImage = typeof Image === "function" ? new Image() : void 0;
     #config;
     #ownFrame;
@@ -2131,20 +2114,22 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #previousTouchAction = "";
     #settingsUnsubscribe;
     #unregisterOverlay;
+    #domSyncTimer;
     #placementActive = false;
     #mounted = false;
     #destroyed = false;
     #renderer = (character, x, y, zoom) => {
       if (!character || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) return;
       const own = character.MemberNumber === this.#adapter.getOwnMemberNumber();
-      if (own) this.#ownFrame = { x, y, zoom };
+      if (own) {
+        this.#ownFrame = { x, y, zoom };
+        this.#syncOwnElement();
+        return;
+      }
       if (!this.#config.enabled || !this.#iconsAreVisible()) return;
-      if (!own && !this.#presence.hasCompatiblePeer(character.MemberNumber)) return;
-      const position = resolveRoomBadgePosition(
-        own && this.#previewPosition ? this.#previewPosition : this.#config.position,
-        { x, y, zoom }
-      );
-      this.#draw(position, own && this.#placementActive);
+      if (!this.#presence.hasCompatiblePeer(character.MemberNumber)) return;
+      const position = resolveRoomBadgePosition(this.#config.position, { x, y, zoom });
+      this.#draw(position);
     };
     #handlePointerDown = (event) => {
       if (!this.#placementActive || this.#drag || event.button !== 0 || !this.#ownFrame || !this.#canvas) {
@@ -2156,10 +2141,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#previewPosition ?? this.#config.position,
         this.#ownFrame
       );
-      const padding = Math.max(BADGE_HIT_PADDING * this.#ownFrame.zoom, 4);
-      if (point.x < position.left - padding || point.x > position.left + position.size + padding || point.y < position.top - padding || point.y > position.top + position.size + padding) {
-        return;
-      }
       this.#drag = {
         pointerId: event.pointerId,
         startCanvasX: point.x,
@@ -2170,7 +2151,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       };
       this.#consumePointer(event);
       try {
-        this.#canvas.setPointerCapture(event.pointerId);
+        this.#element.setPointerCapture(event.pointerId);
       } catch {
       }
     };
@@ -2190,6 +2171,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         point.y - drag.offsetY,
         frame
       );
+      this.#syncOwnElement();
       this.#consumePointer(event);
     };
     #handlePointerUp = (event) => {
@@ -2205,6 +2187,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       });
       this.#previewPosition = void 0;
       this.#setPlacement(false);
+      this.#syncOwnElement();
     };
     #handlePointerCancel = (event) => {
       if (!this.#drag || this.#drag.pointerId !== event.pointerId) return;
@@ -2212,6 +2195,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#releasePointer(event.pointerId);
       this.#drag = void 0;
       this.#previewPosition = void 0;
+      this.#syncOwnElement();
     };
     #handleKeyDown = (event) => {
       if (!this.#placementActive || event.key !== "Escape") return;
@@ -2224,22 +2208,44 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#presence = presence;
       this.#config = settings.get().ui.roomBadge;
       if (this.#fallbackImage) this.#fallbackImage.src = kikilink_blossom_default;
+      this.#element.className = "kl-room-blossom";
+      this.#element.src = kikilink_blossom_default;
+      this.#element.alt = "";
+      this.#element.draggable = false;
+      this.#element.hidden = true;
+      this.#element.setAttribute("aria-hidden", "true");
+      Object.assign(this.#element.style, {
+        position: "fixed",
+        display: "none",
+        pointerEvents: "none",
+        opacity: String(BADGE_OPACITY),
+        zIndex: "2147483000",
+        userSelect: "none",
+        touchAction: "none",
+        filter: "drop-shadow(0 1px 3px rgba(0, 0, 0, .75))"
+      });
       this.#settingsUnsubscribe = settings.subscribe((next) => {
         this.#config = next.ui.roomBadge;
         if (!this.#config.enabled) this.cancelPlacement();
+        this.#syncOwnElement();
       });
     }
     mount() {
       if (this.#destroyed || this.#mounted) return;
       this.#mounted = true;
-      if (typeof this.#adapter.registerCharacterOverlay !== "function") return;
-      this.#unregisterOverlay = this.#adapter.registerCharacterOverlay(this.#renderer);
+      document.body.append(this.#element);
+      if (typeof this.#adapter.registerCharacterOverlay === "function") {
+        this.#unregisterOverlay = this.#adapter.registerCharacterOverlay(this.#renderer);
+      }
+      this.#domSyncTimer = setInterval(() => this.#syncOwnElement(), DOM_SYNC_INTERVAL_MS);
+      this.#syncOwnElement();
       window.addEventListener("keydown", this.#handleKeyDown);
     }
     /** Arms a single drag of the flower above the authenticated player's character. */
     beginPlacement() {
       const liveFrame = visibleCharacterFrame(this.#adapter.getOwnMemberNumber());
       if (liveFrame) this.#ownFrame = liveFrame;
+      this.#syncOwnElement();
       if (this.#destroyed || !this.#mounted || !this.#config.enabled || typeof this.#adapter.isInChatRoom !== "function" || !this.#adapter.isInChatRoom() || !this.#ownFrame) {
         return false;
       }
@@ -2272,10 +2278,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#settingsUnsubscribe = void 0;
       this.#unregisterOverlay?.();
       this.#unregisterOverlay = void 0;
+      if (this.#domSyncTimer !== void 0) clearInterval(this.#domSyncTimer);
+      this.#domSyncTimer = void 0;
+      this.#element.remove();
       this.#ownFrame = void 0;
       this.#mounted = false;
     }
-    #draw(position, placement) {
+    #draw(position) {
       const context = mainCanvasContext();
       if (!context) return;
       try {
@@ -2297,45 +2306,72 @@ One of mods you are using is using an old version of SDK. It will work for now b
           );
           context.restore();
         }
-        if (placement) {
-          context.save();
-          context.strokeStyle = "rgba(255, 135, 153, 0.9)";
-          context.lineWidth = Math.max(1.5, position.size / 15);
-          context.setLineDash([Math.max(2, position.size / 5), Math.max(2, position.size / 6)]);
-          context.strokeRect(
-            position.left - 4,
-            position.top - 4,
-            position.size + 8,
-            position.size + 8
-          );
-          context.restore();
-        }
       } catch {
       }
     }
     #iconsAreVisible() {
       return typeof ChatRoomHideIconState !== "number" || ChatRoomHideIconState === 0;
     }
+    #syncOwnElement() {
+      if (this.#destroyed || !this.#mounted) return;
+      const inRoom = typeof this.#adapter.isInChatRoom === "function" && this.#adapter.isInChatRoom();
+      if (!this.#config.enabled || !this.#iconsAreVisible() || !inRoom) {
+        this.#element.hidden = true;
+        this.#element.style.display = "none";
+        return;
+      }
+      const liveFrame = visibleCharacterFrame(this.#adapter.getOwnMemberNumber());
+      if (liveFrame) this.#ownFrame = liveFrame;
+      const frame = this.#ownFrame;
+      const canvas = mainCanvasElement();
+      if (!frame || !canvas) {
+        this.#element.hidden = true;
+        this.#element.style.display = "none";
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0 || canvas.width <= 0 || canvas.height <= 0) {
+        this.#element.hidden = true;
+        this.#element.style.display = "none";
+        return;
+      }
+      const position = resolveRoomBadgePosition(
+        this.#previewPosition ?? this.#config.position,
+        frame
+      );
+      const scaleX = rect.width / canvas.width;
+      const scaleY = rect.height / canvas.height;
+      this.#element.hidden = false;
+      this.#element.style.display = "block";
+      this.#element.style.left = `${rect.left + position.left * scaleX}px`;
+      this.#element.style.top = `${rect.top + position.top * scaleY}px`;
+      this.#element.style.width = `${position.size * scaleX}px`;
+      this.#element.style.height = `${position.size * scaleY}px`;
+    }
     #setPlacement(active) {
       if (active === this.#placementActive) return;
       this.#placementActive = active;
       const canvas = this.#canvas;
       if (active && canvas) {
-        this.#previousCursor = canvas.style.cursor;
-        this.#previousTouchAction = canvas.style.touchAction;
-        canvas.style.cursor = "grab";
-        canvas.style.touchAction = "none";
-        canvas.addEventListener("pointerdown", this.#handlePointerDown, true);
+        this.#previousCursor = this.#element.style.cursor;
+        this.#previousTouchAction = this.#element.style.touchAction;
+        this.#element.style.cursor = "grab";
+        this.#element.style.touchAction = "none";
+        this.#element.style.pointerEvents = "auto";
+        this.#element.style.outline = "1px dashed rgba(255, 135, 153, .9)";
+        this.#element.style.outlineOffset = "3px";
+        this.#element.addEventListener("pointerdown", this.#handlePointerDown, true);
         window.addEventListener("pointermove", this.#handlePointerMove, true);
         window.addEventListener("pointerup", this.#handlePointerUp, true);
         window.addEventListener("pointercancel", this.#handlePointerCancel, true);
         return;
       }
-      if (canvas) {
-        canvas.removeEventListener("pointerdown", this.#handlePointerDown, true);
-        canvas.style.cursor = this.#previousCursor;
-        canvas.style.touchAction = this.#previousTouchAction;
-      }
+      this.#element.removeEventListener("pointerdown", this.#handlePointerDown, true);
+      this.#element.style.cursor = this.#previousCursor;
+      this.#element.style.touchAction = this.#previousTouchAction;
+      this.#element.style.pointerEvents = "none";
+      this.#element.style.outline = "";
+      this.#element.style.outlineOffset = "";
       window.removeEventListener("pointermove", this.#handlePointerMove, true);
       window.removeEventListener("pointerup", this.#handlePointerUp, true);
       window.removeEventListener("pointercancel", this.#handlePointerCancel, true);
@@ -2346,11 +2382,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
       event.stopImmediatePropagation();
     }
     #releasePointer(pointerId) {
-      const canvas = this.#canvas;
-      if (pointerId === void 0 || !canvas) return;
+      if (pointerId === void 0) return;
       try {
-        if (!canvas.hasPointerCapture || canvas.hasPointerCapture(pointerId)) {
-          canvas.releasePointerCapture(pointerId);
+        if (!this.#element.hasPointerCapture || this.#element.hasPointerCapture(pointerId)) {
+          this.#element.releasePointerCapture(pointerId);
         }
       } catch {
       }
@@ -2499,6 +2534,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (this.#registryMonitor === void 0) {
         this.#registryMonitor = setInterval(() => {
           this.#ensureRegistryInjection();
+          this.#syncOpenNativeDialog();
         }, REGISTRY_MONITOR_INTERVAL_MS);
       }
       this.syncFromSettings();
@@ -2529,6 +2565,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#runtimeActivities.set(runtimeName, definition);
       }
       this.#ensureRegistryInjection();
+      this.#syncOpenNativeDialog();
     }
     isAvailable() {
       return this.adapter.canSendRoomEmote();
@@ -2549,7 +2586,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const existing = new Set(activities.map((item) => item?.Activity?.Name));
       const selfTarget = character?.MemberNumber === this.adapter.getOwnMemberNumber();
       for (const [runtimeName, definition] of this.#runtimeActivities) {
-        if (definition.targetGroup !== groupName || existing.has(runtimeName)) continue;
+        if (!activityGroupsMatch(definition.targetGroup, groupName) || existing.has(runtimeName)) {
+          continue;
+        }
         if (selfTarget && definition.targetMode === "other") continue;
         if (!selfTarget && definition.targetMode === "self") continue;
         if (result === activities) result = [...activities];
@@ -2771,6 +2810,38 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
       refreshNativeActivityDialog();
     }
+    /**
+     * Repairs the exact array consumed by the currently open BC activity grid. This path is kept
+     * independent from ModSDK and from function replacement so another addon cannot make saved
+     * KikiLink activities silently disappear from an already-open native menu.
+     */
+    #syncOpenNativeDialog() {
+      if (typeof DialogMenuMode === "undefined" || DialogMenuMode !== "activities" || typeof DialogActivity === "undefined" || !Array.isArray(DialogActivity)) {
+        return;
+      }
+      let character;
+      try {
+        character = typeof CharacterGetCurrent === "function" ? CharacterGetCurrent() : typeof CurrentCharacter !== "undefined" ? CurrentCharacter : void 0;
+      } catch {
+        return;
+      }
+      const groupName = character?.FocusGroup?.Name;
+      if (!character || typeof groupName !== "string") return;
+      const extended = this.extendAllowedActivities(character, groupName, DialogActivity);
+      if (extended === DialogActivity) return;
+      DialogActivity.splice(0, DialogActivity.length, ...extended);
+      try {
+        const reload = DialogMenuMapping?.activities?.Reload;
+        if (typeof reload === "function") {
+          const pending = reload.call(DialogMenuMapping.activities, null, {
+            reset: true,
+            resetDialogItems: false
+          });
+          if (pending && typeof pending.catch === "function") void pending.catch(() => void 0);
+        }
+      } catch {
+      }
+    }
     #registryInjectionIsHealthy(registry) {
       const registeredActivities = registry.activities.filter(
         (activity) => typeof activity?.Name === "string" && activity.Name.startsWith(ACTIVITY_PREFIX)
@@ -2896,6 +2967,15 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return { activities: ActivityFemale3DCG, ordering: ActivityFemale3DCGOrdering };
     }
     return void 0;
+  }
+  function activityGroupsMatch(configuredGroup, focusedGroup) {
+    if (configuredGroup === focusedGroup) return true;
+    if (typeof AssetGroup === "undefined" || !Array.isArray(AssetGroup)) return false;
+    const canonical = (name) => {
+      const group = AssetGroup.find((candidate) => candidate?.Name === name);
+      return group?.MirrorActivitiesFrom ?? group?.Name ?? name;
+    };
+    return canonical(configuredGroup) === canonical(focusedGroup);
   }
   function createNativeActivity(runtimeName, definition) {
     return {
@@ -14266,6 +14346,7 @@ ${expanded}` : expanded;
     #activeMemberNumber;
     #desiredMemberNumber;
     #transitionPromise;
+    #versionBadge;
     #started = false;
     publicApi() {
       return {
@@ -14282,6 +14363,7 @@ ${expanded}` : expanded;
     async start() {
       if (this.#started) return;
       this.#started = true;
+      this.#mountVersionBadge();
       await waitForAuthenticatedPlayer(() => this.#started);
       if (!this.#started) return;
       this.#desiredMemberNumber = authenticatedMemberNumber();
@@ -14297,6 +14379,8 @@ ${expanded}` : expanded;
       this.#desiredMemberNumber = void 0;
       await this.#transitionPromise;
       await this.#deactivateAccount();
+      this.#versionBadge?.remove();
+      this.#versionBadge = void 0;
       this.#bus.clear();
       this.#logger.info("Stopped");
     }
@@ -14380,6 +14464,30 @@ ${expanded}` : expanded;
       this.#accountStorage = void 0;
       this.#activeMemberNumber = void 0;
     }
+    #mountVersionBadge() {
+      const existing = document.getElementById("kikilink-version");
+      if (existing) existing.remove();
+      const badge = document.createElement("span");
+      badge.id = "kikilink-version";
+      badge.dataset.kikilinkVersion = this.version;
+      badge.textContent = this.version;
+      badge.setAttribute("aria-hidden", "true");
+      Object.assign(badge.style, {
+        position: "fixed",
+        left: "3px",
+        bottom: "2px",
+        zIndex: "2147483646",
+        color: "#fff",
+        opacity: "0.18",
+        font: "7px/1 monospace",
+        letterSpacing: "0",
+        pointerEvents: "none",
+        userSelect: "none",
+        mixBlendMode: "difference"
+      });
+      document.body.append(badge);
+      this.#versionBadge = badge;
+    }
   };
   async function waitForAuthenticatedPlayer(keepWaiting) {
     while (keepWaiting() && authenticatedMemberNumber() === void 0) {
@@ -14407,7 +14515,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.4");
+    const app = new KikiLinkApp("0.20.5");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

@@ -35,6 +35,11 @@ describe("KikiLink startup", () => {
 
     await vi.advanceTimersByTimeAsync(99);
     expect(document.querySelector("#kikilink-root")).toBeNull();
+    const version = document.querySelector<HTMLElement>("#kikilink-version");
+    expect(version?.textContent).toBe("0.3.1");
+    expect(version?.dataset.kikilinkVersion).toBe("0.3.1");
+    expect(version?.style.opacity).toBe("0.18");
+    expect(version?.style.left).toBe("3px");
 
     globalThis.Player.MemberNumber = 999;
     globalThis.Player.Name = "AccountKiki";
@@ -65,6 +70,7 @@ describe("KikiLink startup", () => {
 
     await app.destroy();
     expect(document.querySelector("#kikilink-root")).toBeNull();
+    expect(document.querySelector("#kikilink-version")).toBeNull();
   });
 
   it("rebuilds KikiLink with the new account's own settings after an in-page switch", async () => {

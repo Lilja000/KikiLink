@@ -7,26 +7,35 @@
     <style>
       html, body { height: 100%; margin: 0; }
       body {
-        display: grid;
-        place-items: center;
         background: radial-gradient(circle at 30% 20%, #31202a, #111116 46%, #08080b);
         color: #eee;
         font-family: system-ui, sans-serif;
       }
-      .fake-game { text-align: center; opacity: 0.38; }
-      .fake-game strong { display: block; font-size: 34px; }
+      #MainCanvas { width: min(100vw, 1200px); height: auto; display: block; margin: 40px auto 0; background: #19131a; }
+      #harness-status { position: fixed; top: 8px; left: 8px; z-index: 20; font: 13px/1.4 monospace; }
+      #activity-grid { position: fixed; right: 12px; bottom: 24px; display: grid; gap: 6px; z-index: 20; }
+      #activity-grid button { min-width: 180px; min-height: 42px; position: relative; }
     </style>
   </head>
   <body>
-    <div class="fake-game">
-      <strong>Bondage Club</strong>
-      Local KikiLink compatibility harness
-    </div>
+    <div id="harness-status">Starting real-bundle integration check…</div>
+    <canvas id="MainCanvas" width="2000" height="1000"></canvas>
+    <div id="activity-grid"></div>
     <script>
+      window.alert = () => {};
+      window.bcModSdk = Object.freeze({
+        version: "1.2.0",
+        apiVersion: 1,
+        registerMod() { throw new Error("Harness intentionally blocks ModSDK registration"); },
+        getModsInfo() { return []; },
+        getPatchingInfo() { return new Map(); },
+        errorReporterHooks: Object.seal({ apiEndpointEnter: null, hookEnter: null, hookChainExit: null }),
+      });
       window.Player = {
         MemberNumber: 999001,
         Name: "KikiAccount",
         Nickname: "Kiki",
+        ExtensionSettings: {},
         FriendNames: new Map([
           [123456, "ReinaAccount"],
           [456789, "SidneyAccount"],
@@ -36,6 +45,16 @@
         window.Player,
         { MemberNumber: 123456, Name: "ReinaAccount", Nickname: "Reina" },
       ];
+      window.ChatRoomCharacterDrawlist = window.ChatRoomCharacter;
+      window.ChatRoomCharacterViewLoopCharacters = (callback) => {
+        if (callback(0, 100, 0, 500, 1)) return;
+        callback(1, 600, 0, 500, 1);
+      };
+      window.ChatRoomCharacterViewDrawOverlay = () => {};
+      window.ChatRoomDrawCharacterStatusIcons = () => {};
+      window.ChatRoomHideIconState = 0;
+      window.MainCanvas = document.getElementById("MainCanvas").getContext("2d");
+      window.DrawImageEx = () => true;
       window.FriendListBeepLog = [
         {
           MemberNumber: 123456,
@@ -53,6 +72,7 @@
         Visibility: ["All"],
       };
       window.ServerIsLoggedIn = () => true;
+      window.ServerPlayerExtensionSettingsSync = () => {};
       window.ServerAccountBeep = () => {};
       window.ServerAccountQueryResult = () => {};
       window.ChatRoomMessage = () => {};
@@ -79,7 +99,110 @@
       window.ChatRoomSetTarget = (memberNumber) => console.log("[Harness whisper]", memberNumber);
       window.InformationSheetLoadCharacter = (character) =>
         console.log("[Harness profile]", character.MemberNumber);
+
+      window.GameVersion = "R122";
+      window.AssetGroup = [
+        { Name: "ItemArms", Description: "Arms", Category: "Item" },
+      ];
+      window.ActivityFemale3DCG = [
+        { Name: "Caress", ActivityID: 1, MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"], TargetSelf: ["ItemArms"] },
+      ];
+      window.ActivityFemale3DCGOrdering = ["Caress"];
+      window.CurrentCharacter = {
+        MemberNumber: 123456,
+        Name: "ReinaAccount",
+        Nickname: "Reina",
+        FocusGroup: window.AssetGroup[0],
+      };
+      window.CharacterGetCurrent = () => window.CurrentCharacter;
+      window.CharacterNickname = (character) => character.Nickname || character.Name;
+      window.DialogMenuMode = "activities";
+      window.DialogActivity = [];
+      window.ActivityAllowedForGroup = (character, groupName) =>
+        window.ActivityFemale3DCG
+          .filter((activity) => activity.Target.includes(groupName))
+          .map((activity) => ({ Activity: activity, Group: groupName }));
+      window.ActivityDictionaryText = (key) => key;
+      window.PreferenceGetActivityFactor = () => 2;
+      window.ActivityRun = () => {};
+      window.ChatRoomPublishCustomAction = () => {};
+      window.ElementButton = {
+        CreateForActivity(id, itemActivity, character, onClick, options, config) {
+          const button = document.createElement("button");
+          button.id = id || "activity";
+          button.textContent = window.ActivityDictionaryText(`Activity${itemActivity.Activity.Name}`);
+          button.dataset.activity = itemActivity.Activity.Name;
+          if (options?.image) button.dataset.image = options.image;
+          button.addEventListener("click", () => onClick?.call(button, new PointerEvent("pointerup")));
+          config?.button?.parent?.append(button);
+          return button;
+        },
+      };
+      window.DialogMenuMapping = {
+        activities: {
+          Reload() {
+            const grid = document.getElementById("activity-grid");
+            grid.replaceChildren();
+            window.DialogActivity.forEach((item, index) => window.ElementButton.CreateForActivity(
+              `activity-${index}`,
+              item,
+              window.CurrentCharacter,
+              () => {},
+              {},
+              { button: { parent: grid } },
+            ));
+            return Promise.resolve();
+          },
+        },
+      };
+      window.DialogBuildActivities = (character, reload = true) => {
+        window.DialogActivity = window.ActivityAllowedForGroup(character, character.FocusGroup.Name);
+        if (reload) void window.DialogMenuMapping.activities.Reload();
+      };
+
+      localStorage.setItem(
+        "kikilink:account:999001:kikilink:settings:v1",
+        JSON.stringify({
+          schemaVersion: 16,
+          linkActivities: {
+            enabled: true,
+            customActivities: [{
+              id: "harness-elbow-touch",
+              name: "Harness elbow touch",
+              targetGroup: "ItemArms",
+              targetMode: "both",
+              template: "{me} touches {target's} elbow.",
+              image: "Caress",
+              arousal: 0,
+            }],
+          },
+        }),
+      );
     </script>
     <script src="../dist/KikiLink.user.js"></script>
+    <script>
+      setTimeout(() => {
+        window.ChatRoomCharacterViewDrawOverlay(window.Player, 100, 0, 1);
+        window.DialogBuildActivities(window.CurrentCharacter, true);
+      }, 700);
+      setTimeout(() => {
+        const blossom = document.querySelector(".kl-room-blossom");
+        const version = document.getElementById("kikilink-version");
+        const custom = window.DialogActivity.find((item) => item.Activity.Name.startsWith("KikiLinkCustom_"));
+        const result = {
+          publicApi: window.KikiLink?.getVersion?.() || null,
+          versionBadge: version?.textContent || null,
+          blossomVisible: !!blossom && !blossom.hidden && blossom.style.display !== "none",
+          blossomLeft: blossom?.style.left || null,
+          customActivityInRegistry: window.ActivityFemale3DCG.some((activity) => activity.Name.startsWith("KikiLinkCustom_")),
+          customActivityInDialog: !!custom,
+          customActivityButton: !!document.querySelector("#activity-grid [data-activity^='KikiLinkCustom_']"),
+        };
+        window.__KIKILINK_HARNESS_RESULT__ = result;
+        const passed = Object.values(result).every(Boolean);
+        document.getElementById("harness-status").textContent = `${passed ? "PASS" : "FAIL"} ${JSON.stringify(result)}`;
+        document.body.dataset.harnessPassed = String(passed);
+      }, 1400);
+    </script>
   </body>
 </html>

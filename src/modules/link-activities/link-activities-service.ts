@@ -130,6 +130,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     if (this.#registryMonitor === undefined) {
       this.#registryMonitor = setInterval(() => {
         this.#ensureRegistryInjection();
+        this.#syncOpenNativeDialog();
       }, REGISTRY_MONITOR_INTERVAL_MS);
     }
     this.syncFromSettings();
@@ -163,6 +164,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       this.#runtimeActivities.set(runtimeName, definition);
     }
     this.#ensureRegistryInjection();
+    this.#syncOpenNativeDialog();
   }
 
   isAvailable(): boolean {
@@ -191,7 +193,9 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     const selfTarget = character?.MemberNumber === this.adapter.getOwnMemberNumber();
 
     for (const [runtimeName, definition] of this.#runtimeActivities) {
-      if (definition.targetGroup !== groupName || existing.has(runtimeName)) continue;
+      if (!activityGroupsMatch(definition.targetGroup, groupName) || existing.has(runtimeName)) {
+        continue;
+      }
       if (selfTarget && definition.targetMode === "other") continue;
       if (!selfTarget && definition.targetMode === "self") continue;
       if (result === activities) result = [...activities];
@@ -489,6 +493,50 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     refreshNativeActivityDialog();
   }
 
+  /**
+   * Repairs the exact array consumed by the currently open BC activity grid. This path is kept
+   * independent from ModSDK and from function replacement so another addon cannot make saved
+   * KikiLink activities silently disappear from an already-open native menu.
+   */
+  #syncOpenNativeDialog(): void {
+    if (
+      typeof DialogMenuMode === "undefined" ||
+      DialogMenuMode !== "activities" ||
+      typeof DialogActivity === "undefined" ||
+      !Array.isArray(DialogActivity)
+    ) {
+      return;
+    }
+    let character: BCCharacter | null | undefined;
+    try {
+      character =
+        typeof CharacterGetCurrent === "function"
+          ? CharacterGetCurrent()
+          : typeof CurrentCharacter !== "undefined"
+            ? CurrentCharacter
+            : undefined;
+    } catch {
+      return;
+    }
+    const groupName = character?.FocusGroup?.Name;
+    if (!character || typeof groupName !== "string") return;
+    const extended = this.extendAllowedActivities(character, groupName, DialogActivity);
+    if (extended === DialogActivity) return;
+    DialogActivity.splice(0, DialogActivity.length, ...extended);
+    try {
+      const reload = DialogMenuMapping?.activities?.Reload;
+      if (typeof reload === "function") {
+        const pending = reload.call(DialogMenuMapping.activities, null, {
+          reset: true,
+          resetDialogItems: false,
+        });
+        if (pending && typeof pending.catch === "function") void pending.catch(() => undefined);
+      }
+    } catch {
+      // DialogActivity is already repaired; the next native redraw will consume it.
+    }
+  }
+
   #registryInjectionIsHealthy(registry: NativeActivityRegistry): boolean {
     const registeredActivities = registry.activities.filter((activity) =>
       typeof activity?.Name === "string" && activity.Name.startsWith(ACTIVITY_PREFIX),
@@ -688,6 +736,16 @@ function getNativeActivityRegistry(): NativeActivityRegistry | undefined {
     return { activities: ActivityFemale3DCG, ordering: ActivityFemale3DCGOrdering };
   }
   return undefined;
+}
+
+function activityGroupsMatch(configuredGroup: string, focusedGroup: string): boolean {
+  if (configuredGroup === focusedGroup) return true;
+  if (typeof AssetGroup === "undefined" || !Array.isArray(AssetGroup)) return false;
+  const canonical = (name: string): string => {
+    const group = AssetGroup.find((candidate) => candidate?.Name === name);
+    return group?.MirrorActivitiesFrom ?? group?.Name ?? name;
+  };
+  return canonical(configuredGroup) === canonical(focusedGroup);
 }
 
 function createNativeActivity(

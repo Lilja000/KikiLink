@@ -1,6 +1,6 @@
 # Account-scoped data and device sync
 
-KikiLink 0.20.4 treats the authenticated Bondage Club `Player.MemberNumber` as the owner of every
+KikiLink 0.20.5 treats the authenticated Bondage Club `Player.MemberNumber` as the owner of every
 piece of state. It does not use a shared browser-wide KikiLink identity.
 
 ## Local isolation

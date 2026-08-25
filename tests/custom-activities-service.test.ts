@@ -26,7 +26,10 @@ afterEach(() => {
     "GameVersion",
     "DialogBuildActivities",
     "CharacterGetCurrent",
+    "CurrentCharacter",
     "DialogMenuMode",
+    "DialogActivity",
+    "DialogMenuMapping",
   ]) {
     Reflect.deleteProperty(globalThis, key);
   }
@@ -374,6 +377,55 @@ describe("native Custom Activities", () => {
         )
         .map((item) => item.Activity.Name),
     ).toEqual([expect.stringMatching(/^KikiLinkCustom_/)]);
+    service.stop();
+  });
+
+  it("repairs the open native grid without hooks and honors mirrored activity groups", () => {
+    vi.useFakeTimers();
+    globalThis.ActivityFemale3DCG = [
+      { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
+    ];
+    globalThis.ActivityFemale3DCGOrdering = ["Caress"];
+    globalThis.AssetGroup = [
+      { Name: "ItemArms", Description: "Arms", Category: "Item" },
+      {
+        Name: "ItemHands",
+        Description: "Hands",
+        Category: "Item",
+        MirrorActivitiesFrom: "ItemArms",
+      },
+    ];
+    const target = {
+      MemberNumber: 123,
+      Name: "Reina",
+      FocusGroup: globalThis.AssetGroup[1]!,
+    };
+    globalThis.CharacterGetCurrent = () => target;
+    globalThis.DialogMenuMode = "activities";
+    globalThis.DialogActivity = [];
+    const reload = vi.fn(() => Promise.resolve());
+    globalThis.DialogMenuMapping = { activities: { Reload: reload } };
+    const service = new LinkActivitiesService(
+      {
+        registerCustomActivityIntegration: () => () => undefined,
+        getOwnMemberNumber: () => 999,
+      } as unknown as BCAdapter,
+      settingsWithElbowTouch(),
+    );
+
+    service.start();
+    expect(globalThis.DialogActivity.map((item) => item.Activity.Name)).toEqual([
+      expect.stringMatching(/^KikiLinkCustom_/),
+    ]);
+    expect(globalThis.DialogActivity[0]?.Group).toBe("ItemHands");
+    expect(reload).toHaveBeenCalledOnce();
+
+    globalThis.DialogActivity.splice(0);
+    vi.advanceTimersByTime(500);
+    expect(globalThis.DialogActivity.map((item) => item.Activity.Name)).toEqual([
+      expect.stringMatching(/^KikiLinkCustom_/),
+    ]);
+    expect(reload).toHaveBeenCalledTimes(2);
     service.stop();
   });
 

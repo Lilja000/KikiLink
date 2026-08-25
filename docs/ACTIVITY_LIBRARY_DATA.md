@@ -1,6 +1,6 @@
 # Custom Activities data and compatibility
 
-KikiLink 0.20.4 stores user-created activities under the authenticated BC MemberNumber and registers
+KikiLink 0.20.5 stores user-created activities under the authenticated BC MemberNumber and registers
 them beside Bondage Club's vanilla activities at runtime. There is no public activity library or
 remote index; the private library is also included in that account's bounded `ExtensionSettings`
 snapshot so it can follow the same account to another device.

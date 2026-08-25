@@ -111,39 +111,46 @@ describe("room Blossom character positioning", () => {
     expect(DEFAULT_ROOM_BADGE_POSITION).toEqual({ x: 0.87, y: 0.005 });
   });
 
-  it("draws a 30-unit translucent icon for the account and compatible KikiLink peers only", () => {
+  it("shows a hook-independent DOM icon for the account and canvas icons for compatible peers", () => {
     const { badge, render, compatible, unregister } = fixture();
     const draw = vi.mocked(globalThis.DrawImageEx);
 
     render({ MemberNumber: 999, Name: "Kiki" }, 100, 20, 0.5);
-    expect(draw).toHaveBeenLastCalledWith(
-      BLOSSOM_ICON_DATA_URL,
-      globalThis.MainCanvas,
-      317.5,
-      22.5,
-      { Width: 15, Height: 15, Alpha: 0.78 },
-    );
+    const own = document.querySelector<HTMLImageElement>(".kl-room-blossom");
+    expect(own).not.toBeNull();
+    expect(own?.src).toBe(BLOSSOM_ICON_DATA_URL);
+    expect(own?.hidden).toBe(false);
+    expect(own?.style.left).toBe("317.5px");
+    expect(own?.style.top).toBe("22.5px");
+    expect(own?.style.width).toBe("15px");
+    expect(own?.style.height).toBe("15px");
+    expect(draw).not.toHaveBeenCalled();
 
     render({ MemberNumber: 123, Name: "Unknown addon" }, 600, 20, 0.5);
-    expect(draw).toHaveBeenCalledTimes(1);
+    expect(draw).not.toHaveBeenCalled();
     compatible.add(123);
     render({ MemberNumber: 123, Name: "KikiLink peer" }, 600, 20, 0.5);
-    expect(draw).toHaveBeenCalledTimes(2);
+    expect(draw).toHaveBeenCalledTimes(1);
 
     globalThis.ChatRoomHideIconState = 1;
     render({ MemberNumber: 999, Name: "Kiki" }, 100, 20, 0.5);
-    expect(draw).toHaveBeenCalledTimes(2);
+    expect(own?.hidden).toBe(true);
+    expect(draw).toHaveBeenCalledTimes(1);
     badge.destroy();
+    expect(own?.isConnected).toBe(false);
     expect(unregister).toHaveBeenCalledOnce();
   });
 
-  it("follows enabled settings without adding a fixed DOM badge", () => {
+  it("follows enabled settings on the passive fixed DOM badge", () => {
     const { badge, render, settings } = fixture();
-    expect(document.querySelector(".kl-room-blossom")).toBeNull();
+    const own = document.querySelector<HTMLImageElement>(".kl-room-blossom");
+    expect(own).not.toBeNull();
+    render({ MemberNumber: 999, Name: "Kiki" }, 0, 0, 1);
+    expect(own?.hidden).toBe(false);
     settings.update((draft) => {
       draft.ui.roomBadge.enabled = false;
     });
-    render({ MemberNumber: 999, Name: "Kiki" }, 0, 0, 1);
+    expect(own?.hidden).toBe(true);
     expect(globalThis.DrawImageEx).not.toHaveBeenCalled();
     badge.destroy();
   });
@@ -166,10 +173,12 @@ describe("room Blossom settings-armed dragging", () => {
   });
 
   it("ignores normal pointer input and persists one character-relative drag when armed", () => {
-    const { badge, canvas, render, settings } = fixture();
+    const { badge, render, settings } = fixture();
     render({ MemberNumber: 999, Name: "Kiki" }, 100, 0, 1);
+    const own = document.querySelector<HTMLImageElement>(".kl-room-blossom");
+    if (!own) throw new Error("Blossom DOM icon was not mounted");
     const before = settings.get().ui.roomBadge.position;
-    canvas.dispatchEvent(
+    own.dispatchEvent(
       new PointerEvent("pointerdown", { pointerId: 7, button: 0, clientX: 540, clientY: 10 }),
     );
     window.dispatchEvent(
@@ -179,9 +188,9 @@ describe("room Blossom settings-armed dragging", () => {
     expect(settings.get().ui.roomBadge.position).toEqual(before);
 
     expect(badge.beginPlacement()).toBe(true);
-    expect(canvas.style.cursor).toBe("grab");
-    expect(canvas.style.touchAction).toBe("none");
-    canvas.dispatchEvent(
+    expect(own.style.cursor).toBe("grab");
+    expect(own.style.pointerEvents).toBe("auto");
+    own.dispatchEvent(
       new PointerEvent("pointerdown", {
         bubbles: true,
         pointerId: 7,
@@ -203,8 +212,8 @@ describe("room Blossom settings-armed dragging", () => {
     );
 
     expect(settings.get().ui.roomBadge.position).toEqual({ x: 0.99, y: 0.095 });
-    expect(canvas.style.cursor).toBe("");
-    expect(canvas.style.touchAction).toBe("");
+    expect(own.style.cursor).toBe("");
+    expect(own.style.pointerEvents).toBe("none");
     badge.destroy();
   });
 
@@ -219,7 +228,7 @@ describe("room Blossom settings-armed dragging", () => {
     active.render({ MemberNumber: 999, Name: "Kiki" }, 100, 0, 1);
     expect(active.badge.beginPlacement()).toBe(true);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    expect(active.canvas.style.cursor).toBe("");
+    expect(document.querySelector<HTMLElement>(".kl-room-blossom")?.style.cursor).toBe("");
     active.settings.update((draft) => {
       draft.ui.roomBadge.position = { x: 0.2, y: 0.3 };
     });

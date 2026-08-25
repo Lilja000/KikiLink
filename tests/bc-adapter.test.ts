@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import bcModSDK from "bondage-club-mod-sdk";
 import { BCAdapter, type BCCustomActivityIntegration } from "../src/bc/adapter";
 import { EventBus } from "../src/core/event-bus";
 import type { KikiLinkEvents } from "../src/core/types";
@@ -450,6 +451,111 @@ describe("BCAdapter", () => {
     expect(nativeOverlay).toHaveBeenCalledWith(character, 120, 30, 0.75);
     expect(renderer).toHaveBeenCalledWith(character, 120, 30, 0.75);
     adapter.stop();
+  });
+
+  it("keeps Blossom and native activities functional without any ModSDK registration", () => {
+    const nativeOverlay = vi.fn();
+    const nativeAllowed = vi.fn((_character: BCCharacter, groupName: string) => [
+      {
+        Activity: { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: [groupName] },
+        Group: groupName,
+      },
+    ]);
+    globalThis.ChatRoomCharacterViewDrawOverlay = nativeOverlay;
+    globalThis.ActivityAllowedForGroup = nativeAllowed;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.20.5");
+    const renderer = vi.fn();
+    const customName = "KikiLinkCustom_direct";
+    const integration: BCCustomActivityIntegration = {
+      isCustomActivity: (name) => name === customName,
+      extendAllowedActivities: (_character, groupName, activities) => [
+        ...activities,
+        {
+          Activity: {
+            Name: customName,
+            MaxProgress: 0,
+            Prerequisite: [],
+            Target: [groupName],
+          },
+          Group: groupName,
+        },
+      ],
+      resolveText: () => undefined,
+      resolveImage: () => undefined,
+      run: () => false,
+      decorateButton: () => undefined,
+      onRoomMessage: () => undefined,
+    };
+
+    adapter.registerCharacterOverlay(renderer);
+    adapter.registerCustomActivityIntegration(integration);
+    const character = { MemberNumber: 999, Name: "AccountKiki" };
+    globalThis.ChatRoomCharacterViewDrawOverlay(character, 100, 20, 0.5);
+    const allowed = globalThis.ActivityAllowedForGroup(character, "ItemArms");
+
+    expect(nativeOverlay).toHaveBeenCalledWith(character, 100, 20, 0.5);
+    expect(renderer).toHaveBeenCalledWith(character, 100, 20, 0.5);
+    expect(nativeAllowed).toHaveBeenCalledWith(character, "ItemArms");
+    expect(allowed.map((item) => item.Activity.Name)).toEqual(["Caress", customName]);
+    adapter.stop();
+  });
+
+  it("recovers late BC functions even when another KikiLink registration blocks ModSDK", async () => {
+    vi.useFakeTimers();
+    const blocker = bcModSDK.registerMod({
+      name: "KikiLink",
+      fullName: "Blocked KikiLink test registration",
+      version: "0.0.0",
+    });
+    try {
+      globalThis.Player = {
+        MemberNumber: 999,
+        Name: "AccountKiki",
+        FriendNames: new Map(),
+      };
+      globalThis.ServerSendBeepMessage = vi.fn();
+      const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.20.5");
+      const renderer = vi.fn();
+      const customName = "KikiLinkCustom_late_direct";
+      adapter.registerCharacterOverlay(renderer);
+      adapter.registerCustomActivityIntegration({
+        isCustomActivity: (name) => name === customName,
+        extendAllowedActivities: (_character, groupName, activities) => [
+          ...activities,
+          {
+            Activity: {
+              Name: customName,
+              MaxProgress: 0,
+              Prerequisite: [],
+              Target: [groupName],
+            },
+            Group: groupName,
+          },
+        ],
+        resolveText: () => undefined,
+        resolveImage: () => undefined,
+        run: () => false,
+        decorateButton: () => undefined,
+        onRoomMessage: () => undefined,
+      });
+      await adapter.start();
+
+      const nativeOverlay = vi.fn();
+      const nativeAllowed = vi.fn(() => [] as BCItemActivity[]);
+      globalThis.ChatRoomCharacterViewDrawOverlay = nativeOverlay;
+      globalThis.ActivityAllowedForGroup = nativeAllowed;
+      await vi.advanceTimersByTimeAsync(500);
+
+      const character = { MemberNumber: 999, Name: "AccountKiki" };
+      globalThis.ChatRoomCharacterViewDrawOverlay(character, 80, 10, 0.6);
+      const allowed = globalThis.ActivityAllowedForGroup(character, "ItemArms");
+      expect(nativeOverlay).toHaveBeenCalledOnce();
+      expect(renderer).toHaveBeenCalledWith(character, 80, 10, 0.6);
+      expect(allowed.map((item) => item.Activity.Name)).toEqual([customName]);
+      adapter.stop();
+    } finally {
+      blocker.unload();
+    }
   });
 
   it("installs both established overlay paths when the ChatRoom screen loads after login", async () => {

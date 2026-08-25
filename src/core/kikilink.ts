@@ -31,6 +31,7 @@ export class KikiLinkApp {
   #activeMemberNumber: number | undefined;
   #desiredMemberNumber: number | undefined;
   #transitionPromise: Promise<void> | undefined;
+  #versionBadge: HTMLSpanElement | undefined;
   #started = false;
 
   constructor(private readonly version: string) {
@@ -55,6 +56,7 @@ export class KikiLinkApp {
   async start(): Promise<void> {
     if (this.#started) return;
     this.#started = true;
+    this.#mountVersionBadge();
     await waitForAuthenticatedPlayer(() => this.#started);
     if (!this.#started) return;
 
@@ -72,6 +74,8 @@ export class KikiLinkApp {
     this.#desiredMemberNumber = undefined;
     await this.#transitionPromise;
     await this.#deactivateAccount();
+    this.#versionBadge?.remove();
+    this.#versionBadge = undefined;
     this.#bus.clear();
     this.#logger.info("Stopped");
   }
@@ -175,6 +179,31 @@ export class KikiLinkApp {
     this.#settings = undefined;
     this.#accountStorage = undefined;
     this.#activeMemberNumber = undefined;
+  }
+
+  #mountVersionBadge(): void {
+    const existing = document.getElementById("kikilink-version");
+    if (existing) existing.remove();
+    const badge = document.createElement("span");
+    badge.id = "kikilink-version";
+    badge.dataset.kikilinkVersion = this.version;
+    badge.textContent = this.version;
+    badge.setAttribute("aria-hidden", "true");
+    Object.assign(badge.style, {
+      position: "fixed",
+      left: "3px",
+      bottom: "2px",
+      zIndex: "2147483646",
+      color: "#fff",
+      opacity: "0.18",
+      font: "7px/1 monospace",
+      letterSpacing: "0",
+      pointerEvents: "none",
+      userSelect: "none",
+      mixBlendMode: "difference",
+    });
+    document.body.append(badge);
+    this.#versionBadge = badge;
   }
 }
 

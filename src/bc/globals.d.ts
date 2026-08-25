@@ -58,6 +58,7 @@ declare global {
     Name: string;
     Description: string;
     Category: "Appearance" | "Item" | "Script";
+    MirrorActivitiesFrom?: string;
     Zone?: ReadonlyArray<readonly [number, number, number, number]>;
   }
 
@@ -124,6 +125,7 @@ declare global {
   var GameVersion: string;
   var DialogMenuMode: string | null;
   var DialogActivity: BCItemActivity[];
+  var CurrentCharacter: BCCharacter | null;
   var DialogMenuMapping: {
     activities?: {
       Reload(
