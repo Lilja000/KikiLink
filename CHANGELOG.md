@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.20.6 - 2026-08-25
+
+- Fixed the shared real-browser failure behind both missing integrations: when browser CSP or a
+  userscript-manager fallback placed KikiLink in an isolated JavaScript world, its own interface
+  could mount while every Bondage Club global and hook remained disconnected from the page.
+- Added a live `unsafeWindow` bridge for the exact BC functions, arrays, canvas state, account data,
+  and ModSDK surface KikiLink consumes. Getter/setter forwarding follows BC and addon replacements
+  instead of copying stale values, while direct hooks now always wrap the real page functions.
+- Aligned Blossom with current BC R129 and Echo Activities by drawing the 35-unit flower through
+  `DrawImageResize` at the established status-icon-row coordinate. The DOM image is retained only
+  as a delayed fallback and as the deliberate Move flower drag handle.
+- Upgraded the published-userscript regression to isolate every BC global from the userscript
+  window, reject ModSDK registration, execute the full built bundle, then verify the native canvas
+  draw, visible fallback, live Custom Activity registry/dialog/button, and corner version badge.
+
 ## 0.20.5 - 2026-08-25
 
 - Removed ModSDK as a dependency of the two critical UI integrations. Blossom and all six native

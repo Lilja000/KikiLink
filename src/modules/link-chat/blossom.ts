@@ -6,10 +6,11 @@ import BLOSSOM_ICON_DATA_URL from "../../../design/branding/kikilink-blossom.svg
 
 const CHARACTER_WIDTH = 500;
 const CHARACTER_HEIGHT = 1_000;
-const BADGE_SIZE = 30;
+const BADGE_SIZE = 35;
 const BADGE_OPACITY = 0.78;
 const BADGE_DRAG_THRESHOLD = 5;
 const DOM_SYNC_INTERVAL_MS = 33;
+const CANVAS_FALLBACK_GRACE_MS = 250;
 
 export interface NormalizedRoomBadgePosition {
   x: number;
@@ -41,7 +42,7 @@ type RoomBadgeConfig = KikiLinkSettings["ui"]["roomBadge"];
 
 /** The same small character-relative icon row used by BCX and native status icons. */
 export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
-  x: 0.87,
+  x: 0.84,
   y: 0.005,
 });
 
@@ -94,6 +95,7 @@ export class RoomBlossomBadge {
   #settingsUnsubscribe: (() => void) | undefined;
   #unregisterOverlay: (() => void) | undefined;
   #domSyncTimer: ReturnType<typeof setInterval> | undefined;
+  #ownCanvasRenderedAt = 0;
   #placementActive = false;
   #mounted = false;
   #destroyed = false;
@@ -103,6 +105,11 @@ export class RoomBlossomBadge {
     const own = character.MemberNumber === this.#adapter.getOwnMemberNumber();
     if (own) {
       this.#ownFrame = { x, y, zoom };
+      if (this.#config.enabled && this.#iconsAreVisible()) {
+        if (this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame))) {
+          this.#ownCanvasRenderedAt = Date.now();
+        }
+      }
       this.#syncOwnElement();
       return;
     }
@@ -263,6 +270,7 @@ export class RoomBlossomBadge {
     this.cancelPlacement();
     this.#canvas = canvas;
     this.#setPlacement(true);
+    this.#syncOwnElement();
     return true;
   }
 
@@ -297,12 +305,21 @@ export class RoomBlossomBadge {
     this.#mounted = false;
   }
 
-  #draw(position: RoomBadgeCanvasPosition): void {
+  #draw(position: RoomBadgeCanvasPosition): boolean {
     const context = mainCanvasContext();
-    if (!context) return;
+    if (!context) return false;
     try {
-      if (typeof DrawImageEx === "function") {
-        DrawImageEx(BLOSSOM_ICON_DATA_URL, context, position.left, position.top, {
+      // Echo and current BC R129 both use DrawImageResize for this exact character icon row.
+      if (typeof DrawImageResize === "function") {
+        return DrawImageResize(
+          BLOSSOM_ICON_DATA_URL,
+          position.left,
+          position.top,
+          position.size,
+          position.size,
+        );
+      } else if (typeof DrawImageCanvas === "function") {
+        return DrawImageCanvas(BLOSSOM_ICON_DATA_URL, context, position.left, position.top, {
           Width: position.size,
           Height: position.size,
           Alpha: BADGE_OPACITY,
@@ -318,10 +335,12 @@ export class RoomBlossomBadge {
           position.size,
         );
         context.restore();
+        return true;
       }
     } catch {
       // A canvas can be replaced between room frames; the next overlay render retries naturally.
     }
+    return false;
   }
 
   #iconsAreVisible(): boolean {
@@ -358,6 +377,16 @@ export class RoomBlossomBadge {
       this.#previewPosition ?? this.#config.position,
       frame,
     );
+    // The native canvas icon is authoritative. The fixed DOM copy is only a resilient fallback
+    // (or the explicit one-drag handle), so normal rendering never doubles the flower.
+    if (
+      !this.#placementActive &&
+      Date.now() - this.#ownCanvasRenderedAt <= CANVAS_FALLBACK_GRACE_MS
+    ) {
+      this.#element.hidden = true;
+      this.#element.style.display = "none";
+      return;
+    }
     const scaleX = rect.width / canvas.width;
     const scaleY = rect.height / canvas.height;
     this.#element.hidden = false;

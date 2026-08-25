@@ -37,7 +37,8 @@ const GLOBAL_KEYS = [
   "DialogBuildActivities",
   "DialogMenuMapping",
   "DialogMenuMode",
-  "DrawImageEx",
+  "DrawImageCanvas",
+  "DrawImageResize",
   "ElementButton",
   "FriendListBeepLog",
   "GameVersion",
@@ -53,7 +54,12 @@ const GLOBAL_KEYS = [
   "ServerSend",
   "ServerSendBeepMessage",
   "ServerSocket",
+  "unsafeWindow",
 ] as const;
+
+const PAGE_GLOBAL_KEYS = GLOBAL_KEYS.filter(
+  (key) => key !== "alert" && key !== "KikiLink" && key !== "unsafeWindow",
+);
 
 afterEach(async () => {
   const api = (window as unknown as { KikiLink?: { destroy(): Promise<void> } }).KikiLink;
@@ -184,9 +190,9 @@ describe("published userscript runtime", () => {
       restore: vi.fn(),
       globalAlpha: 1,
     });
-    setGlobal("DrawImageEx", vi.fn(() => true));
+    setGlobal("DrawImageResize", vi.fn(() => true));
 
-    setGlobal("GameVersion", "R122");
+    setGlobal("GameVersion", "R129");
     setGlobal("AssetGroup", groups);
     setGlobal("ActivityFemale3DCG", [vanillaActivity]);
     setGlobal("ActivityFemale3DCGOrdering", ["Caress"]);
@@ -260,7 +266,7 @@ describe("published userscript runtime", () => {
           Group: string;
         }>
       >("ActivityAllowedForGroup")(character, character.FocusGroup.Name);
-      setGlobal("DialogActivity", activities);
+      (window as unknown as Record<string, unknown>).DialogActivity = activities;
       if (reload) {
         void getGlobal<{ activities: { Reload(): Promise<void> } }>("DialogMenuMapping")
           .activities.Reload();
@@ -288,10 +294,14 @@ describe("published userscript runtime", () => {
       }),
     );
 
-    expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
-    expect(window.eval("typeof ServerSendBeepMessage")).toBe("function");
+    const pageWindow = isolateBCGlobals();
+    expect(pageWindow.bcModSdk).toMatchObject({ registerMod });
+    expect(window.eval("typeof ServerSendBeepMessage")).toBe("undefined");
     window.eval(USER_SCRIPT);
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    getGlobal<(character: typeof player, x: number, y: number, zoom: number) => void>(
+      "ChatRoomDrawCharacterStatusIcons",
+    )(player, 100, 0, 1);
     getGlobal<(character: typeof target, reload?: boolean) => void>("DialogBuildActivities")(
       target,
       true,
@@ -310,15 +320,17 @@ describe("published userscript runtime", () => {
         ?.shadowRoot?.querySelector<HTMLElement>(".kl-connection-text")?.textContent,
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
+    expect(pageWindow.KikiLink).toBe(api);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.20.5");
-    expect(version?.textContent).toBe("0.20.5");
+    expect(api.getVersion()).toBe("0.20.6");
+    expect(version?.textContent).toBe("0.20.6");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(false);
     expect(blossom?.style.display).toBe("block");
-    expect(blossom?.style.left).toBe("535px");
+    expect(blossom?.style.left).toBe("520px");
     expect(blossom?.style.top).toBe("5px");
+    expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalled();
     expect(registered.some((activity) => activity.Name.startsWith(CUSTOM_ACTIVITY_PREFIX))).toBe(
       true,
     );
@@ -345,4 +357,15 @@ function setGlobal(name: string, value: unknown): void {
 
 function getGlobal<T>(name: string): T {
   return (window as unknown as Record<string, unknown>)[name] as T;
+}
+
+function isolateBCGlobals(): Record<string, unknown> {
+  const page: Record<string, unknown> = {};
+  for (const key of PAGE_GLOBAL_KEYS) {
+    if (Reflect.has(window, key)) page[key] = getGlobal(key);
+    Reflect.deleteProperty(globalThis, key);
+    Reflect.deleteProperty(window, key);
+  }
+  setGlobal("unsafeWindow", page);
+  return page;
 }

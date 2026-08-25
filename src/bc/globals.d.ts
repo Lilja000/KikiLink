@@ -1,4 +1,6 @@
 declare global {
+  var unsafeWindow: Window & typeof globalThis;
+
   interface BCPlayer {
     MemberNumber: number;
     Name: string;
@@ -185,7 +187,7 @@ declare global {
     isHeightResizeAllowed?: boolean,
     drawCanvas?: CanvasRenderingContext2D,
   ): void;
-  function DrawImageEx(
+  function DrawImageCanvas(
     source: string | HTMLImageElement | HTMLCanvasElement,
     canvas: CanvasRenderingContext2D,
     x: number,
@@ -195,6 +197,13 @@ declare global {
       Height?: number;
       Alpha?: number;
     },
+  ): boolean;
+  function DrawImageResize(
+    source: string | HTMLImageElement | HTMLCanvasElement,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
   ): boolean;
   function ChatRoomSetTarget(memberNumber: number): void;
   function InformationSheetLoadCharacter(character: BCCharacter): void;

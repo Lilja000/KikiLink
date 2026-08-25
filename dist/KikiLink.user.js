@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.5
+// @version      0.20.6
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -15,8 +15,8 @@
 // @match        https://*.bondage-asia.com/*
 // @run-at       document-end
 // @inject-into  page
-// @sandbox      raw
-// @grant        none
+// @sandbox      JavaScript
+// @grant        unsafeWindow
 // ==/UserScript==
 "use strict";
 (() => {
@@ -269,6 +269,92 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const keys = Object.keys(metadata);
     return keys.length === 2 && keys.includes("messageType") && keys.includes("messageColor") && metadata.messageType === "Message" && typeof metadata.messageColor === "string" && /^#[0-9a-f]{6}$/iu.test(metadata.messageColor);
   }
+
+  // src/bc/page-context.ts
+  function getBCPageWindow() {
+    try {
+      if (typeof unsafeWindow === "object" && unsafeWindow !== null) {
+        return unsafeWindow;
+      }
+    } catch {
+    }
+    return window;
+  }
+  function installBCPageContextBridge() {
+    const page = getBCPageWindow();
+    const locals = /* @__PURE__ */ new Set([
+      globalThis,
+      window
+    ]);
+    for (const local of locals) {
+      if (local === page) continue;
+      for (const name of BC_PAGE_GLOBALS) {
+        try {
+          const descriptor = Object.getOwnPropertyDescriptor(local, name);
+          if (descriptor && descriptor.configurable === false) continue;
+          Object.defineProperty(local, name, {
+            configurable: true,
+            enumerable: descriptor?.enumerable ?? false,
+            get: () => page[name],
+            set: (value) => {
+              page[name] = value;
+            }
+          });
+        } catch {
+        }
+      }
+    }
+    return page;
+  }
+  var BC_PAGE_GLOBALS = [
+    "ActivityAllowedForGroup",
+    "ActivityDictionaryText",
+    "ActivityEffectFlat",
+    "ActivityFemale3DCG",
+    "ActivityFemale3DCGOrdering",
+    "ActivityRun",
+    "AssetGroup",
+    "CharacterGetCurrent",
+    "CharacterNickname",
+    "ChatRoomCharacter",
+    "ChatRoomCharacterDrawlist",
+    "ChatRoomCharacterViewDrawOverlay",
+    "ChatRoomCharacterViewLoopCharacters",
+    "ChatRoomData",
+    "ChatRoomDrawCharacterStatusIcons",
+    "ChatRoomHideIconState",
+    "ChatRoomMessage",
+    "ChatRoomPublishCustomAction",
+    "ChatRoomSendEmote",
+    "ChatRoomSetTarget",
+    "CurrentCharacter",
+    "CurrentScreen",
+    "DialogActivity",
+    "DialogBuildActivities",
+    "DialogMenuMapping",
+    "DialogMenuMode",
+    "DrawCharacter",
+    "DrawImageCanvas",
+    "DrawImageResize",
+    "ElementButton",
+    "FriendListBeepLog",
+    "FriendListLoadFriendList",
+    "GameVersion",
+    "InformationSheetLoadCharacter",
+    "LZString",
+    "MainCanvas",
+    "Player",
+    "PreferenceGetActivityFactor",
+    "ServerAccountBeep",
+    "ServerAccountQueryResult",
+    "ServerIsLoggedIn",
+    "ServerPlayerExtensionSettingsSync",
+    "ServerPlayerIsInChatRoom",
+    "ServerSend",
+    "ServerSendBeepMessage",
+    "ServerSocket",
+    "bcModSdk"
+  ];
 
   // src/bc/adapter.ts
   var READY_POLL_MS = 400;
@@ -904,7 +990,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     #installDirectHook(name, hook) {
       const path = name.split(".");
-      let context = window;
+      let context = getBCPageWindow();
       for (const key of path.slice(0, -1)) {
         const next = context[key];
         if (!next || typeof next !== "object" && typeof next !== "function") return void 0;
@@ -1123,7 +1209,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return typeof document !== "undefined" && document.body !== null && typeof Player === "object" && Player !== null && Number.isSafeInteger(Player.MemberNumber) && Player.MemberNumber > 0 && typeof ServerSendBeepMessage === "function";
   }
   function currentModSdk() {
-    const sdk = window.bcModSdk;
+    const sdk = getBCPageWindow().bcModSdk;
     if (!sdk || typeof sdk.registerMod !== "function") {
       throw new Error("Bondage Club ModSDK is unavailable");
     }
@@ -2075,12 +2161,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
   // src/modules/link-chat/blossom.ts
   var CHARACTER_WIDTH = 500;
   var CHARACTER_HEIGHT = 1e3;
-  var BADGE_SIZE = 30;
+  var BADGE_SIZE = 35;
   var BADGE_OPACITY = 0.78;
   var BADGE_DRAG_THRESHOLD = 5;
   var DOM_SYNC_INTERVAL_MS = 33;
+  var CANVAS_FALLBACK_GRACE_MS = 250;
   var DEFAULT_ROOM_BADGE_POSITION = Object.freeze({
-    x: 0.87,
+    x: 0.84,
     y: 5e-3
   });
   function resolveRoomBadgePosition(position, frame) {
@@ -2115,6 +2202,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #settingsUnsubscribe;
     #unregisterOverlay;
     #domSyncTimer;
+    #ownCanvasRenderedAt = 0;
     #placementActive = false;
     #mounted = false;
     #destroyed = false;
@@ -2123,6 +2211,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const own = character.MemberNumber === this.#adapter.getOwnMemberNumber();
       if (own) {
         this.#ownFrame = { x, y, zoom };
+        if (this.#config.enabled && this.#iconsAreVisible()) {
+          if (this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame))) {
+            this.#ownCanvasRenderedAt = Date.now();
+          }
+        }
         this.#syncOwnElement();
         return;
       }
@@ -2254,6 +2347,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.cancelPlacement();
       this.#canvas = canvas;
       this.#setPlacement(true);
+      this.#syncOwnElement();
       return true;
     }
     cancelPlacement() {
@@ -2286,10 +2380,18 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     #draw(position) {
       const context = mainCanvasContext();
-      if (!context) return;
+      if (!context) return false;
       try {
-        if (typeof DrawImageEx === "function") {
-          DrawImageEx(kikilink_blossom_default, context, position.left, position.top, {
+        if (typeof DrawImageResize === "function") {
+          return DrawImageResize(
+            kikilink_blossom_default,
+            position.left,
+            position.top,
+            position.size,
+            position.size
+          );
+        } else if (typeof DrawImageCanvas === "function") {
+          return DrawImageCanvas(kikilink_blossom_default, context, position.left, position.top, {
             Width: position.size,
             Height: position.size,
             Alpha: BADGE_OPACITY
@@ -2305,9 +2407,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
             position.size
           );
           context.restore();
+          return true;
         }
       } catch {
       }
+      return false;
     }
     #iconsAreVisible() {
       return typeof ChatRoomHideIconState !== "number" || ChatRoomHideIconState === 0;
@@ -2339,6 +2443,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#previewPosition ?? this.#config.position,
         frame
       );
+      if (!this.#placementActive && Date.now() - this.#ownCanvasRenderedAt <= CANVAS_FALLBACK_GRACE_MS) {
+        this.#element.hidden = true;
+        this.#element.style.display = "none";
+        return;
+      }
       const scaleX = rect.width / canvas.width;
       const scaleY = rect.height / canvas.height;
       this.#element.hidden = false;
@@ -14513,10 +14622,13 @@ ${expanded}` : expanded;
 
   // src/index.ts
   async function bootstrap() {
-    const previous = window.KikiLink;
+    const page = installBCPageContextBridge();
+    const previous = page.KikiLink ?? window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.5");
-    window.KikiLink = app.publicApi();
+    const app = new KikiLinkApp("0.20.6");
+    const api = app.publicApi();
+    window.KikiLink = api;
+    page.KikiLink = api;
     try {
       await app.start();
     } catch (error) {

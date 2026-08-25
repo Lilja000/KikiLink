@@ -54,7 +54,7 @@
       window.ChatRoomDrawCharacterStatusIcons = () => {};
       window.ChatRoomHideIconState = 0;
       window.MainCanvas = document.getElementById("MainCanvas").getContext("2d");
-      window.DrawImageEx = () => true;
+      window.DrawImageResize = () => true;
       window.FriendListBeepLog = [
         {
           MemberNumber: 123456,
@@ -100,7 +100,7 @@
       window.InformationSheetLoadCharacter = (character) =>
         console.log("[Harness profile]", character.MemberNumber);
 
-      window.GameVersion = "R122";
+      window.GameVersion = "R129";
       window.AssetGroup = [
         { Name: "ItemArms", Description: "Arms", Category: "Item" },
       ];
@@ -182,7 +182,7 @@
     <script src="../dist/KikiLink.user.js"></script>
     <script>
       setTimeout(() => {
-        window.ChatRoomCharacterViewDrawOverlay(window.Player, 100, 0, 1);
+        window.ChatRoomDrawCharacterStatusIcons(window.Player, 100, 0, 1);
         window.DialogBuildActivities(window.CurrentCharacter, true);
       }, 700);
       setTimeout(() => {

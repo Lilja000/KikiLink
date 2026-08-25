@@ -9,6 +9,7 @@ import type {
 } from "../core/types";
 import type { EventBus } from "../core/event-bus";
 import { cleanBeepMessageContent } from "./message-content";
+import { getBCPageWindow } from "./page-context";
 
 const READY_POLL_MS = 400;
 const ACTIVITY_HOOK_RETRY_MS = 500;
@@ -795,7 +796,7 @@ export class BCAdapter {
 
   #installDirectHook(name: string, hook: ResilientHook): DirectHookRegistration | undefined {
     const path = name.split(".");
-    let context: Record<string, any> = window as unknown as Record<string, any>;
+    let context: Record<string, any> = getBCPageWindow();
     for (const key of path.slice(0, -1)) {
       const next = context[key];
       if (!next || (typeof next !== "object" && typeof next !== "function")) return undefined;
@@ -1093,7 +1094,7 @@ function isBondageClubReady(): boolean {
 }
 
 function currentModSdk(): ModSDKGlobalAPI {
-  const sdk = (window as typeof window & { bcModSdk?: ModSDKGlobalAPI }).bcModSdk;
+  const sdk = getBCPageWindow().bcModSdk as ModSDKGlobalAPI | undefined;
   if (!sdk || typeof sdk.registerMod !== "function") {
     throw new Error("Bondage Club ModSDK is unavailable");
   }
