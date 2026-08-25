@@ -1,6 +1,6 @@
 # Account-scoped data and device sync
 
-KikiLink 0.20.2 treats the authenticated Bondage Club `Player.MemberNumber` as the owner of every
+KikiLink 0.20.3 treats the authenticated Bondage Club `Player.MemberNumber` as the owner of every
 piece of state. It does not use a shared browser-wide KikiLink identity.
 
 ## Local isolation
@@ -10,6 +10,10 @@ piece of state. It does not use a shared browser-wide KikiLink identity.
 - LinkRoster receives the same account-scoped storage as Settings;
 - logout stops modules, hooks, intervals, and repositories and removes the KikiLink host; and
 - an in-page account change completes that teardown before mounting the next account.
+
+Startup also waits until Bondage Club has populated the authenticated player's `ExtensionSettings`.
+The account namespace is therefore opened at the same post-login boundary as its server-backed data,
+instead of letting an earlier empty login state overwrite it.
 
 Versions before 0.20.2 wrote unscoped keys such as `kikilink:settings:v1` and used one `kikilink`
 IndexedDB database. Those records contain no owner MemberNumber. KikiLink therefore does not import

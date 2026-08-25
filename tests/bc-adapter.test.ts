@@ -448,6 +448,30 @@ describe("BCAdapter", () => {
     adapter.stop();
   });
 
+  it("installs the character overlay when the ChatRoom screen loads after login", async () => {
+    vi.useFakeTimers();
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ServerSendBeepMessage = vi.fn();
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.20.3");
+    const renderer = vi.fn();
+    adapter.registerCharacterOverlay(renderer);
+    await adapter.start();
+
+    const nativeOverlay = vi.fn();
+    globalThis.ChatRoomCharacterViewDrawOverlay = nativeOverlay;
+    await vi.advanceTimersByTimeAsync(500);
+    const character = { MemberNumber: 999, Name: "AccountKiki" };
+    globalThis.ChatRoomCharacterViewDrawOverlay(character, 240, 10, 0.5);
+
+    expect(nativeOverlay).toHaveBeenCalledWith(character, 240, 10, 0.5);
+    expect(renderer).toHaveBeenCalledWith(character, 240, 10, 0.5);
+    adapter.stop();
+  });
+
   it("shares native activity hooks and handles only registered custom actions", async () => {
     vi.useFakeTimers();
     const nativeMessage = vi.fn();

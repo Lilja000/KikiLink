@@ -22,7 +22,8 @@ afterEach(() => {
 });
 
 describe("LinkChatView", () => {
-  it("mounts a small passive Blossom with settings-only placement", () => {
+  it("keeps Blossom out of fixed DOM and exposes settings-only character placement", () => {
+    let renderOverlay: ((character: BCCharacter, x: number, y: number, zoom: number) => void) | undefined;
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
@@ -31,6 +32,13 @@ describe("LinkChatView", () => {
       getKnownContacts: () => [],
       canSendBeep: () => true,
       isReady: () => true,
+      isInChatRoom: () => false,
+      registerCharacterOverlay: (renderer: typeof renderOverlay) => {
+        renderOverlay = renderer;
+        return () => {
+          renderOverlay = undefined;
+        };
+      },
       sendBeep: vi.fn(),
     } as unknown as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());
@@ -46,11 +54,8 @@ describe("LinkChatView", () => {
     const blossom = shadow?.querySelector<HTMLElement>(".kl-room-blossom");
     const blossomSettings = shadow?.querySelector<HTMLElement>(".kl-room-badge-settings");
 
-    expect(blossom).not.toBeNull();
-    expect(blossom?.style.position).toBe("fixed");
-    expect(blossom?.querySelector(".kl-room-blossom-image")).not.toBeNull();
-    expect(blossom?.style.width).toBe("28px");
-    expect(blossom?.style.pointerEvents).toBe("none");
+    expect(blossom).toBeNull();
+    expect(renderOverlay).toBeTypeOf("function");
     expect(blossomSettings?.textContent).toContain("Move flower");
     expect(blossomSettings?.textContent).toContain("Normal gameplay cannot move it");
     expect(shadow?.querySelector('select[aria-label="Room Blossom position"]')).toBeNull();
@@ -59,16 +64,13 @@ describe("LinkChatView", () => {
     const moveFlower = [...(blossomSettings?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .find((button) => button.textContent.includes("Move flower"));
     moveFlower?.click();
-    expect(blossom?.dataset.placement).toBe("true");
-    expect(blossom?.style.pointerEvents).toBe("auto");
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    expect(blossom?.dataset.placement).toBe("false");
-    expect(blossom?.style.pointerEvents).toBe("none");
+    expect(shadow?.querySelector(".kl-toast")?.textContent).toContain("Enter a chat room");
     expect(
       shadow?.querySelector<HTMLTextAreaElement>(".kl-afk-reply-message")?.placeholder,
     ).toBe("Hi, I'm AFK. Message me later!");
 
     view.destroy();
+    expect(renderOverlay).toBeUndefined();
     expect(shadow?.querySelector(".kl-room-blossom")).toBeNull();
   });
 

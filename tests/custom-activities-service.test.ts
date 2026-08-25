@@ -23,6 +23,10 @@ afterEach(() => {
     "ActivityEffectFlat",
     "CharacterNickname",
     "DrawCharacter",
+    "GameVersion",
+    "DialogBuildActivities",
+    "CharacterGetCurrent",
+    "DialogMenuMode",
   ]) {
     Reflect.deleteProperty(globalThis, key);
   }
@@ -253,6 +257,7 @@ describe("native Custom Activities", () => {
       activity.Name.startsWith("KikiLinkCustom_"),
     );
     expect(custom).toMatchObject({
+      ActivityID: undefined,
       MaxProgress: 0,
       Target: ["ItemArms"],
       TargetSelf: ["ItemArms"],
@@ -278,6 +283,45 @@ describe("native Custom Activities", () => {
     service.stop();
     expect(globalThis.ActivityFemale3DCG.map((activity) => activity.Name)).toEqual(["Caress"]);
     expect(globalThis.ActivityFemale3DCGOrdering).toEqual(["Caress"]);
+  });
+
+  it("uses account-specific native names and refreshes an already-open activity grid", () => {
+    globalThis.ActivityFemale3DCG = [
+      { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
+    ];
+    globalThis.ActivityFemale3DCGOrdering = ["Caress"];
+    globalThis.DialogMenuMode = "activities";
+    const target = { MemberNumber: 123, Name: "Reina" };
+    globalThis.CharacterGetCurrent = () => target;
+    globalThis.DialogBuildActivities = vi.fn();
+    const settings = settingsWithElbowTouch();
+    const first = new LinkActivitiesService(
+      {
+        registerCustomActivityIntegration: () => () => undefined,
+        getOwnMemberNumber: () => 101,
+      } as unknown as BCAdapter,
+      settings,
+    );
+    first.start();
+    const firstName = globalThis.ActivityFemale3DCG.at(-1)?.Name;
+    expect(globalThis.DialogBuildActivities).toHaveBeenCalledWith(target, true);
+    first.stop();
+
+    vi.mocked(globalThis.DialogBuildActivities).mockClear();
+    const second = new LinkActivitiesService(
+      {
+        registerCustomActivityIntegration: () => () => undefined,
+        getOwnMemberNumber: () => 202,
+      } as unknown as BCAdapter,
+      settings,
+    );
+    second.start();
+    const secondName = globalThis.ActivityFemale3DCG.at(-1)?.Name;
+    expect(firstName).toMatch(/^KikiLinkCustom_/);
+    expect(secondName).toMatch(/^KikiLinkCustom_/);
+    expect(secondName).not.toBe(firstName);
+    expect(globalThis.DialogBuildActivities).toHaveBeenCalledWith(target, true);
+    second.stop();
   });
 
   it("extends the exact native dialog list and never duplicates its registered activity", () => {

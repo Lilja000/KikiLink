@@ -132,7 +132,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(15);
+    expect(settings.schemaVersion).toBe(16);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -256,7 +256,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(15);
+    expect(settings.schemaVersion).toBe(16);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -280,7 +280,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(15);
+    expect(settings.schemaVersion).toBe(16);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -346,7 +346,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(15);
+    expect(settings.schemaVersion).toBe(16);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -441,7 +441,7 @@ describe("SettingsStore", () => {
 
   it("sanitizes the room Blossom, profile avatar, and AFK reply", () => {
     const settings = sanitizeSettings({
-      schemaVersion: 15,
+      schemaVersion: 16,
       ui: {
         roomBadge: {
           enabled: true,
@@ -468,7 +468,7 @@ describe("SettingsStore", () => {
     });
 
     const rejected = sanitizeSettings({
-      schemaVersion: 15,
+      schemaVersion: 16,
       ui: {
         roomBadge: { enabled: true, position: { x: 2, y: -1 } },
       },
@@ -492,6 +492,13 @@ describe("SettingsStore", () => {
       enabled: true,
       message: DEFAULT_SETTINGS.linkPresence.afkAutoReply.message,
     });
+
+    expect(
+      sanitizeSettings({
+        schemaVersion: 15,
+        ui: { roomBadge: { enabled: true, position: { x: 0.72, y: 0.08 } } },
+      }).ui.roomBadge,
+    ).toEqual({ enabled: true, position: null });
   });
 
   it("migrates the accidental Russian AFK default and old preset badge settings", () => {
@@ -513,7 +520,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(15);
+    expect(settings.schemaVersion).toBe(16);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,

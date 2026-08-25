@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.20.3 - 2026-08-25
+
+- Replaced the fixed screen-space Blossom with the actual Bondage Club character-overlay pattern
+  used by established addons: the 30-unit translucent flower is drawn from each character's
+  `CharX`, `CharY`, and `Zoom`, respects hidden status icons, and appears for the authenticated
+  player and confirmed compatible KikiLink peers.
+- Kept flower movement behind the explicit Appearance button. Placement mode now drags the canvas
+  flower above the current character, saves a character-relative offset, consumes no gameplay input
+  outside that mode, and resets beside the normal addon-icon row.
+- Aligned Custom Activities with Echo's live registration lifecycle: runtime names now include the
+  owning MemberNumber, native entries explicitly carry `ActivityID`, `Target`, and `TargetSelf`,
+  registration waits for both populated registries, and an already-open native activity grid is
+  rebuilt after synchronization.
+- Wait for the authenticated account's `ExtensionSettings` after login before opening its
+  MemberNumber-specific localStorage namespace and IndexedDB. This prevents a blank or previous
+  login transition from racing the current account data returned by Bondage Club.
+- Migrated settings to schema version 16 and reset only the obsolete v15 viewport flower coordinate;
+  account settings, chats, notebook entries, profile data, and Custom Activities remain intact.
+
 ## 0.20.2 - 2026-08-24
 
 - Scoped settings, player records, drafts, conversations, and IndexedDB message history to the

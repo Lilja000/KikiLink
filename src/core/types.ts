@@ -191,7 +191,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 15;
+  schemaVersion: 16;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -203,7 +203,7 @@ export interface KikiLinkSettings {
     launcherPosition: { x: number; y: number } | null;
     roomBadge: {
       enabled: boolean;
-      /** Normalized viewport position, persisted after the user drags the flower. */
+      /** Normalized offset inside the character's 500x1000 canvas frame. */
       position: { x: number; y: number } | null;
     };
     reducedMotion: boolean;

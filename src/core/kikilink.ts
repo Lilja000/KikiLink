@@ -196,9 +196,20 @@ function authenticatedMemberNumber(): number | undefined {
     return undefined;
   }
   try {
-    return typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn()
-      ? Player.MemberNumber
-      : undefined;
+    if (typeof ServerIsLoggedIn === "function") {
+      if (!ServerIsLoggedIn()) return undefined;
+      // LianChat initializes its account DB after LoginResponse. Waiting for this object gives us
+      // the same boundary and prevents an empty local snapshot from winning before BC has loaded
+      // the authenticated account's ExtensionSettings.
+      if (
+        typeof Player.ExtensionSettings !== "object" ||
+        Player.ExtensionSettings === null ||
+        Array.isArray(Player.ExtensionSettings)
+      ) {
+        return undefined;
+      }
+    }
+    return Player.MemberNumber;
   } catch {
     return undefined;
   }

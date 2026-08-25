@@ -157,8 +157,9 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     const settings = this.settings?.get();
     if (!settings?.linkActivities.enabled) return;
 
+    const owner = currentMemberNumber(this.adapter);
     for (const definition of settings.linkActivities.customActivities) {
-      const runtimeName = runtimeActivityName(definition.id);
+      const runtimeName = runtimeActivityName(owner, definition.id);
       this.#runtimeActivities.set(runtimeName, definition);
     }
     this.#ensureRegistryInjection();
@@ -484,6 +485,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       registry.ordering.push(runtimeName);
       this.#injectedActivities.set(runtimeName, activity);
     }
+    refreshNativeActivityDialog();
   }
 
   #registryInjectionIsHealthy(registry: NativeActivityRegistry): boolean {
@@ -632,9 +634,9 @@ function dictionaryIdentifies(
   );
 }
 
-function runtimeActivityName(id: string): string {
+function runtimeActivityName(owner: number, id: string): string {
   const safe = id.replace(/[^A-Za-z0-9_]/g, "_").slice(0, 36) || "Activity";
-  return `${ACTIVITY_PREFIX}${hashString(id)}_${safe}`;
+  return `${ACTIVITY_PREFIX}${hashString(`${owner}/${id}`)}_${safe}`;
 }
 
 function hashString(value: string): string {
@@ -693,16 +695,46 @@ function createNativeActivity(
 ): BCActivity {
   return {
     Name: runtimeName,
+    ActivityID:
+      typeof GameVersion === "string" && GameVersion === "R121" ? -1 : undefined,
     MaxProgress: 0,
     MaxProgressSelf: 0,
     Prerequisite: [],
     Target: definition.targetMode === "self" ? [] : [definition.targetGroup],
-    ...(definition.targetMode === "self"
-      ? { TargetSelf: [definition.targetGroup] }
-      : definition.targetMode === "both"
-        ? { TargetSelf: [definition.targetGroup] }
-        : {}),
+    TargetSelf:
+      definition.targetMode === "self" || definition.targetMode === "both"
+        ? [definition.targetGroup]
+        : [],
   };
+}
+
+function currentMemberNumber(adapter: BCAdapter): number {
+  try {
+    const value = adapter.getOwnMemberNumber();
+    if (validMemberNumber(value)) return value;
+  } catch {
+    // Tiny test/fallback adapters may not implement account identity.
+  }
+  return typeof Player === "object" && Player !== null && validMemberNumber(Player.MemberNumber)
+    ? Player.MemberNumber
+    : 0;
+}
+
+function refreshNativeActivityDialog(): void {
+  if (
+    typeof DialogBuildActivities !== "function" ||
+    typeof CharacterGetCurrent !== "function" ||
+    typeof DialogMenuMode === "undefined" ||
+    DialogMenuMode !== "activities"
+  ) {
+    return;
+  }
+  try {
+    const character = CharacterGetCurrent();
+    if (character) DialogBuildActivities(character, true);
+  } catch {
+    // Registration itself is complete; the next native menu open rebuilds the list normally.
+  }
 }
 
 function nativeActivityRegistryIsLoaded(registry: NativeActivityRegistry): boolean {

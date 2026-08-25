@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.2
+// @version      0.20.3
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -273,6 +273,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   // src/bc/adapter.ts
   var READY_POLL_MS = 400;
   var ACTIVITY_HOOK_RETRY_MS = 500;
+  var CHARACTER_OVERLAY_HOOK_RETRY_MS = 500;
   var SOCKET_REBIND_MS = 2e3;
   var BEEP_LOG_POLL_MS = 1e3;
   var RECENT_INCOMING_TTL_MS = 1e4;
@@ -300,6 +301,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #socketRebindTimer;
     #beepLogTimer;
     #activityHookRetryTimer;
+    #characterOverlayHookRetryTimer;
+    #characterOverlayHookName;
     #beepLogCursor = 0;
     #seenIncomingPayloads = /* @__PURE__ */ new WeakSet();
     #stopped = false;
@@ -343,14 +346,19 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (this.#socketRebindTimer !== void 0) clearInterval(this.#socketRebindTimer);
       if (this.#beepLogTimer !== void 0) clearInterval(this.#beepLogTimer);
       if (this.#activityHookRetryTimer !== void 0) clearInterval(this.#activityHookRetryTimer);
+      if (this.#characterOverlayHookRetryTimer !== void 0) {
+        clearInterval(this.#characterOverlayHookRetryTimer);
+      }
       this.#socketRebindTimer = void 0;
       this.#beepLogTimer = void 0;
       this.#activityHookRetryTimer = void 0;
+      this.#characterOverlayHookRetryTimer = void 0;
       this.#detachSocketListeners();
       for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
       this.#modApi?.unload();
       this.#modApi = void 0;
       this.#installedActivityHooks.clear();
+      this.#characterOverlayHookName = void 0;
     }
     isReady() {
       return this.#ready;
@@ -363,6 +371,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     registerCharacterOverlay(renderer) {
       this.#characterOverlayRenderers.add(renderer);
+      this.#ensureCharacterOverlayHook();
       return () => this.#characterOverlayRenderers.delete(renderer);
     }
     registerCustomActivityIntegration(integration) {
@@ -643,24 +652,32 @@ One of mods you are using is using an old version of SDK. It will work for now b
           return result;
         })
       );
-      if (typeof ChatRoomDrawCharacterStatusIcons === "function") {
-        this.#tryInstallHook(
-          "ChatRoomDrawCharacterStatusIcons",
-          () => modApi.hookFunction("ChatRoomDrawCharacterStatusIcons", -10, (args, next) => {
-            const result = next(args);
-            this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
-            return result;
-          })
+      this.#ensureCharacterOverlayHook();
+      if (this.#characterOverlayHookName === void 0 && this.#characterOverlayHookRetryTimer === void 0) {
+        this.#characterOverlayHookRetryTimer = setInterval(
+          () => this.#ensureCharacterOverlayHook(),
+          CHARACTER_OVERLAY_HOOK_RETRY_MS
         );
-      } else if (typeof ChatRoomCharacterViewDrawOverlay === "function") {
-        this.#tryInstallHook(
-          "ChatRoomCharacterViewDrawOverlay",
-          () => modApi.hookFunction("ChatRoomCharacterViewDrawOverlay", -10, (args, next) => {
-            const result = next(args);
-            this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
-            return result;
-          })
-        );
+      }
+    }
+    #ensureCharacterOverlayHook() {
+      const modApi = this.#modApi;
+      if (!modApi || this.#characterOverlayHookName !== void 0) return;
+      const name = typeof ChatRoomCharacterViewDrawOverlay === "function" ? "ChatRoomCharacterViewDrawOverlay" : typeof ChatRoomDrawCharacterStatusIcons === "function" ? "ChatRoomDrawCharacterStatusIcons" : void 0;
+      if (!name) return;
+      const installed = this.#tryInstallHook(
+        name,
+        () => modApi.hookFunction(name, -10, (args, next) => {
+          const result = next(args);
+          this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
+          return result;
+        })
+      );
+      if (!installed) return;
+      this.#characterOverlayHookName = name;
+      if (this.#characterOverlayHookRetryTimer !== void 0) {
+        clearInterval(this.#characterOverlayHookRetryTimer);
+        this.#characterOverlayHookRetryTimer = void 0;
       }
     }
     #ensureActivityHooks() {
@@ -1511,7 +1528,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 15,
+    schemaVersion: 16,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -1662,7 +1679,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkRoster = isRecord3(source.linkRoster) ? source.linkRoster : {};
     const linkReactions = isRecord3(source.linkReactions) ? source.linkReactions : {};
     return {
-      schemaVersion: 15,
+      schemaVersion: 16,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -1672,7 +1689,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         launcherSide: ui.launcherSide === "left" ? "left" : "right",
         launcherOpen: ui.launcherOpen === "last" || ui.launcherOpen === "chat" ? ui.launcherOpen : DEFAULT_SETTINGS.ui.launcherOpen,
         launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
-        roomBadge: sanitizeRoomBadge(ui.roomBadge),
+        roomBadge: sanitizeRoomBadge(ui.roomBadge, sourceSchema),
         reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
         settingsSection: isSettingsSection(ui.settingsSection) ? ui.settingsSection : DEFAULT_SETTINGS.ui.settingsSection
       },
@@ -1765,11 +1782,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const normalized = normalizeImageUrl(value);
     return normalized && normalized.length <= 500 ? normalized : "";
   }
-  function sanitizeRoomBadge(value) {
+  function sanitizeRoomBadge(value, sourceSchema) {
     const source = isRecord3(value) ? value : {};
     return {
       enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.ui.roomBadge.enabled),
-      position: sanitizeLauncherPosition(source.position)
+      // v15 stored viewport coordinates. They cannot be assigned safely to a character, so the
+      // first canvas-native release deliberately returns the flower to its documented icon row.
+      position: sourceSchema >= 16 ? sanitizeLauncherPosition(source.position) : null
     };
   }
   function sanitizeQuickAlerts(value) {
@@ -1932,302 +1951,291 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var kikilink_blossom_default = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KikiLink blossom">%0A  <g transform="rotate(-18 32 32)" fill="%23e82142" fill-opacity=".62" stroke="%23ff93a3" stroke-opacity=".52" stroke-width="1">%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(72 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(144 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(216 32 32)"/>%0A    <ellipse cx="32" cy="18" rx="8.6" ry="14" transform="rotate(288 32 32)"/>%0A  </g>%0A  <g transform="rotate(-18 32 32)" fill="none" stroke="%23ffd9df" stroke-linecap="round" stroke-opacity=".24" stroke-width="1.1">%0A    <path d="M32 31V10"/>%0A    <path d="M32 31V10" transform="rotate(72 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(144 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(216 32 32)"/>%0A    <path d="M32 31V10" transform="rotate(288 32 32)"/>%0A  </g>%0A  <circle cx="32" cy="32" r="6.2" fill="%238d0921" fill-opacity=".92" stroke="%23ff8b9c" stroke-opacity=".48" stroke-width="1"/>%0A  <circle cx="32" cy="32" r="3.1" fill="%23efb34e" fill-opacity=".9"/>%0A</svg>%0A';
 
   // src/modules/link-chat/blossom.ts
-  var BADGE_HIT_SIZE = 28;
-  var BADGE_VISUAL_SIZE = 20;
-  var BADGE_DRAG_THRESHOLD = 6;
+  var CHARACTER_WIDTH = 500;
+  var CHARACTER_HEIGHT = 1e3;
+  var BADGE_SIZE = 30;
   var BADGE_OPACITY = 0.78;
+  var BADGE_HIT_PADDING = 12;
+  var BADGE_DRAG_THRESHOLD = 5;
   var DEFAULT_ROOM_BADGE_POSITION = Object.freeze({
-    x: 0.6,
-    y: 0.055
+    x: 0.87,
+    y: 5e-3
   });
-  function resolveRoomBadgePosition(position, viewportWidth, viewportHeight) {
+  function resolveRoomBadgePosition(position, frame) {
     const normalized = sanitizePosition(position) ?? DEFAULT_ROOM_BADGE_POSITION;
-    const maxLeft = Math.max(0, finiteDimension(viewportWidth) - BADGE_HIT_SIZE);
-    const maxTop = Math.max(0, finiteDimension(viewportHeight) - BADGE_HIT_SIZE);
+    const zoom = finitePositive(frame.zoom, 1);
     return {
-      left: Math.round(normalized.x * maxLeft),
-      top: Math.round(normalized.y * maxTop)
+      left: finiteNumber(frame.x) + normalized.x * CHARACTER_WIDTH * zoom,
+      top: finiteNumber(frame.y) + normalized.y * CHARACTER_HEIGHT * zoom,
+      size: BADGE_SIZE * zoom
     };
   }
-  function normalizeRoomBadgePosition(left, top, viewportWidth, viewportHeight) {
-    const maxLeft = Math.max(0, finiteDimension(viewportWidth) - BADGE_HIT_SIZE);
-    const maxTop = Math.max(0, finiteDimension(viewportHeight) - BADGE_HIT_SIZE);
+  function normalizeRoomBadgePosition(left, top, frame) {
+    const zoom = finitePositive(frame.zoom, 1);
     return {
-      x: maxLeft === 0 ? 0.5 : clamp(finiteNumber(left) / maxLeft, 0, 1),
-      y: maxTop === 0 ? 0.5 : clamp(finiteNumber(top) / maxTop, 0, 1)
+      x: clamp((finiteNumber(left) - finiteNumber(frame.x)) / (CHARACTER_WIDTH * zoom), 0, 1),
+      y: clamp((finiteNumber(top) - finiteNumber(frame.y)) / (CHARACTER_HEIGHT * zoom), 0, 1)
     };
   }
   var RoomBlossomBadge = class {
-    #element = document.createElement("span");
-    #image = document.createElement("img");
     #settings;
+    #adapter;
+    #presence;
+    #fallbackImage = typeof Image === "function" ? new Image() : void 0;
     #config;
+    #ownFrame;
+    #previewPosition;
     #drag;
+    #canvas;
+    #previousCursor = "";
+    #previousTouchAction = "";
     #settingsUnsubscribe;
+    #unregisterOverlay;
     #placementActive = false;
     #mounted = false;
     #destroyed = false;
+    #renderer = (character, x, y, zoom) => {
+      if (!character || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) return;
+      const own = character.MemberNumber === this.#adapter.getOwnMemberNumber();
+      if (own) this.#ownFrame = { x, y, zoom };
+      if (!this.#config.enabled || !this.#iconsAreVisible()) return;
+      if (!own && !this.#presence.hasCompatiblePeer(character.MemberNumber)) return;
+      const position = resolveRoomBadgePosition(
+        own && this.#previewPosition ? this.#previewPosition : this.#config.position,
+        { x, y, zoom }
+      );
+      this.#draw(position, own && this.#placementActive);
+    };
     #handlePointerDown = (event) => {
-      if (event.button !== 0 || this.#drag || !this.#config.enabled || !this.#placementActive) {
+      if (!this.#placementActive || this.#drag || event.button !== 0 || !this.#ownFrame || !this.#canvas) {
         return;
       }
-      const rect = this.#element.getBoundingClientRect();
-      const styleLeft = parsePixel(this.#element.style.left);
-      const styleTop = parsePixel(this.#element.style.top);
-      const startLeft = rect.width > 0 && Number.isFinite(rect.left) ? rect.left : styleLeft;
-      const startTop = rect.height > 0 && Number.isFinite(rect.top) ? rect.top : styleTop;
+      const point = eventCanvasPoint(event, this.#canvas);
+      if (!point) return;
+      const position = resolveRoomBadgePosition(
+        this.#previewPosition ?? this.#config.position,
+        this.#ownFrame
+      );
+      const padding = Math.max(BADGE_HIT_PADDING * this.#ownFrame.zoom, 4);
+      if (point.x < position.left - padding || point.x > position.left + position.size + padding || point.y < position.top - padding || point.y > position.top + position.size + padding) {
+        return;
+      }
       this.#drag = {
         pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        startLeft,
-        startTop,
-        currentLeft: startLeft,
-        currentTop: startTop,
+        startCanvasX: point.x,
+        startCanvasY: point.y,
+        offsetX: point.x - position.left,
+        offsetY: point.y - position.top,
         moved: false
       };
-      event.preventDefault();
+      this.#consumePointer(event);
       try {
-        this.#element.setPointerCapture(event.pointerId);
+        this.#canvas.setPointerCapture(event.pointerId);
       } catch {
       }
     };
     #handlePointerMove = (event) => {
       const drag = this.#drag;
-      if (!drag || drag.pointerId !== event.pointerId) return;
-      const deltaX = event.clientX - drag.startX;
-      const deltaY = event.clientY - drag.startY;
-      if (!drag.moved && Math.hypot(deltaX, deltaY) < BADGE_DRAG_THRESHOLD) return;
+      const frame = this.#ownFrame;
+      const canvas = this.#canvas;
+      if (!drag || drag.pointerId !== event.pointerId || !frame || !canvas) return;
+      const point = eventCanvasPoint(event, canvas);
+      if (!point) return;
+      if (!drag.moved && Math.hypot(point.x - drag.startCanvasX, point.y - drag.startCanvasY) < BADGE_DRAG_THRESHOLD) {
+        return;
+      }
       drag.moved = true;
-      event.preventDefault();
-      this.#element.dataset.dragging = "true";
-      this.#element.style.cursor = "grabbing";
-      const next = clampPixelPosition(
-        drag.startLeft + deltaX,
-        drag.startTop + deltaY,
-        window.innerWidth,
-        window.innerHeight
+      this.#previewPosition = normalizeRoomBadgePosition(
+        point.x - drag.offsetX,
+        point.y - drag.offsetY,
+        frame
       );
-      drag.currentLeft = next.left;
-      drag.currentTop = next.top;
-      this.#place(next);
+      this.#consumePointer(event);
     };
     #handlePointerUp = (event) => {
       const drag = this.#drag;
       if (!drag || drag.pointerId !== event.pointerId) return;
-      this.#drag = void 0;
-      this.#element.dataset.dragging = "false";
-      this.#element.style.cursor = this.#placementActive ? "grab" : "default";
+      this.#consumePointer(event);
       this.#releasePointer(event.pointerId);
-      if (!drag.moved) {
-        this.#positionFromConfig();
-        return;
-      }
-      const position = normalizeRoomBadgePosition(
-        drag.currentLeft,
-        drag.currentTop,
-        window.innerWidth,
-        window.innerHeight
-      );
-      const next = this.#settings.update((draft) => {
-        draft.ui.roomBadge.position = position;
+      this.#drag = void 0;
+      if (!drag.moved || !this.#previewPosition) return;
+      const saved = this.#previewPosition;
+      this.#settings.update((draft) => {
+        draft.ui.roomBadge.position = saved;
       });
-      this.#config = next.ui.roomBadge;
-      this.#positionFromConfig();
+      this.#previewPosition = void 0;
       this.#setPlacement(false);
     };
     #handlePointerCancel = (event) => {
       if (!this.#drag || this.#drag.pointerId !== event.pointerId) return;
-      this.#cancelDrag(true);
-      this.#positionFromConfig();
-    };
-    #handleLostPointerCapture = (event) => {
-      if (!this.#drag || this.#drag.pointerId !== event.pointerId) return;
-      this.#cancelDrag(false);
-      this.#positionFromConfig();
-    };
-    #handleViewportResize = () => {
-      this.#cancelDrag(true);
-      this.#positionFromConfig();
+      this.#consumePointer(event);
+      this.#releasePointer(event.pointerId);
+      this.#drag = void 0;
+      this.#previewPosition = void 0;
     };
     #handleKeyDown = (event) => {
       if (!this.#placementActive || event.key !== "Escape") return;
       event.preventDefault();
-      this.#cancelDrag(true);
-      this.#positionFromConfig();
-      this.#setPlacement(false);
+      this.cancelPlacement();
     };
-    constructor(settings) {
+    constructor(adapter, settings, presence) {
+      this.#adapter = adapter;
       this.#settings = settings;
+      this.#presence = presence;
       this.#config = settings.get().ui.roomBadge;
-      this.#buildElement();
+      if (this.#fallbackImage) this.#fallbackImage.src = kikilink_blossom_default;
       this.#settingsUnsubscribe = settings.subscribe((next) => {
-        const config = next.ui.roomBadge;
-        const changed = config.enabled !== this.#config.enabled || config.position?.x !== this.#config.position?.x || config.position?.y !== this.#config.position?.y;
-        this.#config = config;
-        if (!changed) return;
-        this.#cancelDrag(true);
-        if (!config.enabled) this.#setPlacement(false);
-        this.#sync();
+        this.#config = next.ui.roomBadge;
+        if (!this.#config.enabled) this.cancelPlacement();
       });
     }
-    /** Mounts the fixed badge into KikiLink's existing ShadowRoot. */
-    mount(root) {
-      if (this.#destroyed) return;
-      if (!this.#mounted) {
-        this.#mounted = true;
-        window.addEventListener("resize", this.#handleViewportResize);
-        window.addEventListener("keydown", this.#handleKeyDown);
-      }
-      if (this.#element.parentNode !== root) root.append(this.#element);
-      this.#sync();
+    mount() {
+      if (this.#destroyed || this.#mounted) return;
+      this.#mounted = true;
+      if (typeof this.#adapter.registerCharacterOverlay !== "function") return;
+      this.#unregisterOverlay = this.#adapter.registerCharacterOverlay(this.#renderer);
+      window.addEventListener("keydown", this.#handleKeyDown);
     }
-    /** Arms one deliberate drag from the settings screen. */
+    /** Arms a single drag of the flower above the authenticated player's character. */
     beginPlacement() {
-      if (this.#destroyed || !this.#mounted || !this.#config.enabled) return false;
-      this.#cancelDrag(true);
+      if (this.#destroyed || !this.#mounted || !this.#config.enabled || typeof this.#adapter.isInChatRoom !== "function" || !this.#adapter.isInChatRoom() || !this.#ownFrame) {
+        return false;
+      }
+      const canvas = mainCanvasElement();
+      if (!canvas) return false;
+      this.cancelPlacement();
+      this.#canvas = canvas;
       this.#setPlacement(true);
       return true;
     }
     cancelPlacement() {
-      this.#cancelDrag(true);
-      this.#positionFromConfig();
+      this.#releasePointer(this.#drag?.pointerId);
+      this.#drag = void 0;
+      this.#previewPosition = void 0;
       this.#setPlacement(false);
     }
-    /** Restores the documented default without disabling the badge. */
     resetPosition() {
       if (this.#destroyed) return;
-      const next = this.#settings.update((draft) => {
+      this.cancelPlacement();
+      this.#settings.update((draft) => {
         draft.ui.roomBadge.position = null;
       });
-      this.#config = next.ui.roomBadge;
-      this.#cancelDrag(true);
-      this.#setPlacement(false);
-      this.#sync();
     }
     destroy() {
       if (this.#destroyed) return;
       this.#destroyed = true;
-      this.#cancelDrag(true);
-      if (this.#mounted) {
-        window.removeEventListener("resize", this.#handleViewportResize);
-        window.removeEventListener("keydown", this.#handleKeyDown);
-      }
-      this.#mounted = false;
+      this.cancelPlacement();
+      window.removeEventListener("keydown", this.#handleKeyDown);
       this.#settingsUnsubscribe?.();
       this.#settingsUnsubscribe = void 0;
-      this.#element.removeEventListener("pointerdown", this.#handlePointerDown);
-      this.#element.removeEventListener("pointermove", this.#handlePointerMove);
-      this.#element.removeEventListener("pointerup", this.#handlePointerUp);
-      this.#element.removeEventListener("pointercancel", this.#handlePointerCancel);
-      this.#element.removeEventListener("lostpointercapture", this.#handleLostPointerCapture);
-      this.#element.remove();
+      this.#unregisterOverlay?.();
+      this.#unregisterOverlay = void 0;
+      this.#ownFrame = void 0;
+      this.#mounted = false;
     }
-    #buildElement() {
-      this.#element.className = "kl-room-blossom";
-      this.#element.dataset.dragging = "false";
-      this.#element.setAttribute("role", "img");
-      this.#element.setAttribute("aria-label", "KikiLink Blossom");
-      this.#element.title = "KikiLink Blossom";
-      Object.assign(this.#element.style, {
-        position: "fixed",
-        width: `${BADGE_HIT_SIZE}px`,
-        height: `${BADGE_HIT_SIZE}px`,
-        margin: "0",
-        padding: "0",
-        border: "0",
-        background: "transparent",
-        opacity: String(BADGE_OPACITY),
-        cursor: "default",
-        pointerEvents: "none",
-        touchAction: "none",
-        userSelect: "none",
-        webkitUserSelect: "none",
-        boxSizing: "border-box",
-        zIndex: "2147482998",
-        filter: "drop-shadow(0 2px 6px rgba(0, 0, 0, 0.32))",
-        willChange: "left, top"
-      });
-      this.#image.className = "kl-room-blossom-image";
-      this.#image.src = kikilink_blossom_default;
-      this.#image.alt = "";
-      this.#image.decoding = "async";
-      this.#image.draggable = false;
-      Object.assign(this.#image.style, {
-        position: "absolute",
-        left: `${(BADGE_HIT_SIZE - BADGE_VISUAL_SIZE) / 2}px`,
-        top: `${(BADGE_HIT_SIZE - BADGE_VISUAL_SIZE) / 2}px`,
-        width: `${BADGE_VISUAL_SIZE}px`,
-        height: `${BADGE_VISUAL_SIZE}px`,
-        pointerEvents: "none"
-      });
-      this.#element.append(this.#image);
-      this.#setPlacement(false);
-      this.#element.addEventListener("pointerdown", this.#handlePointerDown);
-      this.#element.addEventListener("pointermove", this.#handlePointerMove);
-      this.#element.addEventListener("pointerup", this.#handlePointerUp);
-      this.#element.addEventListener("pointercancel", this.#handlePointerCancel);
-      this.#element.addEventListener("lostpointercapture", this.#handleLostPointerCapture);
+    #draw(position, placement) {
+      const context = mainCanvasContext();
+      if (!context) return;
+      try {
+        if (typeof DrawImageEx === "function") {
+          DrawImageEx(kikilink_blossom_default, context, position.left, position.top, {
+            Width: position.size,
+            Height: position.size,
+            Alpha: BADGE_OPACITY
+          });
+        } else if (this.#fallbackImage?.complete && this.#fallbackImage.naturalWidth > 0) {
+          context.save();
+          context.globalAlpha = BADGE_OPACITY;
+          context.drawImage(
+            this.#fallbackImage,
+            position.left,
+            position.top,
+            position.size,
+            position.size
+          );
+          context.restore();
+        }
+        if (placement) {
+          context.save();
+          context.strokeStyle = "rgba(255, 135, 153, 0.9)";
+          context.lineWidth = Math.max(1.5, position.size / 15);
+          context.setLineDash([Math.max(2, position.size / 5), Math.max(2, position.size / 6)]);
+          context.strokeRect(
+            position.left - 4,
+            position.top - 4,
+            position.size + 8,
+            position.size + 8
+          );
+          context.restore();
+        }
+      } catch {
+      }
     }
-    #sync() {
-      this.#element.hidden = !this.#config.enabled;
-      this.#element.style.display = this.#config.enabled ? "block" : "none";
-      if (this.#config.enabled) this.#positionFromConfig();
+    #iconsAreVisible() {
+      return typeof ChatRoomHideIconState !== "number" || ChatRoomHideIconState === 0;
     }
     #setPlacement(active) {
-      this.#placementActive = active && this.#config.enabled;
-      this.#element.dataset.placement = String(this.#placementActive);
-      this.#element.style.pointerEvents = this.#placementActive ? "auto" : "none";
-      this.#element.style.cursor = this.#placementActive ? "grab" : "default";
-      this.#element.style.outline = this.#placementActive ? "2px solid rgba(255, 122, 143, 0.78)" : "none";
-      this.#element.style.outlineOffset = this.#placementActive ? "2px" : "0";
-      this.#element.title = this.#placementActive ? "Drag Blossom to its new position \xB7 Esc to cancel" : "KikiLink Blossom";
-      this.#element.setAttribute(
-        "aria-label",
-        this.#placementActive ? "Move KikiLink Blossom" : "KikiLink Blossom"
-      );
-      this.#element.tabIndex = this.#placementActive ? 0 : -1;
+      if (active === this.#placementActive) return;
+      this.#placementActive = active;
+      const canvas = this.#canvas;
+      if (active && canvas) {
+        this.#previousCursor = canvas.style.cursor;
+        this.#previousTouchAction = canvas.style.touchAction;
+        canvas.style.cursor = "grab";
+        canvas.style.touchAction = "none";
+        canvas.addEventListener("pointerdown", this.#handlePointerDown, true);
+        window.addEventListener("pointermove", this.#handlePointerMove, true);
+        window.addEventListener("pointerup", this.#handlePointerUp, true);
+        window.addEventListener("pointercancel", this.#handlePointerCancel, true);
+        return;
+      }
+      if (canvas) {
+        canvas.removeEventListener("pointerdown", this.#handlePointerDown, true);
+        canvas.style.cursor = this.#previousCursor;
+        canvas.style.touchAction = this.#previousTouchAction;
+      }
+      window.removeEventListener("pointermove", this.#handlePointerMove, true);
+      window.removeEventListener("pointerup", this.#handlePointerUp, true);
+      window.removeEventListener("pointercancel", this.#handlePointerCancel, true);
+      this.#canvas = void 0;
     }
-    #positionFromConfig() {
-      if (!this.#mounted || this.#drag) return;
-      this.#place(
-        resolveRoomBadgePosition(
-          this.#config.position,
-          window.innerWidth,
-          window.innerHeight
-        )
-      );
-    }
-    #place(position) {
-      this.#element.style.left = `${Math.round(position.left)}px`;
-      this.#element.style.top = `${Math.round(position.top)}px`;
-      this.#element.style.right = "auto";
-      this.#element.style.bottom = "auto";
-    }
-    #cancelDrag(releasePointer) {
-      const pointerId = this.#drag?.pointerId;
-      this.#drag = void 0;
-      this.#element.dataset.dragging = "false";
-      this.#element.style.cursor = this.#placementActive ? "grab" : "default";
-      if (releasePointer && pointerId !== void 0) this.#releasePointer(pointerId);
+    #consumePointer(event) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
     }
     #releasePointer(pointerId) {
+      const canvas = this.#canvas;
+      if (pointerId === void 0 || !canvas) return;
       try {
-        if (!this.#element.hasPointerCapture || this.#element.hasPointerCapture(pointerId)) {
-          this.#element.releasePointerCapture(pointerId);
+        if (!canvas.hasPointerCapture || canvas.hasPointerCapture(pointerId)) {
+          canvas.releasePointerCapture(pointerId);
         }
       } catch {
       }
     }
   };
-  function clampPixelPosition(left, top, viewportWidth, viewportHeight) {
+  function mainCanvasContext() {
+    if (typeof MainCanvas === "undefined" || MainCanvas === null) return void 0;
+    if (typeof MainCanvas.drawImage === "function") {
+      return MainCanvas;
+    }
+    return MainCanvas.getContext?.("2d") ?? void 0;
+  }
+  function mainCanvasElement() {
+    const context = mainCanvasContext();
+    if (context?.canvas) return context.canvas;
+    if (typeof MainCanvas !== "undefined" && typeof MainCanvas.getContext === "function") {
+      return MainCanvas;
+    }
+    const byId = document.getElementById("MainCanvas");
+    return byId instanceof HTMLCanvasElement ? byId : void 0;
+  }
+  function eventCanvasPoint(event, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return void 0;
     return {
-      left: Math.round(
-        clamp(finiteNumber(left), 0, Math.max(0, finiteDimension(viewportWidth) - BADGE_HIT_SIZE))
-      ),
-      top: Math.round(
-        clamp(finiteNumber(top), 0, Math.max(0, finiteDimension(viewportHeight) - BADGE_HIT_SIZE))
-      )
+      x: (event.clientX - rect.left) * (canvas.width / rect.width),
+      y: (event.clientY - rect.top) * (canvas.height / rect.height)
     };
   }
   function sanitizePosition(position) {
@@ -2237,15 +2245,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
       y: clamp(Number.isFinite(position.y) ? position.y : DEFAULT_ROOM_BADGE_POSITION.y, 0, 1)
     };
   }
-  function parsePixel(value) {
-    const parsed = Number.parseFloat(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
   function finiteNumber(value) {
     return Number.isFinite(value) ? value : 0;
   }
-  function finiteDimension(value) {
-    return Math.max(0, finiteNumber(value));
+  function finitePositive(value, fallback) {
+    return Number.isFinite(value) && value > 0 ? value : fallback;
   }
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -2360,8 +2364,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#injectedActivities.clear();
       const settings = this.settings?.get();
       if (!settings?.linkActivities.enabled) return;
+      const owner = currentMemberNumber(this.adapter);
       for (const definition of settings.linkActivities.customActivities) {
-        const runtimeName = runtimeActivityName(definition.id);
+        const runtimeName = runtimeActivityName(owner, definition.id);
         this.#runtimeActivities.set(runtimeName, definition);
       }
       this.#ensureRegistryInjection();
@@ -2604,6 +2609,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         registry.ordering.push(runtimeName);
         this.#injectedActivities.set(runtimeName, activity);
       }
+      refreshNativeActivityDialog();
     }
     #registryInjectionIsHealthy(registry) {
       const registeredActivities = registry.activities.filter(
@@ -2689,9 +2695,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
       (entry) => isRecord4(entry) && entry.Tag === tag && entry.MemberNumber === memberNumber
     );
   }
-  function runtimeActivityName(id) {
+  function runtimeActivityName(owner, id) {
     const safe = id.replace(/[^A-Za-z0-9_]/g, "_").slice(0, 36) || "Activity";
-    return `${ACTIVITY_PREFIX}${hashString(id)}_${safe}`;
+    return `${ACTIVITY_PREFIX}${hashString(`${owner}/${id}`)}_${safe}`;
   }
   function hashString(value) {
     let hash = 2166136261;
@@ -2734,12 +2740,31 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function createNativeActivity(runtimeName, definition) {
     return {
       Name: runtimeName,
+      ActivityID: typeof GameVersion === "string" && GameVersion === "R121" ? -1 : void 0,
       MaxProgress: 0,
       MaxProgressSelf: 0,
       Prerequisite: [],
       Target: definition.targetMode === "self" ? [] : [definition.targetGroup],
-      ...definition.targetMode === "self" ? { TargetSelf: [definition.targetGroup] } : definition.targetMode === "both" ? { TargetSelf: [definition.targetGroup] } : {}
+      TargetSelf: definition.targetMode === "self" || definition.targetMode === "both" ? [definition.targetGroup] : []
     };
+  }
+  function currentMemberNumber(adapter) {
+    try {
+      const value = adapter.getOwnMemberNumber();
+      if (validMemberNumber(value)) return value;
+    } catch {
+    }
+    return typeof Player === "object" && Player !== null && validMemberNumber(Player.MemberNumber) ? Player.MemberNumber : 0;
+  }
+  function refreshNativeActivityDialog() {
+    if (typeof DialogBuildActivities !== "function" || typeof CharacterGetCurrent !== "function" || typeof DialogMenuMode === "undefined" || DialogMenuMode !== "activities") {
+      return;
+    }
+    try {
+      const character = CharacterGetCurrent();
+      if (character) DialogBuildActivities(character, true);
+    } catch {
+    }
   }
   function nativeActivityRegistryIsLoaded(registry) {
     const availableNames = new Set(
@@ -7472,7 +7497,7 @@ select:focus-visible {
       this.roster = roster;
       this.imageUploader = imageUploader;
       this.presence = presence ?? new LinkPresenceService(adapter, settings, new EventBus(), version);
-      this.#roomBadge = new RoomBlossomBadge(settings);
+      this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence);
     }
     adapter;
     service;
@@ -7881,7 +7906,7 @@ select:focus-visible {
         this.#profileMenu
       );
       document.body.append(this.#host);
-      this.#roomBadge.mount(this.#shadow);
+      this.#roomBadge.mount();
       this.#positionLauncher();
       window.addEventListener("resize", this.#handleViewportResize);
       document.addEventListener("pointerdown", this.#handleOutsidePointerDown);
@@ -8671,7 +8696,7 @@ select:focus-visible {
         element("div", { className: "kl-setting-section-title", text: "Blossom badge" }),
         this.#settingRow(
           "Show Blossom flower",
-          "A small translucent KikiLink mark over the game screen.",
+          "A small translucent KikiLink mark beside the addon icons above compatible characters.",
           roomBadgeSwitch
         ),
         element(
@@ -8683,7 +8708,7 @@ select:focus-visible {
             element("div", { className: "kl-setting-name", text: "Flower position" }),
             element("div", {
               className: "kl-setting-help",
-              text: "Choose Move flower, then drag the small top icon once. Normal gameplay cannot move it."
+              text: "Choose Move flower while you are in a room, then drag the flower above your character once. Normal gameplay cannot move it."
             })
           ),
           element("div", { className: "kl-inline-actions" }, moveRoomBadge, resetRoomBadge)
@@ -12333,7 +12358,7 @@ ${expanded}` : expanded;
     }
     #resetRoomBadgePosition() {
       this.#roomBadge.resetPosition();
-      this.#toast("Blossom returned to its default top position.");
+      this.#toast("Blossom returned beside the character addon icons.");
     }
     #beginRoomBadgePlacement() {
       if (!this.settings.get().ui.roomBadge.enabled) {
@@ -12343,7 +12368,7 @@ ${expanded}` : expanded;
         this.#roomBadgeToggle.checked = true;
       }
       if (!this.#roomBadge.beginPlacement()) {
-        this.#toast("Blossom is not ready yet.", "error");
+        this.#toast("Enter a chat room and wait until your character is visible, then try again.", "error");
         return;
       }
       this.close();
@@ -14206,7 +14231,13 @@ ${expanded}` : expanded;
       return void 0;
     }
     try {
-      return typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn() ? Player.MemberNumber : void 0;
+      if (typeof ServerIsLoggedIn === "function") {
+        if (!ServerIsLoggedIn()) return void 0;
+        if (typeof Player.ExtensionSettings !== "object" || Player.ExtensionSettings === null || Array.isArray(Player.ExtensionSettings)) {
+          return void 0;
+        }
+      }
+      return Player.MemberNumber;
     } catch {
       return void 0;
     }
@@ -14216,7 +14247,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.2");
+    const app = new KikiLinkApp("0.20.3");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

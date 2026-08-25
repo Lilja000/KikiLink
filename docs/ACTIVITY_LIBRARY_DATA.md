@@ -1,6 +1,6 @@
 # Custom Activities data and compatibility
 
-KikiLink 0.20.2 stores user-created activities under the authenticated BC MemberNumber and registers
+KikiLink 0.20.3 stores user-created activities under the authenticated BC MemberNumber and registers
 them beside Bondage Club's vanilla activities at runtime. There is no public activity library or
 remote index; the private library is also included in that account's bounded `ExtensionSettings`
 snapshot so it can follow the same account to another device.
@@ -27,8 +27,10 @@ to their canonical vanilla image during editing and sanitation.
 
 ## Runtime registration
 
-KikiLink derives a private runtime name from each local ID, then waits until Bondage Club exposes its
-live `ActivityFemale3DCG` registry and ordering list before appending the definition. A lightweight
+KikiLink derives a private runtime name from the owning MemberNumber and each local ID, then waits
+until Bondage Club exposes its populated live `ActivityFemale3DCG` registry and ordering list before
+appending the definition. Each native object explicitly provides `ActivityID`, `Target`, and
+`TargetSelf`, matching the registration shape used by Echo's activity manager. A lightweight
 lifecycle check detects replaced or rebuilt registry arrays and restores every saved definition
 exactly once. Before every sync and during unload, all names under KikiLink's prefix are removed
 from both the tracked and current registries. This keeps edits idempotent without load-order races.
@@ -38,6 +40,9 @@ KikiLink also extends the result of `ActivityAllowedForGroup`, which is the exac
 load or another addon's registry rebuild from leaving a valid saved definition invisible. Existing
 native results are preserved, empty/blocked native lists are not bypassed, and duplicate runtime
 names are never appended.
+
+If the native activity grid is already open when a definition is saved or restored, KikiLink asks
+Bondage Club to rebuild that grid immediately; otherwise the next ordinary menu open discovers it.
 
 The activity uses `MaxProgress: 0`; optional arousal is not delegated to the vanilla activity cap.
 KikiLink intercepts only its own runtime names, reuses the chosen vanilla picture, and appends the
@@ -78,3 +83,6 @@ so it is not silently treated as consent to send files to Litterbox.
 
 Schema 15 replaces the old badge presets with one normalized draggable position and changes only the
 untouched accidental Russian AFK default to English. User-edited AFK messages remain unchanged.
+
+Schema 16 changes that flower position from a viewport coordinate to a character-relative canvas
+offset. The obsolete v15 coordinate alone is reset to the addon-icon row.

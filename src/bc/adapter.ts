@@ -11,6 +11,7 @@ import { cleanBeepMessageContent } from "./message-content";
 
 const READY_POLL_MS = 400;
 const ACTIVITY_HOOK_RETRY_MS = 500;
+const CHARACTER_OVERLAY_HOOK_RETRY_MS = 500;
 const SOCKET_REBIND_MS = 2_000;
 const BEEP_LOG_POLL_MS = 1_000;
 const RECENT_INCOMING_TTL_MS = 10_000;
@@ -64,6 +65,8 @@ export class BCAdapter {
   #socketRebindTimer: ReturnType<typeof setInterval> | undefined;
   #beepLogTimer: ReturnType<typeof setInterval> | undefined;
   #activityHookRetryTimer: ReturnType<typeof setInterval> | undefined;
+  #characterOverlayHookRetryTimer: ReturnType<typeof setInterval> | undefined;
+  #characterOverlayHookName: string | undefined;
   #beepLogCursor = 0;
   #seenIncomingPayloads = new WeakSet<object>();
   #stopped = false;
@@ -118,14 +121,19 @@ export class BCAdapter {
     if (this.#socketRebindTimer !== undefined) clearInterval(this.#socketRebindTimer);
     if (this.#beepLogTimer !== undefined) clearInterval(this.#beepLogTimer);
     if (this.#activityHookRetryTimer !== undefined) clearInterval(this.#activityHookRetryTimer);
+    if (this.#characterOverlayHookRetryTimer !== undefined) {
+      clearInterval(this.#characterOverlayHookRetryTimer);
+    }
     this.#socketRebindTimer = undefined;
     this.#beepLogTimer = undefined;
     this.#activityHookRetryTimer = undefined;
+    this.#characterOverlayHookRetryTimer = undefined;
     this.#detachSocketListeners();
     for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
     this.#modApi?.unload();
     this.#modApi = undefined;
     this.#installedActivityHooks.clear();
+    this.#characterOverlayHookName = undefined;
   }
 
   isReady(): boolean {
@@ -142,6 +150,7 @@ export class BCAdapter {
 
   registerCharacterOverlay(renderer: BCCharacterOverlayRenderer): () => void {
     this.#characterOverlayRenderers.add(renderer);
+    this.#ensureCharacterOverlayHook();
     return () => this.#characterOverlayRenderers.delete(renderer);
   }
 
@@ -477,22 +486,43 @@ export class BCAdapter {
         return result;
       }),
     );
-    if (typeof ChatRoomDrawCharacterStatusIcons === "function") {
-      this.#tryInstallHook("ChatRoomDrawCharacterStatusIcons", () =>
-        modApi.hookFunction("ChatRoomDrawCharacterStatusIcons", -10, (args, next) => {
-          const result = next(args);
-          this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
-          return result;
-        }),
+    this.#ensureCharacterOverlayHook();
+    if (
+      this.#characterOverlayHookName === undefined &&
+      this.#characterOverlayHookRetryTimer === undefined
+    ) {
+      this.#characterOverlayHookRetryTimer = setInterval(
+        () => this.#ensureCharacterOverlayHook(),
+        CHARACTER_OVERLAY_HOOK_RETRY_MS,
       );
-    } else if (typeof ChatRoomCharacterViewDrawOverlay === "function") {
-      this.#tryInstallHook("ChatRoomCharacterViewDrawOverlay", () =>
-        modApi.hookFunction("ChatRoomCharacterViewDrawOverlay", -10, (args, next) => {
-          const result = next(args);
-          this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
-          return result;
-        }),
-      );
+    }
+  }
+
+  #ensureCharacterOverlayHook(): void {
+    const modApi = this.#modApi;
+    if (!modApi || this.#characterOverlayHookName !== undefined) return;
+    // Match established room addons such as BCX: draw after the complete character overlay so
+    // the mark shares CharX/CharY/Zoom with every other above-character icon. Screen functions can
+    // load after login, so installation is retried until one becomes available.
+    const name =
+      typeof ChatRoomCharacterViewDrawOverlay === "function"
+        ? "ChatRoomCharacterViewDrawOverlay"
+        : typeof ChatRoomDrawCharacterStatusIcons === "function"
+          ? "ChatRoomDrawCharacterStatusIcons"
+          : undefined;
+    if (!name) return;
+    const installed = this.#tryInstallHook(name, () =>
+      modApi.hookFunction(name, -10, (args, next) => {
+        const result = next(args);
+        this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
+        return result;
+      }),
+    );
+    if (!installed) return;
+    this.#characterOverlayHookName = name;
+    if (this.#characterOverlayHookRetryTimer !== undefined) {
+      clearInterval(this.#characterOverlayHookRetryTimer);
+      this.#characterOverlayHookRetryTimer = undefined;
     }
   }
 

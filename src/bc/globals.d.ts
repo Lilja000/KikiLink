@@ -39,7 +39,7 @@ declare global {
 
   interface BCActivity {
     Name: string;
-    ActivityID?: number;
+    ActivityID?: number | undefined;
     MaxProgress: number;
     MaxProgressSelf?: number;
     Prerequisite: string[];
@@ -119,6 +119,8 @@ declare global {
   var ServerSocket: BCServerSocket | null;
   var MainCanvas: CanvasRenderingContext2D | HTMLCanvasElement;
   var ChatRoomHideIconState: number;
+  var GameVersion: string;
+  var DialogMenuMode: string | null;
   var ActivityFemale3DCG: BCActivity[];
   var ActivityFemale3DCGOrdering: string[];
   var AssetGroup: BCAssetGroup[];
@@ -141,6 +143,8 @@ declare global {
   ): void;
   function ActivityDictionaryText(keyword: string): string;
   function ActivityAllowedForGroup(character: BCCharacter, groupName: string): BCItemActivity[];
+  function DialogBuildActivities(character: BCCharacter, reload?: boolean): void;
+  function CharacterGetCurrent(): BCCharacter | null;
   function ActivityRun(
     actor: BCCharacter,
     acted: BCCharacter,
@@ -168,6 +172,17 @@ declare global {
     isHeightResizeAllowed?: boolean,
     drawCanvas?: CanvasRenderingContext2D,
   ): void;
+  function DrawImageEx(
+    source: string | HTMLImageElement | HTMLCanvasElement,
+    canvas: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    options?: {
+      Width?: number;
+      Height?: number;
+      Alpha?: number;
+    },
+  ): boolean;
   function ChatRoomSetTarget(memberNumber: number): void;
   function InformationSheetLoadCharacter(character: BCCharacter): void;
   function ServerIsLoggedIn(): boolean;

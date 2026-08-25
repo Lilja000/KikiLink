@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 15,
+  schemaVersion: 16,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -185,7 +185,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
 
   return {
-    schemaVersion: 15,
+    schemaVersion: 16,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -208,7 +208,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? ui.launcherOpen
           : DEFAULT_SETTINGS.ui.launcherOpen,
       launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
-      roomBadge: sanitizeRoomBadge(ui.roomBadge),
+      roomBadge: sanitizeRoomBadge(ui.roomBadge, sourceSchema),
       reducedMotion: booleanOr(ui.reducedMotion, DEFAULT_SETTINGS.ui.reducedMotion),
       settingsSection: isSettingsSection(ui.settingsSection)
         ? ui.settingsSection
@@ -342,11 +342,16 @@ function sanitizeAvatarUrl(value: unknown): string {
   return normalized && normalized.length <= 500 ? normalized : "";
 }
 
-function sanitizeRoomBadge(value: unknown): KikiLinkSettings["ui"]["roomBadge"] {
+function sanitizeRoomBadge(
+  value: unknown,
+  sourceSchema: number,
+): KikiLinkSettings["ui"]["roomBadge"] {
   const source = isRecord(value) ? value : {};
   return {
     enabled: booleanOr(source.enabled, DEFAULT_SETTINGS.ui.roomBadge.enabled),
-    position: sanitizeLauncherPosition(source.position),
+    // v15 stored viewport coordinates. They cannot be assigned safely to a character, so the
+    // first canvas-native release deliberately returns the flower to its documented icon row.
+    position: sourceSchema >= 16 ? sanitizeLauncherPosition(source.position) : null,
   };
 }
 

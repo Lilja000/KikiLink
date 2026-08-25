@@ -40,6 +40,10 @@ describe("KikiLink startup", () => {
     globalThis.Player.Name = "AccountKiki";
     loggedIn = true;
     await vi.advanceTimersByTimeAsync(1);
+    expect(document.querySelector("#kikilink-root")).toBeNull();
+
+    globalThis.Player.ExtensionSettings = {};
+    await vi.advanceTimersByTimeAsync(100);
     await started;
 
     const host = document.querySelector<HTMLElement>("#kikilink-root");

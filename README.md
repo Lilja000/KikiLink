@@ -11,9 +11,9 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.20.2` isolates every KikiLink by Bondage Club account, mirrors portable account data to
-other devices, puts saved Custom Activities into the actual native dialog list, and makes the small
-top Blossom movable only through its Appearance setting.
+Version `0.20.3` isolates every KikiLink by Bondage Club account, waits for that account's loaded
+ExtensionSettings, registers saved Custom Activities through the native live registries, and draws
+the small Blossom in the real character addon-icon row.
 
 ## Link Deck
 
@@ -163,8 +163,10 @@ same native Bondage Club emote path and are visible to everyone in the room.
 ## Interface
 
 - The original wolf-and-red-moon KikiLink emblem is restored in the launcher and workspace
-- A separate 20 px translucent Blossom starts near the top addon-icon area, ignores ordinary
-  gameplay input, and can be moved once only after choosing `Move flower` in Appearance
+- A separate translucent Blossom uses the native character canvas at the same 30-unit scale as
+  established addon marks, follows each character's position and zoom, and respects hidden icons
+- The flower ignores ordinary gameplay input and can be dragged only after choosing `Move flower`
+  in Appearance while the authenticated character is visible in a room
 - Original dependency-free SVG icons with one consistent rounded line style across navigation,
   chat controls, favorites, pins, images, dialogs, and player actions
 - Dark lacquer, light paper, and follow-system appearance modes

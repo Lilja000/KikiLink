@@ -484,7 +484,7 @@ export class LinkChatView {
     this.presence =
       presence ??
       new LinkPresenceService(adapter, settings, new EventBus(), version);
-    this.#roomBadge = new RoomBlossomBadge(settings);
+    this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence);
   }
 
   private readonly presence: LinkPresenceService;
@@ -523,7 +523,7 @@ export class LinkChatView {
       this.#profileMenu,
     );
     document.body.append(this.#host);
-    this.#roomBadge.mount(this.#shadow);
+    this.#roomBadge.mount();
     this.#positionLauncher();
     window.addEventListener("resize", this.#handleViewportResize);
     document.addEventListener("pointerdown", this.#handleOutsidePointerDown);
@@ -1429,7 +1429,7 @@ export class LinkChatView {
       element("div", { className: "kl-setting-section-title", text: "Blossom badge" }),
       this.#settingRow(
         "Show Blossom flower",
-        "A small translucent KikiLink mark over the game screen.",
+        "A small translucent KikiLink mark beside the addon icons above compatible characters.",
         roomBadgeSwitch,
       ),
       element(
@@ -1441,7 +1441,7 @@ export class LinkChatView {
           element("div", { className: "kl-setting-name", text: "Flower position" }),
           element("div", {
             className: "kl-setting-help",
-            text: "Choose Move flower, then drag the small top icon once. Normal gameplay cannot move it.",
+            text: "Choose Move flower while you are in a room, then drag the flower above your character once. Normal gameplay cannot move it.",
           }),
         ),
         element("div", { className: "kl-inline-actions" }, moveRoomBadge, resetRoomBadge),
@@ -5533,7 +5533,7 @@ export class LinkChatView {
 
   #resetRoomBadgePosition(): void {
     this.#roomBadge.resetPosition();
-    this.#toast("Blossom returned to its default top position.");
+    this.#toast("Blossom returned beside the character addon icons.");
   }
 
   #beginRoomBadgePlacement(): void {
@@ -5544,7 +5544,7 @@ export class LinkChatView {
       this.#roomBadgeToggle.checked = true;
     }
     if (!this.#roomBadge.beginPlacement()) {
-      this.#toast("Blossom is not ready yet.", "error");
+      this.#toast("Enter a chat room and wait until your character is visible, then try again.", "error");
       return;
     }
     this.close();
