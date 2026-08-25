@@ -11,9 +11,9 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.20.3` isolates every KikiLink by Bondage Club account, waits for that account's loaded
-ExtensionSettings, registers saved Custom Activities through the native live registries, and draws
-the small Blossom in the real character addon-icon row.
+Version `0.20.4` isolates every KikiLink by Bondage Club account, keeps native hooks alive when BC
+or another addon replaces a cached entrypoint, registers saved Custom Activities in the live native
+grid, and draws the small Blossom in the real character addon-icon row.
 
 ## Link Deck
 

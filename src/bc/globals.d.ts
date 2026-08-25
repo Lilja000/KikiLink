@@ -34,6 +34,7 @@ declare global {
     MemberNumber: number;
     Name: string;
     Nickname?: string;
+    FocusGroup?: BCAssetGroup | null;
     GetPronouns?(): "SheHer" | "HeHim" | "TheyThem" | "ItIt";
   }
 
@@ -115,12 +116,22 @@ declare global {
   var CurrentScreen: string;
   var ChatRoomData: BCChatRoomData | null;
   var ChatRoomCharacter: BCCharacter[];
+  var ChatRoomCharacterDrawlist: BCCharacter[];
   var FriendListBeepLog: BCFriendListBeepLogMessage[];
   var ServerSocket: BCServerSocket | null;
   var MainCanvas: CanvasRenderingContext2D | HTMLCanvasElement;
   var ChatRoomHideIconState: number;
   var GameVersion: string;
   var DialogMenuMode: string | null;
+  var DialogActivity: BCItemActivity[];
+  var DialogMenuMapping: {
+    activities?: {
+      Reload(
+        parameters?: unknown,
+        options?: { reset?: boolean; resetDialogItems?: boolean },
+      ): Promise<unknown> | void;
+    };
+  };
   var ActivityFemale3DCG: BCActivity[];
   var ActivityFemale3DCGOrdering: string[];
   var AssetGroup: BCAssetGroup[];
@@ -200,6 +211,15 @@ declare global {
     characterX: number,
     characterY: number,
     zoom: number,
+  ): void;
+  function ChatRoomCharacterViewLoopCharacters(
+    callback: (
+      characterIndex: number,
+      characterX: number,
+      characterY: number,
+      space: number,
+      zoom: number,
+    ) => boolean | void,
   ): void;
 
   namespace ElementButton {

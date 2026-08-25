@@ -1,7 +1,7 @@
 # Player notebook data
 
 KikiLink keeps the Player notebook private to the authenticated BC MemberNumber. Manual JSON
-backup remains available, while 0.20.3 also includes the notebook in KikiLink's bounded private BC
+backup remains available, while 0.20.4 also includes the notebook in KikiLink's bounded private BC
 account snapshot for same-account device transfer. There is no public notebook or search index.
 
 ## Backup format

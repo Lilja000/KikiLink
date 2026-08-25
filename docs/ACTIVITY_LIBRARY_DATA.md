@@ -1,6 +1,6 @@
 # Custom Activities data and compatibility
 
-KikiLink 0.20.3 stores user-created activities under the authenticated BC MemberNumber and registers
+KikiLink 0.20.4 stores user-created activities under the authenticated BC MemberNumber and registers
 them beside Bondage Club's vanilla activities at runtime. There is no public activity library or
 remote index; the private library is also included in that account's bounded `ExtensionSettings`
 snapshot so it can follow the same account to another device.
@@ -35,11 +35,11 @@ lifecycle check detects replaced or rebuilt registry arrays and restores every s
 exactly once. Before every sync and during unload, all names under KikiLink's prefix are removed
 from both the tracked and current registries. This keeps edits idempotent without load-order races.
 
-KikiLink also extends the result of `ActivityAllowedForGroup`, which is the exact list BC assigns to
-`DialogActivity` before creating the native button grid. This second path prevents a late userscript
-load or another addon's registry rebuild from leaving a valid saved definition invisible. Existing
-native results are preserved, empty/blocked native lists are not bypassed, and duplicate runtime
-names are never appended.
+KikiLink also extends both `ActivityAllowedForGroup` and the final `DialogActivity` list used to
+create the native button grid. This redundant path prevents a late userscript load, a rebuilt
+registry, or a replaced ModSDK entrypoint from leaving a saved definition invisible. Existing
+native results are preserved, a matching custom action can populate an otherwise empty native list,
+and duplicate runtime names are never appended.
 
 If the native activity grid is already open when a definition is saved or restored, KikiLink asks
 Bondage Club to rebuild that grid immediately; otherwise the next ordinary menu open discovers it.

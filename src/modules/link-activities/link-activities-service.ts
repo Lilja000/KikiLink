@@ -183,17 +183,18 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     groupName: string,
     activities: BCItemActivity[],
   ): BCItemActivity[] {
-    if (!Array.isArray(activities) || activities.length === 0 || typeof groupName !== "string") {
+    if (!Array.isArray(activities) || !SAFE_ASSET_NAME.test(groupName)) {
       return activities;
     }
-    const result = [...activities];
-    const existing = new Set(result.map((item) => item?.Activity?.Name));
+    let result = activities;
+    const existing = new Set(activities.map((item) => item?.Activity?.Name));
     const selfTarget = character?.MemberNumber === this.adapter.getOwnMemberNumber();
 
     for (const [runtimeName, definition] of this.#runtimeActivities) {
       if (definition.targetGroup !== groupName || existing.has(runtimeName)) continue;
       if (selfTarget && definition.targetMode === "other") continue;
       if (!selfTarget && definition.targetMode === "self") continue;
+      if (result === activities) result = [...activities];
       result.push({
         Activity:
           this.#injectedActivities.get(runtimeName) ??

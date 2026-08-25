@@ -80,7 +80,13 @@ function fixture(options: { inRoom?: boolean } = {}): BadgeFixture {
 }
 
 afterEach(() => {
-  for (const key of ["MainCanvas", "ChatRoomHideIconState", "DrawImageEx"]) {
+  for (const key of [
+    "MainCanvas",
+    "ChatRoomHideIconState",
+    "DrawImageEx",
+    "ChatRoomCharacterDrawlist",
+    "ChatRoomCharacterViewLoopCharacters",
+  ]) {
     Reflect.deleteProperty(globalThis, key);
   }
   document.body.replaceChildren();
@@ -144,6 +150,21 @@ describe("room Blossom character positioning", () => {
 });
 
 describe("room Blossom settings-armed dragging", () => {
+  it("recovers the visible player frame when the overlay hook has not drawn yet", () => {
+    const { badge } = fixture();
+    globalThis.ChatRoomCharacterDrawlist = [
+      { MemberNumber: 999, Name: "Kiki" },
+      { MemberNumber: 123, Name: "Reina" },
+    ];
+    globalThis.ChatRoomCharacterViewLoopCharacters = (callback) => {
+      callback(0, 100, 20, 500, 0.75);
+      callback(1, 600, 20, 500, 0.75);
+    };
+
+    expect(badge.beginPlacement()).toBe(true);
+    badge.destroy();
+  });
+
   it("ignores normal pointer input and persists one character-relative drag when armed", () => {
     const { badge, canvas, render, settings } = fixture();
     render({ MemberNumber: 999, Name: "Kiki" }, 100, 0, 1);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.3
+// @version      0.20.4
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -280,7 +280,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var KIKILINK_BEEP_TYPE = "KikiLink";
   var KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
   var MAX_PROTOCOL_PAYLOAD = 700;
-  var CUSTOM_ACTIVITY_HOOK_COUNT = 5;
+  var CUSTOM_ACTIVITY_HOOK_COUNT = 6;
   var BCAdapter = class {
     constructor(bus, version) {
       this.bus = bus;
@@ -296,13 +296,17 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #characterOverlayRenderers = /* @__PURE__ */ new Set();
     #customActivityIntegrations = /* @__PURE__ */ new Set();
     #installedActivityHooks = /* @__PURE__ */ new Set();
+    #resilientHooks = /* @__PURE__ */ new Map();
+    #directHookRegistrations = /* @__PURE__ */ new Map();
     #modApi;
     #socket;
     #socketRebindTimer;
     #beepLogTimer;
     #activityHookRetryTimer;
     #characterOverlayHookRetryTimer;
-    #characterOverlayHookName;
+    #characterOverlayHookNames = /* @__PURE__ */ new Set();
+    #overlayRenderSignatures = /* @__PURE__ */ new Set();
+    #overlayRenderResetQueued = false;
     #beepLogCursor = 0;
     #seenIncomingPayloads = /* @__PURE__ */ new WeakSet();
     #stopped = false;
@@ -358,7 +362,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#modApi?.unload();
       this.#modApi = void 0;
       this.#installedActivityHooks.clear();
-      this.#characterOverlayHookName = void 0;
+      this.#resilientHooks.clear();
+      this.#directHookRegistrations.clear();
+      this.#characterOverlayHookNames.clear();
+      this.#overlayRenderSignatures.clear();
+      this.#overlayRenderResetQueued = false;
     }
     isReady() {
       return this.#ready;
@@ -635,7 +643,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         );
       }
       this.#ensureActivityHooks();
-      if (this.#installedActivityHooks.size < CUSTOM_ACTIVITY_HOOK_COUNT && this.#activityHookRetryTimer === void 0) {
+      if (this.#activityHookRetryTimer === void 0) {
         this.#activityHookRetryTimer = setInterval(
           () => this.#ensureActivityHooks(),
           ACTIVITY_HOOK_RETRY_MS
@@ -653,7 +661,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         })
       );
       this.#ensureCharacterOverlayHook();
-      if (this.#characterOverlayHookName === void 0 && this.#characterOverlayHookRetryTimer === void 0) {
+      if (this.#characterOverlayHookRetryTimer === void 0) {
         this.#characterOverlayHookRetryTimer = setInterval(
           () => this.#ensureCharacterOverlayHook(),
           CHARACTER_OVERLAY_HOOK_RETRY_MS
@@ -662,132 +670,208 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     #ensureCharacterOverlayHook() {
       const modApi = this.#modApi;
-      if (!modApi || this.#characterOverlayHookName !== void 0) return;
-      const name = typeof ChatRoomCharacterViewDrawOverlay === "function" ? "ChatRoomCharacterViewDrawOverlay" : typeof ChatRoomDrawCharacterStatusIcons === "function" ? "ChatRoomDrawCharacterStatusIcons" : void 0;
-      if (!name) return;
-      const installed = this.#tryInstallHook(
-        name,
-        () => modApi.hookFunction(name, -10, (args, next) => {
+      if (!modApi) return;
+      for (const name of this.#characterOverlayHookNames) {
+        const hook = this.#resilientHooks.get(name);
+        if (hook) this.#ensureDirectFallback(name, hook);
+      }
+      if (this.#characterOverlayHookNames.has("ChatRoomCharacterViewDrawOverlay") && this.#characterOverlayHookNames.has("ChatRoomDrawCharacterStatusIcons")) {
+        return;
+      }
+      const candidates = [
+        ["ChatRoomCharacterViewDrawOverlay", typeof ChatRoomCharacterViewDrawOverlay === "function"],
+        ["ChatRoomDrawCharacterStatusIcons", typeof ChatRoomDrawCharacterStatusIcons === "function"]
+      ];
+      for (const [name, available] of candidates) {
+        if (!available || this.#characterOverlayHookNames.has(name)) continue;
+        const hook = (args, next) => {
           const result = next(args);
           this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
           return result;
-        })
-      );
-      if (!installed) return;
-      this.#characterOverlayHookName = name;
-      if (this.#characterOverlayHookRetryTimer !== void 0) {
-        clearInterval(this.#characterOverlayHookRetryTimer);
-        this.#characterOverlayHookRetryTimer = void 0;
+        };
+        const installed = this.#tryInstallHook(
+          name,
+          () => modApi.hookFunction(name, -10, hook),
+          hook
+        );
+        if (installed) this.#characterOverlayHookNames.add(name);
       }
     }
     #ensureActivityHooks() {
       const modApi = this.#modApi;
       if (!modApi) return;
+      for (const name of this.#installedActivityHooks) {
+        const hook = this.#resilientHooks.get(name);
+        if (hook) this.#ensureDirectFallback(name, hook);
+      }
+      if (this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT) return;
+      const allowedHook = (args, next) => {
+        const activities = next(args);
+        if (!Array.isArray(activities)) return activities;
+        return this.#extendAllowedActivities(args[0], args[1], activities);
+      };
       this.#tryInstallActivityHook(
         "ActivityAllowedForGroup",
         typeof ActivityAllowedForGroup === "function",
-        () => modApi.hookFunction("ActivityAllowedForGroup", 10, (args, next) => {
-          let activities = next(args);
-          if (!Array.isArray(activities)) return activities;
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const extended = this.#callActivityIntegration(
-              integration,
-              () => integration.extendAllowedActivities?.(args[0], args[1], activities)
-            );
-            if (Array.isArray(extended)) activities = extended;
-          }
-          return activities;
-        })
+        10,
+        allowedHook
       );
+      const dialogBuildHook = (args, next) => {
+        const result = next(args);
+        if (!Array.isArray(DialogActivity)) return result;
+        const character = args[0];
+        const groupName = character?.FocusGroup?.Name;
+        if (typeof groupName !== "string") return result;
+        const extended = this.#extendAllowedActivities(character, groupName, DialogActivity);
+        if (extended === DialogActivity) return result;
+        DialogActivity = extended;
+        if ((args[1] ?? true) && DialogMenuMode === "activities") {
+          try {
+            const reload = DialogMenuMapping?.activities?.Reload;
+            if (typeof reload === "function") {
+              const pending = reload.call(DialogMenuMapping.activities, null, {
+                reset: true,
+                resetDialogItems: false
+              });
+              if (pending && typeof pending.catch === "function") {
+                void pending.catch(
+                  (error) => this.#logger.warn("Native custom activity grid refresh failed", error)
+                );
+              }
+            }
+          } catch (error) {
+            this.#logger.warn("Native custom activity grid refresh failed", error);
+          }
+        }
+        return result;
+      };
+      this.#tryInstallActivityHook(
+        "DialogBuildActivities",
+        typeof DialogBuildActivities === "function",
+        -10,
+        dialogBuildHook
+      );
+      const dictionaryHook = (args, next) => {
+        const keyword = typeof args[0] === "string" ? args[0] : "";
+        for (const integration of [...this.#customActivityIntegrations]) {
+          const resolved = this.#callActivityIntegration(
+            integration,
+            () => integration.resolveText(keyword)
+          );
+          if (resolved !== void 0) return resolved;
+        }
+        return next(args);
+      };
       this.#tryInstallActivityHook(
         "ActivityDictionaryText",
         typeof ActivityDictionaryText === "function",
-        () => modApi.hookFunction("ActivityDictionaryText", 10, (args, next) => {
-          const keyword = typeof args[0] === "string" ? args[0] : "";
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const text = this.#callActivityIntegration(
-              integration,
-              () => integration.resolveText(keyword)
-            );
-            if (text !== void 0) return text;
-          }
-          return next(args);
-        })
+        10,
+        dictionaryHook
       );
+      const runHook = (args, next) => {
+        for (const integration of [...this.#customActivityIntegrations]) {
+          const handled = this.#callActivityIntegration(
+            integration,
+            () => integration.run(args[0], args[1], args[2], args[3])
+          );
+          if (handled) return void 0;
+        }
+        return next(args);
+      };
       this.#tryInstallActivityHook(
         "ActivityRun",
         typeof ActivityRun === "function",
-        () => modApi.hookFunction("ActivityRun", 10, (args, next) => {
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const handled = this.#callActivityIntegration(
-              integration,
-              () => integration.run(args[0], args[1], args[2], args[3])
-            );
-            if (handled) return void 0;
-          }
-          return next(args);
-        })
+        10,
+        runHook
       );
+      const activityButtonHook = (args, next) => {
+        const itemActivity = args[1];
+        const activityName = itemActivity?.Activity?.Name;
+        if (typeof activityName === "string") {
+          for (const integration of [...this.#customActivityIntegrations]) {
+            const image = this.#callActivityIntegration(
+              integration,
+              () => integration.resolveImage(activityName)
+            );
+            if (image !== void 0) {
+              args[4] = { ...args[4] ?? {}, image };
+              break;
+            }
+          }
+        }
+        const button = next(args);
+        for (const integration of [...this.#customActivityIntegrations]) {
+          this.#callActivityIntegration(integration, () => {
+            integration.decorateButton(button, itemActivity);
+          });
+        }
+        return button;
+      };
       this.#tryInstallActivityHook(
         "ElementButton.CreateForActivity",
         typeof ElementButton === "object" && ElementButton !== null && typeof ElementButton.CreateForActivity === "function",
-        () => modApi.hookFunction("ElementButton.CreateForActivity", 10, (args, next) => {
-          const itemActivity = args[1];
-          const activityName = itemActivity?.Activity?.Name;
-          if (typeof activityName === "string") {
-            for (const integration of [...this.#customActivityIntegrations]) {
-              const image = this.#callActivityIntegration(
-                integration,
-                () => integration.resolveImage(activityName)
-              );
-              if (image !== void 0) {
-                args[4] = { ...args[4] ?? {}, image };
-                break;
-              }
-            }
-          }
-          const button = next(args);
-          for (const integration of [...this.#customActivityIntegrations]) {
-            this.#callActivityIntegration(integration, () => {
-              integration.decorateButton(button, itemActivity);
-            });
-          }
-          return button;
-        })
+        10,
+        activityButtonHook
       );
+      const preferenceHook = (args, next) => {
+        const activityName = typeof args[1] === "string" ? args[1] : "";
+        for (const integration of [...this.#customActivityIntegrations]) {
+          const custom = this.#callActivityIntegration(
+            integration,
+            () => integration.isCustomActivity?.(activityName) ?? false
+          );
+          if (custom) return 2;
+        }
+        return next(args);
+      };
       this.#tryInstallActivityHook(
         "PreferenceGetActivityFactor",
         typeof PreferenceGetActivityFactor === "function",
-        () => modApi.hookFunction("PreferenceGetActivityFactor", 10, (args, next) => {
-          const activityName = typeof args[1] === "string" ? args[1] : "";
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const custom = this.#callActivityIntegration(
-              integration,
-              () => integration.isCustomActivity?.(activityName) ?? false
-            );
-            if (custom) return 2;
-          }
-          return next(args);
-        })
+        10,
+        preferenceHook
       );
-      if (this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT && this.#activityHookRetryTimer !== void 0) {
-        clearInterval(this.#activityHookRetryTimer);
-        this.#activityHookRetryTimer = void 0;
+    }
+    #tryInstallActivityHook(name, available, priority, hook) {
+      if (!available || this.#installedActivityHooks.has(name)) return;
+      const modApi = this.#modApi;
+      if (!modApi) return;
+      if (this.#tryInstallHook(
+        name,
+        () => modApi.hookFunction(name, priority, hook),
+        hook
+      )) {
+        this.#installedActivityHooks.add(name);
       }
     }
-    #tryInstallActivityHook(name, available, install) {
-      if (!available || this.#installedActivityHooks.has(name)) return;
-      if (this.#tryInstallHook(name, install)) this.#installedActivityHooks.add(name);
-    }
     #renderCharacterOverlays(character, characterX, characterY, zoom) {
+      const signature = `${character?.MemberNumber ?? "?"}:${characterX}:${characterY}:${zoom}`;
+      if (this.#overlayRenderSignatures.has(signature)) return;
+      this.#overlayRenderSignatures.add(signature);
+      if (!this.#overlayRenderResetQueued) {
+        this.#overlayRenderResetQueued = true;
+        queueMicrotask(() => {
+          this.#overlayRenderSignatures.clear();
+          this.#overlayRenderResetQueued = false;
+        });
+      }
       for (const renderer of [...this.#characterOverlayRenderers]) {
         try {
           renderer(character, characterX, characterY, zoom);
         } catch (error) {
-          this.#characterOverlayRenderers.delete(renderer);
-          this.#logger.warn("Disabled a failing character overlay renderer", error);
+          this.#logger.warn("Character overlay renderer failed for this frame", error);
         }
       }
+    }
+    #extendAllowedActivities(character, groupName, activities) {
+      let extended = activities;
+      for (const integration of [...this.#customActivityIntegrations]) {
+        const candidate = this.#callActivityIntegration(
+          integration,
+          () => integration.extendAllowedActivities?.(character, groupName, extended)
+        );
+        if (Array.isArray(candidate)) extended = candidate;
+      }
+      return extended;
     }
     #notifyCustomActivityMessage(message) {
       for (const integration of [...this.#customActivityIntegrations]) {
@@ -798,19 +882,75 @@ One of mods you are using is using an old version of SDK. It will work for now b
       try {
         return call();
       } catch (error) {
-        this.#customActivityIntegrations.delete(integration);
-        this.#logger.warn("Disabled a failing custom activity integration", error);
+        this.#logger.warn(
+          `${integration.constructor.name || "Custom activity integration"} failed for this call`,
+          error
+        );
         return void 0;
       }
     }
-    #tryInstallHook(name, install) {
+    #tryInstallHook(name, install, resilientHook) {
       try {
-        this.#unhooks.push(install());
+        const sdkUnhook = install();
+        this.#unhooks.push(sdkUnhook);
+        if (resilientHook) {
+          this.#resilientHooks.set(name, resilientHook);
+          if (!this.#ensureDirectFallback(name, resilientHook)) {
+            this.#resilientHooks.delete(name);
+            this.#unhooks.pop();
+            sdkUnhook();
+            return false;
+          }
+        }
         return true;
       } catch (error) {
         this.#logger.warn(`${name} hook unavailable; keeping native fallback`, error);
         return false;
       }
+    }
+    #ensureDirectFallback(name, hook) {
+      if (this.#sdkEntrypointIsCurrent(name)) return true;
+      const existing = this.#directHookRegistrations.get(name);
+      if (existing?.isCurrent()) return true;
+      const registration = this.#installDirectHook(name, hook);
+      if (!registration) return false;
+      this.#directHookRegistrations.set(name, registration);
+      this.#unhooks.push(registration.unhook);
+      this.#logger.warn(`${name} was replaced after ModSDK cached it; direct fallback installed`);
+      return true;
+    }
+    #sdkEntrypointIsCurrent(name) {
+      try {
+        const info = import_bondage_club_mod_sdk.default.getPatchingInfo().get(name);
+        return Boolean(info?.sdkEntrypoint && info.currentEntrypoint === info.sdkEntrypoint);
+      } catch {
+        return false;
+      }
+    }
+    #installDirectHook(name, hook) {
+      const path = name.split(".");
+      let context = window;
+      for (const key of path.slice(0, -1)) {
+        const next = context[key];
+        if (!next || typeof next !== "object" && typeof next !== "function") return void 0;
+        context = next;
+      }
+      const property = path.at(-1);
+      if (!property) return void 0;
+      const original = context[property];
+      if (typeof original !== "function") return void 0;
+      const adapter = this;
+      const wrapper = function(...args) {
+        if (adapter.#stopped) return original.apply(this, args);
+        return hook(args, (nextArgs) => original.apply(this, nextArgs));
+      };
+      context[property] = wrapper;
+      return {
+        isCurrent: () => context[property] === wrapper,
+        unhook: () => {
+          if (context[property] === wrapper) context[property] = original;
+        }
+      };
     }
     #attachSocketListeners() {
       const socket = typeof ServerSocket === "object" && ServerSocket !== null ? ServerSocket : void 0;
@@ -2098,6 +2238,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     /** Arms a single drag of the flower above the authenticated player's character. */
     beginPlacement() {
+      const liveFrame = visibleCharacterFrame(this.#adapter.getOwnMemberNumber());
+      if (liveFrame) this.#ownFrame = liveFrame;
       if (this.#destroyed || !this.#mounted || !this.#config.enabled || typeof this.#adapter.isInChatRoom !== "function" || !this.#adapter.isInChatRoom() || !this.#ownFrame) {
         return false;
       }
@@ -2237,6 +2379,23 @@ One of mods you are using is using an old version of SDK. It will work for now b
       x: (event.clientX - rect.left) * (canvas.width / rect.width),
       y: (event.clientY - rect.top) * (canvas.height / rect.height)
     };
+  }
+  function visibleCharacterFrame(memberNumber) {
+    if (!Number.isSafeInteger(memberNumber) || typeof ChatRoomCharacterViewLoopCharacters !== "function" || typeof ChatRoomCharacterDrawlist === "undefined" || !Array.isArray(ChatRoomCharacterDrawlist)) {
+      return void 0;
+    }
+    let frame;
+    try {
+      ChatRoomCharacterViewLoopCharacters((characterIndex, x, y, _space, zoom) => {
+        if (ChatRoomCharacterDrawlist[characterIndex]?.MemberNumber !== memberNumber) return;
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom) || zoom <= 0) return;
+        frame = { x, y, zoom };
+        return true;
+      });
+    } catch {
+      return void 0;
+    }
+    return frame;
   }
   function sanitizePosition(position) {
     if (!position) return null;
@@ -2383,16 +2542,17 @@ One of mods you are using is using an old version of SDK. It will work for now b
      * BC or another addon rebuilt/cached the activity list before KikiLink started.
      */
     extendAllowedActivities(character, groupName, activities) {
-      if (!Array.isArray(activities) || activities.length === 0 || typeof groupName !== "string") {
+      if (!Array.isArray(activities) || !SAFE_ASSET_NAME2.test(groupName)) {
         return activities;
       }
-      const result = [...activities];
-      const existing = new Set(result.map((item) => item?.Activity?.Name));
+      let result = activities;
+      const existing = new Set(activities.map((item) => item?.Activity?.Name));
       const selfTarget = character?.MemberNumber === this.adapter.getOwnMemberNumber();
       for (const [runtimeName, definition] of this.#runtimeActivities) {
         if (definition.targetGroup !== groupName || existing.has(runtimeName)) continue;
         if (selfTarget && definition.targetMode === "other") continue;
         if (!selfTarget && definition.targetMode === "self") continue;
+        if (result === activities) result = [...activities];
         result.push({
           Activity: this.#injectedActivities.get(runtimeName) ?? createNativeActivity(runtimeName, definition),
           Group: groupName
@@ -14247,7 +14407,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.3");
+    const app = new KikiLinkApp("0.20.4");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.20.4 - 2026-08-25
+
+- Fixed the real runtime failure shared by Blossom and Custom Activities: ModSDK can retain a stale
+  cached entrypoint after Bondage Club or another addon replaces a function. KikiLink now detects
+  that state and installs a cleanup-safe direct wrapper around the current native function instead
+  of treating an unreachable hook as healthy.
+- Registered the Blossom renderer through both established room-addon paths used by BCX and Echo,
+  with same-frame de-duplication. The explicit `Move flower` action can also recover the visible
+  player's exact `CharX`, `CharY`, and `Zoom` directly from BC's character loop if no overlay frame
+  has reached KikiLink yet.
+- Added a second native activity-grid path at `DialogBuildActivities`, kept integrations alive after
+  transient menu replacement errors, and allowed a matching saved activity to populate an otherwise
+  empty native group result. Saved actions now survive stale preference and allowed-list hooks.
+- Added regression coverage for replaced ModSDK entrypoints, the missing-overlay placement error,
+  the final `DialogActivity` grid, and empty native activity groups. All 133 tests pass.
+
 ## 0.20.3 - 2026-08-25
 
 - Replaced the fixed screen-space Blossom with the actual Bondage Club character-overlay pattern

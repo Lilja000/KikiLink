@@ -18,11 +18,18 @@ const RECENT_INCOMING_TTL_MS = 10_000;
 const KIKILINK_BEEP_TYPE = "KikiLink";
 const KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
 const MAX_PROTOCOL_PAYLOAD = 700;
-const CUSTOM_ACTIVITY_HOOK_COUNT = 5;
+const CUSTOM_ACTIVITY_HOOK_COUNT = 6;
 
 interface RecentIncoming {
   fingerprint: string;
   capturedAt: number;
+}
+
+type ResilientHook = (args: any[], next: (args: any[]) => any) => any;
+
+interface DirectHookRegistration {
+  isCurrent(): boolean;
+  unhook(): void;
 }
 
 export type BCCharacterOverlayRenderer = (
@@ -60,13 +67,17 @@ export class BCAdapter {
   readonly #characterOverlayRenderers = new Set<BCCharacterOverlayRenderer>();
   readonly #customActivityIntegrations = new Set<BCCustomActivityIntegration>();
   readonly #installedActivityHooks = new Set<string>();
+  readonly #resilientHooks = new Map<string, ResilientHook>();
+  readonly #directHookRegistrations = new Map<string, DirectHookRegistration>();
   #modApi: ModSDKModAPI | undefined;
   #socket: BCServerSocket | undefined;
   #socketRebindTimer: ReturnType<typeof setInterval> | undefined;
   #beepLogTimer: ReturnType<typeof setInterval> | undefined;
   #activityHookRetryTimer: ReturnType<typeof setInterval> | undefined;
   #characterOverlayHookRetryTimer: ReturnType<typeof setInterval> | undefined;
-  #characterOverlayHookName: string | undefined;
+  readonly #characterOverlayHookNames = new Set<string>();
+  readonly #overlayRenderSignatures = new Set<string>();
+  #overlayRenderResetQueued = false;
   #beepLogCursor = 0;
   #seenIncomingPayloads = new WeakSet<object>();
   #stopped = false;
@@ -133,7 +144,11 @@ export class BCAdapter {
     this.#modApi?.unload();
     this.#modApi = undefined;
     this.#installedActivityHooks.clear();
-    this.#characterOverlayHookName = undefined;
+    this.#resilientHooks.clear();
+    this.#directHookRegistrations.clear();
+    this.#characterOverlayHookNames.clear();
+    this.#overlayRenderSignatures.clear();
+    this.#overlayRenderResetQueued = false;
   }
 
   isReady(): boolean {
@@ -467,10 +482,7 @@ export class BCAdapter {
       );
     }
     this.#ensureActivityHooks();
-    if (
-      this.#installedActivityHooks.size < CUSTOM_ACTIVITY_HOOK_COUNT &&
-      this.#activityHookRetryTimer === undefined
-    ) {
+    if (this.#activityHookRetryTimer === undefined) {
       this.#activityHookRetryTimer = setInterval(
         () => this.#ensureActivityHooks(),
         ACTIVITY_HOOK_RETRY_MS,
@@ -487,10 +499,7 @@ export class BCAdapter {
       }),
     );
     this.#ensureCharacterOverlayHook();
-    if (
-      this.#characterOverlayHookName === undefined &&
-      this.#characterOverlayHookRetryTimer === undefined
-    ) {
+    if (this.#characterOverlayHookRetryTimer === undefined) {
       this.#characterOverlayHookRetryTimer = setInterval(
         () => this.#ensureCharacterOverlayHook(),
         CHARACTER_OVERLAY_HOOK_RETRY_MS,
@@ -500,143 +509,205 @@ export class BCAdapter {
 
   #ensureCharacterOverlayHook(): void {
     const modApi = this.#modApi;
-    if (!modApi || this.#characterOverlayHookName !== undefined) return;
-    // Match established room addons such as BCX: draw after the complete character overlay so
-    // the mark shares CharX/CharY/Zoom with every other above-character icon. Screen functions can
-    // load after login, so installation is retried until one becomes available.
-    const name =
-      typeof ChatRoomCharacterViewDrawOverlay === "function"
-        ? "ChatRoomCharacterViewDrawOverlay"
-        : typeof ChatRoomDrawCharacterStatusIcons === "function"
-          ? "ChatRoomDrawCharacterStatusIcons"
-          : undefined;
-    if (!name) return;
-    const installed = this.#tryInstallHook(name, () =>
-      modApi.hookFunction(name, -10, (args, next) => {
+    if (!modApi) return;
+    for (const name of this.#characterOverlayHookNames) {
+      const hook = this.#resilientHooks.get(name);
+      if (hook) this.#ensureDirectFallback(name, hook);
+    }
+    if (
+      this.#characterOverlayHookNames.has("ChatRoomCharacterViewDrawOverlay") &&
+      this.#characterOverlayHookNames.has("ChatRoomDrawCharacterStatusIcons")
+    ) {
+      return;
+    }
+
+    // BCX currently draws from ChatRoomCharacterViewDrawOverlay, while Echo draws from the nested
+    // ChatRoomDrawCharacterStatusIcons function. Hooking both established paths makes the addon
+    // resilient to view variants and to another addon replacing either entrypoint. The synchronous
+    // duplicate is suppressed in #renderCharacterOverlays.
+    const candidates = [
+      ["ChatRoomCharacterViewDrawOverlay", typeof ChatRoomCharacterViewDrawOverlay === "function"],
+      ["ChatRoomDrawCharacterStatusIcons", typeof ChatRoomDrawCharacterStatusIcons === "function"],
+    ] as const;
+    for (const [name, available] of candidates) {
+      if (!available || this.#characterOverlayHookNames.has(name)) continue;
+      const hook: ResilientHook = (args, next) => {
         const result = next(args);
         this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
         return result;
-      }),
-    );
-    if (!installed) return;
-    this.#characterOverlayHookName = name;
-    if (this.#characterOverlayHookRetryTimer !== undefined) {
-      clearInterval(this.#characterOverlayHookRetryTimer);
-      this.#characterOverlayHookRetryTimer = undefined;
+      };
+      const installed = this.#tryInstallHook(name, () =>
+        modApi.hookFunction(name, -10, hook as never),
+        hook,
+      );
+      if (installed) this.#characterOverlayHookNames.add(name);
     }
+
+    // The lightweight timer remains active as a watchdog because BC screen reloads and late addons
+    // can replace either function after this initial installation.
   }
 
   #ensureActivityHooks(): void {
     const modApi = this.#modApi;
     if (!modApi) return;
+    for (const name of this.#installedActivityHooks) {
+      const hook = this.#resilientHooks.get(name);
+      if (hook) this.#ensureDirectFallback(name, hook);
+    }
+    if (this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT) return;
 
+    const allowedHook: ResilientHook = (args, next) => {
+      const activities = next(args);
+      if (!Array.isArray(activities)) return activities;
+      return this.#extendAllowedActivities(args[0], args[1], activities);
+    };
     this.#tryInstallActivityHook(
       "ActivityAllowedForGroup",
       typeof ActivityAllowedForGroup === "function",
-      () =>
-        modApi.hookFunction("ActivityAllowedForGroup", 10, (args, next) => {
-          let activities = next(args);
-          if (!Array.isArray(activities)) return activities;
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const extended = this.#callActivityIntegration(integration, () =>
-              integration.extendAllowedActivities?.(args[0], args[1], activities),
-            );
-            if (Array.isArray(extended)) activities = extended;
-          }
-          return activities;
-        }),
+      10,
+      allowedHook,
     );
+
+    const dialogBuildHook: ResilientHook = (args, next) => {
+      const result = next(args);
+      if (!Array.isArray(DialogActivity)) return result;
+      const character = args[0];
+      const groupName = character?.FocusGroup?.Name;
+      if (typeof groupName !== "string") return result;
+      const extended = this.#extendAllowedActivities(character, groupName, DialogActivity);
+      if (extended === DialogActivity) return result;
+      DialogActivity = extended;
+      if ((args[1] ?? true) && DialogMenuMode === "activities") {
+        try {
+          const reload = DialogMenuMapping?.activities?.Reload;
+          if (typeof reload === "function") {
+            const pending = reload.call(DialogMenuMapping.activities, null, {
+              reset: true,
+              resetDialogItems: false,
+            });
+            if (pending && typeof pending.catch === "function") {
+              void pending.catch((error: unknown) =>
+                this.#logger.warn("Native custom activity grid refresh failed", error),
+              );
+            }
+          }
+        } catch (error) {
+          this.#logger.warn("Native custom activity grid refresh failed", error);
+        }
+      }
+      return result;
+    };
+    this.#tryInstallActivityHook(
+      "DialogBuildActivities",
+      typeof DialogBuildActivities === "function",
+      -10,
+      dialogBuildHook,
+    );
+
+    const dictionaryHook: ResilientHook = (args, next) => {
+      const keyword = typeof args[0] === "string" ? args[0] : "";
+      for (const integration of [...this.#customActivityIntegrations]) {
+        const resolved = this.#callActivityIntegration(integration, () =>
+          integration.resolveText(keyword),
+        );
+        if (resolved !== undefined) return resolved;
+      }
+      return next(args);
+    };
     this.#tryInstallActivityHook(
       "ActivityDictionaryText",
       typeof ActivityDictionaryText === "function",
-      () =>
-        modApi.hookFunction("ActivityDictionaryText", 10, (args, next) => {
-          const keyword = typeof args[0] === "string" ? args[0] : "";
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const text = this.#callActivityIntegration(integration, () =>
-              integration.resolveText(keyword),
-            );
-            if (text !== undefined) return text;
-          }
-          return next(args);
-        }),
+      10,
+      dictionaryHook,
     );
+
+    const runHook: ResilientHook = (args, next) => {
+      for (const integration of [...this.#customActivityIntegrations]) {
+        const handled = this.#callActivityIntegration(integration, () =>
+          integration.run(args[0], args[1], args[2], args[3]),
+        );
+        if (handled) return undefined;
+      }
+      return next(args);
+    };
     this.#tryInstallActivityHook(
       "ActivityRun",
       typeof ActivityRun === "function",
-      () =>
-        modApi.hookFunction("ActivityRun", 10, (args, next) => {
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const handled = this.#callActivityIntegration(integration, () =>
-              integration.run(args[0], args[1], args[2], args[3]),
-            );
-            if (handled) return undefined;
-          }
-          return next(args);
-        }),
+      10,
+      runHook,
     );
+
+    const activityButtonHook: ResilientHook = (args, next) => {
+      const itemActivity = args[1];
+      const activityName = itemActivity?.Activity?.Name;
+      if (typeof activityName === "string") {
+        for (const integration of [...this.#customActivityIntegrations]) {
+          const image = this.#callActivityIntegration(integration, () =>
+            integration.resolveImage(activityName),
+          );
+          if (image !== undefined) {
+            args[4] = { ...(args[4] ?? {}), image };
+            break;
+          }
+        }
+      }
+      const button = next(args);
+      for (const integration of [...this.#customActivityIntegrations]) {
+        this.#callActivityIntegration(integration, () => {
+          integration.decorateButton(button, itemActivity);
+        });
+      }
+      return button;
+    };
     this.#tryInstallActivityHook(
       "ElementButton.CreateForActivity",
       typeof ElementButton === "object" &&
         ElementButton !== null &&
         typeof ElementButton.CreateForActivity === "function",
-      () =>
-        modApi.hookFunction("ElementButton.CreateForActivity", 10, (args, next) => {
-          const itemActivity = args[1];
-          const activityName = itemActivity?.Activity?.Name;
-          if (typeof activityName === "string") {
-            for (const integration of [...this.#customActivityIntegrations]) {
-              const image = this.#callActivityIntegration(integration, () =>
-                integration.resolveImage(activityName),
-              );
-              if (image !== undefined) {
-                args[4] = { ...(args[4] ?? {}), image };
-                break;
-              }
-            }
-          }
-          const button = next(args);
-          for (const integration of [...this.#customActivityIntegrations]) {
-            this.#callActivityIntegration(integration, () => {
-              integration.decorateButton(button, itemActivity);
-            });
-          }
-          return button;
-        }),
+      10,
+      activityButtonHook,
     );
+
+    const preferenceHook: ResilientHook = (args, next) => {
+      const activityName = typeof args[1] === "string" ? args[1] : "";
+      for (const integration of [...this.#customActivityIntegrations]) {
+        const custom = this.#callActivityIntegration(
+          integration,
+          () => integration.isCustomActivity?.(activityName) ?? false,
+        );
+        if (custom) return 2;
+      }
+      return next(args);
+    };
     this.#tryInstallActivityHook(
       "PreferenceGetActivityFactor",
       typeof PreferenceGetActivityFactor === "function",
-      () =>
-        modApi.hookFunction("PreferenceGetActivityFactor", 10, (args, next) => {
-          const activityName = typeof args[1] === "string" ? args[1] : "";
-          for (const integration of [...this.#customActivityIntegrations]) {
-            const custom = this.#callActivityIntegration(
-              integration,
-              () => integration.isCustomActivity?.(activityName) ?? false,
-            );
-            if (custom) return 2;
-          }
-          return next(args);
-        }),
+      10,
+      preferenceHook,
     );
 
-    if (
-      this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT &&
-      this.#activityHookRetryTimer !== undefined
-    ) {
-      clearInterval(this.#activityHookRetryTimer);
-      this.#activityHookRetryTimer = undefined;
-    }
+    // Keep the timer as a hook-health watchdog; all installed hooks are no-ops here unless their
+    // native entrypoint has been replaced since the previous check.
   }
 
   #tryInstallActivityHook(
     name: string,
     available: boolean,
-    install: () => () => void,
+    priority: number,
+    hook: ResilientHook,
   ): void {
     if (!available || this.#installedActivityHooks.has(name)) return;
-    if (this.#tryInstallHook(name, install)) this.#installedActivityHooks.add(name);
+    const modApi = this.#modApi;
+    if (!modApi) return;
+    if (
+      this.#tryInstallHook(
+        name,
+        () => modApi.hookFunction(name, priority, hook as never),
+        hook,
+      )
+    ) {
+      this.#installedActivityHooks.add(name);
+    }
   }
 
   #renderCharacterOverlays(
@@ -645,14 +716,38 @@ export class BCAdapter {
     characterY: number,
     zoom: number,
   ): void {
+    const signature = `${character?.MemberNumber ?? "?"}:${characterX}:${characterY}:${zoom}`;
+    if (this.#overlayRenderSignatures.has(signature)) return;
+    this.#overlayRenderSignatures.add(signature);
+    if (!this.#overlayRenderResetQueued) {
+      this.#overlayRenderResetQueued = true;
+      queueMicrotask(() => {
+        this.#overlayRenderSignatures.clear();
+        this.#overlayRenderResetQueued = false;
+      });
+    }
     for (const renderer of [...this.#characterOverlayRenderers]) {
       try {
         renderer(character, characterX, characterY, zoom);
       } catch (error) {
-        this.#characterOverlayRenderers.delete(renderer);
-        this.#logger.warn("Disabled a failing character overlay renderer", error);
+        this.#logger.warn("Character overlay renderer failed for this frame", error);
       }
     }
+  }
+
+  #extendAllowedActivities(
+    character: BCCharacter,
+    groupName: string,
+    activities: BCItemActivity[],
+  ): BCItemActivity[] {
+    let extended = activities;
+    for (const integration of [...this.#customActivityIntegrations]) {
+      const candidate = this.#callActivityIntegration(integration, () =>
+        integration.extendAllowedActivities?.(character, groupName, extended),
+      );
+      if (Array.isArray(candidate)) extended = candidate;
+    }
+    return extended;
   }
 
   #notifyCustomActivityMessage(message: BCChatRoomMessage): void {
@@ -668,20 +763,86 @@ export class BCAdapter {
     try {
       return call();
     } catch (error) {
-      this.#customActivityIntegrations.delete(integration);
-      this.#logger.warn("Disabled a failing custom activity integration", error);
+      // A menu/canvas can be replaced while BC is drawing it. One transient failure must not
+      // permanently remove every custom activity until the entire userscript is reloaded.
+      this.#logger.warn(
+        `${integration.constructor.name || "Custom activity integration"} failed for this call`,
+        error,
+      );
       return undefined;
     }
   }
 
-  #tryInstallHook(name: string, install: () => () => void): boolean {
+  #tryInstallHook(
+    name: string,
+    install: () => () => void,
+    resilientHook?: ResilientHook,
+  ): boolean {
     try {
-      this.#unhooks.push(install());
+      const sdkUnhook = install();
+      this.#unhooks.push(sdkUnhook);
+      if (resilientHook) {
+        this.#resilientHooks.set(name, resilientHook);
+        if (!this.#ensureDirectFallback(name, resilientHook)) {
+          this.#resilientHooks.delete(name);
+          this.#unhooks.pop();
+          sdkUnhook();
+          return false;
+        }
+      }
       return true;
     } catch (error) {
       this.#logger.warn(`${name} hook unavailable; keeping native fallback`, error);
       return false;
     }
+  }
+
+  #ensureDirectFallback(name: string, hook: ResilientHook): boolean {
+    if (this.#sdkEntrypointIsCurrent(name)) return true;
+    const existing = this.#directHookRegistrations.get(name);
+    if (existing?.isCurrent()) return true;
+    const registration = this.#installDirectHook(name, hook);
+    if (!registration) return false;
+    this.#directHookRegistrations.set(name, registration);
+    this.#unhooks.push(registration.unhook);
+    this.#logger.warn(`${name} was replaced after ModSDK cached it; direct fallback installed`);
+    return true;
+  }
+
+  #sdkEntrypointIsCurrent(name: string): boolean {
+    try {
+      const info = bcModSDK.getPatchingInfo().get(name);
+      return Boolean(info?.sdkEntrypoint && info.currentEntrypoint === info.sdkEntrypoint);
+    } catch {
+      return false;
+    }
+  }
+
+  #installDirectHook(name: string, hook: ResilientHook): DirectHookRegistration | undefined {
+    const path = name.split(".");
+    let context: Record<string, any> = window as unknown as Record<string, any>;
+    for (const key of path.slice(0, -1)) {
+      const next = context[key];
+      if (!next || (typeof next !== "object" && typeof next !== "function")) return undefined;
+      context = next as Record<string, any>;
+    }
+    const property = path.at(-1);
+    if (!property) return undefined;
+    const original = context[property];
+    if (typeof original !== "function") return undefined;
+
+    const adapter = this;
+    const wrapper = function (this: unknown, ...args: any[]): any {
+      if (adapter.#stopped) return original.apply(this, args);
+      return hook(args, (nextArgs) => original.apply(this, nextArgs));
+    };
+    context[property] = wrapper;
+    return {
+      isCurrent: () => context[property] === wrapper,
+      unhook: () => {
+        if (context[property] === wrapper) context[property] = original;
+      },
+    };
   }
 
   #attachSocketListeners(): void {

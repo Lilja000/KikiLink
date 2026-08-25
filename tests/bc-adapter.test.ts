@@ -21,6 +21,10 @@ afterEach(() => {
     "ChatRoomMessage",
     "ActivityDictionaryText",
     "ActivityAllowedForGroup",
+    "DialogBuildActivities",
+    "DialogActivity",
+    "DialogMenuMapping",
+    "DialogMenuMode",
     "ActivityRun",
     "PreferenceGetActivityFactor",
     "ElementButton",
@@ -448,7 +452,7 @@ describe("BCAdapter", () => {
     adapter.stop();
   });
 
-  it("installs the character overlay when the ChatRoom screen loads after login", async () => {
+  it("installs both established overlay paths when the ChatRoom screen loads after login", async () => {
     vi.useFakeTimers();
     globalThis.Player = {
       MemberNumber: 999,
@@ -462,13 +466,23 @@ describe("BCAdapter", () => {
     await adapter.start();
 
     const nativeOverlay = vi.fn();
+    const nativeStatusIcons = vi.fn();
     globalThis.ChatRoomCharacterViewDrawOverlay = nativeOverlay;
+    globalThis.ChatRoomDrawCharacterStatusIcons = nativeStatusIcons;
     await vi.advanceTimersByTimeAsync(500);
     const character = { MemberNumber: 999, Name: "AccountKiki" };
-    globalThis.ChatRoomCharacterViewDrawOverlay(character, 240, 10, 0.5);
+    globalThis.ChatRoomDrawCharacterStatusIcons(character, 240, 10, 0.5);
 
-    expect(nativeOverlay).toHaveBeenCalledWith(character, 240, 10, 0.5);
+    expect(nativeStatusIcons).toHaveBeenCalledWith(character, 240, 10, 0.5);
     expect(renderer).toHaveBeenCalledWith(character, 240, 10, 0.5);
+
+    renderer.mockClear();
+    const replacedStatusIcons = vi.fn();
+    globalThis.ChatRoomDrawCharacterStatusIcons = replacedStatusIcons;
+    await vi.advanceTimersByTimeAsync(500);
+    globalThis.ChatRoomDrawCharacterStatusIcons(character, 260, 12, 0.6);
+    expect(replacedStatusIcons).toHaveBeenCalledWith(character, 260, 12, 0.6);
+    expect(renderer).toHaveBeenCalledWith(character, 260, 12, 0.6);
     adapter.stop();
   });
 
@@ -484,6 +498,10 @@ describe("BCAdapter", () => {
       },
     ]);
     const nativePreference = vi.fn(() => 0);
+    const nativeDialogBuild = vi.fn(() => {
+      globalThis.DialogActivity = [];
+    });
+    const reloadActivities = vi.fn(() => Promise.resolve());
     const nativeCreateButton = vi.fn(
       (
         _idPrefix: string | null,
@@ -507,6 +525,10 @@ describe("BCAdapter", () => {
     globalThis.ActivityDictionaryText = nativeDictionary;
     globalThis.ActivityRun = nativeRun;
     globalThis.ActivityAllowedForGroup = nativeAllowed;
+    globalThis.DialogBuildActivities = nativeDialogBuild;
+    globalThis.DialogActivity = [];
+    globalThis.DialogMenuMode = "activities";
+    globalThis.DialogMenuMapping = { activities: { Reload: reloadActivities } };
     Object.assign(globalThis, {
       ElementButton: { CreateForActivity: nativeCreateButton },
     });
@@ -568,6 +590,29 @@ describe("BCAdapter", () => {
       customName,
     ]);
     expect(integration.extendAllowedActivities).toHaveBeenCalledOnce();
+    const replacedAllowed = vi.fn((_character: BCCharacter, groupName: string) => [
+      {
+        Activity: { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: [groupName] },
+        Group: groupName,
+      },
+    ]);
+    globalThis.ActivityAllowedForGroup = replacedAllowed;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(globalThis.ActivityAllowedForGroup(acted, "ItemArms").map((item) => item.Activity.Name)).toEqual([
+      "Caress",
+      customName,
+    ]);
+    expect(replacedAllowed).toHaveBeenCalledOnce();
+    const dialogTarget = {
+      ...acted,
+      FocusGroup: { Name: "ItemArms", Description: "Arms", Category: "Item" as const },
+    };
+    globalThis.DialogBuildActivities(dialogTarget, true);
+    expect(globalThis.DialogActivity.map((item) => item.Activity.Name)).toEqual([customName]);
+    expect(reloadActivities).toHaveBeenCalledWith(null, {
+      reset: true,
+      resetDialogItems: false,
+    });
     globalThis.ActivityRun(actor, acted, group, custom);
     globalThis.ActivityRun(actor, acted, group, vanilla);
     expect(integration.run).toHaveBeenCalledTimes(2);

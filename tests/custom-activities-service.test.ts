@@ -366,12 +366,14 @@ describe("native Custom Activities", () => {
       ),
     ).toEqual([vanilla]);
     expect(
-      service.extendAllowedActivities(
-        { MemberNumber: 123, Name: "Reina" },
-        "ItemArms",
-        [],
-      ),
-    ).toEqual([]);
+      service
+        .extendAllowedActivities(
+          { MemberNumber: 123, Name: "Reina" },
+          "ItemArms",
+          [],
+        )
+        .map((item) => item.Activity.Name),
+    ).toEqual([expect.stringMatching(/^KikiLinkCustom_/)]);
     service.stop();
   });
 

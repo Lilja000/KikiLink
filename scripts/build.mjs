@@ -35,6 +35,7 @@ await build({
   entryPoints: [resolve(root, "src/index.ts")],
   outfile,
   bundle: true,
+  preserveSymlinks: true,
   format: "iife",
   platform: "browser",
   target: ["es2022"],

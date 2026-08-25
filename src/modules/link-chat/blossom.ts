@@ -227,6 +227,8 @@ export class RoomBlossomBadge {
 
   /** Arms a single drag of the flower above the authenticated player's character. */
   beginPlacement(): boolean {
+    const liveFrame = visibleCharacterFrame(this.#adapter.getOwnMemberNumber());
+    if (liveFrame) this.#ownFrame = liveFrame;
     if (
       this.#destroyed ||
       !this.#mounted ||
@@ -392,6 +394,34 @@ function eventCanvasPoint(
     x: (event.clientX - rect.left) * (canvas.width / rect.width),
     y: (event.clientY - rect.top) * (canvas.height / rect.height),
   };
+}
+
+/**
+ * Recovers the authenticated character's current native canvas frame even if an addon replaced
+ * the overlay entrypoint after KikiLink installed its hook. BC uses this same loop to draw and hit
+ * test every visible character; calling it once from the explicit settings action is harmless.
+ */
+function visibleCharacterFrame(memberNumber: number): CharacterCanvasFrame | undefined {
+  if (
+    !Number.isSafeInteger(memberNumber) ||
+    typeof ChatRoomCharacterViewLoopCharacters !== "function" ||
+    typeof ChatRoomCharacterDrawlist === "undefined" ||
+    !Array.isArray(ChatRoomCharacterDrawlist)
+  ) {
+    return undefined;
+  }
+  let frame: CharacterCanvasFrame | undefined;
+  try {
+    ChatRoomCharacterViewLoopCharacters((characterIndex, x, y, _space, zoom) => {
+      if (ChatRoomCharacterDrawlist[characterIndex]?.MemberNumber !== memberNumber) return;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom) || zoom <= 0) return;
+      frame = { x, y, zoom };
+      return true;
+    });
+  } catch {
+    return undefined;
+  }
+  return frame;
 }
 
 function sanitizePosition(
