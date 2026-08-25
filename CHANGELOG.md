@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.10 - 2026-08-25
+
+- Fixed Custom Activity arousal applying only to the local player. Outgoing actions now include
+  validated native BC `ActivityName`/`ActivityCounter` metadata, allowing the target's own BC client
+  to process the effect even when KikiLink is absent, outdated, or temporarily unable to hook the
+  room-message path.
+- Added protocol-v2 handoff for current KikiLink targets: the configured flat arousal amount is
+  applied once on the target client, then only KikiLink's native fallback fields are removed before
+  BC continues. This avoids double arousal while remaining backward-compatible with v1 messages
+  from 0.20.9.
+- Removed the redundant screen-state membership gate from target-side processing, resolved the
+  local/source characters directly from the live room roster, and consume replay nonces only after
+  a successful effect so a transient unavailable runtime can still fall through to native BC.
+
 ## 0.20.9 - 2026-08-25
 
 - Moved outgoing-message capture to the shared low-level `ServerSend("AccountBeep", ...)` path used

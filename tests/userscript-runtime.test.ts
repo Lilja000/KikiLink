@@ -13,6 +13,7 @@ const CUSTOM_ACTIVITY_PREFIX = "KikiLinkCustom_";
 const GLOBAL_KEYS = [
   "ActivityAllowedForGroup",
   "ActivityDictionaryText",
+  "ActivityEffectFlat",
   "ActivityFemale3DCG",
   "ActivityFemale3DCGOrdering",
   "ActivityRun",
@@ -245,7 +246,10 @@ describe("published userscript runtime", () => {
     setGlobal("ServerSocket", null);
     setGlobal("ServerAccountBeep", vi.fn());
     setGlobal("ServerAccountQueryResult", vi.fn());
-    setGlobal("ChatRoomMessage", vi.fn());
+    const nativeRoomMessage = vi.fn();
+    const activityEffectFlat = vi.fn();
+    setGlobal("ChatRoomMessage", nativeRoomMessage);
+    setGlobal("ActivityEffectFlat", activityEffectFlat);
     setGlobal("ChatRoomSendEmote", vi.fn());
     setGlobal("FriendListBeepLog", []);
 
@@ -372,7 +376,7 @@ describe("published userscript runtime", () => {
               targetMode: "both",
               template: "{me} touches {target's} elbow.",
               image: "Caress",
-              arousal: 0,
+              arousal: 6,
             },
           ],
         },
@@ -441,8 +445,8 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.20.9");
-    expect(version?.textContent).toBe("0.20.9");
+    expect(api.getVersion()).toBe("0.20.10");
+    expect(version?.textContent).toBe("0.20.10");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
@@ -472,6 +476,75 @@ describe("published userscript runtime", () => {
     expect(activityMark?.style.height).toBe("12px");
     expect(activityMark?.style.left).toBe("0px");
     expect(activityMark?.style.top).toBe("0px");
+
+    const customActivity = registered.find((activity) =>
+      activity.Name.startsWith(CUSTOM_ACTIVITY_PREFIX),
+    );
+    if (!customActivity) throw new Error("Built userscript did not register its custom activity");
+    getGlobal<Function>("ActivityRun")(
+      player,
+      target,
+      groups[0],
+      { Activity: customActivity, Group: "ItemArms" },
+    );
+    const publish = getGlobal<ReturnType<typeof vi.fn>>("ChatRoomPublishCustomAction");
+    expect(publish).toHaveBeenCalledOnce();
+    const publishedDictionary = publish.mock.calls[0]?.[2] as Array<Record<string, unknown>>;
+    expect(publishedDictionary).toContainEqual({
+      ActivityName: "Caress",
+      KikiLinkArousalFallback: true,
+    });
+    expect(publishedDictionary).toContainEqual({
+      ActivityCounter: 2,
+      KikiLinkArousalFallback: true,
+    });
+    const publishedMeta = publishedDictionary.find(
+      (entry) => entry.Tag === "KikiLinkActivityMeta",
+    );
+    expect(JSON.parse(String(publishedMeta?.Text))).toMatchObject({
+      v: 2,
+      source: TEST_MEMBER_NUMBER,
+      target: target.MemberNumber,
+      group: "ItemArms",
+      arousal: 6,
+      fallbackActivity: "Caress",
+      fallbackCount: 2,
+    });
+
+    const incomingDictionary = [
+      { Tag: "SourceCharacter", Text: "Reina", MemberNumber: target.MemberNumber },
+      { Tag: "TargetCharacter", Text: "Kiki", MemberNumber: TEST_MEMBER_NUMBER },
+      { Tag: "FocusAssetGroup", AssetGroupName: "ItemArms" },
+      { ActivityName: "Caress", KikiLinkArousalFallback: true },
+      { ActivityCounter: 2, KikiLinkArousalFallback: true },
+      {
+        Tag: "KikiLinkActivityMeta",
+        Text: JSON.stringify({
+          v: 2,
+          source: target.MemberNumber,
+          target: TEST_MEMBER_NUMBER,
+          group: "ItemArms",
+          arousal: 6,
+          nonce: "runtime-target01",
+          fallbackActivity: "Caress",
+          fallbackCount: 2,
+        }),
+      },
+    ];
+    getGlobal<Function>("ChatRoomMessage")({
+      Sender: target.MemberNumber,
+      Type: "Action",
+      Content: "KikiLinkCustomActivity",
+      Dictionary: incomingDictionary,
+    });
+    expect(activityEffectFlat).toHaveBeenCalledOnce();
+    expect(activityEffectFlat).toHaveBeenCalledWith(target, player, 6, "ItemArms", 1);
+    expect(incomingDictionary).not.toContainEqual(
+      expect.objectContaining({ KikiLinkArousalFallback: true }),
+    );
+    expect(nativeRoomMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ Dictionary: incomingDictionary }),
+    );
 
     await getGlobal<{ destroy(): Promise<void> }>("KikiLink").destroy();
     expect(document.querySelector("#kikilink-version")).toBeNull();

@@ -13,6 +13,7 @@ import { BLOSSOM_ICON_DATA_URL } from "../link-chat/blossom";
 const ACTIVITY_PREFIX = "KikiLinkCustom_";
 const ACTION_CONTENT = "KikiLinkCustomActivity";
 const META_TAG = "KikiLinkActivityMeta";
+const NATIVE_AROUSAL_FALLBACK_MARKER = "KikiLinkArousalFallback";
 const MAX_SEEN_NONCES = 120;
 const REGISTRY_MONITOR_INTERVAL_MS = 500;
 const SAFE_ASSET_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
@@ -89,12 +90,14 @@ export interface ActivityBodySlot {
 }
 
 interface ActivityMeta {
-  v: 1;
+  v: 1 | 2;
   source: number;
   target: number;
   group: string;
   arousal: number;
   nonce: string;
+  fallbackActivity?: string;
+  fallbackCount?: number;
 }
 
 interface Pronouns {
@@ -388,21 +391,39 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     if (!text) return true;
 
     if (typeof ChatRoomPublishCustomAction === "function") {
+      const fallbackActivity = canonicalVanillaActivityImage(definition.image);
+      const fallbackCount = nativeArousalFallbackCount(definition.arousal);
       const meta: ActivityMeta = {
-        v: 1,
+        // Version 2 tells older KikiLink clients to ignore the private flat effect and let BC's
+        // native fallback run instead. This prevents a 0.20.9 recipient from applying both paths.
+        v: 2,
         source: actor.MemberNumber,
         target: acted.MemberNumber,
         group: targetGroup.Name,
         arousal: definition.arousal,
         nonce: createNonce(),
+        ...(definition.arousal > 0 ? { fallbackActivity, fallbackCount } : {}),
       };
-      ChatRoomPublishCustomAction(ACTION_CONTENT, false, [
+      const dictionary: unknown[] = [
         { Tag: "SourceCharacter", Text: characterName(actor), MemberNumber: actor.MemberNumber },
         { Tag: "TargetCharacter", Text: characterName(acted), MemberNumber: acted.MemberNumber },
         { Tag: "FocusAssetGroup", AssetGroupName: targetGroup.Name },
+      ];
+      if (definition.arousal > 0) {
+        // Current BC only applies remote arousal when its message metadata contains a native
+        // ActivityName. Recipients with KikiLink consume and remove these two entries before BC
+        // continues, preserving the configured flat amount. Everyone else still gets a normal,
+        // preference-aware BC activity effect instead of no effect at all.
+        dictionary.push(
+          { ActivityName: fallbackActivity, [NATIVE_AROUSAL_FALLBACK_MARKER]: true },
+          { ActivityCounter: fallbackCount, [NATIVE_AROUSAL_FALLBACK_MARKER]: true },
+        );
+      }
+      dictionary.push(
         { Tag: `MISSING TEXT IN \"Interface.csv\": ${ACTION_CONTENT}`, Text: text },
         { Tag: META_TAG, Text: JSON.stringify(meta) },
-      ]);
+      );
+      ChatRoomPublishCustomAction(ACTION_CONTENT, false, dictionary);
     } else {
       this.adapter.sendRoomEmote(text);
     }
@@ -448,25 +469,31 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   onRoomMessage(message: BCChatRoomMessage): void {
     const meta = parseActivityMeta(message);
     if (!meta || meta.arousal <= 0 || meta.target !== this.adapter.getOwnMemberNumber()) return;
-    if (message.Sender !== meta.source || !this.adapter.isMemberInCurrentRoom(meta.source)) return;
+    if (message.Sender !== meta.source) return;
     if (
       !dictionaryIdentifies(message.Dictionary, "SourceCharacter", meta.source) ||
       !dictionaryIdentifies(message.Dictionary, "TargetCharacter", meta.target) ||
-      !this.getBodySlots().some((slot) => slot.name === meta.group)
+      !isKnownActivityGroup(meta.group)
     ) {
       return;
     }
     const fingerprint = `${meta.source}:${meta.nonce}`;
     if (this.#seenNonces.includes(fingerprint)) return;
+    if (typeof ActivityEffectFlat !== "function") return;
+    const player = typeof Player === "object" && Player !== null ? Player : undefined;
+    if (!player || player.MemberNumber !== meta.target) return;
+    const source =
+      meta.source === player.MemberNumber
+        ? player
+        : typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter)
+          ? ChatRoomCharacter.find((character) => character.MemberNumber === meta.source)
+          : undefined;
+    if (!source) return;
+
+    ActivityEffectFlat(source, player, meta.arousal, meta.group, 1);
     this.#seenNonces.push(fingerprint);
     if (this.#seenNonces.length > MAX_SEEN_NONCES) this.#seenNonces.shift();
-    if (typeof ActivityEffectFlat !== "function") return;
-    const source =
-      typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter)
-        ? ChatRoomCharacter.find((character) => character.MemberNumber === meta.source)
-        : undefined;
-    if (!source || typeof Player !== "object" || Player === null) return;
-    ActivityEffectFlat(source, Player, meta.arousal, meta.group, 1);
+    removeNativeArousalFallback(message.Dictionary, meta);
   }
 
   #ensureRegistryInjection(): void {
@@ -663,7 +690,7 @@ function parseActivityMeta(message: BCChatRoomMessage): ActivityMeta | undefined
     const parsed = JSON.parse(entry.Text) as unknown;
     if (
       !isRecord(parsed) ||
-      parsed.v !== 1 ||
+      (parsed.v !== 1 && parsed.v !== 2) ||
       !validMemberNumber(parsed.source) ||
       !validMemberNumber(parsed.target) ||
       !SAFE_ASSET_NAME.test(typeof parsed.group === "string" ? parsed.group : "") ||
@@ -676,9 +703,51 @@ function parseActivityMeta(message: BCChatRoomMessage): ActivityMeta | undefined
     ) {
       return undefined;
     }
+    if (
+      parsed.v === 2 &&
+      parsed.arousal > 0 &&
+      (
+        typeof parsed.fallbackActivity !== "string" ||
+        !VANILLA_ACTIVITY_IMAGE_SET.has(parsed.fallbackActivity) ||
+        typeof parsed.fallbackCount !== "number" ||
+        !Number.isInteger(parsed.fallbackCount) ||
+        parsed.fallbackCount < 1 ||
+        parsed.fallbackCount > 4
+      )
+    ) {
+      return undefined;
+    }
     return parsed as unknown as ActivityMeta;
   } catch {
     return undefined;
+  }
+}
+
+function nativeArousalFallbackCount(amount: number): number {
+  return Math.max(1, Math.min(4, Math.ceil(amount / 5)));
+}
+
+function isKnownActivityGroup(groupName: string): boolean {
+  if (typeof AssetGroup === "undefined" || !Array.isArray(AssetGroup)) return true;
+  return AssetGroup.some(
+    (group) => group?.Name === groupName && group.Category === "Item",
+  );
+}
+
+function removeNativeArousalFallback(
+  dictionary: unknown[] | undefined,
+  meta: ActivityMeta,
+): void {
+  if (!Array.isArray(dictionary) || meta.v !== 2) return;
+  for (let index = dictionary.length - 1; index >= 0; index -= 1) {
+    const entry = dictionary[index];
+    if (!isRecord(entry)) continue;
+    const marked = entry[NATIVE_AROUSAL_FALLBACK_MARKER] === true;
+    const matchingActivity =
+      typeof meta.fallbackActivity === "string" && entry.ActivityName === meta.fallbackActivity;
+    const matchingCounter =
+      typeof meta.fallbackCount === "number" && entry.ActivityCounter === meta.fallbackCount;
+    if (marked || matchingActivity || matchingCounter) dictionary.splice(index, 1);
   }
 }
 

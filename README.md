@@ -11,11 +11,11 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.20.9` captures ordinary outgoing Beeps from native BC and compatible messenger addons,
-shows uncropped full-width image cards without repeating the raw image URL, keeps room peers'
-Blossom compatibility fresh, and adds account-derived relationship badges to Players. Blossom uses
-BC's native status-icon renderer and disappears with the other addon icons on vanilla menus; the
-running version remains visible as tiny translucent digits in the lower-left corner.
+Version `0.20.10` makes Custom Activity arousal reach other players through BC's native activity
+metadata while preserving the exact configured amount between current KikiLink clients. It remains
+compatible with 0.20.9 recipients and keeps a native preference-aware fallback when the target does
+not have KikiLink or its hook is unavailable. The running version remains visible as tiny
+translucent digits in the lower-left corner.
 
 ## Link Deck
 

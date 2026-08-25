@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.9
+// @version      0.20.10
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -2594,6 +2594,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var ACTIVITY_PREFIX = "KikiLinkCustom_";
   var ACTION_CONTENT = "KikiLinkCustomActivity";
   var META_TAG = "KikiLinkActivityMeta";
+  var NATIVE_AROUSAL_FALLBACK_MARKER = "KikiLinkArousalFallback";
   var MAX_SEEN_NONCES = 120;
   var REGISTRY_MONITOR_INTERVAL_MS = 500;
   var SAFE_ASSET_NAME2 = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
@@ -2861,21 +2862,35 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }).slice(0, 1e3);
       if (!text) return true;
       if (typeof ChatRoomPublishCustomAction === "function") {
+        const fallbackActivity = canonicalVanillaActivityImage(definition.image);
+        const fallbackCount = nativeArousalFallbackCount(definition.arousal);
         const meta = {
-          v: 1,
+          // Version 2 tells older KikiLink clients to ignore the private flat effect and let BC's
+          // native fallback run instead. This prevents a 0.20.9 recipient from applying both paths.
+          v: 2,
           source: actor.MemberNumber,
           target: acted.MemberNumber,
           group: targetGroup.Name,
           arousal: definition.arousal,
-          nonce: createNonce()
+          nonce: createNonce(),
+          ...definition.arousal > 0 ? { fallbackActivity, fallbackCount } : {}
         };
-        ChatRoomPublishCustomAction(ACTION_CONTENT, false, [
+        const dictionary = [
           { Tag: "SourceCharacter", Text: characterName(actor), MemberNumber: actor.MemberNumber },
           { Tag: "TargetCharacter", Text: characterName(acted), MemberNumber: acted.MemberNumber },
-          { Tag: "FocusAssetGroup", AssetGroupName: targetGroup.Name },
+          { Tag: "FocusAssetGroup", AssetGroupName: targetGroup.Name }
+        ];
+        if (definition.arousal > 0) {
+          dictionary.push(
+            { ActivityName: fallbackActivity, [NATIVE_AROUSAL_FALLBACK_MARKER]: true },
+            { ActivityCounter: fallbackCount, [NATIVE_AROUSAL_FALLBACK_MARKER]: true }
+          );
+        }
+        dictionary.push(
           { Tag: `MISSING TEXT IN "Interface.csv": ${ACTION_CONTENT}`, Text: text },
           { Tag: META_TAG, Text: JSON.stringify(meta) }
-        ]);
+        );
+        ChatRoomPublishCustomAction(ACTION_CONTENT, false, dictionary);
       } else {
         this.adapter.sendRoomEmote(text);
       }
@@ -2917,18 +2932,21 @@ One of mods you are using is using an old version of SDK. It will work for now b
     onRoomMessage(message) {
       const meta = parseActivityMeta(message);
       if (!meta || meta.arousal <= 0 || meta.target !== this.adapter.getOwnMemberNumber()) return;
-      if (message.Sender !== meta.source || !this.adapter.isMemberInCurrentRoom(meta.source)) return;
-      if (!dictionaryIdentifies(message.Dictionary, "SourceCharacter", meta.source) || !dictionaryIdentifies(message.Dictionary, "TargetCharacter", meta.target) || !this.getBodySlots().some((slot) => slot.name === meta.group)) {
+      if (message.Sender !== meta.source) return;
+      if (!dictionaryIdentifies(message.Dictionary, "SourceCharacter", meta.source) || !dictionaryIdentifies(message.Dictionary, "TargetCharacter", meta.target) || !isKnownActivityGroup(meta.group)) {
         return;
       }
       const fingerprint = `${meta.source}:${meta.nonce}`;
       if (this.#seenNonces.includes(fingerprint)) return;
+      if (typeof ActivityEffectFlat !== "function") return;
+      const player = typeof Player === "object" && Player !== null ? Player : void 0;
+      if (!player || player.MemberNumber !== meta.target) return;
+      const source = meta.source === player.MemberNumber ? player : typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter) ? ChatRoomCharacter.find((character) => character.MemberNumber === meta.source) : void 0;
+      if (!source) return;
+      ActivityEffectFlat(source, player, meta.arousal, meta.group, 1);
       this.#seenNonces.push(fingerprint);
       if (this.#seenNonces.length > MAX_SEEN_NONCES) this.#seenNonces.shift();
-      if (typeof ActivityEffectFlat !== "function") return;
-      const source = typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter) ? ChatRoomCharacter.find((character) => character.MemberNumber === meta.source) : void 0;
-      if (!source || typeof Player !== "object" || Player === null) return;
-      ActivityEffectFlat(source, Player, meta.arousal, meta.group, 1);
+      removeNativeArousalFallback(message.Dictionary, meta);
     }
     #ensureRegistryInjection() {
       const registry = getNativeActivityRegistry();
@@ -3065,12 +3083,35 @@ One of mods you are using is using an old version of SDK. It will work for now b
     if (!isRecord4(entry) || typeof entry.Text !== "string" || entry.Text.length > 500) return void 0;
     try {
       const parsed = JSON.parse(entry.Text);
-      if (!isRecord4(parsed) || parsed.v !== 1 || !validMemberNumber(parsed.source) || !validMemberNumber(parsed.target) || !SAFE_ASSET_NAME2.test(typeof parsed.group === "string" ? parsed.group : "") || typeof parsed.arousal !== "number" || !Number.isInteger(parsed.arousal) || parsed.arousal < 0 || parsed.arousal > 20 || typeof parsed.nonce !== "string" || !/^[a-z0-9-]{8,48}$/i.test(parsed.nonce)) {
+      if (!isRecord4(parsed) || parsed.v !== 1 && parsed.v !== 2 || !validMemberNumber(parsed.source) || !validMemberNumber(parsed.target) || !SAFE_ASSET_NAME2.test(typeof parsed.group === "string" ? parsed.group : "") || typeof parsed.arousal !== "number" || !Number.isInteger(parsed.arousal) || parsed.arousal < 0 || parsed.arousal > 20 || typeof parsed.nonce !== "string" || !/^[a-z0-9-]{8,48}$/i.test(parsed.nonce)) {
+        return void 0;
+      }
+      if (parsed.v === 2 && parsed.arousal > 0 && (typeof parsed.fallbackActivity !== "string" || !VANILLA_ACTIVITY_IMAGE_SET.has(parsed.fallbackActivity) || typeof parsed.fallbackCount !== "number" || !Number.isInteger(parsed.fallbackCount) || parsed.fallbackCount < 1 || parsed.fallbackCount > 4)) {
         return void 0;
       }
       return parsed;
     } catch {
       return void 0;
+    }
+  }
+  function nativeArousalFallbackCount(amount) {
+    return Math.max(1, Math.min(4, Math.ceil(amount / 5)));
+  }
+  function isKnownActivityGroup(groupName) {
+    if (typeof AssetGroup === "undefined" || !Array.isArray(AssetGroup)) return true;
+    return AssetGroup.some(
+      (group) => group?.Name === groupName && group.Category === "Item"
+    );
+  }
+  function removeNativeArousalFallback(dictionary, meta) {
+    if (!Array.isArray(dictionary) || meta.v !== 2) return;
+    for (let index = dictionary.length - 1; index >= 0; index -= 1) {
+      const entry = dictionary[index];
+      if (!isRecord4(entry)) continue;
+      const marked = entry[NATIVE_AROUSAL_FALLBACK_MARKER] === true;
+      const matchingActivity = typeof meta.fallbackActivity === "string" && entry.ActivityName === meta.fallbackActivity;
+      const matchingCounter = typeof meta.fallbackCount === "number" && entry.ActivityCounter === meta.fallbackCount;
+      if (marked || matchingActivity || matchingCounter) dictionary.splice(index, 1);
     }
   }
   function dictionaryIdentifies(dictionary, tag, memberNumber) {
@@ -14851,7 +14892,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.9");
+    const app = new KikiLinkApp("0.20.10");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

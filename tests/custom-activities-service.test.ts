@@ -496,11 +496,21 @@ describe("native Custom Activities", () => {
     expect(String(visible?.Text)).not.toContain("messageType");
     const metaEntry = dictionary.find((entry) => entry.Tag === "KikiLinkActivityMeta");
     expect(JSON.parse(String(metaEntry?.Text))).toMatchObject({
-      v: 1,
+      v: 2,
       source: 999,
       target: 123,
       group: "ItemArms",
       arousal: 6,
+      fallbackActivity: "Caress",
+      fallbackCount: 2,
+    });
+    expect(dictionary).toContainEqual({
+      ActivityName: "Caress",
+      KikiLinkArousalFallback: true,
+    });
+    expect(dictionary).toContainEqual({
+      ActivityCounter: 2,
+      KikiLinkArousalFallback: true,
     });
     service.stop();
   });
@@ -521,12 +531,14 @@ describe("native Custom Activities", () => {
     } as unknown as BCAdapter;
     const service = new LinkActivitiesService(adapter);
     const metadata = {
-      v: 1,
+      v: 2,
       source: 999,
       target: 123,
       group: "ItemArms",
       arousal: 8,
       nonce: "nonce-123456",
+      fallbackActivity: "Caress",
+      fallbackCount: 2,
     };
     const message = {
       Type: "Action",
@@ -535,11 +547,16 @@ describe("native Custom Activities", () => {
       Dictionary: [
         { Tag: "SourceCharacter", MemberNumber: 999, Text: "Kiki" },
         { Tag: "TargetCharacter", MemberNumber: 123, Text: "Reina" },
+        { ActivityName: "Caress", KikiLinkArousalFallback: true },
+        { ActivityCounter: 2, KikiLinkArousalFallback: true },
         { Tag: "KikiLinkActivityMeta", Text: JSON.stringify(metadata) },
       ],
     };
 
     service.onRoomMessage(message);
+    expect(message.Dictionary).not.toContainEqual(
+      expect.objectContaining({ KikiLinkArousalFallback: true }),
+    );
     service.onRoomMessage(message);
     expect(effect).toHaveBeenCalledOnce();
     expect(effect).toHaveBeenCalledWith(source, globalThis.Player, 8, "ItemArms", 1);
@@ -568,6 +585,93 @@ describe("native Custom Activities", () => {
       ],
     });
     expect(effect).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the native BC fallback intact when the exact target-side effect is unavailable", () => {
+    const source = { MemberNumber: 999, Name: "Kiki" };
+    globalThis.Player = {
+      MemberNumber: 123,
+      Name: "Reina",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomCharacter = [source, globalThis.Player];
+    const service = new LinkActivitiesService({
+      getOwnMemberNumber: () => 123,
+    } as unknown as BCAdapter);
+    const message = {
+      Type: "Action",
+      Content: "KikiLinkCustomActivity",
+      Sender: 999,
+      Dictionary: [
+        { Tag: "SourceCharacter", MemberNumber: 999, Text: "Kiki" },
+        { Tag: "TargetCharacter", MemberNumber: 123, Text: "Reina" },
+        { ActivityName: "Caress", KikiLinkArousalFallback: true },
+        { ActivityCounter: 2, KikiLinkArousalFallback: true },
+        {
+          Tag: "KikiLinkActivityMeta",
+          Text: JSON.stringify({
+            v: 2,
+            source: 999,
+            target: 123,
+            group: "ItemArms",
+            arousal: 8,
+            nonce: "nonce-available",
+            fallbackActivity: "Caress",
+            fallbackCount: 2,
+          }),
+        },
+      ],
+    };
+
+    service.onRoomMessage(message);
+
+    expect(message.Dictionary).toContainEqual({
+      ActivityName: "Caress",
+      KikiLinkArousalFallback: true,
+    });
+    expect(message.Dictionary).toContainEqual({
+      ActivityCounter: 2,
+      KikiLinkArousalFallback: true,
+    });
+  });
+
+  it("still accepts arousal metadata sent by KikiLink 0.20.9", () => {
+    const effect = vi.fn();
+    globalThis.ActivityEffectFlat = effect;
+    const source = { MemberNumber: 999, Name: "Kiki" };
+    globalThis.Player = {
+      MemberNumber: 123,
+      Name: "Reina",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomCharacter = [source, globalThis.Player];
+    const service = new LinkActivitiesService({
+      getOwnMemberNumber: () => 123,
+    } as unknown as BCAdapter);
+
+    service.onRoomMessage({
+      Type: "Action",
+      Content: "KikiLinkCustomActivity",
+      Sender: 999,
+      Dictionary: [
+        { Tag: "SourceCharacter", MemberNumber: 999, Text: "Kiki" },
+        { Tag: "TargetCharacter", MemberNumber: 123, Text: "Reina" },
+        {
+          Tag: "KikiLinkActivityMeta",
+          Text: JSON.stringify({
+            v: 1,
+            source: 999,
+            target: 123,
+            group: "ItemArms",
+            arousal: 8,
+            nonce: "nonce-legacy01",
+          }),
+        },
+      ],
+    });
+
+    expect(effect).toHaveBeenCalledOnce();
+    expect(effect).toHaveBeenCalledWith(source, globalThis.Player, 8, "ItemArms", 1);
   });
 
   it("expands quick variables without interpreting names as templates", () => {
