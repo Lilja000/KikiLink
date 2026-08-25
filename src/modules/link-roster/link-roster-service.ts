@@ -120,7 +120,14 @@ export class LinkRosterService {
           ...record,
           displayName: character?.memberName ?? record.displayName,
           present: character !== undefined,
-          isFriend: character?.isFriend === true,
+          isFriend:
+            character?.isFriend === true ||
+            (typeof this.adapter.isKnownFriend === "function" &&
+              this.adapter.isKnownFriend(memberNumber)),
+          relationships:
+            typeof this.adapter.getPlayerRelationships === "function"
+              ? this.adapter.getPlayerRelationships(memberNumber)
+              : [],
         };
       })
       .filter((entry) => scope !== "favorites" || entry.favorite)
@@ -130,7 +137,8 @@ export class LinkRosterService {
           entry.displayName.toLocaleLowerCase().includes(normalizedQuery) ||
           entry.memberNumber.toString().includes(normalizedQuery) ||
           entry.note.toLocaleLowerCase().includes(normalizedQuery) ||
-          entry.tags.some((tag) => tag.toLocaleLowerCase().includes(normalizedQuery)),
+          entry.tags.some((tag) => tag.toLocaleLowerCase().includes(normalizedQuery)) ||
+          entry.relationships.some((relationship) => relationship.includes(normalizedQuery)),
       )
       .sort(compareRosterEntries);
   }

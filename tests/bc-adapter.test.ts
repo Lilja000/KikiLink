@@ -73,6 +73,97 @@ describe("BCAdapter", () => {
     });
   });
 
+  it("captures direct AccountBeep sends from other messenger addons exactly once", async () => {
+    const nativeServerSend = vi.fn();
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      Nickname: "Kiki",
+      FriendNames: new Map([[123, "AccountReina"]]),
+    };
+    globalThis.ServerIsLoggedIn = () => true;
+    globalThis.ServerSend = nativeServerSend;
+    globalThis.FriendListBeepLog = [];
+    globalThis.ServerSendBeepMessage = (target, message, options) => {
+      ServerSend("AccountBeep", {
+        MemberNumber: target,
+        BeepType: "",
+        IsSecret: !options?.includeRoom,
+        Message: message,
+      });
+      FriendListBeepLog.push({
+        MemberNumber: target,
+        MemberName: "AccountReina",
+        Sent: true,
+        Time: new Date(),
+        ...(message !== undefined ? { Message: message } : {}),
+      });
+    };
+
+    const bus = new EventBus<KikiLinkEvents>();
+    const sent = vi.fn();
+    bus.on("beep:sent", sent);
+    const adapter = new BCAdapter(bus, "0.20.9");
+    await adapter.start();
+
+    // LianChat uses this low-level path instead of ServerSendBeepMessage.
+    ServerSend("AccountBeep", {
+      MemberNumber: 123,
+      BeepType: "",
+      IsSecret: true,
+      Message: "Sent through LianChat",
+    });
+    expect(sent).toHaveBeenCalledOnce();
+    expect(sent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        direction: "outgoing",
+        peerNumber: 123,
+        content: "Sent through LianChat",
+        includeRoom: false,
+      }),
+    );
+
+    // Two intentional identical sends still count as two messages.
+    ServerSend("AccountBeep", {
+      MemberNumber: 123,
+      BeepType: "",
+      IsSecret: true,
+      Message: "Sent through LianChat",
+    });
+    expect(sent).toHaveBeenCalledTimes(2);
+
+    // The native wrapper also reaches ServerSend, but must not create a second copy.
+    ServerSendBeepMessage(123, "Sent through native Beep", { includeRoom: false });
+    expect(sent).toHaveBeenCalledTimes(3);
+
+    // LinkChat persists its returned event itself, so its own send stays off the event bus.
+    adapter.sendBeep(123, "Sent through KikiLink", false);
+    expect(sent).toHaveBeenCalledTimes(3);
+    adapter.stop();
+  });
+
+  it("reads account relationship labels from the current BC player", () => {
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map(),
+      WhiteList: [123],
+      BlackList: [456],
+      GhostList: [789],
+      Ownership: { MemberNumber: 123, Name: "Reina", Stage: 1 },
+      Lovership: [
+        { MemberNumber: 123, Name: "Reina", Stage: 2 },
+        { MemberNumber: 321, Name: "Mina", Stage: 1 },
+      ],
+    };
+
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.20.9");
+    expect(adapter.getPlayerRelationships(123)).toEqual(["owner", "lover", "whitelist"]);
+    expect(adapter.getPlayerRelationships(321)).toEqual(["lover"]);
+    expect(adapter.getPlayerRelationships(456)).toEqual(["blacklist"]);
+    expect(adapter.getPlayerRelationships(789)).toEqual(["ghosted"]);
+  });
+
   it("uses room nicknames and exposes the native session Beep history", () => {
     globalThis.Player = {
       MemberNumber: 999,
@@ -313,8 +404,10 @@ describe("BCAdapter", () => {
     const bus = new EventBus<KikiLinkEvents>();
     const incoming = vi.fn();
     const online = vi.fn();
+    const protocol = vi.fn();
     bus.on("beep:received", incoming);
     bus.on("bc:online-friends", online);
+    bus.on("bc:protocol", protocol);
     const adapter = new BCAdapter(bus, "0.13.0");
     await adapter.start();
 
@@ -348,6 +441,15 @@ describe("BCAdapter", () => {
       }),
     );
 
+    emit("ChatRoomMessage", {
+      Sender: 123,
+      Type: "Hidden",
+      Content: 'KIKILINK/1 {"t":"ps","s":"online","u":1,"v":"0.20.9"}',
+    });
+    expect(protocol).toHaveBeenCalledWith(
+      expect.objectContaining({ senderNumber: 123, channel: "room" }),
+    );
+
     const replacementListeners = new Map<string, Set<(data: unknown) => void>>();
     const replacementSocket = {
       connected: true,
@@ -362,7 +464,7 @@ describe("BCAdapter", () => {
     };
     globalThis.ServerSocket = replacementSocket as unknown as BCServerSocket;
     vi.advanceTimersByTime(2_001);
-    expect(socket.off).toHaveBeenCalledTimes(2);
+    expect(socket.off).toHaveBeenCalledTimes(3);
     for (const listener of replacementListeners.get("AccountBeep") ?? []) {
       listener({
         MemberNumber: 123,
@@ -374,7 +476,7 @@ describe("BCAdapter", () => {
     expect(incoming).toHaveBeenCalledTimes(2);
 
     adapter.stop();
-    expect(replacementSocket.off).toHaveBeenCalledTimes(2);
+    expect(replacementSocket.off).toHaveBeenCalledTimes(3);
   });
 
   it("recovers incoming Beeps from the native Beep log without duplicating a socket event", async () => {

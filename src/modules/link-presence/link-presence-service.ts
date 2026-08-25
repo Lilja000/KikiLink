@@ -444,11 +444,17 @@ export class LinkPresenceService {
 
   #syncRoom(force: boolean): void {
     const roomName = this.adapter.isInChatRoom() ? this.adapter.getCurrentRoomName() ?? "?" : "";
-    if (!force && roomName === this.#lastRoomName) return;
+    const roomChanged = roomName !== this.#lastRoomName;
     this.#lastRoomName = roomName;
     if (!roomName || !this.settings.get().linkPresence.enabled) return;
-    const query: PresencePacket = { t: "pq", i: createId("room").slice(-18), b: 1 };
-    this.adapter.broadcastKikiLinkProtocol(JSON.stringify(query));
+
+    // A peer can join after our first room announcement or can finish loading its addon later.
+    // Repeat the compact presence packet on the existing 30-second heartbeat so every compatible
+    // player eventually learns about every other KikiLink user without visible chat noise.
+    if (force || roomChanged) {
+      const query: PresencePacket = { t: "pq", i: createId("room").slice(-18), b: 1 };
+      this.adapter.broadcastKikiLinkProtocol(JSON.stringify(query));
+    }
     this.#publishOwnPresence();
   }
 

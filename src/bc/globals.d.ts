@@ -5,6 +5,19 @@ declare global {
     Nickname?: string;
     FriendNames: Map<number, string>;
     FriendList?: number[];
+    WhiteList?: number[];
+    BlackList?: number[];
+    GhostList?: number[];
+    Ownership?: {
+      MemberNumber?: number;
+      Name?: string;
+      Stage?: number;
+    } | null;
+    Lovership?: Array<{
+      MemberNumber?: number;
+      Name?: string;
+      Stage?: number;
+    }>;
     ExtensionSettings?: Record<string, unknown>;
   }
 
@@ -17,8 +30,10 @@ declare global {
     connected?: boolean;
     on(event: "AccountBeep", listener: (data: BCServerAccountBeepResponse) => void): unknown;
     on(event: "AccountQueryResult", listener: (data: BCAccountQueryResponse) => void): unknown;
+    on(event: "ChatRoomMessage", listener: (data: BCChatRoomMessage) => void): unknown;
     off?(event: "AccountBeep", listener: (data: BCServerAccountBeepResponse) => void): unknown;
     off?(event: "AccountQueryResult", listener: (data: BCAccountQueryResponse) => void): unknown;
+    off?(event: "ChatRoomMessage", listener: (data: BCChatRoomMessage) => void): unknown;
     removeListener?(
       event: "AccountBeep",
       listener: (data: BCServerAccountBeepResponse) => void,
@@ -26,6 +41,10 @@ declare global {
     removeListener?(
       event: "AccountQueryResult",
       listener: (data: BCAccountQueryResponse) => void,
+    ): unknown;
+    removeListener?(
+      event: "ChatRoomMessage",
+      listener: (data: BCChatRoomMessage) => void,
     ): unknown;
   }
 

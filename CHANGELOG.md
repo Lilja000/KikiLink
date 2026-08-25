@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.20.9 - 2026-08-25
+
+- Moved outgoing-message capture to the shared low-level `ServerSend("AccountBeep", ...)` path used
+  by current Bondage Club and messenger addons such as LianChat. Normal messages are saved once,
+  typed/service packets remain excluded, KikiLink's own sends do not duplicate, and the native Beep
+  log now provides an additional outgoing recovery path.
+- Reworked inline image cards to use the full available chat width and their natural aspect ratio
+  instead of a fixed crop. When previews are enabled, the raw image URL is no longer repeated above
+  the card; `Show original` remains the single explicit outbound link.
+- Added an independent hidden-room protocol socket listener plus a compact 30-second presence
+  heartbeat. Peers who enter later or finish loading KikiLink after the first handshake now become
+  compatible automatically, so their native room Blossom can appear without opening a chat first.
+- Added account-derived Owner, Lover, Whitelist, Blacklist, and Ghosted badges to Players beside the
+  existing Here, Online, and Friend state. Values are read from the authenticated BC player's live
+  relationship fields and are never copied into another account.
+- Reduced the native Custom Activity Blossom from 14 px to 12 px and the internal activity-library
+  marker from 23 px to 19 px while keeping both upright and fixed to the upper-left corner.
+
 ## 0.20.8 - 2026-08-25
 
 - Redrew Blossom from scratch as an upright cartoon flower with a clean burgundy outline, solid

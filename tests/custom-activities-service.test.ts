@@ -281,8 +281,8 @@ describe("native Custom Activities", () => {
     expect(blossom?.src).toContain("data:image/svg+xml");
     expect(blossom?.style.top).toBe("0px");
     expect(blossom?.style.left).toBe("0px");
-    expect(blossom?.style.width).toBe("14px");
-    expect(blossom?.style.height).toBe("14px");
+    expect(blossom?.style.width).toBe("12px");
+    expect(blossom?.style.height).toBe("12px");
     expect(blossom?.style.right).toBe("auto");
     expect(blossom?.style.bottom).toBe("auto");
     expect(blossom?.style.getPropertyPriority("left")).toBe("important");

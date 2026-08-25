@@ -202,7 +202,7 @@
           customActivityInRegistry: window.ActivityFemale3DCG.some((activity) => activity.Name.startsWith("KikiLinkCustom_")),
           customActivityInDialog: !!custom,
           customActivityButton: !!document.querySelector("#activity-grid [data-activity^='KikiLinkCustom_']"),
-          customActivityMark: activityMark?.style.width === "14px" && activityMark?.style.left === "0px",
+          customActivityMark: activityMark?.style.width === "12px" && activityMark?.style.left === "0px",
         };
         window.__KIKILINK_HARNESS_RESULT__ = result;
         const passed = Object.values(result).every(Boolean);

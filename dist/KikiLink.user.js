@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.20.8
+// @version      0.20.9
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -277,6 +277,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var SOCKET_REBIND_MS = 2e3;
   var BEEP_LOG_POLL_MS = 1e3;
   var RECENT_INCOMING_TTL_MS = 1e4;
+  var RECENT_OUTGOING_TTL_MS = 1e4;
+  var OUTGOING_DEDUPE_WINDOW_MS = 250;
   var KIKILINK_BEEP_TYPE = "KikiLink";
   var KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
   var MAX_PROTOCOL_PAYLOAD = 700;
@@ -294,9 +296,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #nicknameCache = /* @__PURE__ */ new Map();
     #onlineFriends = /* @__PURE__ */ new Map();
     #recentIncoming = [];
+    #recentOutgoing = [];
     #characterOverlayRenderers = /* @__PURE__ */ new Set();
     #customActivityIntegrations = /* @__PURE__ */ new Set();
     #installedActivityHooks = /* @__PURE__ */ new Set();
+    #installedOutgoingHooks = /* @__PURE__ */ new Set();
     #resilientHooks = /* @__PURE__ */ new Map();
     #directHookRegistrations = /* @__PURE__ */ new Map();
     #modApi;
@@ -310,6 +314,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #overlayRenderResetQueued = false;
     #beepLogCursor = 0;
     #seenIncomingPayloads = /* @__PURE__ */ new WeakSet();
+    #seenRoomProtocolPayloads = /* @__PURE__ */ new WeakSet();
     #stopped = false;
     #ready = false;
     #sendingViaKikiLink = false;
@@ -323,6 +328,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #socketQueryListener = (data) => {
       this.#captureOnlineFriends(data);
     };
+    #socketRoomMessageListener = (data) => {
+      this.#captureRoomProtocolPayload(data);
+    };
     async start() {
       this.#stopped = false;
       this.bus.emit("bc:status", { state: "connecting" });
@@ -335,7 +343,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
         () => this.#attachSocketListeners(),
         SOCKET_REBIND_MS
       );
-      this.#beepLogTimer = setInterval(() => this.#captureNewBeepLogEntries(), BEEP_LOG_POLL_MS);
+      this.#beepLogTimer = setInterval(() => {
+        this.#ensureOutgoingBeepHooks();
+        this.#captureNewBeepLogEntries();
+      }, BEEP_LOG_POLL_MS);
       this.#ready = true;
       this.bus.emit("bc:status", { state: "ready" });
       this.bus.emit("bc:ready", { memberNumber: Player.MemberNumber });
@@ -347,7 +358,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#onlineFriends.clear();
       this.#nicknameCache.clear();
       this.#recentIncoming.splice(0);
+      this.#recentOutgoing.splice(0);
       this.#seenIncomingPayloads = /* @__PURE__ */ new WeakSet();
+      this.#seenRoomProtocolPayloads = /* @__PURE__ */ new WeakSet();
       this.#hasOnlineFriendSnapshot = false;
       this.#onlineFriendSignature = void 0;
       if (this.#socketRebindTimer !== void 0) clearInterval(this.#socketRebindTimer);
@@ -367,6 +380,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#compatibilityHooksInitialized = false;
       this.#roomMessageHookInstalled = false;
       this.#installedActivityHooks.clear();
+      this.#installedOutgoingHooks.clear();
       this.#resilientHooks.clear();
       this.#directHookRegistrations.clear();
       this.#characterOverlayHookNames.clear();
@@ -405,7 +419,28 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     isKnownFriend(memberNumber) {
       if (typeof Player !== "object" || Player === null) return false;
-      return Player.FriendNames instanceof Map && Player.FriendNames.has(memberNumber) || Array.isArray(Player.FriendList) && Player.FriendList.includes(memberNumber);
+      if (Array.isArray(Player.FriendList)) return Player.FriendList.includes(memberNumber);
+      return Player.FriendNames instanceof Map && Player.FriendNames.has(memberNumber);
+    }
+    getPlayerRelationships(memberNumber) {
+      if (!Number.isSafeInteger(memberNumber) || memberNumber < 0 || typeof Player !== "object" || Player === null) {
+        return [];
+      }
+      const relationships = [];
+      if (Player.Ownership?.MemberNumber === memberNumber) relationships.push("owner");
+      if (Array.isArray(Player.Lovership) && Player.Lovership.some((relationship) => relationship?.MemberNumber === memberNumber)) {
+        relationships.push("lover");
+      }
+      if (Array.isArray(Player.WhiteList) && Player.WhiteList.includes(memberNumber)) {
+        relationships.push("whitelist");
+      }
+      if (Array.isArray(Player.BlackList) && Player.BlackList.includes(memberNumber)) {
+        relationships.push("blacklist");
+      }
+      if (Array.isArray(Player.GhostList) && Player.GhostList.includes(memberNumber)) {
+        relationships.push("ghosted");
+      }
+      return relationships;
     }
     isMemberInCurrentRoom(memberNumber) {
       return this.isInChatRoom() && this.#findRoomCharacter(memberNumber) !== void 0;
@@ -454,6 +489,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
       const event = this.#normalizeOutgoing(target, message, { includeRoom });
       if (!event) throw new Error("Unable to prepare this Beep");
+      this.#rememberOutgoing(event, "kikilink");
       this.#sendingViaKikiLink = true;
       try {
         ServerSendBeepMessage(target, message, { includeRoom });
@@ -639,18 +675,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
             })
           );
         }
-        this.#tryInstallHook(
-          "ServerSendBeepMessage",
-          () => modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
-            const result = next(args);
-            if (this.#sendingViaKikiLink) return result;
-            const [target, message, options] = args;
-            const event = this.#normalizeOutgoing(target, message, options);
-            if (event) this.bus.emit("beep:sent", event);
-            return result;
-          })
-        );
       }
+      this.#ensureOutgoingBeepHooks();
       this.#ensureActivityHooks();
       if (this.#activityHookRetryTimer === void 0) {
         this.#activityHookRetryTimer = setInterval(
@@ -664,6 +690,24 @@ One of mods you are using is using an old version of SDK. It will work for now b
           () => this.#ensureCharacterOverlayHook(),
           CHARACTER_OVERLAY_HOOK_RETRY_MS
         );
+      }
+    }
+    #ensureOutgoingBeepHooks() {
+      if (!this.#compatibilityHooksInitialized) return;
+      const name = "ServerSend";
+      const existing = this.#resilientHooks.get(name);
+      if (this.#installedOutgoingHooks.has(name)) {
+        if (!this.#modApi && existing) this.#ensureDirectHook(name, existing);
+        return;
+      }
+      if (typeof ServerSend !== "function") return;
+      const hook = (args, next) => {
+        const result = next(args);
+        if (!this.#sendingViaKikiLink) this.#captureOutgoingServerPacket(args[0], args[1]);
+        return result;
+      };
+      if (this.#installIntegrationHook(name, 0, hook)) {
+        this.#installedOutgoingHooks.add(name);
       }
     }
     #ensureCharacterOverlayHook() {
@@ -837,8 +881,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
       if (typeof ChatRoomMessage !== "function") return;
       const hook = (args, next) => {
-        const protocol = this.#normalizeRoomProtocol(args[0]);
-        if (protocol) this.bus.emit("bc:protocol", protocol);
+        this.#captureRoomProtocolPayload(args[0]);
         this.#notifyCustomActivityMessage(args[0]);
         return next(args);
       };
@@ -955,6 +998,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       try {
         socket.on("AccountBeep", this.#socketBeepListener);
         socket.on("AccountQueryResult", this.#socketQueryListener);
+        socket.on("ChatRoomMessage", this.#socketRoomMessageListener);
         if (this.#ready) this.refreshOnlineFriends();
       } catch (error) {
         this.#detachSocketListeners();
@@ -968,10 +1012,39 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (typeof socket.off === "function") {
         socket.off("AccountBeep", this.#socketBeepListener);
         socket.off("AccountQueryResult", this.#socketQueryListener);
+        socket.off("ChatRoomMessage", this.#socketRoomMessageListener);
         return;
       }
       socket.removeListener?.("AccountBeep", this.#socketBeepListener);
       socket.removeListener?.("AccountQueryResult", this.#socketQueryListener);
+      socket.removeListener?.("ChatRoomMessage", this.#socketRoomMessageListener);
+    }
+    #captureOutgoingServerPacket(messageType, payload) {
+      if (messageType !== "AccountBeep" || !payload || typeof payload !== "object") return;
+      try {
+        const data = payload;
+        if (data.BeepType != null && data.BeepType !== "") return;
+        if (!Number.isSafeInteger(data.MemberNumber) || data.MemberNumber < 0) return;
+        const event = this.#normalizeOutgoing(
+          data.MemberNumber,
+          typeof data.Message === "string" ? data.Message : void 0,
+          { includeRoom: data.IsSecret === false }
+        );
+        if (event) this.#captureOutgoing(event, "transport");
+      } catch (error) {
+        this.#logger.warn("Outgoing AccountBeep metadata was not readable", error);
+      }
+    }
+    #captureRoomProtocolPayload(data) {
+      if (!data || typeof data !== "object") return;
+      try {
+        if (this.#seenRoomProtocolPayloads.has(data)) return;
+        this.#seenRoomProtocolPayloads.add(data);
+        const protocol = this.#normalizeRoomProtocol(data);
+        if (protocol) this.bus.emit("bc:protocol", protocol);
+      } catch (error) {
+        this.#logger.warn("Hidden KikiLink room packet was not readable", error);
+      }
     }
     #captureIncomingPayload(data) {
       if (!data || typeof data !== "object" || Array.isArray(data)) return;
@@ -993,12 +1066,16 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const entries = FriendListBeepLog.slice(this.#beepLogCursor);
       this.#beepLogCursor = FriendListBeepLog.length;
       for (const entry of entries) {
-        if (entry.Sent) continue;
         const event = this.#normalizeBeepLogEntry(entry);
-        if (!event || this.#consumeRememberedIncoming(event)) continue;
-        this.bus.emit("beep:received", event);
+        if (!event) continue;
+        if (entry.Sent) {
+          this.#captureOutgoing(event, "log");
+        } else if (!this.#consumeRememberedIncoming(event)) {
+          this.bus.emit("beep:received", event);
+        }
       }
       this.#pruneRememberedIncoming();
+      this.#pruneRememberedOutgoing();
     }
     #normalizeBeepLogEntry(entry) {
       if (!entry || !Number.isSafeInteger(entry.MemberNumber)) return null;
@@ -1036,6 +1113,33 @@ One of mods you are using is using an old version of SDK. It will work for now b
         const first = this.#recentIncoming[0];
         if (!first || now - first.capturedAt <= RECENT_INCOMING_TTL_MS) break;
         this.#recentIncoming.shift();
+      }
+    }
+    #captureOutgoing(event, source) {
+      this.#pruneRememberedOutgoing();
+      const fingerprint = outgoingFingerprint(event);
+      if (this.#recentOutgoing.some(
+        (candidate) => candidate.source !== source && candidate.fingerprint === fingerprint && Math.abs(candidate.sentAt - event.sentAt) <= OUTGOING_DEDUPE_WINDOW_MS
+      )) {
+        return;
+      }
+      this.#rememberOutgoing(event, source);
+      this.bus.emit("beep:sent", event);
+    }
+    #rememberOutgoing(event, source) {
+      this.#recentOutgoing.push({
+        fingerprint: outgoingFingerprint(event),
+        sentAt: event.sentAt,
+        capturedAt: Date.now(),
+        source
+      });
+      this.#pruneRememberedOutgoing();
+    }
+    #pruneRememberedOutgoing(now = Date.now()) {
+      while (this.#recentOutgoing.length > 0) {
+        const first = this.#recentOutgoing[0];
+        if (!first || now - first.capturedAt <= RECENT_OUTGOING_TTL_MS) break;
+        this.#recentOutgoing.shift();
       }
     }
     #normalizeIncoming(data) {
@@ -1137,6 +1241,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
   }
   function incomingFingerprint(event) {
     return [event.peerNumber, event.content, event.roomName ?? ""].join("");
+  }
+  function outgoingFingerprint(event) {
+    return [event.peerNumber, event.content, event.includeRoom ? 1 : 0].join("");
   }
   function isBondageClubReady() {
     return typeof document !== "undefined" && document.body !== null && typeof Player === "object" && Player !== null && Number.isSafeInteger(Player.MemberNumber) && Player.MemberNumber > 0 && typeof ServerSendBeepMessage === "function";
@@ -2786,8 +2893,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
         position: "absolute",
         top: "0px",
         left: "0px",
-        width: "14px",
-        height: "14px",
+        width: "12px",
+        height: "12px",
         opacity: "0.96",
         pointerEvents: "none",
         filter: "drop-shadow(0 1px 3px rgba(0,0,0,.75))",
@@ -2799,8 +2906,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
         ["left", "0px"],
         ["right", "auto"],
         ["bottom", "auto"],
-        ["width", "14px"],
-        ["height", "14px"]
+        ["width", "12px"],
+        ["height", "12px"]
       ]) {
         mark.style.setProperty(property, value, "important");
       }
@@ -3848,10 +3955,11 @@ One of mods you are using is using an old version of SDK. It will work for now b
           ...record,
           displayName: character?.memberName ?? record.displayName,
           present: character !== void 0,
-          isFriend: character?.isFriend === true
+          isFriend: character?.isFriend === true || typeof this.adapter.isKnownFriend === "function" && this.adapter.isKnownFriend(memberNumber),
+          relationships: typeof this.adapter.getPlayerRelationships === "function" ? this.adapter.getPlayerRelationships(memberNumber) : []
         };
       }).filter((entry) => scope !== "favorites" || entry.favorite).filter(
-        (entry) => !normalizedQuery || entry.displayName.toLocaleLowerCase().includes(normalizedQuery) || entry.memberNumber.toString().includes(normalizedQuery) || entry.note.toLocaleLowerCase().includes(normalizedQuery) || entry.tags.some((tag) => tag.toLocaleLowerCase().includes(normalizedQuery))
+        (entry) => !normalizedQuery || entry.displayName.toLocaleLowerCase().includes(normalizedQuery) || entry.memberNumber.toString().includes(normalizedQuery) || entry.note.toLocaleLowerCase().includes(normalizedQuery) || entry.tags.some((tag) => tag.toLocaleLowerCase().includes(normalizedQuery)) || entry.relationships.some((relationship) => relationship.includes(normalizedQuery))
       ).sort(compareRosterEntries);
     }
     get(memberNumber, fallbackName) {
@@ -4503,11 +4611,13 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     #syncRoom(force) {
       const roomName = this.adapter.isInChatRoom() ? this.adapter.getCurrentRoomName() ?? "?" : "";
-      if (!force && roomName === this.#lastRoomName) return;
+      const roomChanged = roomName !== this.#lastRoomName;
       this.#lastRoomName = roomName;
       if (!roomName || !this.settings.get().linkPresence.enabled) return;
-      const query = { t: "pq", i: createId("room").slice(-18), b: 1 };
-      this.adapter.broadcastKikiLinkProtocol(JSON.stringify(query));
+      if (force || roomChanged) {
+        const query = { t: "pq", i: createId("room").slice(-18), b: 1 };
+        this.adapter.broadcastKikiLinkProtocol(JSON.stringify(query));
+      }
       this.#publishOwnPresence();
     }
     #checkOwnStatus() {
@@ -6048,6 +6158,7 @@ button { color: inherit; }
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.kl-message-bubble[data-media="true"] { width: min(88%, 720px); max-width: 720px; }
 .kl-message-bubble::before {
   content: "";
   position: absolute;
@@ -6534,11 +6645,13 @@ button { color: inherit; }
 }
 .kl-roster-entry .kl-avatar { width: 42px; height: 42px; border-radius: 13px; }
 .kl-roster-entry-copy { min-width: 0; }
-.kl-roster-entry-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.kl-roster-entry-name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; min-width: 0; }
 .kl-roster-entry-name { overflow: hidden; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
-.kl-roster-entry-badges { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
-.kl-roster-live,
-.kl-roster-friend {
+.kl-roster-entry-badges,
+.kl-roster-detail-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.kl-roster-entry-badges { flex: 0 1 auto; }
+.kl-roster-detail-badges { margin-top: 4px; }
+.kl-roster-badge {
   padding: 1px 4px;
   border-radius: 999px;
   font-size: var(--kl-type-xxs);
@@ -6547,6 +6660,12 @@ button { color: inherit; }
 }
 .kl-roster-live { background: rgba(104, 211, 145, 0.14); color: #68d391; }
 .kl-roster-friend { background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
+.kl-roster-relationship--owner { background: color-mix(in srgb, #c795ff, transparent 82%); color: #d7b4ff; }
+.kl-roster-relationship--lover { background: color-mix(in srgb, #ff78ae, transparent 82%); color: #ff9fc4; }
+.kl-roster-relationship--whitelist { background: color-mix(in srgb, #69b8ff, transparent 83%); color: #8bc9ff; }
+.kl-roster-relationship--blacklist,
+.kl-roster-relationship--ghosted { background: color-mix(in srgb, var(--kl-danger), transparent 84%); color: #ff8d98; }
+.kl-roster-relationship--ghosted { opacity: 0.82; }
 .kl-roster-favorite { width: 13px; height: 13px; color: var(--kl-gold); }
 .kl-roster-entry-preview {
   overflow: hidden;
@@ -6665,8 +6784,8 @@ button { color: inherit; }
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 23px;
-  height: 23px;
+  width: 19px;
+  height: 19px;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.75));
 }
 .kl-custom-activity-card-copy { min-width: 0; }
@@ -7367,12 +7486,9 @@ select:focus-visible {
 .kl-presence-note { min-width: 0; overflow: hidden; color: var(--kl-muted); text-overflow: ellipsis; white-space: nowrap; }
 .kl-roster-detail-presence { margin-top: 3px; }
 .kl-roster-presence-label {
-  padding: 2px 5px;
-  border-radius: 999px;
+  padding: 1px 4px;
   background: color-mix(in srgb, #77716c, transparent 84%);
   color: var(--kl-muted);
-  font-size: var(--kl-type-xxs);
-  font-weight: 850;
 }
 .kl-roster-presence-label[data-status="online"] { background: color-mix(in srgb, #39c884, transparent 84%); color: #58d99a; }
 .kl-roster-presence-label[data-status="idle"] { background: color-mix(in srgb, #e6ad45, transparent 84%); color: #efbf67; }
@@ -7463,10 +7579,12 @@ select:focus-visible {
 .kl-message-link { color: #efc56c; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor, transparent 48%); text-underline-offset: 2px; }
 .kl-message-row[data-direction="outgoing"] .kl-message-link { color: var(--kl-accent-foreground); }
 .kl-message-media { display: grid; gap: 7px; margin-top: 8px; }
-.kl-image-card { width: min(360px, 100%); min-width: 210px; margin: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--kl-border-strong), transparent 12%); border-radius: 12px; background: var(--kl-surface); color: var(--kl-text); }
-.kl-image-preview { min-height: 0; aspect-ratio: 16 / 10; display: grid; place-items: center; align-content: center; gap: 5px; overflow: hidden; padding: 14px; background: #09090a; color: #d8cec0; text-align: center; }
+.kl-message-content[data-media-only="true"] .kl-message-media { margin-top: 0; }
+.kl-image-card { width: 100%; min-width: 0; max-width: 720px; margin: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--kl-border-strong), transparent 12%); border-radius: 12px; background: var(--kl-surface); color: var(--kl-text); }
+.kl-image-preview { min-height: 190px; display: grid; place-items: center; align-content: center; gap: 5px; overflow: hidden; padding: 14px; background: #09090a; color: #d8cec0; text-align: center; }
 .kl-image-preview[data-state="loading"] { background: linear-gradient(110deg, #101012 30%, #202024 46%, #101012 62%); background-size: 240% 100%; animation: kl-image-loading 1.4s linear infinite; }
-.kl-image-preview img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 6px; }
+.kl-image-preview[data-state="loaded"] { min-height: 0; display: block; padding: 0; background: #09090a; }
+.kl-image-preview img { display: block; width: 100%; height: auto; max-height: none; object-fit: contain; border-radius: 0; }
 .kl-image-placeholder-icon { width: 25px; height: 25px; color: var(--kl-gold); }
 .kl-image-placeholder-title { font-weight: 800; }
 .kl-image-placeholder-help { max-width: 230px; color: #9f978d; font-size: var(--kl-type-xs); }
@@ -7520,7 +7638,8 @@ select:focus-visible {
   .kl-presence-options { grid-template-columns: minmax(0, 1fr); }
   .kl-composer-row { grid-template-columns: 44px minmax(0, 1fr) 48px; gap: 7px; }
   .kl-message-side-actions { opacity: 0.66; transform: none; }
-  .kl-image-card { min-width: min(210px, 64vw); }
+  .kl-message-bubble[data-media="true"] { width: 94%; max-width: 94%; }
+  .kl-image-card { min-width: 0; }
   .kl-chat-presence .kl-presence-note { display: none; }
 }
 
@@ -11040,16 +11159,29 @@ select:focus-visible {
     #rosterEntryButton(entry) {
       const presence = this.presence.get(entry.memberNumber);
       const badges = element("div", { className: "kl-roster-entry-badges" });
-      if (entry.present) badges.append(element("span", { className: "kl-roster-live", text: "HERE" }));
+      if (entry.present) {
+        badges.append(element("span", { className: "kl-roster-badge kl-roster-live", text: "HERE" }));
+      }
       const status = element("span", {
-        className: "kl-roster-presence-label",
+        className: "kl-roster-badge kl-roster-presence-label",
         text: presenceLabel(presence.status)
       });
       status.dataset.status = presence.status;
       status.dataset.presenceLabel = "true";
       status.hidden = presence.status === "unknown";
       badges.append(status);
-      if (entry.isFriend) badges.append(element("span", { className: "kl-roster-friend", text: "FRIEND" }));
+      if (entry.isFriend) {
+        badges.append(element("span", { className: "kl-roster-badge kl-roster-friend", text: "FRIEND" }));
+      }
+      for (const relationship of entry.relationships) {
+        badges.append(
+          element("span", {
+            className: `kl-roster-badge kl-roster-relationship kl-roster-relationship--${relationship}`,
+            text: rosterRelationshipLabel(relationship).toUpperCase(),
+            title: rosterRelationshipDescription(relationship)
+          })
+        );
+      }
       if (entry.favorite) badges.append(kikiIcon("star", "kl-roster-favorite", true));
       const preview = entry.tags.length ? entry.tags.join(" \xB7 ") : entry.note ? entry.note.replace(/\s+/gu, " ") : entry.lastRoomName || `Member ${entry.memberNumber}`;
       const button = element(
@@ -11117,6 +11249,22 @@ select:focus-visible {
       });
       favorite.append(kikiIcon("star", "kl-favorite-icon", entry.favorite));
       const presence = this.presence.get(entry.memberNumber);
+      const detailBadges = element("div", { className: "kl-roster-detail-badges" });
+      if (entry.present) {
+        detailBadges.append(element("span", { className: "kl-roster-badge kl-roster-live", text: "HERE" }));
+      }
+      if (entry.isFriend) {
+        detailBadges.append(element("span", { className: "kl-roster-badge kl-roster-friend", text: "FRIEND" }));
+      }
+      for (const relationship of entry.relationships) {
+        detailBadges.append(
+          element("span", {
+            className: `kl-roster-badge kl-roster-relationship kl-roster-relationship--${relationship}`,
+            text: rosterRelationshipLabel(relationship).toUpperCase(),
+            title: rosterRelationshipDescription(relationship)
+          })
+        );
+      }
       const identity = element(
         "div",
         { className: "kl-roster-identity" },
@@ -11134,6 +11282,7 @@ select:focus-visible {
             className: "kl-roster-number",
             text: `Member ${entry.memberNumber}${entry.present ? " \xB7 in this room" : ""}`
           }),
+          detailBadges.childElementCount > 0 ? detailBadges : null,
           element(
             "div",
             { className: "kl-roster-detail-presence", title: presenceDescription(presence) },
@@ -11793,6 +11942,7 @@ select:focus-visible {
         element("time", { text: formatMessageTime(message.sentAt) })
       );
       const bubble = element("div", { className: "kl-message-bubble" }, body, meta);
+      if (body.querySelector(".kl-message-media")) bubble.dataset.media = "true";
       const row = element("div", { className: "kl-message-row" }, bubble, actions);
       row.dataset.direction = message.direction;
       row.dataset.group = group;
@@ -11886,10 +12036,16 @@ select:focus-visible {
     #renderMessageBody(message) {
       const content = message.content || "Beep without a message";
       const links = parseMessageLinks(content);
+      const previewsEnabled = this.settings.get().linkChat.imagePreviews !== "never";
+      const imageUrls = [...new Set(links.filter((link) => link.image).map((link) => link.url))].slice(0, 2);
       const body = element("div", { className: "kl-message-content" });
       let cursor = 0;
       for (const link of links) {
         if (link.start > cursor) body.append(document.createTextNode(content.slice(cursor, link.start)));
+        if (link.image && previewsEnabled) {
+          cursor = link.end;
+          continue;
+        }
         const anchor = element("a", { className: "kl-message-link", text: content.slice(link.start, link.end) });
         anchor.href = link.url;
         anchor.target = "_blank";
@@ -11899,8 +12055,11 @@ select:focus-visible {
         cursor = link.end;
       }
       if (cursor < content.length) body.append(document.createTextNode(content.slice(cursor)));
-      const imageUrls = [...new Set(links.filter((link) => link.image).map((link) => link.url))].slice(0, 2);
-      if (imageUrls.length === 0 || this.settings.get().linkChat.imagePreviews === "never") return body;
+      if (imageUrls.length === 0 || !previewsEnabled) return body;
+      if (!body.textContent?.trim()) {
+        body.replaceChildren();
+        body.dataset.mediaOnly = "true";
+      }
       const media = element("div", { className: "kl-message-media" });
       for (const url of imageUrls) media.append(this.#imageCard(url));
       body.append(media);
@@ -11909,7 +12068,7 @@ select:focus-visible {
     #imageCard(url) {
       const parsed = new URL(url);
       const preview = element("div", { className: "kl-image-preview" });
-      const open = element("a", { className: "kl-image-open", text: "Open original \u2197" });
+      const open = element("a", { className: "kl-image-open", text: "Show original \u2197" });
       open.href = url;
       open.target = "_blank";
       open.rel = "noopener noreferrer nofollow";
@@ -13191,6 +13350,20 @@ ${expanded}` : expanded;
     const option = element("option", { text: label });
     option.value = value;
     return option;
+  }
+  function rosterRelationshipLabel(relationship) {
+    if (relationship === "owner") return "Owner";
+    if (relationship === "lover") return "Lover";
+    if (relationship === "whitelist") return "Whitelist";
+    if (relationship === "blacklist") return "Blacklist";
+    return "Ghosted";
+  }
+  function rosterRelationshipDescription(relationship) {
+    if (relationship === "owner") return "This player is your current owner";
+    if (relationship === "lover") return "This player is in your BC lover list";
+    if (relationship === "whitelist") return "This player is on your BC whitelist";
+    if (relationship === "blacklist") return "This player is on your BC blacklist";
+    return "This player is on your BC ghost list";
   }
   function presenceLabel(status) {
     if (status === "online") return "Online";
@@ -14678,7 +14851,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.20.8");
+    const app = new KikiLinkApp("0.20.9");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

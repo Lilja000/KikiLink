@@ -7,7 +7,8 @@ import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import type { KikiLinkEvents } from "../src/core/types";
 import { LinkPresenceService } from "../src/modules/link-presence/link-presence-service";
 
-function setup() {
+function setup(options: { inRoom?: boolean } = {}) {
+  const inRoom = options.inRoom === true;
   const sendKikiLinkProtocol = vi.fn(() => "beep" as const);
   const broadcastKikiLinkProtocol = vi.fn((_payload: string) => false);
   const adapter = {
@@ -23,9 +24,9 @@ function setup() {
     ],
     hasOnlineFriendSnapshot: () => true,
     isKnownFriend: (memberNumber: number) => memberNumber === 123 || memberNumber === 456,
-    isMemberInCurrentRoom: () => false,
-    isInChatRoom: () => false,
-    getCurrentRoomName: () => undefined,
+    isMemberInCurrentRoom: () => inRoom,
+    isInChatRoom: () => inRoom,
+    getCurrentRoomName: () => (inRoom ? "Moon Garden" : undefined),
     sendKikiLinkProtocol,
     broadcastKikiLinkProtocol,
   } as unknown as BCAdapter;
@@ -90,6 +91,19 @@ describe("LinkPresenceService", () => {
     });
     expect(service.hasCompatiblePeer(123)).toBe(true);
     expect(service.hasCompatiblePeer(123, Date.now() + 5 * 60_000 + 1)).toBe(false);
+    service.stop();
+  });
+
+  it("reannounces presence in an unchanged room so late-loading peers get Blossom", () => {
+    vi.useFakeTimers();
+    const { service, broadcastKikiLinkProtocol } = setup({ inRoom: true });
+    service.start();
+    const initialPackets = broadcastKikiLinkProtocol.mock.calls.length;
+    expect(initialPackets).toBeGreaterThanOrEqual(2);
+
+    vi.advanceTimersByTime(30_000);
+    expect(broadcastKikiLinkProtocol).toHaveBeenCalledTimes(initialPackets + 1);
+    expect(broadcastKikiLinkProtocol.mock.calls.at(-1)?.[0]).toContain('"t":"ps"');
     service.stop();
   });
 

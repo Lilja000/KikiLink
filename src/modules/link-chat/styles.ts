@@ -1371,6 +1371,7 @@ button { color: inherit; }
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.kl-message-bubble[data-media="true"] { width: min(88%, 720px); max-width: 720px; }
 .kl-message-bubble::before {
   content: "";
   position: absolute;
@@ -1857,11 +1858,13 @@ button { color: inherit; }
 }
 .kl-roster-entry .kl-avatar { width: 42px; height: 42px; border-radius: 13px; }
 .kl-roster-entry-copy { min-width: 0; }
-.kl-roster-entry-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.kl-roster-entry-name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; min-width: 0; }
 .kl-roster-entry-name { overflow: hidden; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
-.kl-roster-entry-badges { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
-.kl-roster-live,
-.kl-roster-friend {
+.kl-roster-entry-badges,
+.kl-roster-detail-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.kl-roster-entry-badges { flex: 0 1 auto; }
+.kl-roster-detail-badges { margin-top: 4px; }
+.kl-roster-badge {
   padding: 1px 4px;
   border-radius: 999px;
   font-size: var(--kl-type-xxs);
@@ -1870,6 +1873,12 @@ button { color: inherit; }
 }
 .kl-roster-live { background: rgba(104, 211, 145, 0.14); color: #68d391; }
 .kl-roster-friend { background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
+.kl-roster-relationship--owner { background: color-mix(in srgb, #c795ff, transparent 82%); color: #d7b4ff; }
+.kl-roster-relationship--lover { background: color-mix(in srgb, #ff78ae, transparent 82%); color: #ff9fc4; }
+.kl-roster-relationship--whitelist { background: color-mix(in srgb, #69b8ff, transparent 83%); color: #8bc9ff; }
+.kl-roster-relationship--blacklist,
+.kl-roster-relationship--ghosted { background: color-mix(in srgb, var(--kl-danger), transparent 84%); color: #ff8d98; }
+.kl-roster-relationship--ghosted { opacity: 0.82; }
 .kl-roster-favorite { width: 13px; height: 13px; color: var(--kl-gold); }
 .kl-roster-entry-preview {
   overflow: hidden;
@@ -1988,8 +1997,8 @@ button { color: inherit; }
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 23px;
-  height: 23px;
+  width: 19px;
+  height: 19px;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.75));
 }
 .kl-custom-activity-card-copy { min-width: 0; }
@@ -2690,12 +2699,9 @@ select:focus-visible {
 .kl-presence-note { min-width: 0; overflow: hidden; color: var(--kl-muted); text-overflow: ellipsis; white-space: nowrap; }
 .kl-roster-detail-presence { margin-top: 3px; }
 .kl-roster-presence-label {
-  padding: 2px 5px;
-  border-radius: 999px;
+  padding: 1px 4px;
   background: color-mix(in srgb, #77716c, transparent 84%);
   color: var(--kl-muted);
-  font-size: var(--kl-type-xxs);
-  font-weight: 850;
 }
 .kl-roster-presence-label[data-status="online"] { background: color-mix(in srgb, #39c884, transparent 84%); color: #58d99a; }
 .kl-roster-presence-label[data-status="idle"] { background: color-mix(in srgb, #e6ad45, transparent 84%); color: #efbf67; }
@@ -2786,10 +2792,12 @@ select:focus-visible {
 .kl-message-link { color: #efc56c; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor, transparent 48%); text-underline-offset: 2px; }
 .kl-message-row[data-direction="outgoing"] .kl-message-link { color: var(--kl-accent-foreground); }
 .kl-message-media { display: grid; gap: 7px; margin-top: 8px; }
-.kl-image-card { width: min(360px, 100%); min-width: 210px; margin: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--kl-border-strong), transparent 12%); border-radius: 12px; background: var(--kl-surface); color: var(--kl-text); }
-.kl-image-preview { min-height: 0; aspect-ratio: 16 / 10; display: grid; place-items: center; align-content: center; gap: 5px; overflow: hidden; padding: 14px; background: #09090a; color: #d8cec0; text-align: center; }
+.kl-message-content[data-media-only="true"] .kl-message-media { margin-top: 0; }
+.kl-image-card { width: 100%; min-width: 0; max-width: 720px; margin: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--kl-border-strong), transparent 12%); border-radius: 12px; background: var(--kl-surface); color: var(--kl-text); }
+.kl-image-preview { min-height: 190px; display: grid; place-items: center; align-content: center; gap: 5px; overflow: hidden; padding: 14px; background: #09090a; color: #d8cec0; text-align: center; }
 .kl-image-preview[data-state="loading"] { background: linear-gradient(110deg, #101012 30%, #202024 46%, #101012 62%); background-size: 240% 100%; animation: kl-image-loading 1.4s linear infinite; }
-.kl-image-preview img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 6px; }
+.kl-image-preview[data-state="loaded"] { min-height: 0; display: block; padding: 0; background: #09090a; }
+.kl-image-preview img { display: block; width: 100%; height: auto; max-height: none; object-fit: contain; border-radius: 0; }
 .kl-image-placeholder-icon { width: 25px; height: 25px; color: var(--kl-gold); }
 .kl-image-placeholder-title { font-weight: 800; }
 .kl-image-placeholder-help { max-width: 230px; color: #9f978d; font-size: var(--kl-type-xs); }
@@ -2843,7 +2851,8 @@ select:focus-visible {
   .kl-presence-options { grid-template-columns: minmax(0, 1fr); }
   .kl-composer-row { grid-template-columns: 44px minmax(0, 1fr) 48px; gap: 7px; }
   .kl-message-side-actions { opacity: 0.66; transform: none; }
-  .kl-image-card { min-width: min(210px, 64vw); }
+  .kl-message-bubble[data-media="true"] { width: 94%; max-width: 94%; }
+  .kl-image-card { min-width: 0; }
   .kl-chat-presence .kl-presence-note { display: none; }
 }
 

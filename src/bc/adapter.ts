@@ -5,6 +5,7 @@ import type {
   BeepEvent,
   KikiLinkEvents,
   OnlineFriend,
+  PlayerRelationship,
   RoomCharacter,
 } from "../core/types";
 import type { EventBus } from "../core/event-bus";
@@ -16,6 +17,8 @@ const CHARACTER_OVERLAY_HOOK_RETRY_MS = 500;
 const SOCKET_REBIND_MS = 2_000;
 const BEEP_LOG_POLL_MS = 1_000;
 const RECENT_INCOMING_TTL_MS = 10_000;
+const RECENT_OUTGOING_TTL_MS = 10_000;
+const OUTGOING_DEDUPE_WINDOW_MS = 250;
 const KIKILINK_BEEP_TYPE = "KikiLink";
 const KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
 const MAX_PROTOCOL_PAYLOAD = 700;
@@ -25,6 +28,13 @@ const CHARACTER_OVERLAY_HOOK_NAME = "ChatRoomDrawCharacterStatusIcons";
 interface RecentIncoming {
   fingerprint: string;
   capturedAt: number;
+}
+
+interface RecentOutgoing {
+  fingerprint: string;
+  sentAt: number;
+  capturedAt: number;
+  source: "transport" | "log" | "kikilink";
 }
 
 type ResilientHook = (args: any[], next: (args: any[]) => any) => any;
@@ -66,9 +76,11 @@ export class BCAdapter {
   readonly #nicknameCache = new Map<number, string>();
   readonly #onlineFriends = new Map<number, OnlineFriend>();
   readonly #recentIncoming: RecentIncoming[] = [];
+  readonly #recentOutgoing: RecentOutgoing[] = [];
   readonly #characterOverlayRenderers = new Set<BCCharacterOverlayRenderer>();
   readonly #customActivityIntegrations = new Set<BCCustomActivityIntegration>();
   readonly #installedActivityHooks = new Set<string>();
+  readonly #installedOutgoingHooks = new Set<string>();
   readonly #resilientHooks = new Map<string, ResilientHook>();
   readonly #directHookRegistrations = new Map<string, DirectHookRegistration>();
   #modApi: ModSDKModAPI | undefined;
@@ -82,6 +94,7 @@ export class BCAdapter {
   #overlayRenderResetQueued = false;
   #beepLogCursor = 0;
   #seenIncomingPayloads = new WeakSet<object>();
+  #seenRoomProtocolPayloads = new WeakSet<object>();
   #stopped = false;
   #ready = false;
   #sendingViaKikiLink = false;
@@ -96,6 +109,10 @@ export class BCAdapter {
 
   readonly #socketQueryListener = (data: BCAccountQueryResponse): void => {
     this.#captureOnlineFriends(data);
+  };
+
+  readonly #socketRoomMessageListener = (data: BCChatRoomMessage): void => {
+    this.#captureRoomProtocolPayload(data);
   };
 
   constructor(
@@ -116,7 +133,10 @@ export class BCAdapter {
       () => this.#attachSocketListeners(),
       SOCKET_REBIND_MS,
     );
-    this.#beepLogTimer = setInterval(() => this.#captureNewBeepLogEntries(), BEEP_LOG_POLL_MS);
+    this.#beepLogTimer = setInterval(() => {
+      this.#ensureOutgoingBeepHooks();
+      this.#captureNewBeepLogEntries();
+    }, BEEP_LOG_POLL_MS);
 
     this.#ready = true;
     this.bus.emit("bc:status", { state: "ready" });
@@ -130,7 +150,9 @@ export class BCAdapter {
     this.#onlineFriends.clear();
     this.#nicknameCache.clear();
     this.#recentIncoming.splice(0);
+    this.#recentOutgoing.splice(0);
     this.#seenIncomingPayloads = new WeakSet<object>();
+    this.#seenRoomProtocolPayloads = new WeakSet<object>();
     this.#hasOnlineFriendSnapshot = false;
     this.#onlineFriendSignature = undefined;
     if (this.#socketRebindTimer !== undefined) clearInterval(this.#socketRebindTimer);
@@ -150,6 +172,7 @@ export class BCAdapter {
     this.#compatibilityHooksInitialized = false;
     this.#roomMessageHookInstalled = false;
     this.#installedActivityHooks.clear();
+    this.#installedOutgoingHooks.clear();
     this.#resilientHooks.clear();
     this.#directHookRegistrations.clear();
     this.#characterOverlayHookNames.clear();
@@ -197,10 +220,38 @@ export class BCAdapter {
 
   isKnownFriend(memberNumber: number): boolean {
     if (typeof Player !== "object" || Player === null) return false;
-    return (
-      (Player.FriendNames instanceof Map && Player.FriendNames.has(memberNumber)) ||
-      (Array.isArray(Player.FriendList) && Player.FriendList.includes(memberNumber))
-    );
+    if (Array.isArray(Player.FriendList)) return Player.FriendList.includes(memberNumber);
+    return Player.FriendNames instanceof Map && Player.FriendNames.has(memberNumber);
+  }
+
+  getPlayerRelationships(memberNumber: number): PlayerRelationship[] {
+    if (
+      !Number.isSafeInteger(memberNumber) ||
+      memberNumber < 0 ||
+      typeof Player !== "object" ||
+      Player === null
+    ) {
+      return [];
+    }
+
+    const relationships: PlayerRelationship[] = [];
+    if (Player.Ownership?.MemberNumber === memberNumber) relationships.push("owner");
+    if (
+      Array.isArray(Player.Lovership) &&
+      Player.Lovership.some((relationship) => relationship?.MemberNumber === memberNumber)
+    ) {
+      relationships.push("lover");
+    }
+    if (Array.isArray(Player.WhiteList) && Player.WhiteList.includes(memberNumber)) {
+      relationships.push("whitelist");
+    }
+    if (Array.isArray(Player.BlackList) && Player.BlackList.includes(memberNumber)) {
+      relationships.push("blacklist");
+    }
+    if (Array.isArray(Player.GhostList) && Player.GhostList.includes(memberNumber)) {
+      relationships.push("ghosted");
+    }
+    return relationships;
   }
 
   isMemberInCurrentRoom(memberNumber: number): boolean {
@@ -257,6 +308,10 @@ export class BCAdapter {
 
     const event = this.#normalizeOutgoing(target, message, { includeRoom });
     if (!event) throw new Error("Unable to prepare this Beep");
+
+    // LinkChat saves the returned event itself. Remember it so the low-level AccountBeep hook and
+    // BC's native FriendListBeepLog recovery cannot save the same message a second time.
+    this.#rememberOutgoing(event, "kikilink");
 
     this.#sendingViaKikiLink = true;
     try {
@@ -480,17 +535,12 @@ export class BCAdapter {
           }),
         );
       }
-      this.#tryInstallHook("ServerSendBeepMessage", () =>
-        modApi.hookFunction("ServerSendBeepMessage", 0, (args, next) => {
-          const result = next(args);
-          if (this.#sendingViaKikiLink) return result;
-          const [target, message, options] = args;
-          const event = this.#normalizeOutgoing(target, message, options);
-          if (event) this.bus.emit("beep:sent", event);
-          return result;
-        }),
-      );
     }
+
+    // LianChat and similar messenger addons bypass ServerSendBeepMessage and publish AccountBeep
+    // directly through ServerSend. Listening at that shared transport boundary captures native and
+    // addon-originated messages without interpreting their private UI implementations.
+    this.#ensureOutgoingBeepHooks();
 
     this.#ensureActivityHooks();
     if (this.#activityHookRetryTimer === undefined) {
@@ -505,6 +555,26 @@ export class BCAdapter {
         () => this.#ensureCharacterOverlayHook(),
         CHARACTER_OVERLAY_HOOK_RETRY_MS,
       );
+    }
+  }
+
+  #ensureOutgoingBeepHooks(): void {
+    if (!this.#compatibilityHooksInitialized) return;
+    const name = "ServerSend";
+    const existing = this.#resilientHooks.get(name);
+    if (this.#installedOutgoingHooks.has(name)) {
+      if (!this.#modApi && existing) this.#ensureDirectHook(name, existing);
+      return;
+    }
+    if (typeof ServerSend !== "function") return;
+
+    const hook: ResilientHook = (args, next) => {
+      const result = next(args);
+      if (!this.#sendingViaKikiLink) this.#captureOutgoingServerPacket(args[0], args[1]);
+      return result;
+    };
+    if (this.#installIntegrationHook(name, 0, hook)) {
+      this.#installedOutgoingHooks.add(name);
     }
   }
 
@@ -700,8 +770,7 @@ export class BCAdapter {
     }
     if (typeof ChatRoomMessage !== "function") return;
     const hook: ResilientHook = (args, next) => {
-      const protocol = this.#normalizeRoomProtocol(args[0]);
-      if (protocol) this.bus.emit("bc:protocol", protocol);
+      this.#captureRoomProtocolPayload(args[0]);
       this.#notifyCustomActivityMessage(args[0]);
       return next(args);
     };
@@ -846,6 +915,7 @@ export class BCAdapter {
     try {
       socket.on("AccountBeep", this.#socketBeepListener);
       socket.on("AccountQueryResult", this.#socketQueryListener);
+      socket.on("ChatRoomMessage", this.#socketRoomMessageListener);
       if (this.#ready) this.refreshOnlineFriends();
     } catch (error) {
       this.#detachSocketListeners();
@@ -860,10 +930,48 @@ export class BCAdapter {
     if (typeof socket.off === "function") {
       socket.off("AccountBeep", this.#socketBeepListener);
       socket.off("AccountQueryResult", this.#socketQueryListener);
+      socket.off("ChatRoomMessage", this.#socketRoomMessageListener);
       return;
     }
     socket.removeListener?.("AccountBeep", this.#socketBeepListener);
     socket.removeListener?.("AccountQueryResult", this.#socketQueryListener);
+    socket.removeListener?.("ChatRoomMessage", this.#socketRoomMessageListener);
+  }
+
+  #captureOutgoingServerPacket(messageType: unknown, payload: unknown): void {
+    if (messageType !== "AccountBeep" || !payload || typeof payload !== "object") return;
+    try {
+      const data = payload as {
+        MemberNumber?: unknown;
+        BeepType?: unknown;
+        IsSecret?: unknown;
+        Message?: unknown;
+      };
+      if (data.BeepType != null && data.BeepType !== "") return;
+      if (!Number.isSafeInteger(data.MemberNumber) || (data.MemberNumber as number) < 0) return;
+      const event = this.#normalizeOutgoing(
+        data.MemberNumber as number,
+        typeof data.Message === "string" ? data.Message : undefined,
+        { includeRoom: data.IsSecret === false },
+      );
+      if (event) this.#captureOutgoing(event, "transport");
+    } catch (error) {
+      // Firefox can expose objects owned by another addon through a guarded compartment. A single
+      // inaccessible packet must not interrupt ServerSend or any other messenger's hook chain.
+      this.#logger.warn("Outgoing AccountBeep metadata was not readable", error);
+    }
+  }
+
+  #captureRoomProtocolPayload(data: BCChatRoomMessage): void {
+    if (!data || typeof data !== "object") return;
+    try {
+      if (this.#seenRoomProtocolPayloads.has(data)) return;
+      this.#seenRoomProtocolPayloads.add(data);
+      const protocol = this.#normalizeRoomProtocol(data);
+      if (protocol) this.bus.emit("bc:protocol", protocol);
+    } catch (error) {
+      this.#logger.warn("Hidden KikiLink room packet was not readable", error);
+    }
   }
 
   #captureIncomingPayload(data: BCServerAccountBeepResponse): void {
@@ -892,12 +1000,16 @@ export class BCAdapter {
     const entries = FriendListBeepLog.slice(this.#beepLogCursor);
     this.#beepLogCursor = FriendListBeepLog.length;
     for (const entry of entries) {
-      if (entry.Sent) continue;
       const event = this.#normalizeBeepLogEntry(entry);
-      if (!event || this.#consumeRememberedIncoming(event)) continue;
-      this.bus.emit("beep:received", event);
+      if (!event) continue;
+      if (entry.Sent) {
+        this.#captureOutgoing(event, "log");
+      } else if (!this.#consumeRememberedIncoming(event)) {
+        this.bus.emit("beep:received", event);
+      }
     }
     this.#pruneRememberedIncoming();
+    this.#pruneRememberedOutgoing();
   }
 
   #normalizeBeepLogEntry(entry: BCFriendListBeepLogMessage): BeepEvent | null {
@@ -944,6 +1056,41 @@ export class BCAdapter {
       const first = this.#recentIncoming[0];
       if (!first || now - first.capturedAt <= RECENT_INCOMING_TTL_MS) break;
       this.#recentIncoming.shift();
+    }
+  }
+
+  #captureOutgoing(event: BeepEvent, source: RecentOutgoing["source"]): void {
+    this.#pruneRememberedOutgoing();
+    const fingerprint = outgoingFingerprint(event);
+    if (
+      this.#recentOutgoing.some(
+        (candidate) =>
+          candidate.source !== source &&
+          candidate.fingerprint === fingerprint &&
+          Math.abs(candidate.sentAt - event.sentAt) <= OUTGOING_DEDUPE_WINDOW_MS,
+      )
+    ) {
+      return;
+    }
+    this.#rememberOutgoing(event, source);
+    this.bus.emit("beep:sent", event);
+  }
+
+  #rememberOutgoing(event: BeepEvent, source: RecentOutgoing["source"]): void {
+    this.#recentOutgoing.push({
+      fingerprint: outgoingFingerprint(event),
+      sentAt: event.sentAt,
+      capturedAt: Date.now(),
+      source,
+    });
+    this.#pruneRememberedOutgoing();
+  }
+
+  #pruneRememberedOutgoing(now = Date.now()): void {
+    while (this.#recentOutgoing.length > 0) {
+      const first = this.#recentOutgoing[0];
+      if (!first || now - first.capturedAt <= RECENT_OUTGOING_TTL_MS) break;
+      this.#recentOutgoing.shift();
     }
   }
 
@@ -1094,6 +1241,10 @@ function cleanName(value: unknown): string | undefined {
 
 function incomingFingerprint(event: BeepEvent): string {
   return [event.peerNumber, event.content, event.roomName ?? ""].join("\u001f");
+}
+
+function outgoingFingerprint(event: BeepEvent): string {
+  return [event.peerNumber, event.content, event.includeRoom ? 1 : 0].join("\u001f");
 }
 
 function isBondageClubReady(): boolean {

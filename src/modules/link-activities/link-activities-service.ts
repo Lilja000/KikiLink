@@ -421,8 +421,8 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       position: "absolute",
       top: "0px",
       left: "0px",
-      width: "14px",
-      height: "14px",
+      width: "12px",
+      height: "12px",
       opacity: "0.96",
       pointerEvents: "none",
       filter: "drop-shadow(0 1px 3px rgba(0,0,0,.75))",
@@ -436,8 +436,8 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       ["left", "0px"],
       ["right", "auto"],
       ["bottom", "auto"],
-      ["width", "14px"],
-      ["height", "14px"],
+      ["width", "12px"],
+      ["height", "12px"],
     ] as const) {
       mark.style.setProperty(property, value, "important");
     }

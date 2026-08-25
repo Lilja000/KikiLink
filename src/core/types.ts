@@ -132,6 +132,13 @@ export interface RoomCharacter {
   isFriend?: boolean;
 }
 
+export type PlayerRelationship =
+  | "owner"
+  | "lover"
+  | "whitelist"
+  | "blacklist"
+  | "ghosted";
+
 export interface PersonRecord {
   memberNumber: number;
   displayName: string;
@@ -147,6 +154,7 @@ export interface PersonRecord {
 export interface RosterEntry extends PersonRecord {
   present: boolean;
   isFriend: boolean;
+  relationships: PlayerRelationship[];
 }
 
 export interface BeepEvent {

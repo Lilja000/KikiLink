@@ -395,7 +395,39 @@ describe("published userscript runtime", () => {
     );
     await new Promise<void>((resolve) => setTimeout(resolve, 550));
 
-    const api = getGlobal<{ getVersion(): string }>("KikiLink");
+    const api = getGlobal<{
+      getVersion(): string;
+      openChat(memberNumber: number, memberName?: string): void;
+    }>("KikiLink");
+    getGlobal<(event: string, data: unknown) => void>("ServerSend")("AccountBeep", {
+      MemberNumber: target.MemberNumber,
+      BeepType: "",
+      IsSecret: true,
+      Message: "Runtime message sent through LianChat",
+    });
+    getGlobal<(message: { Sender: number; Type: string; Content: string }) => void>(
+      "ChatRoomMessage",
+    )({
+      Sender: target.MemberNumber,
+      Type: "Hidden",
+      Content: `KIKILINK/1 ${JSON.stringify({
+        t: "ps",
+        s: "online",
+        u: Date.now(),
+        v: "0.20.9",
+      })}`,
+    });
+    getGlobal<(character: typeof target, x: number, y: number, zoom: number) => void>(
+      "ChatRoomDrawCharacterStatusIcons",
+    )(target, 600, 0, 1);
+    api.openChat(target.MemberNumber, "Reina");
+    await vi.waitFor(() => {
+      expect(
+        document
+          .querySelector<HTMLElement>("#kikilink-root")
+          ?.shadowRoot?.querySelector(".kl-messages")?.textContent,
+      ).toContain("Runtime message sent through LianChat");
+    });
     const version = document.querySelector<HTMLElement>("#kikilink-version");
     const blossom = document.querySelector<HTMLElement>(".kl-room-blossom");
     const activityMark = grid.querySelector<HTMLElement>("[data-kikilink-activity-mark]");
@@ -409,8 +441,8 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.20.8");
-    expect(version?.textContent).toBe("0.20.8");
+    expect(api.getVersion()).toBe("0.20.9");
+    expect(version?.textContent).toBe("0.20.9");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
@@ -422,6 +454,13 @@ describe("published userscript runtime", () => {
       35,
       35,
     );
+    expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
+      expect.stringContaining("data:image/svg+xml"),
+      990,
+      45,
+      35,
+      35,
+    );
     expect(registered.some((activity) => activity.Name.startsWith(CUSTOM_ACTIVITY_PREFIX))).toBe(
       true,
     );
@@ -429,8 +468,8 @@ describe("published userscript runtime", () => {
       true,
     );
     expect(grid.querySelector(`[data-activity^="${CUSTOM_ACTIVITY_PREFIX}"]`)).not.toBeNull();
-    expect(activityMark?.style.width).toBe("14px");
-    expect(activityMark?.style.height).toBe("14px");
+    expect(activityMark?.style.width).toBe("12px");
+    expect(activityMark?.style.height).toBe("12px");
     expect(activityMark?.style.left).toBe("0px");
     expect(activityMark?.style.top).toBe("0px");
 

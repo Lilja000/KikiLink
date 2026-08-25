@@ -11,11 +11,11 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.20.8` introduces the upright cartoon Blossom, a compact expandable body-slot picker,
-and a lower-churn vanilla picture gallery. Blossom uses BC's native status-icon renderer and
-disappears with the other addon icons on vanilla menus; Custom Activities enter the live native
-registries and dialog, and the running version remains visible as tiny translucent digits in the
-lower-left corner.
+Version `0.20.9` captures ordinary outgoing Beeps from native BC and compatible messenger addons,
+shows uncropped full-width image cards without repeating the raw image URL, keeps room peers'
+Blossom compatibility fresh, and adds account-derived relationship badges to Players. Blossom uses
+BC's native status-icon renderer and disappears with the other addon icons on vanilla menus; the
+running version remains visible as tiny translucent digits in the lower-left corner.
 
 ## Link Deck
 
@@ -55,6 +55,7 @@ lower-left corner.
 
 - Live list of everyone else in the current chat room, using character nicknames first
 - Presence dots and KikiLink status labels in player lists and detail cards
+- Account-derived Friend, Owner, Lover, Whitelist, Blacklist, and Ghosted badges
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - Private notes and searchable tags for individual players
 - Favorites that remain easy to find after leaving the room
@@ -87,7 +88,8 @@ so they can follow that same account to another device.
 - Optional editable AFK auto-reply while Idle, limited to one private reply per person per Idle session
 - Direct HTTPS image messages that remain ordinary usable links for players without KikiLink
 - Pasted Markdown, BBCode, and color wrappers are reduced to the direct image URL before sending
-- Privacy-aware inline image previews: ask before loading, always show, or links only
+- Privacy-aware uncropped full-width image previews: ask before loading, always show, or links only
+- Image previews hide the repeated raw URL; `Show original` is the only outbound link on the card
 - Account-free temporary JPG, PNG, and WebP uploads through Catbox's Litterbox, with selectable
   1, 12, 24, or 72 hour retention
 - Local privacy preparation before upload: validate the real file signature, remove the original
@@ -132,7 +134,7 @@ so they can follow that same account to another device.
 - Optional arousal is off by default and exposes a bounded `1–20` base-amount slider only when enabled
 - Saved actions wait for Bondage Club's live registry and stay registered beside vanilla activities
   on the selected body slot even if the game rebuilds that registry
-- Every native custom-activity button carries KikiLink's 14 px cartoon Blossom marker in its upper-left corner
+- Every native custom-activity button carries KikiLink's 12 px cartoon Blossom marker in its upper-left corner
 - Other players receive one ordinary finished action sentence, including players without KikiLink
 - Compatible KikiLink recipients validate sender, target, body group, amount, and nonce before handing
   optional arousal to Bondage Club's own preference-aware activity system
@@ -189,7 +191,8 @@ same native Bondage Club emote path and are visible to everyone in the room.
 The wolf emblem and Blossom marker are both bundled inside the userscript, so KikiLink does not
 fetch branding assets from a remote server while the game is running.
 
-Standard Beeps use Bondage Club's own `ServerSendBeepMessage` path. LinkRoster
+KikiLink's own Beeps use Bondage Club's `ServerSendBeepMessage` path, while its history listener
+captures normal `AccountBeep` sends from native BC and messenger addons such as LianChat. LinkRoster
 uses the game's native Whisper and profile controls, and Custom Activities extend
 the game's native activity registry and action path. Image messages are ordinary HTTPS links, so other players
 do not need KikiLink to open them. Optional local-file upload sends a privacy-prepared WebP
@@ -198,9 +201,9 @@ a KikiLink server. Profile avatars are user-supplied direct HTTPS links. No remo
 used. Full data is stored locally under the authenticated MemberNumber; a bounded portable snapshot
 is stored in that same player's Bondage Club `ExtensionSettings` so settings, activities, profile
 preferences, notebook data, and recent chats can follow the account to another device. Presence uses
-small validated compatibility packets through Bondage Club:
-one hidden room handshake when needed and a point-to-point request for an opened chat,
-never a background Beep broadcast to every friend.
+small validated compatibility packets through Bondage Club: a hidden room handshake on entry,
+a compact hidden presence heartbeat for late-loading peers, and a point-to-point request for an
+opened chat—never a background Beep broadcast to every friend.
 
 ## Account data and switching
 

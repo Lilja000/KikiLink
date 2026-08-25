@@ -635,6 +635,14 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-chat-presence")?.textContent).toContain("Online");
     expect(shadow?.querySelector(".kl-chat-room")?.textContent).toContain("Moon Garden");
     expect(shadow?.querySelector(".kl-image-load")?.textContent).toBe("Show image");
+    expect(shadow?.querySelector(".kl-message-link")).toBeNull();
+    const showOriginal = shadow?.querySelector<HTMLAnchorElement>(".kl-image-open");
+    expect(showOriginal?.textContent).toBe("Show original ↗");
+    expect(showOriginal?.href).toBe("https://cdn.example/picture.webp");
+    expect(shadow?.querySelector(".kl-message-bubble")?.getAttribute("data-media")).toBe("true");
+    expect(shadow?.querySelector("style")?.textContent).toMatch(
+      /\.kl-image-preview img \{[^}]*width: 100%;[^}]*height: auto;/,
+    );
     const remoteAvatar = shadow?.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar");
     expect(remoteAvatar?.querySelector("img")).toBeNull();
 
@@ -1023,6 +1031,8 @@ describe("LinkChatView", () => {
       getRoomCharacters: () => [
         { memberNumber: 123, memberName: "Reina", accountName: "AccountReina", isFriend: true },
       ],
+      isKnownFriend: () => true,
+      getPlayerRelationships: () => ["owner", "lover", "whitelist", "blacklist", "ghosted"],
       getCurrentRoomName: () => "Moon Garden",
       isInChatRoom: () => true,
       canSendBeep: () => true,
@@ -1060,6 +1070,14 @@ describe("LinkChatView", () => {
         ?.getAttribute("data-selected"),
     ).toBe("true");
     expect(shadow?.querySelector(".kl-roster-name")?.textContent).toBe("Reina");
+    const rosterBadges = shadow?.querySelector('[data-member-number="123"]')?.textContent ?? "";
+    expect(rosterBadges).toContain("HERE");
+    expect(rosterBadges).toContain("FRIEND");
+    expect(rosterBadges).toContain("OWNER");
+    expect(rosterBadges).toContain("LOVER");
+    expect(rosterBadges).toContain("WHITELIST");
+    expect(rosterBadges).toContain("BLACKLIST");
+    expect(rosterBadges).toContain("GHOSTED");
     view.destroy();
   });
 
@@ -1498,7 +1516,8 @@ describe("LinkChatView", () => {
     expect(styles).toContain("overflow-anchor: none");
     expect(styles).toContain("contain: paint");
     expect(styles).toContain(".kl-message-bubble::before");
-    expect(styles).toContain("aspect-ratio: 16 / 10");
+    expect(styles).toContain("max-width: 720px");
+    expect(styles).toContain("height: auto; max-height: none");
 
     const messageScroller = shadow?.querySelector<HTMLElement>(".kl-messages");
     const oldestRow = initialRows[0];

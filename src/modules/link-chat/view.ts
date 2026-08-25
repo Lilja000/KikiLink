@@ -7,6 +7,7 @@ import type {
   LinkReactionFired,
   LinkMessage,
   NotificationSoundPreset,
+  PlayerRelationship,
   PresenceSnapshot,
   PresenceStatus,
   QuickAction,
@@ -3521,16 +3522,29 @@ export class LinkChatView {
   #rosterEntryButton(entry: RosterEntry): HTMLButtonElement {
     const presence = this.presence.get(entry.memberNumber);
     const badges = element("div", { className: "kl-roster-entry-badges" });
-    if (entry.present) badges.append(element("span", { className: "kl-roster-live", text: "HERE" }));
+    if (entry.present) {
+      badges.append(element("span", { className: "kl-roster-badge kl-roster-live", text: "HERE" }));
+    }
     const status = element("span", {
-      className: "kl-roster-presence-label",
+      className: "kl-roster-badge kl-roster-presence-label",
       text: presenceLabel(presence.status),
     });
     status.dataset.status = presence.status;
     status.dataset.presenceLabel = "true";
     status.hidden = presence.status === "unknown";
     badges.append(status);
-    if (entry.isFriend) badges.append(element("span", { className: "kl-roster-friend", text: "FRIEND" }));
+    if (entry.isFriend) {
+      badges.append(element("span", { className: "kl-roster-badge kl-roster-friend", text: "FRIEND" }));
+    }
+    for (const relationship of entry.relationships) {
+      badges.append(
+        element("span", {
+          className: `kl-roster-badge kl-roster-relationship kl-roster-relationship--${relationship}`,
+          text: rosterRelationshipLabel(relationship).toUpperCase(),
+          title: rosterRelationshipDescription(relationship),
+        }),
+      );
+    }
     if (entry.favorite) badges.append(kikiIcon("star", "kl-roster-favorite", true));
     const preview = entry.tags.length
       ? entry.tags.join(" · ")
@@ -3604,6 +3618,22 @@ export class LinkChatView {
     });
     favorite.append(kikiIcon("star", "kl-favorite-icon", entry.favorite));
     const presence = this.presence.get(entry.memberNumber);
+    const detailBadges = element("div", { className: "kl-roster-detail-badges" });
+    if (entry.present) {
+      detailBadges.append(element("span", { className: "kl-roster-badge kl-roster-live", text: "HERE" }));
+    }
+    if (entry.isFriend) {
+      detailBadges.append(element("span", { className: "kl-roster-badge kl-roster-friend", text: "FRIEND" }));
+    }
+    for (const relationship of entry.relationships) {
+      detailBadges.append(
+        element("span", {
+          className: `kl-roster-badge kl-roster-relationship kl-roster-relationship--${relationship}`,
+          text: rosterRelationshipLabel(relationship).toUpperCase(),
+          title: rosterRelationshipDescription(relationship),
+        }),
+      );
+    }
     const identity = element(
       "div",
       { className: "kl-roster-identity" },
@@ -3621,6 +3651,7 @@ export class LinkChatView {
           className: "kl-roster-number",
           text: `Member ${entry.memberNumber}${entry.present ? " · in this room" : ""}`,
         }),
+        detailBadges.childElementCount > 0 ? detailBadges : null,
         element(
           "div",
           { className: "kl-roster-detail-presence", title: presenceDescription(presence) },
@@ -4399,6 +4430,7 @@ export class LinkChatView {
       element("time", { text: formatMessageTime(message.sentAt) }),
     );
     const bubble = element("div", { className: "kl-message-bubble" }, body, meta);
+    if (body.querySelector(".kl-message-media")) bubble.dataset.media = "true";
     const row = element("div", { className: "kl-message-row" }, bubble, actions);
     row.dataset.direction = message.direction;
     row.dataset.group = group;
@@ -4513,10 +4545,16 @@ export class LinkChatView {
   #renderMessageBody(message: LinkMessage): HTMLElement {
     const content = message.content || "Beep without a message";
     const links = parseMessageLinks(content);
+    const previewsEnabled = this.settings.get().linkChat.imagePreviews !== "never";
+    const imageUrls = [...new Set(links.filter((link) => link.image).map((link) => link.url))].slice(0, 2);
     const body = element("div", { className: "kl-message-content" });
     let cursor = 0;
     for (const link of links) {
       if (link.start > cursor) body.append(document.createTextNode(content.slice(cursor, link.start)));
+      if (link.image && previewsEnabled) {
+        cursor = link.end;
+        continue;
+      }
       const anchor = element("a", { className: "kl-message-link", text: content.slice(link.start, link.end) });
       anchor.href = link.url;
       anchor.target = "_blank";
@@ -4527,8 +4565,11 @@ export class LinkChatView {
     }
     if (cursor < content.length) body.append(document.createTextNode(content.slice(cursor)));
 
-    const imageUrls = [...new Set(links.filter((link) => link.image).map((link) => link.url))].slice(0, 2);
-    if (imageUrls.length === 0 || this.settings.get().linkChat.imagePreviews === "never") return body;
+    if (imageUrls.length === 0 || !previewsEnabled) return body;
+    if (!body.textContent?.trim()) {
+      body.replaceChildren();
+      body.dataset.mediaOnly = "true";
+    }
     const media = element("div", { className: "kl-message-media" });
     for (const url of imageUrls) media.append(this.#imageCard(url));
     body.append(media);
@@ -4538,7 +4579,7 @@ export class LinkChatView {
   #imageCard(url: string): HTMLElement {
     const parsed = new URL(url);
     const preview = element("div", { className: "kl-image-preview" });
-    const open = element("a", { className: "kl-image-open", text: "Open original ↗" });
+    const open = element("a", { className: "kl-image-open", text: "Show original ↗" });
     open.href = url;
     open.target = "_blank";
     open.rel = "noopener noreferrer nofollow";
@@ -6053,6 +6094,22 @@ function selectOption(value: string, label: string): HTMLOptionElement {
   const option = element("option", { text: label });
   option.value = value;
   return option;
+}
+
+function rosterRelationshipLabel(relationship: PlayerRelationship): string {
+  if (relationship === "owner") return "Owner";
+  if (relationship === "lover") return "Lover";
+  if (relationship === "whitelist") return "Whitelist";
+  if (relationship === "blacklist") return "Blacklist";
+  return "Ghosted";
+}
+
+function rosterRelationshipDescription(relationship: PlayerRelationship): string {
+  if (relationship === "owner") return "This player is your current owner";
+  if (relationship === "lover") return "This player is in your BC lover list";
+  if (relationship === "whitelist") return "This player is on your BC whitelist";
+  if (relationship === "blacklist") return "This player is on your BC blacklist";
+  return "This player is on your BC ghost list";
 }
 
 function presenceLabel(status: PresenceSnapshot["status"]): string {
