@@ -328,7 +328,7 @@ describe("LinkChatView", () => {
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
       settings,
-      "0.21.1",
+      "0.21.2",
     );
     view.mount();
     await view.open();
@@ -340,7 +340,7 @@ describe("LinkChatView", () => {
     expect(about?.hidden).toBe(false);
     expect(about?.textContent).toContain("Kiki");
     expect(about?.textContent).toContain("Member 0");
-    expect(about?.textContent).toContain("0.21.1");
+    expect(about?.textContent).toContain("0.21.2");
     expect(about?.textContent).not.toMatch(/artificial intelligence|\bAI\b/iu);
     expect(about?.querySelector<HTMLImageElement>(".kl-about-watermark")?.src).toContain(
       "design/branding/kikilink-emblem.webp",

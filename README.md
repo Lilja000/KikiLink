@@ -5,13 +5,14 @@ not connected to Velvet District or any previous Kiki project.
 
 ## Install
 
-[**Install KikiLink**](https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js)
+[**Install KikiLink**](https://cdn.jsdelivr.net/gh/Lilja000/KikiLink@main/dist/KikiLink.user.js)
 
 Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.21.1` adds a branded About page, reliable visible-player Presence discovery, tappable
+Version `0.21.2` moves installation and automatic updates to a Firefox-accessible CDN while retaining
+a branded About page, reliable visible-player Presence discovery, tappable
 privacy-aware profile avatars, and a proper Gallery library that accepts links or local uploads
 without sending them through a chat. The running version remains visible as tiny translucent digits
 in the lower-left corner.

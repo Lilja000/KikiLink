@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.21.2 - 2026-08-26
+
+- Moved the userscript installation and automatic update channel from `raw.githubusercontent.com`
+  to jsDelivr so Firefox users whose network cannot reach GitHub Raw can install and update KikiLink.
+
 ## 0.21.1 - 2026-08-25
 
 - Added a branded About category with the KikiLink wolf emblem, creator identity, running version,
