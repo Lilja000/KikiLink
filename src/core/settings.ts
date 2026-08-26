@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 17,
+  schemaVersion: 18,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -44,6 +44,10 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     imageUploads: {
       enabled: true,
       retention: "24h",
+    },
+    gallery: {
+      saved: [],
+      hiddenUrls: [],
     },
     quickActions: [
       { label: "Wave", template: "*waves to {name}*" },
@@ -187,7 +191,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
 
   return {
-    schemaVersion: 17,
+    schemaVersion: 18,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -250,6 +254,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? linkChat.imagePreviews
           : DEFAULT_SETTINGS.linkChat.imagePreviews,
       imageUploads: sanitizeImageUploads(imageUploads, sourceSchema),
+      gallery: sanitizeGallery(linkChat.gallery),
       quickActions: sanitizeQuickActions(linkChat.quickActions),
     },
     linkPresence: {
@@ -319,6 +324,50 @@ function sanitizeImageUploads(
         ? value.retention
         : DEFAULT_SETTINGS.linkChat.imageUploads.retention,
   };
+}
+
+function sanitizeGallery(value: unknown): KikiLinkSettings["linkChat"]["gallery"] {
+  const source = isRecord(value) ? value : {};
+  const hiddenUrls = sanitizeImageUrlList(source.hiddenUrls, 80);
+  const hidden = new Set(hiddenUrls);
+  const savedByUrl = new Map<string, { url: string; addedAt: number }>();
+  if (Array.isArray(source.saved)) {
+    for (const candidate of source.saved.slice(0, 80)) {
+      if (!isRecord(candidate)) continue;
+      const url = sanitizeDirectImageUrl(candidate.url);
+      if (!url || hidden.has(url) || savedByUrl.has(url)) continue;
+      const addedAt =
+        typeof candidate.addedAt === "number" &&
+        Number.isFinite(candidate.addedAt) &&
+        candidate.addedAt > 0
+          ? Math.min(Date.now(), Math.round(candidate.addedAt))
+          : Date.now();
+      savedByUrl.set(url, { url, addedAt });
+      if (savedByUrl.size >= 40) break;
+    }
+  }
+  return {
+    saved: [...savedByUrl.values()].sort((left, right) => right.addedAt - left.addedAt),
+    hiddenUrls,
+  };
+}
+
+function sanitizeImageUrlList(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const urls = new Set<string>();
+  for (const candidate of value) {
+    const url = sanitizeDirectImageUrl(candidate);
+    if (!url) continue;
+    urls.add(url);
+    if (urls.size >= limit) break;
+  }
+  return [...urls];
+}
+
+function sanitizeDirectImageUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.trim().length > 500) return undefined;
+  const url = normalizeImageUrl(value);
+  return url && url.length <= 500 ? url : undefined;
 }
 
 function sanitizeAfkAutoReply(
@@ -466,7 +515,8 @@ function isSettingsSection(
     value === "chat" ||
     value === "players" ||
     value === "activities" ||
-    value === "reactions"
+    value === "reactions" ||
+    value === "about"
   );
 }
 

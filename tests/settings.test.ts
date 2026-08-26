@@ -140,7 +140,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(17);
+    expect(settings.schemaVersion).toBe(18);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -264,7 +264,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(17);
+    expect(settings.schemaVersion).toBe(18);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -288,7 +288,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(17);
+    expect(settings.schemaVersion).toBe(18);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -354,7 +354,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(17);
+    expect(settings.schemaVersion).toBe(18);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -530,7 +530,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(17);
+    expect(settings.schemaVersion).toBe(18);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -549,6 +549,33 @@ describe("SettingsStore", () => {
     expect(customized.linkPresence.afkAutoReply).toEqual({
       enabled: true,
       message: "Still drawing; I'll answer soon.",
+    });
+  });
+
+  it("sanitizes an account-scoped Gallery library and remembers its About section", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 18,
+      ui: { settingsSection: "about" },
+      linkChat: {
+        gallery: {
+          saved: [
+            { url: " https://files.catbox.moe/keep.webp ", addedAt: 200 },
+            { url: "https://files.catbox.moe/keep.webp", addedAt: 100 },
+            { url: "https://files.catbox.moe/hidden.png", addedAt: 300 },
+            { url: "http://tracker.example/bad.png", addedAt: 400 },
+          ],
+          hiddenUrls: [
+            "https://files.catbox.moe/hidden.png",
+            "javascript:alert(1)",
+          ],
+        },
+      },
+    });
+
+    expect(settings.ui.settingsSection).toBe("about");
+    expect(settings.linkChat.gallery).toEqual({
+      saved: [{ url: "https://files.catbox.moe/keep.webp", addedAt: 200 }],
+      hiddenUrls: ["https://files.catbox.moe/hidden.png"],
     });
   });
 });

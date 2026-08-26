@@ -237,4 +237,27 @@ describe("LinkPresenceService", () => {
     expect(service.isTyping(123)).toBe(false);
     service.stop();
   });
+
+  it("discovers visible players through a deduplicated, rate-limited queue", () => {
+    vi.useFakeTimers();
+    const { service, sendKikiLinkProtocol } = setup();
+
+    expect(service.requestMany([123, 456, 123, 999, -1, Number.NaN])).toBe(2);
+    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(1);
+    expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
+      123,
+      expect.stringContaining('"t":"pq"'),
+    );
+
+    vi.advanceTimersByTime(139);
+    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
+    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(2);
+    expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
+      456,
+      expect.stringContaining('"t":"pq"'),
+    );
+    expect(service.requestMany([123, 456])).toBe(0);
+    service.stop();
+  });
 });

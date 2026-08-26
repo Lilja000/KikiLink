@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.21.0
+// @version      0.21.1
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -1586,28 +1586,30 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     async listMedia(limit = 300) {
       const conversations = await this.listConversations();
-      const messageGroups = await Promise.all(
-        conversations.map(async (conversation) => ({
-          conversation,
-          messages: await this.getMessages(conversation.peerNumber, 500)
-        }))
-      );
       const media = /* @__PURE__ */ new Map();
-      for (const { conversation, messages } of messageGroups) {
-        for (const message of messages) {
-          for (const link of parseMessageLinks(message.content)) {
-            if (!link.image) continue;
-            const item = {
-              url: link.url,
-              provider: mediaProvider(link.url),
-              peerNumber: conversation.peerNumber,
-              peerName: conversationDisplayName(conversation),
-              direction: message.direction,
-              sentAt: message.sentAt,
-              messageId: message.id
-            };
-            const previous = media.get(item.url);
-            if (!previous || previous.sentAt < item.sentAt) media.set(item.url, item);
+      for (let index = 0; index < conversations.length; index += 8) {
+        const messageGroups = await Promise.all(
+          conversations.slice(index, index + 8).map(async (conversation) => ({
+            conversation,
+            messages: await this.getMessages(conversation.peerNumber, 500)
+          }))
+        );
+        for (const { conversation, messages } of messageGroups) {
+          for (const message of messages) {
+            for (const link of parseMessageLinks(message.content)) {
+              if (!link.image) continue;
+              const item = {
+                url: link.url,
+                provider: galleryMediaProvider(link.url),
+                peerNumber: conversation.peerNumber,
+                peerName: conversationDisplayName(conversation),
+                direction: message.direction,
+                sentAt: message.sentAt,
+                messageId: message.id
+              };
+              const previous = media.get(item.url);
+              if (!previous || previous.sentAt < item.sentAt) media.set(item.url, item);
+            }
           }
         }
       }
@@ -1707,7 +1709,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const alias = value.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 40);
     return alias || void 0;
   }
-  function mediaProvider(value) {
+  function galleryMediaProvider(value) {
     try {
       const host = new URL(value).hostname.toLocaleLowerCase();
       if (host === "files.catbox.moe") return "catbox";
@@ -1924,7 +1926,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 17,
+    schemaVersion: 18,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -1955,6 +1957,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
       imageUploads: {
         enabled: true,
         retention: "24h"
+      },
+      gallery: {
+        saved: [],
+        hiddenUrls: []
       },
       quickActions: [
         { label: "Wave", template: "*waves to {name}*" },
@@ -2077,7 +2083,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkRoster = isRecord3(source.linkRoster) ? source.linkRoster : {};
     const linkReactions = isRecord3(source.linkReactions) ? source.linkReactions : {};
     return {
-      schemaVersion: 17,
+      schemaVersion: 18,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -2122,6 +2128,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         ),
         imagePreviews: linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never" ? linkChat.imagePreviews : DEFAULT_SETTINGS.linkChat.imagePreviews,
         imageUploads: sanitizeImageUploads(imageUploads, sourceSchema),
+        gallery: sanitizeGallery(linkChat.gallery),
         quickActions: sanitizeQuickActions(linkChat.quickActions)
       },
       linkPresence: {
@@ -2164,6 +2171,42 @@ One of mods you are using is using an old version of SDK. It will work for now b
       enabled: sourceSchema < 14 ? false : booleanOr(value.enabled, DEFAULT_SETTINGS.linkChat.imageUploads.enabled),
       retention: value.retention === "1h" || value.retention === "12h" || value.retention === "24h" || value.retention === "72h" ? value.retention : DEFAULT_SETTINGS.linkChat.imageUploads.retention
     };
+  }
+  function sanitizeGallery(value) {
+    const source = isRecord3(value) ? value : {};
+    const hiddenUrls = sanitizeImageUrlList(source.hiddenUrls, 80);
+    const hidden = new Set(hiddenUrls);
+    const savedByUrl = /* @__PURE__ */ new Map();
+    if (Array.isArray(source.saved)) {
+      for (const candidate of source.saved.slice(0, 80)) {
+        if (!isRecord3(candidate)) continue;
+        const url = sanitizeDirectImageUrl(candidate.url);
+        if (!url || hidden.has(url) || savedByUrl.has(url)) continue;
+        const addedAt = typeof candidate.addedAt === "number" && Number.isFinite(candidate.addedAt) && candidate.addedAt > 0 ? Math.min(Date.now(), Math.round(candidate.addedAt)) : Date.now();
+        savedByUrl.set(url, { url, addedAt });
+        if (savedByUrl.size >= 40) break;
+      }
+    }
+    return {
+      saved: [...savedByUrl.values()].sort((left, right) => right.addedAt - left.addedAt),
+      hiddenUrls
+    };
+  }
+  function sanitizeImageUrlList(value, limit) {
+    if (!Array.isArray(value)) return [];
+    const urls = /* @__PURE__ */ new Set();
+    for (const candidate of value) {
+      const url = sanitizeDirectImageUrl(candidate);
+      if (!url) continue;
+      urls.add(url);
+      if (urls.size >= limit) break;
+    }
+    return [...urls];
+  }
+  function sanitizeDirectImageUrl(value) {
+    if (typeof value !== "string" || value.trim().length > 500) return void 0;
+    const url = normalizeImageUrl(value);
+    return url && url.length <= 500 ? url : void 0;
   }
   function sanitizeAfkAutoReply(value, sourceSchema) {
     const source = isRecord3(value) ? value : {};
@@ -2263,7 +2306,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value);
   }
   function isSettingsSection(value) {
-    return value === "appearance" || value === "navigation" || value === "chat" || value === "players" || value === "activities" || value === "reactions";
+    return value === "appearance" || value === "navigation" || value === "chat" || value === "players" || value === "activities" || value === "reactions" || value === "about";
   }
   function getDefaultStorage() {
     try {
@@ -4635,6 +4678,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var REMOTE_STATUS_TTL_MS = 5 * 6e4;
   var RECENT_PACKET_ONLINE_MS = 9e4;
   var REQUEST_COOLDOWN_MS = 2e4;
+  var REQUEST_QUEUE_INTERVAL_MS = 140;
+  var MAX_QUEUED_REQUESTS = 60;
   var RESPONSE_COOLDOWN_MS = 5e3;
   var TYPING_REFRESH_MS = 1800;
   var TYPING_TTL_MS = 5500;
@@ -4653,12 +4698,15 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #listeners = /* @__PURE__ */ new Set();
     #lastRequestAt = /* @__PURE__ */ new Map();
     #lastResponseAt = /* @__PURE__ */ new Map();
+    #requestQueue = [];
+    #queuedRequests = /* @__PURE__ */ new Set();
     #localTyping = /* @__PURE__ */ new Map();
     #remoteTypingUntil = /* @__PURE__ */ new Map();
     #typingExpiryTimers = /* @__PURE__ */ new Map();
     #unsubscribers = [];
     #nativeTimer;
     #statusTimer;
+    #requestTimer;
     #lastInteractionAt = Date.now();
     #lastEffectiveStatus = "online";
     #lastRoomName = "";
@@ -4711,6 +4759,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#syncRoom(true);
     }
     stop() {
+      if (this.#requestTimer !== void 0) clearTimeout(this.#requestTimer);
+      this.#requestTimer = void 0;
+      this.#requestQueue.splice(0);
+      this.#queuedRequests.clear();
       if (!this.#started) return;
       for (const memberNumber of this.#localTyping.keys()) {
         this.setTyping(memberNumber, false, true);
@@ -4854,7 +4906,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       return { memberNumber, status: "unknown", source: "unknown", updatedAt: 0 };
     }
     request(memberNumber, force = false) {
-      if (!this.settings.get().linkPresence.enabled || memberNumber === this.adapter.getOwnMemberNumber()) {
+      if (!Number.isSafeInteger(memberNumber) || memberNumber < 0 || !this.settings.get().linkPresence.enabled || memberNumber === this.adapter.getOwnMemberNumber()) {
         return false;
       }
       const now = Date.now();
@@ -4867,8 +4919,31 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#lastRequestAt.set(memberNumber, now);
         return true;
       } catch {
+        this.#lastRequestAt.set(memberNumber, now);
         return false;
       }
+    }
+    /**
+     * Quietly discovers KikiLink presence for a visible player list without bursting BC's socket.
+     * Repeated renders are cheap: queued members and the normal request cooldown are deduplicated.
+     */
+    requestMany(memberNumbers) {
+      if (!this.settings.get().linkPresence.enabled) return 0;
+      const ownMemberNumber = this.adapter.getOwnMemberNumber();
+      const now = Date.now();
+      let added = 0;
+      for (const memberNumber of memberNumbers) {
+        if (this.#requestQueue.length >= MAX_QUEUED_REQUESTS || !Number.isSafeInteger(memberNumber) || memberNumber < 0 || memberNumber === ownMemberNumber || this.#queuedRequests.has(memberNumber) || now - (this.#lastRequestAt.get(memberNumber) ?? 0) < REQUEST_COOLDOWN_MS) {
+          continue;
+        }
+        this.#requestQueue.push(memberNumber);
+        this.#queuedRequests.add(memberNumber);
+        added += 1;
+      }
+      if (this.#requestQueue.length > 0 && this.#requestTimer === void 0) {
+        this.#drainRequestQueue();
+      }
+      return added;
     }
     isTyping(memberNumber, now = Date.now()) {
       return (this.#remoteTypingUntil.get(memberNumber) ?? 0) > now;
@@ -4895,6 +4970,19 @@ One of mods you are using is using an old version of SDK. It will work for now b
         return true;
       } catch {
         return false;
+      }
+    }
+    #drainRequestQueue() {
+      this.#requestTimer = void 0;
+      const memberNumber = this.#requestQueue.shift();
+      if (memberNumber === void 0) return;
+      this.#queuedRequests.delete(memberNumber);
+      this.request(memberNumber);
+      if (this.#requestQueue.length > 0) {
+        this.#requestTimer = setTimeout(
+          () => this.#drainRequestQueue(),
+          REQUEST_QUEUE_INTERVAL_MS
+        );
       }
     }
     #receive(senderNumber, payload) {
@@ -6375,6 +6463,16 @@ button { color: inherit; }
   border-color: var(--kl-border-strong);
   background: var(--kl-surface-hover);
 }
+.kl-sidebar-gallery {
+  width: auto;
+  grid-auto-flow: column;
+  gap: 6px;
+  padding-inline: 9px;
+  color: var(--kl-gold);
+  font-size: var(--kl-type-xs);
+  font-weight: 820;
+}
+.kl-sidebar-gallery .kl-icon { width: 16px; height: 16px; }
 .kl-search,
 .kl-composer-input,
 .kl-number-input,
@@ -6449,6 +6547,7 @@ button { color: inherit; }
 }
 
 .kl-avatar {
+  position: relative;
   width: 44px;
   height: 44px;
   display: grid;
@@ -6461,6 +6560,27 @@ button { color: inherit; }
   text-transform: uppercase;
 }
 .kl-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.kl-avatar[data-avatar-state="available"] {
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--kl-gold), transparent 20%);
+}
+.kl-avatar[data-avatar-state="available"]::after {
+  content: "+";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--kl-gold), #000 26%);
+  border-radius: 999px;
+  background: var(--kl-gold);
+  color: #17100d;
+  font-size: 11px;
+  font-weight: 950;
+  line-height: 1;
+}
 
 .kl-conversation-main { min-width: 0; }
 .kl-conversation-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -7648,6 +7768,7 @@ select:focus-visible {
   .kl-icon-button { width: 44px; height: 44px; }
   .kl-text-button { min-height: 44px; }
   .kl-sidebar-new-chat { width: 44px; height: 44px; }
+  .kl-sidebar-gallery { width: auto; }
   .kl-action-chip { min-height: 40px; }
   .kl-search-wrap { padding: 12px; }
   .kl-conversation { grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; padding: 10px; }
@@ -7677,6 +7798,8 @@ select:focus-visible {
   .kl-feature-page-footer { min-height: 60px; padding: 8px 12px; }
   .kl-room-grid { grid-template-columns: minmax(0, 1fr); padding: 12px; }
   .kl-gallery-grid { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .kl-gallery-header-actions { width: 100%; }
+  .kl-gallery-header-actions .kl-text-button { flex: 1 1 auto; }
   .kl-room-player { grid-template-columns: 40px minmax(0, 1fr); }
   .kl-room-player-actions { grid-column: 1 / -1; justify-content: flex-start; }
   .kl-roster-body {
@@ -7711,6 +7834,8 @@ select:focus-visible {
   }
   .kl-settings-tab[data-active="true"] { box-shadow: inset 0 -3px var(--kl-accent); }
   .kl-settings-panel { padding: 18px 18px 28px; }
+  .kl-about-facts { grid-template-columns: minmax(0, 1fr); }
+  .kl-about-watermark { right: -20%; width: 90%; }
   .kl-settings-actions { min-height: 60px; padding: 8px 12px; }
   .kl-toast { right: 12px; bottom: 76px; max-width: calc(100% - 24px); }
   .kl-finder-dialog {
@@ -8043,13 +8168,77 @@ select:focus-visible {
   padding: 18px;
   overflow: auto;
 }
+.kl-gallery-header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .kl-gallery-item { min-width: 0; display: grid; align-content: start; gap: 8px; padding: 10px; border: 1px solid var(--kl-border); border-radius: 16px; background: var(--kl-surface-1); }
 .kl-gallery-item .kl-image-card { max-width: none; }
 .kl-gallery-meta { min-width: 0; display: flex; justify-content: space-between; gap: 10px; color: var(--kl-muted); font-size: var(--kl-type-xs); }
 .kl-gallery-meta strong { color: var(--kl-gold); text-transform: capitalize; }
 .kl-gallery-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kl-gallery-actions { display: flex; flex-wrap: wrap; gap: 7px; }
-.kl-gallery-empty { grid-column: 1 / -1; place-self: center; padding: 32px; color: var(--kl-muted); text-align: center; }
+.kl-gallery-remove { margin-left: auto; }
+.kl-gallery-empty { grid-column: 1 / -1; place-self: center; display: grid; justify-items: center; gap: 12px; padding: 32px; color: var(--kl-muted); text-align: center; }
+
+.kl-about-card {
+  position: relative;
+  isolation: isolate;
+  min-height: 390px;
+  display: grid;
+  align-content: start;
+  gap: 22px;
+  padding: clamp(20px, 4vw, 34px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--kl-gold), transparent 55%);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 92% 10%, color-mix(in srgb, var(--kl-accent), transparent 82%), transparent 35%),
+    linear-gradient(145deg, color-mix(in srgb, var(--kl-surface-2), transparent 8%), var(--kl-surface));
+}
+.kl-about-watermark {
+  position: absolute;
+  z-index: -1;
+  right: -7%;
+  bottom: -19%;
+  width: min(430px, 68%);
+  opacity: 0.075;
+  filter: saturate(0.85);
+  pointer-events: none;
+  user-select: none;
+}
+.kl-about-brand { display: flex; align-items: center; gap: 16px; }
+.kl-about-emblem { width: 66px; height: 66px; flex: 0 0 auto; }
+.kl-about-name {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(25px, 4vw, 34px);
+  font-weight: 750;
+  letter-spacing: 0.01em;
+}
+.kl-about-tagline { margin-top: 2px; color: var(--kl-muted); font-size: var(--kl-type-body); }
+.kl-about-creator { display: grid; justify-items: start; gap: 2px; }
+.kl-about-label { color: var(--kl-gold); font-size: var(--kl-type-xxs); font-weight: 900; letter-spacing: 0.16em; }
+.kl-about-creator strong { font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-xl); }
+.kl-about-creator-number { color: var(--kl-muted); font-size: var(--kl-type-sm); }
+.kl-about-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin: 0; }
+.kl-about-fact { min-width: 0; padding: 11px 12px; border: 1px solid var(--kl-border); border-radius: 13px; background: color-mix(in srgb, var(--kl-surface), transparent 14%); }
+.kl-about-fact dt { color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-about-fact dd { margin: 2px 0 0; overflow-wrap: anywhere; color: var(--kl-text); font-size: var(--kl-type-sm); font-weight: 800; }
+.kl-about-links { display: flex; flex-wrap: wrap; gap: 9px; }
+.kl-about-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border: 1px solid var(--kl-border-strong);
+  border-radius: 999px;
+  background: var(--kl-surface-2);
+  color: var(--kl-text);
+  font-size: var(--kl-type-sm);
+  font-weight: 800;
+  text-decoration: none;
+}
+.kl-about-link:hover { border-color: var(--kl-gold); background: var(--kl-surface-hover); }
+.kl-about-link--discord { border-color: color-mix(in srgb, #7289da, var(--kl-border) 42%); }
+.kl-about-link-icon { width: 14px; height: 14px; color: var(--kl-gold); }
+.kl-about-note { max-width: 620px; margin: 0; color: var(--kl-muted); font-size: var(--kl-type-xs); line-height: 1.55; }
 .kl-room-page { grid-template-rows: auto auto minmax(0, 1fr); }
 .kl-room-admin-status { padding: 10px 20px; border-bottom: 1px solid var(--kl-border); color: var(--kl-muted); font-size: var(--kl-type-sm); }
 .kl-room-admin-status[data-state="admin"] { color: #68d391; }
@@ -8550,6 +8739,7 @@ select:focus-visible {
   var kikilink_emblem_default = "data:image/webp;base64,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";
 
   // src/modules/link-chat/view.ts
+  var KIKILINK_CREATOR_MEMBER_NUMBER = 0;
   var LinkChatView = class {
     constructor(adapter, service, settings, version, activities = new LinkActivitiesService(adapter, settings), roster = new LinkRosterService(
       adapter,
@@ -8659,6 +8849,7 @@ select:focus-visible {
     #homeChatMetric = element("span", { className: "kl-feature-card-metric" });
     #homeRosterMetric = element("span", { className: "kl-feature-card-metric" });
     #homeActivitiesMetric = element("span", { className: "kl-feature-card-metric" });
+    #homeGalleryMetric = element("span", { className: "kl-feature-card-metric" });
     #homeSettingsMetric = element("span", { className: "kl-feature-card-metric" });
     #homeRosterAction = element("span", { className: "kl-feature-card-action" });
     #homeActivitiesAction = element("span", { className: "kl-feature-card-action" });
@@ -8672,9 +8863,14 @@ select:focus-visible {
       type: "button",
       title: "Open Custom Activities"
     });
+    #homeGalleryCard = element("button", {
+      className: "kl-feature-card",
+      type: "button",
+      title: "Open Media Gallery"
+    });
     #conversationList = element("div", { className: "kl-conversations" });
     #galleryButton = element("button", {
-      className: "kl-sidebar-new-chat",
+      className: "kl-sidebar-new-chat kl-sidebar-gallery",
       type: "button",
       title: "Media gallery",
       ariaLabel: "Open media gallery"
@@ -8873,6 +9069,8 @@ select:focus-visible {
     });
     #afkAutoReplyOptions = element("div", { className: "kl-afk-reply-options" });
     #imageDialog = element("dialog", { className: "kl-dialog kl-image-dialog" });
+    #imageDialogTitle = element("div", { className: "kl-dialog-title" });
+    #imageDialogSubtitle = element("div", { className: "kl-dialog-subtitle" });
     #imageUrlInput = element("input", { className: "kl-search kl-image-url" });
     #imagePreview = element("div", { className: "kl-image-compose-preview" });
     #imageLinkTab = element("button", {
@@ -8948,6 +9146,7 @@ select:focus-visible {
     #visibleFinderResults = [];
     #finderSelectedIndex = 0;
     #finderRenderToken = 0;
+    #galleryRenderToken = 0;
     #toastTimer;
     #launcherDrag;
     #panelDrag;
@@ -8967,6 +9166,7 @@ select:focus-visible {
     #aliasTarget;
     #removeChatTarget;
     #imageSourceMode = "link";
+    #imageDestination = "chat";
     #preparedLocalImage;
     #localImageObjectUrl;
     #imageUploadBusy = false;
@@ -9159,6 +9359,7 @@ select:focus-visible {
         for (const memberNumber of /* @__PURE__ */ new Set([...result.joined, ...result.left])) {
           this.#schedulePresenceRender(memberNumber);
         }
+        this.presence.requestMany(result.joined);
       }
       if (this.#workspaceView === "roster" && result.changed) this.#renderRoster();
     }
@@ -9250,7 +9451,10 @@ select:focus-visible {
       this.#search.placeholder = "Search chats";
       this.#search.autocomplete = "off";
       this.#search.addEventListener("input", () => void this.#renderConversations());
-      this.#galleryButton.append(kikiIcon("image"));
+      this.#galleryButton.append(
+        kikiIcon("image"),
+        element("span", { className: "kl-sidebar-gallery-label", text: "Gallery" })
+      );
       this.#galleryButton.addEventListener("click", () => void this.#openGallery());
       const newChatButton = element("button", {
         className: "kl-sidebar-new-chat",
@@ -9464,6 +9668,16 @@ select:focus-visible {
         this.#homeActivitiesAction
       );
       this.#homeActivitiesCard.addEventListener("click", () => this.#activateFeature("activities"));
+      this.#fillFeatureCard(
+        this.#homeGalleryCard,
+        "image",
+        "YOUR IMAGE LIBRARY",
+        "Gallery",
+        "Browse chat images or add a link and local upload directly to your library.",
+        this.#homeGalleryMetric,
+        element("span", { className: "kl-feature-card-action", text: "Open gallery" })
+      );
+      this.#homeGalleryCard.addEventListener("click", () => this.#activateFeature("gallery"));
       const settingsCard = element("button", {
         className: "kl-feature-card",
         type: "button",
@@ -9485,7 +9699,7 @@ select:focus-visible {
         element("h2", { text: "Choose a tool" }),
         element("p", {
           className: "kl-home-section-description",
-          text: "Four clear destinations. Home always brings you back here."
+          text: "Core tools stay here; Gallery is easy to reach without adding another main tab."
         })
       );
       const cards = element(
@@ -9494,6 +9708,7 @@ select:focus-visible {
         chatCard,
         this.#homeRosterCard,
         this.#homeActivitiesCard,
+        this.#homeGalleryCard,
         settingsCard
       );
       const privacy = element(
@@ -10412,6 +10627,76 @@ select:focus-visible {
         customSounds,
         advancedReactions
       );
+      const aboutMark = element("img", { className: "kl-about-watermark" });
+      aboutMark.src = kikilink_emblem_default;
+      aboutMark.alt = "";
+      aboutMark.decoding = "async";
+      aboutMark.draggable = false;
+      const creatorNumber = element(
+        "span",
+        {
+          className: "kl-about-creator-number",
+          text: `Member ${KIKILINK_CREATOR_MEMBER_NUMBER}`
+        }
+      );
+      const discord = element("a", {
+        className: "kl-about-link kl-about-link--discord",
+        text: "Join the KikiLink Discord"
+      });
+      discord.href = "https://discord.gg/6sgGTnptht";
+      discord.target = "_blank";
+      discord.rel = "noopener noreferrer nofollow";
+      discord.append(kikiIcon("external", "kl-about-link-icon"));
+      const repository = element("a", {
+        className: "kl-about-link",
+        text: "Open source repository"
+      });
+      repository.href = "https://github.com/Lilja000/KikiLink";
+      repository.target = "_blank";
+      repository.rel = "noopener noreferrer nofollow";
+      repository.append(kikiIcon("external", "kl-about-link-icon"));
+      const aboutCard = element(
+        "section",
+        { className: "kl-about-card" },
+        aboutMark,
+        element(
+          "div",
+          { className: "kl-about-brand" },
+          this.#emblem("kl-about-emblem"),
+          element(
+            "div",
+            {},
+            element("div", { className: "kl-about-name", text: "KikiLink" }),
+            element("div", { className: "kl-about-tagline", text: "Personal Link Deck for Bondage Club" })
+          )
+        ),
+        element(
+          "div",
+          { className: "kl-about-creator" },
+          element("span", { className: "kl-about-label", text: "CREATED BY" }),
+          element("strong", { text: "Kiki" }),
+          creatorNumber
+        ),
+        element(
+          "dl",
+          { className: "kl-about-facts" },
+          aboutFact("Version", this.version),
+          aboutFact("Release channel", "Stable"),
+          aboutFact("License", "MIT"),
+          aboutFact("Data", "Scoped to your signed-in BC account")
+        ),
+        element("div", { className: "kl-about-links" }, discord, repository),
+        element("p", {
+          className: "kl-about-note",
+          text: "KikiLink is an independent quality-of-life addon. It keeps account data separate and shares Presence only with compatible KikiLink users."
+        })
+      );
+      const aboutSection = this.#createSettingsPanel(
+        "about",
+        "About KikiLink",
+        "Version, creator, community, and project information.",
+        aboutCard
+      );
       const panels = element(
         "div",
         { className: "kl-settings-panels" },
@@ -10420,7 +10705,8 @@ select:focus-visible {
         chatSection,
         rosterSection,
         activitiesSection,
-        reactionsSection
+        reactionsSection,
+        aboutSection
       );
       this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
       const cancel = element("button", {
@@ -10455,7 +10741,8 @@ select:focus-visible {
         chat: { icon: "chat", label: "Chat" },
         players: { icon: "users", label: "Players" },
         activities: { icon: "activities", label: "Activities" },
-        reactions: { icon: "reactions", label: "Alerts" }
+        reactions: { icon: "reactions", label: "Alerts" },
+        about: { icon: "profile", label: "About" }
       };
       const tab = element(
         "button",
@@ -10865,20 +11152,17 @@ select:focus-visible {
       this.#toast("KikiLink profile saved.");
     }
     #buildImageDialog() {
-      const title = element("div", { className: "kl-dialog-title", text: "Send an image" });
-      title.id = "kikilink-image-title";
-      this.#imageDialog.setAttribute("aria-labelledby", title.id);
+      this.#imageDialogTitle.textContent = "Send an image";
+      this.#imageDialogTitle.id = "kikilink-image-title";
+      this.#imageDialog.setAttribute("aria-labelledby", this.#imageDialogTitle.id);
       const header = element(
         "header",
         { className: "kl-dialog-header" },
         element(
           "div",
           { className: "kl-dialog-heading" },
-          title,
-          element("div", {
-            className: "kl-dialog-subtitle",
-            text: "A normal Beep link for everyone; an inline preview for KikiLink."
-          })
+          this.#imageDialogTitle,
+          this.#imageDialogSubtitle
         ),
         this.#dialogCloseButton("Close image sender", () => this.#requestCloseImageDialog())
       );
@@ -11167,11 +11451,14 @@ select:focus-visible {
       await this.refresh();
       this.#toast(`${target.displayName} removed from recent chats.`);
     }
-    #openImageDialog() {
-      if (this.#activePeer === void 0) {
+    #openImageDialog(destination = "chat") {
+      if (destination === "chat" && this.#activePeer === void 0) {
         this.#toast("Choose a conversation first.", "error");
         return;
       }
+      this.#imageDestination = destination;
+      this.#imageDialogTitle.textContent = destination === "gallery" ? "Add to Gallery" : "Send an image";
+      this.#imageDialogSubtitle.textContent = destination === "gallery" ? "Save a direct link or upload a privacy-prepared local image without sending a chat." : "A normal Beep link for everyone; an inline preview for KikiLink.";
       this.#resetLocalImage();
       this.#imageUrlInput.value = "";
       this.#renderImageComposePreview();
@@ -11203,7 +11490,7 @@ select:focus-visible {
     #renderImageComposePreview() {
       const url = normalizeImageUrl(this.#imageUrlInput.value);
       if (this.#imageSourceMode === "link") {
-        this.#sendImageButton.textContent = "Send image";
+        this.#sendImageButton.textContent = this.#imageDestination === "gallery" ? "Save to Gallery" : "Send image";
         this.#sendImageButton.disabled = !url;
       }
       if (!this.#imageUrlInput.value.trim()) {
@@ -11228,7 +11515,7 @@ select:focus-visible {
         element(
           "span",
           {},
-          element("strong", { text: "Ready to send" }),
+          element("strong", { text: this.#imageDestination === "gallery" ? "Ready to save" : "Ready to send" }),
           element("small", { text: `${parsed.hostname}${parsed.pathname}` })
         )
       );
@@ -11244,7 +11531,7 @@ select:focus-visible {
       this.#chooseImageFileButton.hidden = config === null;
       this.#chooseImageFileButton.disabled = this.#imageUploadBusy;
       this.#chooseImageFileButton.textContent = this.#preparedLocalImage ? "Choose another" : "Choose image";
-      this.#sendImageButton.textContent = "Upload & send";
+      this.#sendImageButton.textContent = this.#imageDestination === "gallery" ? "Upload & save" : "Upload & send";
       this.#sendImageButton.disabled = this.#imageUploadBusy || config === null || this.#preparedLocalImage === void 0;
       if (this.#imageUploadBusy) {
         this.#localImageStatus.replaceChildren(
@@ -11376,6 +11663,12 @@ select:focus-visible {
         this.#renderImageComposePreview();
         return;
       }
+      if (this.#imageDestination === "gallery") {
+        if (!this.#saveGalleryImage(url)) return;
+        this.#imageDialog.close();
+        this.#toast("Image saved to your Gallery.");
+        return;
+      }
       const sent = await this.#sendContent(url, false);
       if (!sent) return;
       this.#imageDialog.close();
@@ -11397,6 +11690,16 @@ select:focus-visible {
         const url = await this.imageUploader.upload(image, config);
         if (token !== this.#imageUploadToken) return;
         this.#imageUrlInput.value = url;
+        if (this.#imageDestination === "gallery") {
+          this.#imageUploadBusy = false;
+          if (!this.#saveGalleryImage(url)) {
+            this.#setImageSourceMode("link");
+            return;
+          }
+          this.#toast(`Private details removed; temporary ${config.retention} image saved to Gallery.`);
+          this.#imageDialog.close();
+          return;
+        }
         const sent = await this.#sendContent(url, false);
         if (token !== this.#imageUploadToken) return;
         this.#imageUploadBusy = false;
@@ -11510,8 +11813,8 @@ select:focus-visible {
           icon: "image",
           category: "Destination",
           title: "Media Gallery",
-          detail: "Images from every saved LinkChat conversation",
-          keywords: "gallery images pictures catbox litterbox media all chats",
+          detail: "Images you add directly and media from saved LinkChat conversations",
+          keywords: "gallery library add upload images pictures catbox litterbox media all chats",
           priority: 70,
           action: { kind: "workspace", target: "gallery" }
         },
@@ -11746,6 +12049,12 @@ select:focus-visible {
       }
     }
     #buildGalleryPage() {
+      const addImage = element("button", {
+        className: "kl-text-button kl-text-button--primary",
+        type: "button",
+        text: "Add image",
+        onClick: () => this.#openImageDialog("gallery")
+      });
       const refresh = element("button", {
         className: "kl-text-button",
         type: "button",
@@ -11762,7 +12071,7 @@ select:focus-visible {
           element("h1", { className: "kl-feature-page-title", text: "Media Gallery" }),
           this.#gallerySubtitle
         ),
-        refresh
+        element("div", { className: "kl-gallery-header-actions" }, addImage, refresh)
       );
       this.#galleryPage.append(header, this.#galleryGrid);
     }
@@ -11771,24 +12080,66 @@ select:focus-visible {
       await this.#renderGallery();
     }
     async #renderGallery() {
+      const token = ++this.#galleryRenderToken;
       this.#galleryGrid.setAttribute("aria-busy", "true");
       this.#galleryGrid.replaceChildren(
         element("div", { className: "kl-gallery-empty", text: "Collecting images from LinkChat\u2026" })
       );
       try {
-        const items = await this.service.listMedia(400);
-        this.#gallerySubtitle.textContent = items.length ? `${items.length} unique image${items.length === 1 ? "" : "s"} from saved conversations.` : "Images shared in saved conversations will appear here.";
+        const settings = this.settings.get();
+        const chatItems = await this.service.listMedia(400);
+        if (token !== this.#galleryRenderToken) return;
+        const hidden = new Set(settings.linkChat.gallery.hiddenUrls);
+        const itemsByUrl = /* @__PURE__ */ new Map();
+        for (const saved of settings.linkChat.gallery.saved) {
+          if (hidden.has(saved.url)) continue;
+          itemsByUrl.set(saved.url, {
+            url: saved.url,
+            provider: galleryMediaProvider(saved.url),
+            sortAt: saved.addedAt,
+            saved: true
+          });
+        }
+        for (const chat of chatItems) {
+          if (hidden.has(chat.url)) continue;
+          const existing = itemsByUrl.get(chat.url);
+          itemsByUrl.set(chat.url, {
+            url: chat.url,
+            provider: chat.provider,
+            sortAt: Math.max(existing?.sortAt ?? 0, chat.sentAt),
+            saved: existing?.saved ?? false,
+            chat
+          });
+        }
+        const items = [...itemsByUrl.values()].sort((left, right) => right.sortAt - left.sortAt).slice(0, 400);
+        const savedCount = items.filter((item) => item.saved).length;
+        this.#gallerySubtitle.textContent = items.length ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` \xB7 ${savedCount} added directly` : ""}.` : "Images from saved chats and anything you add directly will appear here.";
         if (items.length === 0) {
           this.#galleryGrid.replaceChildren(
-            element("div", {
-              className: "kl-gallery-empty",
-              text: "No Catbox, Litterbox, or other direct image links are saved yet."
-            })
+            element(
+              "div",
+              { className: "kl-gallery-empty" },
+              element("div", { text: "Your Gallery is empty." }),
+              element("button", {
+                className: "kl-text-button kl-text-button--primary",
+                type: "button",
+                text: "Add the first image",
+                onClick: () => this.#openImageDialog("gallery")
+              })
+            )
           );
           return;
         }
-        this.#galleryGrid.replaceChildren(...items.map((item) => this.#galleryItem(item)));
+        let roomAdmin = false;
+        try {
+          roomAdmin = this.adapter.getRoomAdminSnapshot()?.isAdmin === true;
+        } catch {
+        }
+        this.#galleryGrid.replaceChildren(
+          ...items.map((item) => this.#galleryItem(item, roomAdmin))
+        );
       } catch (error) {
+        if (token !== this.#galleryRenderToken) return;
         this.#galleryGrid.replaceChildren(
           element("div", {
             className: "kl-gallery-empty",
@@ -11796,21 +12147,21 @@ select:focus-visible {
           })
         );
       } finally {
-        this.#galleryGrid.setAttribute("aria-busy", "false");
+        if (token === this.#galleryRenderToken) {
+          this.#galleryGrid.setAttribute("aria-busy", "false");
+        }
       }
     }
-    #galleryItem(item) {
-      const roomAdmin = this.adapter.getRoomAdminSnapshot()?.isAdmin === true;
-      const actions = element(
-        "div",
-        { className: "kl-gallery-actions" },
-        element("button", {
+    #galleryItem(item, roomAdmin) {
+      const actions = element("div", { className: "kl-gallery-actions" });
+      if (item.chat) {
+        actions.append(element("button", {
           className: "kl-text-button",
           type: "button",
           text: "Open chat",
-          onClick: () => void this.openChat(item.peerNumber, item.peerName)
-        })
-      );
+          onClick: () => void this.openChat(item.chat.peerNumber, item.chat.peerName)
+        }));
+      }
       if (roomAdmin) {
         actions.append(
           element("button", {
@@ -11825,7 +12176,16 @@ select:focus-visible {
           })
         );
       }
-      return element(
+      actions.append(
+        element("button", {
+          className: "kl-text-button kl-text-button--danger kl-gallery-remove",
+          type: "button",
+          text: "Remove",
+          ariaLabel: "Remove image from this Gallery",
+          onClick: () => this.#removeGalleryImage(item)
+        })
+      );
+      const card = element(
         "article",
         { className: "kl-gallery-item" },
         this.#imageCard(item.url),
@@ -11834,11 +12194,52 @@ select:focus-visible {
           { className: "kl-gallery-meta" },
           element("strong", { text: item.provider === "other" ? "Image" : item.provider }),
           element("span", {
-            text: `${item.direction === "outgoing" ? "Sent to" : "From"} ${item.peerName} \xB7 ${formatMessageTime(item.sentAt)}`
+            text: item.chat ? `${item.chat.direction === "outgoing" ? "Sent to" : "From"} ${item.chat.peerName} \xB7 ${formatMessageTime(item.chat.sentAt)}` : `Added to Gallery \xB7 ${formatMessageTime(item.sortAt)}`
           })
         ),
         actions
       );
+      card.dataset.galleryUrl = item.url;
+      card.dataset.gallerySource = item.saved ? "library" : "chat";
+      return card;
+    }
+    #saveGalleryImage(value, addedAt = Date.now()) {
+      const url = normalizeImageUrl(value);
+      if (!url || url.length > 500) {
+        this.#toast("Use a direct HTTPS image link ending in a supported image extension.", "error");
+        return false;
+      }
+      this.settings.update((draft) => {
+        draft.linkChat.gallery.hiddenUrls = draft.linkChat.gallery.hiddenUrls.filter(
+          (hiddenUrl) => hiddenUrl !== url
+        );
+        draft.linkChat.gallery.saved = [
+          { url, addedAt },
+          ...draft.linkChat.gallery.saved.filter((saved) => saved.url !== url)
+        ];
+      });
+      this.#renderHomeStatus();
+      if (this.#workspaceView === "gallery") void this.#renderGallery();
+      return true;
+    }
+    #removeGalleryImage(item) {
+      if (!window.confirm(
+        "Remove this image from your KikiLink Gallery? The original chat message and hosted file will not be deleted."
+      )) {
+        return;
+      }
+      this.settings.update((draft) => {
+        draft.linkChat.gallery.saved = draft.linkChat.gallery.saved.filter(
+          (saved) => saved.url !== item.url
+        );
+        draft.linkChat.gallery.hiddenUrls = [
+          item.url,
+          ...draft.linkChat.gallery.hiddenUrls.filter((url) => url !== item.url)
+        ];
+      });
+      this.#renderHomeStatus();
+      void this.#renderGallery();
+      this.#toast("Image removed from this Gallery. Its chat message was left untouched.");
     }
     #buildRoomPage() {
       const refresh = element("button", {
@@ -11987,6 +12388,7 @@ select:focus-visible {
       this.#roomPlayers.replaceChildren(
         ...snapshot.players.map((player) => this.#roomPlayerRow(player, snapshot.isAdmin))
       );
+      this.presence.requestMany(snapshot.players.map((player) => player.memberNumber));
       if (snapshot.players.length === 0) {
         this.#roomPlayers.append(
           element("div", { className: "kl-gallery-empty", text: "No other players are in this room." })
@@ -12012,6 +12414,7 @@ select:focus-visible {
       }
     }
     #roomPlayerRow(player, canManage) {
+      const presence = this.presence.get(player.memberNumber);
       const actions = element("div", { className: "kl-room-player-actions" });
       if (canManage) {
         actions.append(
@@ -12025,12 +12428,22 @@ select:focus-visible {
         );
       }
       const badges = element("div", { className: "kl-room-player-badges" });
+      const status = element("span", { text: presenceLabel(presence.status) });
+      status.dataset.status = presence.status;
+      status.dataset.presenceLabel = "true";
+      status.hidden = presence.status === "unknown";
+      badges.append(status);
       if (player.admin) badges.append(element("span", { text: "ADMIN" }));
       if (player.whitelisted) badges.append(element("span", { text: "WHITELIST" }));
-      return element(
+      const row = element(
         "article",
         { className: "kl-room-player" },
-        this.#avatar(player.memberName, player.memberNumber),
+        element(
+          "div",
+          { className: "kl-avatar-wrap" },
+          this.#avatar(player.memberName, player.memberNumber),
+          presenceDot(presence.status)
+        ),
         element(
           "div",
           { className: "kl-room-player-copy" },
@@ -12040,6 +12453,8 @@ select:focus-visible {
         ),
         actions
       );
+      row.dataset.memberNumber = player.memberNumber.toString();
+      return row;
     }
     #roomActionButton(player, action, label, danger = false) {
       return element("button", {
@@ -12249,6 +12664,7 @@ select:focus-visible {
         );
       } else {
         for (const entry of entries) this.#rosterList.append(this.#rosterEntryButton(entry));
+        this.presence.requestMany(entries.slice(0, 60).map((entry) => entry.memberNumber));
       }
       const selected = entries.find(
         (entry) => entry.memberNumber === this.#selectedRosterMember
@@ -12669,6 +13085,8 @@ select:focus-visible {
       this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
       this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled ? settings.linkActivities.customActivities.length > 0 ? `${settings.linkActivities.customActivities.length} custom ${settings.linkActivities.customActivities.length === 1 ? "activity" : "activities"}` : "No custom activities yet" : "Hidden \xB7 tap to enable";
       this.#homeActivitiesAction.textContent = settings.linkActivities.enabled ? "Manage activities" : "Show Custom tab";
+      const savedGalleryCount = settings.linkChat.gallery.saved.length;
+      this.#homeGalleryMetric.textContent = savedGalleryCount > 0 ? `${savedGalleryCount} saved ${savedGalleryCount === 1 ? "image" : "images"} \xB7 chat media included` : "Chat media plus images you add directly";
       const themeLabel = settings.ui.theme === "light" ? "Light paper" : settings.ui.theme === "system" ? "System theme" : "Dark lacquer";
       const comfortLabel = settings.ui.density === "super-compact" ? "Super compact" : settings.ui.density === "compact" ? "Compact" : "Comfortable";
       this.#homeSettingsMetric.textContent = `${themeLabel} \xB7 ${comfortLabel} \xB7 ${settings.ui.accent.toUpperCase()}`;
@@ -12834,6 +13252,9 @@ select:focus-visible {
         fragment.append(this.#conversationButton(conversation));
       }
       this.#conversationList.replaceChildren(fragment);
+      this.presence.requestMany(
+        conversations.slice(0, 60).map((conversation) => conversation.peerNumber)
+      );
     }
     #conversationButton(conversation) {
       const presence = this.presence.get(conversation.peerNumber);
@@ -13335,6 +13756,16 @@ select:focus-visible {
       const snapshot = this.presence.get(memberNumber);
       const rosterEntry = this.roster.get(memberNumber, nativeName);
       const inRoom = this.adapter.isMemberInCurrentRoom(memberNumber);
+      const headerPresenceLabel = element("span", { text: presenceLabel(snapshot.status) });
+      headerPresenceLabel.dataset.presenceLabel = "true";
+      const headerPresence = element(
+        "span",
+        { title: presenceDescription(snapshot) },
+        presenceDot(snapshot.status),
+        headerPresenceLabel,
+        ` \xB7 #${memberNumber}`
+      );
+      headerPresence.dataset.presenceDescription = "true";
       const header = element(
         "header",
         { className: "kl-profile-menu-header" },
@@ -13348,12 +13779,7 @@ select:focus-visible {
           "div",
           { className: "kl-profile-menu-identity" },
           element("strong", { text: shownName }),
-          element(
-            "span",
-            { title: presenceDescription(snapshot) },
-            presenceDot(snapshot.status),
-            `${presenceLabel(snapshot.status)} \xB7 #${memberNumber}`
-          ),
+          headerPresence,
           snapshot.statusMessage ? element("small", { className: "kl-presence-note", text: snapshot.statusMessage }) : null,
           conversation?.localAlias ? element("small", {
             className: "kl-profile-native-name",
@@ -13361,6 +13787,7 @@ select:focus-visible {
           }) : null
         )
       );
+      header.dataset.memberNumber = memberNumber.toString();
       const primary = element(
         "div",
         { className: "kl-profile-menu-group" },
@@ -13458,6 +13885,7 @@ select:focus-visible {
         )
       ) : null;
       this.#profileMenu.replaceChildren(header, primary, organize);
+      this.#profileMenu.dataset.memberNumber = memberNumber.toString();
       if (remove) this.#profileMenu.append(remove);
       this.#profileMenu.hidden = false;
       this.#profileMenu.style.left = `${x}px`;
@@ -13572,8 +14000,10 @@ select:focus-visible {
           memberNumber: contact.memberNumber,
           displayName: contact.memberName
         }));
+        button.dataset.memberNumber = contact.memberNumber.toString();
         this.#newChatResults.append(button);
       }
+      this.presence.requestMany(contacts.map((contact) => contact.memberNumber));
     }
     #renderQuickActions() {
       const actions = this.settings.get().linkChat.quickActions;
@@ -14463,17 +14893,43 @@ ${expanded}` : expanded;
       const own = memberNumber === this.adapter.getOwnMemberNumber();
       const url = explicitUrl ?? this.presence.get(memberNumber).avatarUrl;
       const previewPolicy = this.settings.get().linkChat.imagePreviews;
+      const candidateUrl = url && !own && previewPolicy === "ask" && !this.#allowedAvatarUrls.has(url) ? url : "";
       const allowedUrl = url && (own || previewPolicy === "always" || previewPolicy === "ask" && this.#allowedAvatarUrls.has(url)) ? url : "";
-      if (target.dataset.avatarName === name && target.dataset.avatarUrl === allowedUrl && target.childNodes.length > 0) {
+      if (target.dataset.avatarName === name && target.dataset.avatarUrl === allowedUrl && target.dataset.avatarCandidate === candidateUrl && target.childNodes.length > 0) {
         return;
       }
       target.dataset.kikilinkAvatar = "true";
       target.dataset.avatarName = name;
       target.dataset.avatarUrl = allowedUrl;
+      target.dataset.avatarCandidate = candidateUrl;
+      target.dataset.avatarMemberNumber = memberNumber.toString();
+      if (candidateUrl) {
+        target.setAttribute("aria-label", `Show ${name}'s KikiLink avatar`);
+      } else {
+        target.removeAttribute("aria-label");
+      }
+      if (target.dataset.avatarConsentBound !== "true") {
+        target.dataset.avatarConsentBound = "true";
+        target.addEventListener("click", (event) => {
+          const candidate = target.dataset.avatarCandidate;
+          const candidateMemberNumber = Number(target.dataset.avatarMemberNumber);
+          if (!candidate || !Number.isSafeInteger(candidateMemberNumber)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          this.#allowedAvatarUrls.add(candidate);
+          this.#renderAvatar(
+            target,
+            target.dataset.avatarName || this.adapter.getMemberName(candidateMemberNumber),
+            candidateMemberNumber
+          );
+          this.#schedulePresenceRender(candidateMemberNumber);
+          this.#toast("Profile avatar shown for this session.");
+        });
+      }
       const fallback = () => {
         if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
         target.replaceChildren(document.createTextNode(avatarText(name)));
-        target.dataset.avatarState = "initials";
+        target.dataset.avatarState = candidateUrl ? "available" : "initials";
       };
       fallback();
       if (!allowedUrl) return;
@@ -14613,6 +15069,12 @@ ${expanded}` : expanded;
         title: "Notifications",
         detail: "Friend, room, and chat alerts with optional sounds and advanced rules",
         keywords: "alert sound audio chime sparkle pop linkreactions automation event rule beep join leave online friend notification notice emote advanced cooldown template"
+      },
+      {
+        section: "about",
+        title: "About KikiLink",
+        detail: "Creator, version, Discord, repository, and license",
+        keywords: "about creator kiki member number version discord community github repository license mit"
       }
     ];
     return definitions.map((definition, index) => ({
@@ -14652,6 +15114,14 @@ ${expanded}` : expanded;
     }).filter((entry) => entry !== void 0).sort(
       (left, right) => right.score - left.score || left.result.title.localeCompare(right.result.title)
     ).map((entry) => entry.result);
+  }
+  function aboutFact(label, value) {
+    return element(
+      "div",
+      { className: "kl-about-fact" },
+      element("dt", { text: label }),
+      element("dd", { text: value })
+    );
   }
   function selectOption2(value, label) {
     const option = element("option", { text: label });
@@ -16158,7 +16628,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.21.0");
+    const app = new KikiLinkApp("0.21.1");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

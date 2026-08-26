@@ -38,6 +38,7 @@ import {
 } from "../../storage/device-notification-sound-store";
 import {
   conversationDisplayName,
+  galleryMediaProvider,
   type ChatMediaItem,
   type ChatService,
 } from "./chat-service";
@@ -102,6 +103,16 @@ interface ProfileTarget {
   memberNumber: number;
   displayName: string;
 }
+
+interface GalleryItem {
+  url: string;
+  provider: ChatMediaItem["provider"];
+  sortAt: number;
+  saved: boolean;
+  chat?: ChatMediaItem;
+}
+
+const KIKILINK_CREATOR_MEMBER_NUMBER = 0;
 
 export class LinkChatView {
   readonly #host = document.createElement("div");
@@ -183,6 +194,7 @@ export class LinkChatView {
   readonly #homeChatMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeRosterMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeActivitiesMetric = element("span", { className: "kl-feature-card-metric" });
+  readonly #homeGalleryMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeSettingsMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeRosterAction = element("span", { className: "kl-feature-card-action" });
   readonly #homeActivitiesAction = element("span", { className: "kl-feature-card-action" });
@@ -196,9 +208,14 @@ export class LinkChatView {
     type: "button",
     title: "Open Custom Activities",
   });
+  readonly #homeGalleryCard = element("button", {
+    className: "kl-feature-card",
+    type: "button",
+    title: "Open Media Gallery",
+  });
   readonly #conversationList = element("div", { className: "kl-conversations" });
   readonly #galleryButton = element("button", {
-    className: "kl-sidebar-new-chat",
+    className: "kl-sidebar-new-chat kl-sidebar-gallery",
     type: "button",
     title: "Media gallery",
     ariaLabel: "Open media gallery",
@@ -397,6 +414,8 @@ export class LinkChatView {
   }) as HTMLTextAreaElement;
   readonly #afkAutoReplyOptions = element("div", { className: "kl-afk-reply-options" });
   readonly #imageDialog = element("dialog", { className: "kl-dialog kl-image-dialog" });
+  readonly #imageDialogTitle = element("div", { className: "kl-dialog-title" });
+  readonly #imageDialogSubtitle = element("div", { className: "kl-dialog-subtitle" });
   readonly #imageUrlInput = element("input", { className: "kl-search kl-image-url" }) as HTMLInputElement;
   readonly #imagePreview = element("div", { className: "kl-image-compose-preview" });
   readonly #imageLinkTab = element("button", {
@@ -472,6 +491,7 @@ export class LinkChatView {
   #visibleFinderResults: FinderResult[] = [];
   #finderSelectedIndex = 0;
   #finderRenderToken = 0;
+  #galleryRenderToken = 0;
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #launcherDrag:
     | {
@@ -509,6 +529,7 @@ export class LinkChatView {
   #aliasTarget: { memberNumber: number; nativeName: string } | undefined;
   #removeChatTarget: { memberNumber: number; displayName: string } | undefined;
   #imageSourceMode: "link" | "file" = "link";
+  #imageDestination: "chat" | "gallery" = "chat";
   #preparedLocalImage: PreparedLocalImage | undefined;
   #localImageObjectUrl: string | undefined;
   #imageUploadBusy = false;
@@ -779,6 +800,7 @@ export class LinkChatView {
       for (const memberNumber of new Set([...result.joined, ...result.left])) {
         this.#schedulePresenceRender(memberNumber);
       }
+      this.presence.requestMany(result.joined);
     }
     if (this.#workspaceView === "roster" && result.changed) this.#renderRoster();
   }
@@ -875,7 +897,10 @@ export class LinkChatView {
     this.#search.placeholder = "Search chats";
     this.#search.autocomplete = "off";
     this.#search.addEventListener("input", () => void this.#renderConversations());
-    this.#galleryButton.append(kikiIcon("image"));
+    this.#galleryButton.append(
+      kikiIcon("image"),
+      element("span", { className: "kl-sidebar-gallery-label", text: "Gallery" }),
+    );
     this.#galleryButton.addEventListener("click", () => void this.#openGallery());
     const newChatButton = element("button", {
       className: "kl-sidebar-new-chat",
@@ -1118,6 +1143,16 @@ export class LinkChatView {
       this.#homeActivitiesAction,
     );
     this.#homeActivitiesCard.addEventListener("click", () => this.#activateFeature("activities"));
+    this.#fillFeatureCard(
+      this.#homeGalleryCard,
+      "image",
+      "YOUR IMAGE LIBRARY",
+      "Gallery",
+      "Browse chat images or add a link and local upload directly to your library.",
+      this.#homeGalleryMetric,
+      element("span", { className: "kl-feature-card-action", text: "Open gallery" }),
+    );
+    this.#homeGalleryCard.addEventListener("click", () => this.#activateFeature("gallery"));
     const settingsCard = element("button", {
       className: "kl-feature-card",
       type: "button",
@@ -1139,7 +1174,7 @@ export class LinkChatView {
       element("h2", { text: "Choose a tool" }),
       element("p", {
         className: "kl-home-section-description",
-        text: "Four clear destinations. Home always brings you back here.",
+        text: "Core tools stay here; Gallery is easy to reach without adding another main tab.",
       }),
     );
     const cards = element(
@@ -1148,6 +1183,7 @@ export class LinkChatView {
       chatCard,
       this.#homeRosterCard,
       this.#homeActivitiesCard,
+      this.#homeGalleryCard,
       settingsCard,
     );
     const privacy = element(
@@ -2134,6 +2170,77 @@ export class LinkChatView {
       advancedReactions,
     );
 
+    const aboutMark = element("img", { className: "kl-about-watermark" }) as HTMLImageElement;
+    aboutMark.src = KIKILINK_EMBLEM_DATA_URL;
+    aboutMark.alt = "";
+    aboutMark.decoding = "async";
+    aboutMark.draggable = false;
+    const creatorNumber = element(
+      "span",
+      {
+        className: "kl-about-creator-number",
+        text: `Member ${KIKILINK_CREATOR_MEMBER_NUMBER}`,
+      },
+    );
+    const discord = element("a", {
+      className: "kl-about-link kl-about-link--discord",
+      text: "Join the KikiLink Discord",
+    });
+    discord.href = "https://discord.gg/6sgGTnptht";
+    discord.target = "_blank";
+    discord.rel = "noopener noreferrer nofollow";
+    discord.append(kikiIcon("external", "kl-about-link-icon"));
+    const repository = element("a", {
+      className: "kl-about-link",
+      text: "Open source repository",
+    });
+    repository.href = "https://github.com/Lilja000/KikiLink";
+    repository.target = "_blank";
+    repository.rel = "noopener noreferrer nofollow";
+    repository.append(kikiIcon("external", "kl-about-link-icon"));
+    const aboutCard = element(
+      "section",
+      { className: "kl-about-card" },
+      aboutMark,
+      element(
+        "div",
+        { className: "kl-about-brand" },
+        this.#emblem("kl-about-emblem"),
+        element(
+          "div",
+          {},
+          element("div", { className: "kl-about-name", text: "KikiLink" }),
+          element("div", { className: "kl-about-tagline", text: "Personal Link Deck for Bondage Club" }),
+        ),
+      ),
+      element(
+        "div",
+        { className: "kl-about-creator" },
+        element("span", { className: "kl-about-label", text: "CREATED BY" }),
+        element("strong", { text: "Kiki" }),
+        creatorNumber,
+      ),
+      element(
+        "dl",
+        { className: "kl-about-facts" },
+        aboutFact("Version", this.version),
+        aboutFact("Release channel", "Stable"),
+        aboutFact("License", "MIT"),
+        aboutFact("Data", "Scoped to your signed-in BC account"),
+      ),
+      element("div", { className: "kl-about-links" }, discord, repository),
+      element("p", {
+        className: "kl-about-note",
+        text: "KikiLink is an independent quality-of-life addon. It keeps account data separate and shares Presence only with compatible KikiLink users.",
+      }),
+    );
+    const aboutSection = this.#createSettingsPanel(
+      "about",
+      "About KikiLink",
+      "Version, creator, community, and project information.",
+      aboutCard,
+    );
+
     const panels = element(
       "div",
       { className: "kl-settings-panels" },
@@ -2143,6 +2250,7 @@ export class LinkChatView {
       rosterSection,
       activitiesSection,
       reactionsSection,
+      aboutSection,
     );
 
     this.#saveSettingsButton.addEventListener("click", () => this.#saveSettings());
@@ -2185,6 +2293,7 @@ export class LinkChatView {
       players: { icon: "users", label: "Players" },
       activities: { icon: "activities", label: "Activities" },
       reactions: { icon: "reactions", label: "Alerts" },
+      about: { icon: "profile", label: "About" },
     };
     const tab = element(
       "button",
@@ -2629,20 +2738,17 @@ export class LinkChatView {
   }
 
   #buildImageDialog(): void {
-    const title = element("div", { className: "kl-dialog-title", text: "Send an image" });
-    title.id = "kikilink-image-title";
-    this.#imageDialog.setAttribute("aria-labelledby", title.id);
+    this.#imageDialogTitle.textContent = "Send an image";
+    this.#imageDialogTitle.id = "kikilink-image-title";
+    this.#imageDialog.setAttribute("aria-labelledby", this.#imageDialogTitle.id);
     const header = element(
       "header",
       { className: "kl-dialog-header" },
       element(
         "div",
         { className: "kl-dialog-heading" },
-        title,
-        element("div", {
-          className: "kl-dialog-subtitle",
-          text: "A normal Beep link for everyone; an inline preview for KikiLink.",
-        }),
+        this.#imageDialogTitle,
+        this.#imageDialogSubtitle,
       ),
       this.#dialogCloseButton("Close image sender", () => this.#requestCloseImageDialog()),
     );
@@ -2934,11 +3040,16 @@ export class LinkChatView {
     this.#toast(`${target.displayName} removed from recent chats.`);
   }
 
-  #openImageDialog(): void {
-    if (this.#activePeer === undefined) {
+  #openImageDialog(destination: "chat" | "gallery" = "chat"): void {
+    if (destination === "chat" && this.#activePeer === undefined) {
       this.#toast("Choose a conversation first.", "error");
       return;
     }
+    this.#imageDestination = destination;
+    this.#imageDialogTitle.textContent = destination === "gallery" ? "Add to Gallery" : "Send an image";
+    this.#imageDialogSubtitle.textContent = destination === "gallery"
+      ? "Save a direct link or upload a privacy-prepared local image without sending a chat."
+      : "A normal Beep link for everyone; an inline preview for KikiLink.";
     this.#resetLocalImage();
     this.#imageUrlInput.value = "";
     this.#renderImageComposePreview();
@@ -2973,7 +3084,7 @@ export class LinkChatView {
   #renderImageComposePreview(): void {
     const url = normalizeImageUrl(this.#imageUrlInput.value);
     if (this.#imageSourceMode === "link") {
-      this.#sendImageButton.textContent = "Send image";
+      this.#sendImageButton.textContent = this.#imageDestination === "gallery" ? "Save to Gallery" : "Send image";
       this.#sendImageButton.disabled = !url;
     }
     if (!this.#imageUrlInput.value.trim()) {
@@ -2998,7 +3109,7 @@ export class LinkChatView {
       element(
         "span",
         {},
-        element("strong", { text: "Ready to send" }),
+        element("strong", { text: this.#imageDestination === "gallery" ? "Ready to save" : "Ready to send" }),
         element("small", { text: `${parsed.hostname}${parsed.pathname}` }),
       ),
     );
@@ -3017,7 +3128,7 @@ export class LinkChatView {
     this.#chooseImageFileButton.textContent = this.#preparedLocalImage
       ? "Choose another"
       : "Choose image";
-    this.#sendImageButton.textContent = "Upload & send";
+    this.#sendImageButton.textContent = this.#imageDestination === "gallery" ? "Upload & save" : "Upload & send";
     this.#sendImageButton.disabled =
       this.#imageUploadBusy || config === null || this.#preparedLocalImage === undefined;
 
@@ -3161,6 +3272,12 @@ export class LinkChatView {
       this.#renderImageComposePreview();
       return;
     }
+    if (this.#imageDestination === "gallery") {
+      if (!this.#saveGalleryImage(url)) return;
+      this.#imageDialog.close();
+      this.#toast("Image saved to your Gallery.");
+      return;
+    }
     const sent = await this.#sendContent(url, false);
     if (!sent) return;
     this.#imageDialog.close();
@@ -3186,6 +3303,16 @@ export class LinkChatView {
       const url = await this.imageUploader.upload(image, config);
       if (token !== this.#imageUploadToken) return;
       this.#imageUrlInput.value = url;
+      if (this.#imageDestination === "gallery") {
+        this.#imageUploadBusy = false;
+        if (!this.#saveGalleryImage(url)) {
+          this.#setImageSourceMode("link");
+          return;
+        }
+        this.#toast(`Private details removed; temporary ${config.retention} image saved to Gallery.`);
+        this.#imageDialog.close();
+        return;
+      }
       const sent = await this.#sendContent(url, false);
       if (token !== this.#imageUploadToken) return;
       this.#imageUploadBusy = false;
@@ -3306,8 +3433,8 @@ export class LinkChatView {
         icon: "image",
         category: "Destination",
         title: "Media Gallery",
-        detail: "Images from every saved LinkChat conversation",
-        keywords: "gallery images pictures catbox litterbox media all chats",
+        detail: "Images you add directly and media from saved LinkChat conversations",
+        keywords: "gallery library add upload images pictures catbox litterbox media all chats",
         priority: 70,
         action: { kind: "workspace", target: "gallery" },
       },
@@ -3569,6 +3696,12 @@ export class LinkChatView {
   }
 
   #buildGalleryPage(): void {
+    const addImage = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Add image",
+      onClick: () => this.#openImageDialog("gallery"),
+    });
     const refresh = element("button", {
       className: "kl-text-button",
       type: "button",
@@ -3585,7 +3718,7 @@ export class LinkChatView {
         element("h1", { className: "kl-feature-page-title", text: "Media Gallery" }),
         this.#gallerySubtitle,
       ),
-      refresh,
+      element("div", { className: "kl-gallery-header-actions" }, addImage, refresh),
     );
     this.#galleryPage.append(header, this.#galleryGrid);
   }
@@ -3596,26 +3729,71 @@ export class LinkChatView {
   }
 
   async #renderGallery(): Promise<void> {
+    const token = ++this.#galleryRenderToken;
     this.#galleryGrid.setAttribute("aria-busy", "true");
     this.#galleryGrid.replaceChildren(
       element("div", { className: "kl-gallery-empty", text: "Collecting images from LinkChat…" }),
     );
     try {
-      const items = await this.service.listMedia(400);
+      const settings = this.settings.get();
+      const chatItems = await this.service.listMedia(400);
+      if (token !== this.#galleryRenderToken) return;
+      const hidden = new Set(settings.linkChat.gallery.hiddenUrls);
+      const itemsByUrl = new Map<string, GalleryItem>();
+      for (const saved of settings.linkChat.gallery.saved) {
+        if (hidden.has(saved.url)) continue;
+        itemsByUrl.set(saved.url, {
+          url: saved.url,
+          provider: galleryMediaProvider(saved.url),
+          sortAt: saved.addedAt,
+          saved: true,
+        });
+      }
+      for (const chat of chatItems) {
+        if (hidden.has(chat.url)) continue;
+        const existing = itemsByUrl.get(chat.url);
+        itemsByUrl.set(chat.url, {
+          url: chat.url,
+          provider: chat.provider,
+          sortAt: Math.max(existing?.sortAt ?? 0, chat.sentAt),
+          saved: existing?.saved ?? false,
+          chat,
+        });
+      }
+      const items = [...itemsByUrl.values()]
+        .sort((left, right) => right.sortAt - left.sortAt)
+        .slice(0, 400);
+      const savedCount = items.filter((item) => item.saved).length;
       this.#gallerySubtitle.textContent = items.length
-        ? `${items.length} unique image${items.length === 1 ? "" : "s"} from saved conversations.`
-        : "Images shared in saved conversations will appear here.";
+        ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` · ${savedCount} added directly` : ""}.`
+        : "Images from saved chats and anything you add directly will appear here.";
       if (items.length === 0) {
         this.#galleryGrid.replaceChildren(
-          element("div", {
-            className: "kl-gallery-empty",
-            text: "No Catbox, Litterbox, or other direct image links are saved yet.",
-          }),
+          element(
+            "div",
+            { className: "kl-gallery-empty" },
+            element("div", { text: "Your Gallery is empty." }),
+            element("button", {
+              className: "kl-text-button kl-text-button--primary",
+              type: "button",
+              text: "Add the first image",
+              onClick: () => this.#openImageDialog("gallery"),
+            }),
+          ),
         );
         return;
       }
-      this.#galleryGrid.replaceChildren(...items.map((item) => this.#galleryItem(item)));
+      let roomAdmin = false;
+      try {
+        roomAdmin = this.adapter.getRoomAdminSnapshot()?.isAdmin === true;
+      } catch {
+        // Cross-realm game objects can be temporarily unavailable while BC changes screens.
+      }
+      this.#galleryGrid.replaceChildren(
+        ...items.map((item) => this.#galleryItem(item, roomAdmin)),
+      );
     } catch (error) {
+      if (token !== this.#galleryRenderToken) return;
       this.#galleryGrid.replaceChildren(
         element("div", {
           className: "kl-gallery-empty",
@@ -3623,22 +3801,22 @@ export class LinkChatView {
         }),
       );
     } finally {
-      this.#galleryGrid.setAttribute("aria-busy", "false");
+      if (token === this.#galleryRenderToken) {
+        this.#galleryGrid.setAttribute("aria-busy", "false");
+      }
     }
   }
 
-  #galleryItem(item: ChatMediaItem): HTMLElement {
-    const roomAdmin = this.adapter.getRoomAdminSnapshot()?.isAdmin === true;
-    const actions = element(
-      "div",
-      { className: "kl-gallery-actions" },
-      element("button", {
+  #galleryItem(item: GalleryItem, roomAdmin: boolean): HTMLElement {
+    const actions = element("div", { className: "kl-gallery-actions" });
+    if (item.chat) {
+      actions.append(element("button", {
         className: "kl-text-button",
         type: "button",
         text: "Open chat",
-        onClick: () => void this.openChat(item.peerNumber, item.peerName),
-      }),
-    );
+        onClick: () => void this.openChat(item.chat!.peerNumber, item.chat!.peerName),
+      }));
+    }
     if (roomAdmin) {
       actions.append(
         element("button", {
@@ -3653,7 +3831,16 @@ export class LinkChatView {
         }),
       );
     }
-    return element(
+    actions.append(
+      element("button", {
+        className: "kl-text-button kl-text-button--danger kl-gallery-remove",
+        type: "button",
+        text: "Remove",
+        ariaLabel: "Remove image from this Gallery",
+        onClick: () => this.#removeGalleryImage(item),
+      }),
+    );
+    const card = element(
       "article",
       { className: "kl-gallery-item" },
       this.#imageCard(item.url),
@@ -3662,11 +3849,58 @@ export class LinkChatView {
         { className: "kl-gallery-meta" },
         element("strong", { text: item.provider === "other" ? "Image" : item.provider }),
         element("span", {
-          text: `${item.direction === "outgoing" ? "Sent to" : "From"} ${item.peerName} · ${formatMessageTime(item.sentAt)}`,
+          text: item.chat
+            ? `${item.chat.direction === "outgoing" ? "Sent to" : "From"} ${item.chat.peerName} · ${formatMessageTime(item.chat.sentAt)}`
+            : `Added to Gallery · ${formatMessageTime(item.sortAt)}`,
         }),
       ),
       actions,
     );
+    card.dataset.galleryUrl = item.url;
+    card.dataset.gallerySource = item.saved ? "library" : "chat";
+    return card;
+  }
+
+  #saveGalleryImage(value: string, addedAt = Date.now()): boolean {
+    const url = normalizeImageUrl(value);
+    if (!url || url.length > 500) {
+      this.#toast("Use a direct HTTPS image link ending in a supported image extension.", "error");
+      return false;
+    }
+    this.settings.update((draft) => {
+      draft.linkChat.gallery.hiddenUrls = draft.linkChat.gallery.hiddenUrls.filter(
+        (hiddenUrl) => hiddenUrl !== url,
+      );
+      draft.linkChat.gallery.saved = [
+        { url, addedAt },
+        ...draft.linkChat.gallery.saved.filter((saved) => saved.url !== url),
+      ];
+    });
+    this.#renderHomeStatus();
+    if (this.#workspaceView === "gallery") void this.#renderGallery();
+    return true;
+  }
+
+  #removeGalleryImage(item: GalleryItem): void {
+    if (
+      !window.confirm(
+        "Remove this image from your KikiLink Gallery? The original chat message and hosted file will not be deleted.",
+      )
+    ) {
+      return;
+    }
+    this.settings.update((draft) => {
+      draft.linkChat.gallery.saved = draft.linkChat.gallery.saved.filter(
+        (saved) => saved.url !== item.url,
+      );
+      draft.linkChat.gallery.hiddenUrls = [
+        item.url,
+        ...draft.linkChat.gallery.hiddenUrls.filter((url) => url !== item.url),
+      ];
+    });
+    this.#renderHomeStatus();
+    void this.#renderGallery();
+    this.#toast("Image removed from this Gallery. Its chat message was left untouched.");
   }
 
   #buildRoomPage(): void {
@@ -3822,6 +4056,7 @@ export class LinkChatView {
     this.#roomPlayers.replaceChildren(
       ...snapshot.players.map((player) => this.#roomPlayerRow(player, snapshot.isAdmin)),
     );
+    this.presence.requestMany(snapshot.players.map((player) => player.memberNumber));
     if (snapshot.players.length === 0) {
       this.#roomPlayers.append(
         element("div", { className: "kl-gallery-empty", text: "No other players are in this room." }),
@@ -3849,6 +4084,7 @@ export class LinkChatView {
   }
 
   #roomPlayerRow(player: BCRoomAdminPlayer, canManage: boolean): HTMLElement {
+    const presence = this.presence.get(player.memberNumber);
     const actions = element("div", { className: "kl-room-player-actions" });
     if (canManage) {
       actions.append(
@@ -3862,12 +4098,22 @@ export class LinkChatView {
       );
     }
     const badges = element("div", { className: "kl-room-player-badges" });
+    const status = element("span", { text: presenceLabel(presence.status) });
+    status.dataset.status = presence.status;
+    status.dataset.presenceLabel = "true";
+    status.hidden = presence.status === "unknown";
+    badges.append(status);
     if (player.admin) badges.append(element("span", { text: "ADMIN" }));
     if (player.whitelisted) badges.append(element("span", { text: "WHITELIST" }));
-    return element(
+    const row = element(
       "article",
       { className: "kl-room-player" },
-      this.#avatar(player.memberName, player.memberNumber),
+      element(
+        "div",
+        { className: "kl-avatar-wrap" },
+        this.#avatar(player.memberName, player.memberNumber),
+        presenceDot(presence.status),
+      ),
       element(
         "div",
         { className: "kl-room-player-copy" },
@@ -3877,6 +4123,8 @@ export class LinkChatView {
       ),
       actions,
     );
+    row.dataset.memberNumber = player.memberNumber.toString();
+    return row;
   }
 
   #roomActionButton(
@@ -4129,6 +4377,7 @@ export class LinkChatView {
       );
     } else {
       for (const entry of entries) this.#rosterList.append(this.#rosterEntryButton(entry));
+      this.presence.requestMany(entries.slice(0, 60).map((entry) => entry.memberNumber));
     }
 
     const selected = entries.find(
@@ -4626,6 +4875,11 @@ export class LinkChatView {
       ? "Manage activities"
       : "Show Custom tab";
 
+    const savedGalleryCount = settings.linkChat.gallery.saved.length;
+    this.#homeGalleryMetric.textContent = savedGalleryCount > 0
+      ? `${savedGalleryCount} saved ${savedGalleryCount === 1 ? "image" : "images"} · chat media included`
+      : "Chat media plus images you add directly";
+
     const themeLabel =
       settings.ui.theme === "light"
         ? "Light paper"
@@ -4825,6 +5079,9 @@ export class LinkChatView {
       fragment.append(this.#conversationButton(conversation));
     }
     this.#conversationList.replaceChildren(fragment);
+    this.presence.requestMany(
+      conversations.slice(0, 60).map((conversation) => conversation.peerNumber),
+    );
   }
 
   #conversationButton(conversation: ConversationMeta): HTMLButtonElement {
@@ -5380,6 +5637,16 @@ export class LinkChatView {
     const snapshot = this.presence.get(memberNumber);
     const rosterEntry = this.roster.get(memberNumber, nativeName);
     const inRoom = this.adapter.isMemberInCurrentRoom(memberNumber);
+    const headerPresenceLabel = element("span", { text: presenceLabel(snapshot.status) });
+    headerPresenceLabel.dataset.presenceLabel = "true";
+    const headerPresence = element(
+      "span",
+      { title: presenceDescription(snapshot) },
+      presenceDot(snapshot.status),
+      headerPresenceLabel,
+      ` · #${memberNumber}`,
+    );
+    headerPresence.dataset.presenceDescription = "true";
     const header = element(
       "header",
       { className: "kl-profile-menu-header" },
@@ -5393,12 +5660,7 @@ export class LinkChatView {
         "div",
         { className: "kl-profile-menu-identity" },
         element("strong", { text: shownName }),
-        element(
-          "span",
-          { title: presenceDescription(snapshot) },
-          presenceDot(snapshot.status),
-          `${presenceLabel(snapshot.status)} · #${memberNumber}`,
-        ),
+        headerPresence,
         snapshot.statusMessage
           ? element("small", { className: "kl-presence-note", text: snapshot.statusMessage })
           : null,
@@ -5410,6 +5672,7 @@ export class LinkChatView {
           : null,
       ),
     );
+    header.dataset.memberNumber = memberNumber.toString();
     const primary = element(
       "div",
       { className: "kl-profile-menu-group" },
@@ -5521,6 +5784,7 @@ export class LinkChatView {
         )
       : null;
     this.#profileMenu.replaceChildren(header, primary, organize);
+    this.#profileMenu.dataset.memberNumber = memberNumber.toString();
     if (remove) this.#profileMenu.append(remove);
     this.#profileMenu.hidden = false;
     this.#profileMenu.style.left = `${x}px`;
@@ -5662,8 +5926,10 @@ export class LinkChatView {
         memberNumber: contact.memberNumber,
         displayName: contact.memberName,
       }));
+      button.dataset.memberNumber = contact.memberNumber.toString();
       this.#newChatResults.append(button);
     }
+    this.presence.requestMany(contacts.map((contact) => contact.memberNumber));
   }
 
   #renderQuickActions(): void {
@@ -6694,6 +6960,13 @@ export class LinkChatView {
     const own = memberNumber === this.adapter.getOwnMemberNumber();
     const url = explicitUrl ?? this.presence.get(memberNumber).avatarUrl;
     const previewPolicy = this.settings.get().linkChat.imagePreviews;
+    const candidateUrl =
+      url &&
+      !own &&
+      previewPolicy === "ask" &&
+      !this.#allowedAvatarUrls.has(url)
+        ? url
+        : "";
     const allowedUrl =
       url &&
       (own ||
@@ -6704,6 +6977,7 @@ export class LinkChatView {
     if (
       target.dataset.avatarName === name &&
       target.dataset.avatarUrl === allowedUrl &&
+      target.dataset.avatarCandidate === candidateUrl &&
       target.childNodes.length > 0
     ) {
       return;
@@ -6711,10 +6985,35 @@ export class LinkChatView {
     target.dataset.kikilinkAvatar = "true";
     target.dataset.avatarName = name;
     target.dataset.avatarUrl = allowedUrl;
+    target.dataset.avatarCandidate = candidateUrl;
+    target.dataset.avatarMemberNumber = memberNumber.toString();
+    if (candidateUrl) {
+      target.setAttribute("aria-label", `Show ${name}'s KikiLink avatar`);
+    } else {
+      target.removeAttribute("aria-label");
+    }
+    if (target.dataset.avatarConsentBound !== "true") {
+      target.dataset.avatarConsentBound = "true";
+      target.addEventListener("click", (event) => {
+        const candidate = target.dataset.avatarCandidate;
+        const candidateMemberNumber = Number(target.dataset.avatarMemberNumber);
+        if (!candidate || !Number.isSafeInteger(candidateMemberNumber)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.#allowedAvatarUrls.add(candidate);
+        this.#renderAvatar(
+          target,
+          target.dataset.avatarName || this.adapter.getMemberName(candidateMemberNumber),
+          candidateMemberNumber,
+        );
+        this.#schedulePresenceRender(candidateMemberNumber);
+        this.#toast("Profile avatar shown for this session.");
+      });
+    }
     const fallback = (): void => {
       if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
       target.replaceChildren(document.createTextNode(avatarText(name)));
-      target.dataset.avatarState = "initials";
+      target.dataset.avatarState = candidateUrl ? "available" : "initials";
     };
     fallback();
     if (!allowedUrl) return;
@@ -6889,6 +7188,12 @@ function finderSettingResults(): FinderResult[] {
       keywords:
         "alert sound audio chime sparkle pop linkreactions automation event rule beep join leave online friend notification notice emote advanced cooldown template",
     },
+    {
+      section: "about",
+      title: "About KikiLink",
+      detail: "Creator, version, Discord, repository, and license",
+      keywords: "about creator kiki member number version discord community github repository license mit",
+    },
   ];
   return definitions.map((definition, index) => ({
     id: `setting-${definition.section}`,
@@ -6940,6 +7245,15 @@ function rankFinderResults(catalog: FinderResult[], query: string): FinderResult
         right.score - left.score || left.result.title.localeCompare(right.result.title),
     )
     .map((entry) => entry.result);
+}
+
+function aboutFact(label: string, value: string): HTMLDivElement {
+  return element(
+    "div",
+    { className: "kl-about-fact" },
+    element("dt", { text: label }),
+    element("dd", { text: value }),
+  );
 }
 
 function selectOption(value: string, label: string): HTMLOptionElement {

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.21.1 - 2026-08-25
+
+- Added a branded About category with the KikiLink wolf emblem, creator identity, running version,
+  stable channel, MIT license, account-data summary, official repository, and KikiLink Discord.
+- Fixed player statuses and profile avatars remaining absent until a player was selected. Visible
+  chats, room players, and known contacts now use a deduplicated 140 ms Presence discovery queue;
+  remote avatars under `Ask first` expose a clear one-time tap control without weakening privacy.
+- Promoted Media Gallery to a labeled Chat control and a dedicated Home card without adding another
+  primary navigation tab. Finder now describes both manually added images and saved-chat media.
+- Added direct Gallery import for HTTPS links and privacy-prepared local uploads. Account-scoped
+  saved images follow the signed-in BC account, while Remove hides only the Gallery card and never
+  deletes the original chat message or hosted file.
+- Kept `Use as room background` entirely out of Gallery markup for non-admins and added a live
+  permission regression for losing room-admin rights while Gallery is open.
+- Bounded all-chat media scanning to eight concurrent history reads so large accounts no longer
+  create a burst of IndexedDB transactions when Gallery opens.
+
 ## 0.21.0 - 2026-08-25
 
 - Added a 0–100 Alerts volume control and local custom notification sounds. Files are validated as

@@ -14,6 +14,8 @@ const STATUS_CHECK_MS = 15_000;
 const REMOTE_STATUS_TTL_MS = 5 * 60_000;
 const RECENT_PACKET_ONLINE_MS = 90_000;
 const REQUEST_COOLDOWN_MS = 20_000;
+const REQUEST_QUEUE_INTERVAL_MS = 140;
+const MAX_QUEUED_REQUESTS = 60;
 const RESPONSE_COOLDOWN_MS = 5_000;
 const TYPING_REFRESH_MS = 1_800;
 const TYPING_TTL_MS = 5_500;
@@ -49,12 +51,15 @@ export class LinkPresenceService {
   readonly #listeners = new Set<PresenceListener>();
   readonly #lastRequestAt = new Map<number, number>();
   readonly #lastResponseAt = new Map<number, number>();
+  readonly #requestQueue: number[] = [];
+  readonly #queuedRequests = new Set<number>();
   readonly #localTyping = new Map<number, { active: true; sentAt: number }>();
   readonly #remoteTypingUntil = new Map<number, number>();
   readonly #typingExpiryTimers = new Map<number, ReturnType<typeof setTimeout>>();
   readonly #unsubscribers: Array<() => void> = [];
   #nativeTimer: ReturnType<typeof setInterval> | undefined;
   #statusTimer: ReturnType<typeof setInterval> | undefined;
+  #requestTimer: ReturnType<typeof setTimeout> | undefined;
   #lastInteractionAt = Date.now();
   #lastEffectiveStatus: PresenceStatus = "online";
   #lastRoomName = "";
@@ -120,6 +125,10 @@ export class LinkPresenceService {
   }
 
   stop(): void {
+    if (this.#requestTimer !== undefined) clearTimeout(this.#requestTimer);
+    this.#requestTimer = undefined;
+    this.#requestQueue.splice(0);
+    this.#queuedRequests.clear();
     if (!this.#started) return;
     for (const memberNumber of this.#localTyping.keys()) {
       this.setTyping(memberNumber, false, true);
@@ -296,7 +305,12 @@ export class LinkPresenceService {
   }
 
   request(memberNumber: number, force = false): boolean {
-    if (!this.settings.get().linkPresence.enabled || memberNumber === this.adapter.getOwnMemberNumber()) {
+    if (
+      !Number.isSafeInteger(memberNumber) ||
+      memberNumber < 0 ||
+      !this.settings.get().linkPresence.enabled ||
+      memberNumber === this.adapter.getOwnMemberNumber()
+    ) {
       return false;
     }
     const now = Date.now();
@@ -309,8 +323,40 @@ export class LinkPresenceService {
       this.#lastRequestAt.set(memberNumber, now);
       return true;
     } catch {
+      // A transient BC or cross-realm failure must not turn every UI render into another send.
+      this.#lastRequestAt.set(memberNumber, now);
       return false;
     }
+  }
+
+  /**
+   * Quietly discovers KikiLink presence for a visible player list without bursting BC's socket.
+   * Repeated renders are cheap: queued members and the normal request cooldown are deduplicated.
+   */
+  requestMany(memberNumbers: Iterable<number>): number {
+    if (!this.settings.get().linkPresence.enabled) return 0;
+    const ownMemberNumber = this.adapter.getOwnMemberNumber();
+    const now = Date.now();
+    let added = 0;
+    for (const memberNumber of memberNumbers) {
+      if (
+        this.#requestQueue.length >= MAX_QUEUED_REQUESTS ||
+        !Number.isSafeInteger(memberNumber) ||
+        memberNumber < 0 ||
+        memberNumber === ownMemberNumber ||
+        this.#queuedRequests.has(memberNumber) ||
+        now - (this.#lastRequestAt.get(memberNumber) ?? 0) < REQUEST_COOLDOWN_MS
+      ) {
+        continue;
+      }
+      this.#requestQueue.push(memberNumber);
+      this.#queuedRequests.add(memberNumber);
+      added += 1;
+    }
+    if (this.#requestQueue.length > 0 && this.#requestTimer === undefined) {
+      this.#drainRequestQueue();
+    }
+    return added;
   }
 
   isTyping(memberNumber: number, now = Date.now()): boolean {
@@ -346,6 +392,20 @@ export class LinkPresenceService {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  #drainRequestQueue(): void {
+    this.#requestTimer = undefined;
+    const memberNumber = this.#requestQueue.shift();
+    if (memberNumber === undefined) return;
+    this.#queuedRequests.delete(memberNumber);
+    this.request(memberNumber);
+    if (this.#requestQueue.length > 0) {
+      this.#requestTimer = setTimeout(
+        () => this.#drainRequestQueue(),
+        REQUEST_QUEUE_INTERVAL_MS,
+      );
     }
   }
 

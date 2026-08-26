@@ -16,7 +16,8 @@ export type SettingsSection =
   | "chat"
   | "players"
   | "activities"
-  | "reactions";
+  | "reactions"
+  | "about";
 export type BCConnectionState = "connecting" | "ready" | "error";
 export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
 export type PresenceState = PresenceStatus | "unknown";
@@ -61,6 +62,11 @@ export interface PresenceSnapshot {
 export interface QuickAction {
   label: string;
   template: string;
+}
+
+export interface SavedGalleryImage {
+  url: string;
+  addedAt: number;
 }
 
 export interface RoomActivity {
@@ -200,7 +206,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 17;
+  schemaVersion: 18;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -232,6 +238,10 @@ export interface KikiLinkSettings {
     imageUploads: {
       enabled: boolean;
       retention: ImageUploadRetention;
+    };
+    gallery: {
+      saved: SavedGalleryImage[];
+      hiddenUrls: string[];
     };
     quickActions: QuickAction[];
   };

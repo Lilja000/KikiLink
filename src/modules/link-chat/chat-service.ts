@@ -129,28 +129,32 @@ export class ChatService {
 
   async listMedia(limit = 300): Promise<ChatMediaItem[]> {
     const conversations = await this.listConversations();
-    const messageGroups = await Promise.all(
-      conversations.map(async (conversation) => ({
-        conversation,
-        messages: await this.getMessages(conversation.peerNumber, 500),
-      })),
-    );
     const media = new Map<string, ChatMediaItem>();
-    for (const { conversation, messages } of messageGroups) {
-      for (const message of messages) {
-        for (const link of parseMessageLinks(message.content)) {
-          if (!link.image) continue;
-          const item: ChatMediaItem = {
-            url: link.url,
-            provider: mediaProvider(link.url),
-            peerNumber: conversation.peerNumber,
-            peerName: conversationDisplayName(conversation),
-            direction: message.direction,
-            sentAt: message.sentAt,
-            messageId: message.id,
-          };
-          const previous = media.get(item.url);
-          if (!previous || previous.sentAt < item.sentAt) media.set(item.url, item);
+    // Keep IndexedDB work bounded on accounts with a large chat list. Eight parallel reads are
+    // quick in practice without opening hundreds of transactions at once.
+    for (let index = 0; index < conversations.length; index += 8) {
+      const messageGroups = await Promise.all(
+        conversations.slice(index, index + 8).map(async (conversation) => ({
+          conversation,
+          messages: await this.getMessages(conversation.peerNumber, 500),
+        })),
+      );
+      for (const { conversation, messages } of messageGroups) {
+        for (const message of messages) {
+          for (const link of parseMessageLinks(message.content)) {
+            if (!link.image) continue;
+            const item: ChatMediaItem = {
+              url: link.url,
+              provider: galleryMediaProvider(link.url),
+              peerNumber: conversation.peerNumber,
+              peerName: conversationDisplayName(conversation),
+              direction: message.direction,
+              sentAt: message.sentAt,
+              messageId: message.id,
+            };
+            const previous = media.get(item.url);
+            if (!previous || previous.sentAt < item.sentAt) media.set(item.url, item);
+          }
         }
       }
     }
@@ -272,7 +276,7 @@ function normalizeLocalAlias(value: string): string | undefined {
   return alias || undefined;
 }
 
-function mediaProvider(value: string): ChatMediaItem["provider"] {
+export function galleryMediaProvider(value: string): ChatMediaItem["provider"] {
   try {
     const host = new URL(value).hostname.toLocaleLowerCase();
     if (host === "files.catbox.moe") return "catbox";

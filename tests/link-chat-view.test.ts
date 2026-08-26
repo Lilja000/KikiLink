@@ -173,6 +173,7 @@ describe("LinkChatView", () => {
   });
 
   it("renders native Room Tools and an all-chat image gallery", async () => {
+    let roomAdmin = true;
     const updateRoomCustomization = vi.fn();
     const runRoomMemberAction = vi.fn();
     const adapter = {
@@ -186,7 +187,7 @@ describe("LinkChatView", () => {
       ],
       getRoomAdminSnapshot: () => ({
         roomName: "Moon Garden",
-        isAdmin: true,
+        isAdmin: roomAdmin,
         customization: {
           imageUrl: "https://files.catbox.moe/old.webp",
           musicUrl: "https://cdn.example/old.mp3",
@@ -256,10 +257,99 @@ describe("LinkChatView", () => {
       expect(shadow?.querySelector<HTMLElement>(".kl-gallery-page")?.hidden).toBe(false);
       expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("catbox");
       expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("Show original");
+      expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain(
+        "Use as room background",
+      );
+    });
+
+    roomAdmin = false;
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-header-actions button") ?? [])]
+      .find((button) => button.textContent === "Refresh")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-gallery-grid")?.textContent).not.toContain(
+        "Use as room background",
+      );
+    });
+
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-header-actions button") ?? [])]
+      .find((button) => button.textContent === "Add image")
+      ?.click();
+    const galleryUrl = shadow?.querySelector<HTMLInputElement>(".kl-image-url");
+    if (!galleryUrl) throw new Error("Missing Gallery image URL field");
+    galleryUrl.value = "https://files.catbox.moe/direct-gallery.png";
+    galleryUrl.dispatchEvent(new Event("input", { bubbles: true }));
+    shadow
+      ?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(settings.get().linkChat.gallery.saved).toMatchObject([
+        { url: "https://files.catbox.moe/direct-gallery.png" },
+      ]);
+      expect(
+        shadow?.querySelector<HTMLElement>(
+          '[data-gallery-url="https://files.catbox.moe/direct-gallery.png"]',
+        ),
+      ).not.toBeNull();
+    });
+
+    shadow
+      ?.querySelector<HTMLElement>(
+        '[data-gallery-url="https://files.catbox.moe/direct-gallery.png"]',
+      )
+      ?.querySelector<HTMLButtonElement>(".kl-gallery-remove")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(settings.get().linkChat.gallery.saved).toEqual([]);
+      expect(settings.get().linkChat.gallery.hiddenUrls).toContain(
+        "https://files.catbox.moe/direct-gallery.png",
+      );
     });
 
     view.destroy();
     vi.unstubAllGlobals();
+  });
+
+  it("shows a branded About panel with the release and community links", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getRoomCharacters: () => [],
+      canSendBeep: () => true,
+      isReady: () => true,
+      isInChatRoom: () => false,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.21.1",
+    );
+    view.mount();
+    await view.open();
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('[data-target="settings"]')?.click();
+    shadow?.querySelector<HTMLButtonElement>('[data-section="about"]')?.click();
+    const about = shadow?.querySelector<HTMLElement>("#kikilink-settings-panel-about");
+    expect(about?.hidden).toBe(false);
+    expect(about?.textContent).toContain("Kiki");
+    expect(about?.textContent).toContain("Member 0");
+    expect(about?.textContent).toContain("0.21.1");
+    expect(about?.textContent).not.toMatch(/artificial intelligence|\bAI\b/iu);
+    expect(about?.querySelector<HTMLImageElement>(".kl-about-watermark")?.src).toContain(
+      "design/branding/kikilink-emblem.webp",
+    );
+    expect(about?.querySelector<HTMLAnchorElement>(".kl-about-link--discord")?.href).toBe(
+      "https://discord.gg/6sgGTnptht",
+    );
+
+    view.destroy();
   });
 
   it("opens a feature deck by default and lets the launcher behavior and accent be customized", async () => {
@@ -295,7 +385,7 @@ describe("LinkChatView", () => {
       expect(shadow?.querySelector(".kl-home-title")?.textContent).toContain("Kiki");
     });
     expect(shadow?.querySelector(".kl-home-statuses")?.textContent).toContain("Moon Garden");
-    expect(shadow?.querySelectorAll(".kl-feature-card")).toHaveLength(4);
+    expect(shadow?.querySelectorAll(".kl-feature-card")).toHaveLength(5);
     expect(shadow?.querySelector(".kl-home-next-title")?.textContent).toBe(
       "Start your first chat",
     );
@@ -304,12 +394,12 @@ describe("LinkChatView", () => {
       [...(shadow?.querySelectorAll(".kl-feature-card-title") ?? [])].map(
         (title) => title.textContent,
       ),
-    ).toEqual(["Chat", "Players", "Custom Activities", "Settings"]);
+    ).toEqual(["Chat", "Players", "Custom Activities", "Gallery", "Settings"]);
     expect(
       [...(shadow?.querySelectorAll(".kl-feature-card-action") ?? [])].map(
         (action) => action.textContent,
       ),
-    ).toEqual(["Open Chat", "View players", "Manage activities", "Customize"]);
+    ).toEqual(["Open Chat", "View players", "Manage activities", "Open gallery", "Customize"]);
     expect(shadow?.querySelector('.kl-nav-item[data-target="home"]')?.getAttribute("data-active")).toBe(
       "true",
     );
@@ -332,7 +422,7 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
     const settingsPage = shadow?.querySelector<HTMLElement>(".kl-settings-page");
     expect(settingsPage?.hidden).toBe(false);
-    expect(settingsPage?.querySelectorAll('[role="tab"]')).toHaveLength(6);
+    expect(settingsPage?.querySelectorAll('[role="tab"]')).toHaveLength(7);
     const navigationTab = settingsPage?.querySelector<HTMLButtonElement>(
       '[role="tab"][data-section="navigation"]',
     );
@@ -736,6 +826,8 @@ describe("LinkChatView", () => {
     );
     const remoteAvatar = shadow?.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar");
     expect(remoteAvatar?.querySelector("img")).toBeNull();
+    expect(remoteAvatar?.dataset.avatarState).toBe("available");
+    expect(remoteAvatar?.getAttribute("aria-label")).toContain("Show Reina's KikiLink avatar");
 
     shadow?.querySelector<HTMLButtonElement>(".kl-attach-image")?.click();
     const imageInput = shadow?.querySelector<HTMLInputElement>(".kl-image-url");
@@ -914,6 +1006,42 @@ describe("LinkChatView", () => {
         false,
       );
     });
+
+    vi.mocked(imageUploader.prepare).mockClear();
+    vi.mocked(imageUploader.upload).mockClear();
+    sendBeep.mockClear();
+    shadow?.querySelector<HTMLButtonElement>(".kl-sidebar-gallery")?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLElement>(".kl-gallery-page")?.hidden).toBe(false);
+    });
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-header-actions button") ?? [])]
+      .find((button) => button.textContent === "Add image")
+      ?.click();
+    shadow?.querySelector<HTMLButtonElement>("#kikilink-image-source-file")?.click();
+    const galleryFileInput = shadow?.querySelector<HTMLInputElement>(
+      "#kikilink-image-file-panel input[type=file]",
+    );
+    if (!galleryFileInput) throw new Error("Missing Gallery local image input");
+    const galleryFile = new File([Uint8Array.of(0xff, 0xd8, 0xff)], "gallery.jpg", {
+      type: "image/jpeg",
+    });
+    Object.defineProperty(galleryFileInput, "files", {
+      configurable: true,
+      value: [galleryFile],
+    });
+    galleryFileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(imageUploader.prepare).toHaveBeenCalledWith(galleryFile);
+    });
+    shadow
+      ?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(settings.get().linkChat.gallery.saved).toMatchObject([
+        { url: "https://litter.catbox.moe/photo.webp" },
+      ]);
+    });
+    expect(sendBeep).not.toHaveBeenCalled();
     view.destroy();
   });
 

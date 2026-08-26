@@ -11,10 +11,10 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.21.0` adds a real quiet Do not disturb mode, adjustable alert volume, device-only custom
-sounds up to five seconds, a draggable desktop window, an all-chat media gallery, and native Room
-Tools for administrators. The running version remains visible as tiny translucent digits in the
-lower-left corner.
+Version `0.21.1` adds a branded About page, reliable visible-player Presence discovery, tappable
+privacy-aware profile avatars, and a proper Gallery library that accepts links or local uploads
+without sending them through a chat. The running version remains visible as tiny translucent digits
+in the lower-left corner.
 
 ## Link Deck
 
@@ -22,13 +22,13 @@ lower-left corner.
 - Guided Home surfaces one useful next step: read unread Beeps, begin a first chat, view
   the current room, or continue the most recent conversation
 - Action-first cards use familiar names and visible verbs for Chat, Players, Custom Activities,
-  and Settings
+  Gallery, and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
 - Your KikiLink presence is always one quiet top-bar control away
 - Five clear primary destinations: Home, Chat, Players, Room, and Custom Activities
 - Persistent feature rail on desktop and a focused five-item bottom bar on phones
 - Players and Custom Activities stay inside the workspace instead of opening blocking dialogs
-- Settings is a full workspace with Appearance, Navigation, Chat, Players, Activities, and Alerts categories
+- Settings is a full workspace with Appearance, Navigation, Chat, Players, Activities, Alerts, and About categories
 - Configurable launcher behavior: open Home, the last section, or LinkChat directly
 - Dark lacquer, light paper, and system themes with five accent presets or any custom color
 - Comfortable, Compact, or Super compact spacing, three text sizes, and Guided or Focused Home styles
@@ -42,7 +42,7 @@ lower-left corner.
 
 - A visible `Find` control in the top bar, available from every KikiLink workspace
 - Local search across destinations, recent chats, current and recorded players, known contacts,
-  saved activities, and all six Settings categories
+  saved activities, and all seven Settings categories
 - Useful suggestions before typing, prioritized unread/recent conversations, and immediate
   result refinement while typing
 - Direct member-number actions such as `#12345` even when no conversation exists yet
@@ -55,6 +55,8 @@ lower-left corner.
 
 - Live list of everyone else in the current chat room, using character nicknames first
 - Presence dots and KikiLink status labels in player lists and detail cards
+- Visible player lists discover compatible KikiLink Presence through a quiet rate-limited queue
+- Privacy-aware remote avatars show a clear one-time tap affordance when `Ask first` is selected
 - Account-derived Friend, Owner, Lover, Whitelist, Blacklist, and Ghosted badges
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - Private notes and searchable tags for individual players
@@ -129,8 +131,17 @@ so they can follow that same account to another device.
 - Local image preparation and temporary Litterbox upload can fill the room background field;
   renamed MP3/MP4 room audio up to 20 MB can fill the music field
 - A lazy all-chat gallery deduplicates direct images across saved conversations and labels Catbox/Litterbox
+- A visible Gallery Home card and labeled Chat button open the library without adding another main tab
+- Direct image links and privacy-prepared local uploads can be saved without sending a chat message
+- Gallery Remove hides only the local/account-scoped card; it does not delete chats or hosted files
 - Gallery cards keep full image proportions, expose only `Show original`, reopen the source chat, and
   can fill the room background field for administrators
+
+## About
+
+- A translucent KikiLink wolf emblem and compact project card inside Settings
+- Creator Kiki (`Member 0`), the current stable version, MIT license, and account-data scope
+- Official repository and KikiLink Discord: <https://discord.gg/6sgGTnptht>
 
 ## Custom Activities
 
