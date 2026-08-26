@@ -26,7 +26,7 @@ interface MultipartUploadResponse {
   body: string;
 }
 
-export type HostedFileRetention = "1d" | "3d" | "7d" | "30d";
+export type HostedFileRetention = "auto" | "1d" | "3d" | "7d" | "30d";
 
 export interface WaifuVaultUploadConfig {
   retention: HostedFileRetention;
@@ -245,7 +245,8 @@ export function normalizeCloudinaryUploadConfig(value: unknown): CloudinaryUploa
 export function normalizeWaifuVaultUploadConfig(value: unknown): WaifuVaultUploadConfig | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const retention = (value as Record<string, unknown>).retention;
-  return retention === "1d" ||
+  return retention === "auto" ||
+    retention === "1d" ||
     retention === "3d" ||
     retention === "7d" ||
     retention === "30d"
@@ -391,7 +392,7 @@ function isExpectedCloudinaryUrl(value: string, cloudName: string): boolean {
 
 function waifuVaultUploadUrl(retention: HostedFileRetention): string {
   const url = new URL(WAIFUVAULT_UPLOAD_ENDPOINT);
-  url.searchParams.set("expires", retention);
+  if (retention !== "auto") url.searchParams.set("expires", retention);
   url.searchParams.set("hide_filename", "true");
   return url.href;
 }

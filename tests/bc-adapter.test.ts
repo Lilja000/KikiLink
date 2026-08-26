@@ -1013,8 +1013,8 @@ describe("BCAdapter", () => {
         _idPrefix: string | null,
         _activity: BCItemActivity,
         _character: BCCharacter,
-        _onClick: () => void,
-        options?: { image?: string },
+        _onClick: (this: HTMLButtonElement, event: PointerEvent) => unknown,
+        options?: { image?: string } | null,
       ) => {
         const button = document.createElement("button");
         button.dataset.image = options?.image ?? "native";
@@ -1040,6 +1040,7 @@ describe("BCAdapter", () => {
     });
 
     const customName = "KikiLinkCustom_test";
+    const customLabel = `Label-ChatSelf-ItemArms-${customName}`;
     const integration: BCCustomActivityIntegration = {
       isCustomActivity: vi.fn((activityName) => activityName === customName),
       extendAllowedActivities: vi.fn((_character, groupName, activities) => [
@@ -1055,10 +1056,12 @@ describe("BCAdapter", () => {
         },
       ]),
       resolveText: vi.fn((keyword) =>
-        keyword === `Activity${customName}` ? "Elbow touch" : undefined,
+        keyword === `Activity${customName}` || keyword === customLabel
+          ? "Elbow touch"
+          : undefined,
       ),
       resolveImage: vi.fn((activityName) =>
-        activityName === customName ? "Assets/Female3DCG/Activity/Caress.png" : undefined,
+        activityName === customName ? "./Assets/Female3DCG/Activity/Caress.png" : undefined,
       ),
       run: vi.fn((_actor, _acted, _group, itemActivity) =>
         itemActivity.Activity.Name === customName,
@@ -1075,6 +1078,7 @@ describe("BCAdapter", () => {
     vi.advanceTimersByTime(500);
 
     expect(globalThis.ActivityDictionaryText(`Activity${customName}`)).toBe("Elbow touch");
+    expect(globalThis.ActivityDictionaryText(customLabel)).toBe("Elbow touch");
     expect(globalThis.ActivityDictionaryText("ActivityCaress")).toBe("native:ActivityCaress");
     expect(globalThis.PreferenceGetActivityFactor(globalThis.Player, customName, false)).toBe(2);
     expect(globalThis.PreferenceGetActivityFactor(globalThis.Player, "Caress", false)).toBe(0);
@@ -1117,13 +1121,50 @@ describe("BCAdapter", () => {
       acted,
       () => undefined,
     );
-    expect(customButton.dataset.image).toBe("Assets/Female3DCG/Activity/Caress.png");
+    expect(customButton.dataset.image).toBe("./Assets/Female3DCG/Activity/Caress.png");
     expect(customButton.dataset.blossom).toBe("true");
 
     const message = { Type: "Action", Content: "KikiLinkCustomActivity", Sender: 123 };
     globalThis.ChatRoomMessage(message);
     expect(integration.onRoomMessage).toHaveBeenCalledWith(message);
     expect(nativeMessage).toHaveBeenCalledWith(message);
+
+    // A late addon or a BC hot reload can replace the live ModSDK router. KikiLink's critical
+    // activity boundaries must wrap the replacement without swallowing its vanilla behavior.
+    const replacementDictionary = vi.fn((keyword: string) => `replacement:${keyword}`);
+    const replacementRun = vi.fn();
+    const replacementCreateButton = vi.fn(
+      (
+        _idPrefix: string | null,
+        _activity: BCItemActivity,
+        _character: BCCharacter,
+        _onClick: (this: HTMLButtonElement, event: PointerEvent) => unknown,
+        options?: { image?: string } | null,
+      ) => {
+        const button = document.createElement("button");
+        button.dataset.image = options?.image ?? "replacement";
+        return button;
+      },
+    );
+    globalThis.ActivityDictionaryText = replacementDictionary;
+    globalThis.ActivityRun = replacementRun;
+    globalThis.ElementButton.CreateForActivity = replacementCreateButton;
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(globalThis.ActivityDictionaryText(customLabel)).toBe("Elbow touch");
+    expect(globalThis.ActivityDictionaryText("ActivityKiss")).toBe("replacement:ActivityKiss");
+    expect(replacementDictionary).toHaveBeenCalledOnce();
+    globalThis.ActivityRun(actor, acted, group, custom);
+    globalThis.ActivityRun(actor, acted, group, vanilla);
+    expect(replacementRun).toHaveBeenCalledOnce();
+    const repairedButton = globalThis.ElementButton.CreateForActivity(
+      null,
+      custom,
+      acted,
+      () => undefined,
+    );
+    expect(repairedButton.dataset.image).toBe("./Assets/Female3DCG/Activity/Caress.png");
+    expect(repairedButton.dataset.blossom).toBe("true");
     adapter.stop();
   });
 });

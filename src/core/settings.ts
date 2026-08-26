@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 20,
+  schemaVersion: 21,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -96,6 +96,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
   linkMusic: {
     playlists: [{ id: "main", name: "My playlist", tracks: [] }],
     activePlaylistId: "main",
+    uploadRetention: "auto",
     repeatMode: "off",
     shuffle: false,
     volume: 70,
@@ -203,7 +204,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 20,
+    schemaVersion: 21,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -416,10 +417,19 @@ function sanitizeMusicSettings(
   return {
     playlists,
     activePlaylistId,
+    uploadRetention: sanitizeMusicUploadRetention(value.uploadRetention),
     repeatMode: value.repeatMode === "all" || value.repeatMode === "one" ? value.repeatMode : "off",
     shuffle: booleanOr(value.shuffle, DEFAULT_SETTINGS.linkMusic.shuffle),
     volume: integerInRange(value.volume, 0, 100, DEFAULT_SETTINGS.linkMusic.volume),
   };
+}
+
+function sanitizeMusicUploadRetention(
+  value: unknown,
+): KikiLinkSettings["linkMusic"]["uploadRetention"] {
+  return value === "auto" || value === "1d" || value === "3d" || value === "7d" || value === "30d"
+    ? value
+    : DEFAULT_SETTINGS.linkMusic.uploadRetention;
 }
 
 function sanitizeImageUploads(

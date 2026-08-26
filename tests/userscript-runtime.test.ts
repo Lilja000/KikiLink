@@ -453,8 +453,8 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.22.2");
-    expect(version?.textContent).toBe("0.22.2");
+    expect(api.getVersion()).toBe("0.22.3");
+    expect(version?.textContent).toBe("0.22.3");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.22.2
+// @version      0.22.3
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -284,7 +284,24 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
   var MAX_PROTOCOL_PAYLOAD = 700;
   var CUSTOM_ACTIVITY_HOOK_COUNT = 6;
+  var CRITICAL_CUSTOM_ACTIVITY_HOOKS = [
+    "ActivityDictionaryText",
+    "ActivityRun",
+    "ElementButton.CreateForActivity"
+  ];
   var CHARACTER_OVERLAY_HOOK_NAME = "ChatRoomDrawCharacterStatusIcons";
+  function nonReentrantHook(hook) {
+    let active = false;
+    return (args, next) => {
+      if (active) return next(args);
+      active = true;
+      try {
+        return hook(args, next);
+      } finally {
+        active = false;
+      }
+    };
+  }
   var BCAdapter = class {
     constructor(bus, version) {
       this.bus = bus;
@@ -946,12 +963,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #ensureActivityHooks() {
       if (!this.#compatibilityHooksInitialized) return;
       this.#ensureRoomMessageHook();
-      if (!this.#modApi) {
-        for (const name of this.#installedActivityHooks) {
-          const hook = this.#resilientHooks.get(name);
-          if (hook) this.#ensureDirectHook(name, hook);
-        }
-      }
+      this.#ensureActivityHookHealth();
       if (this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT) return;
       const allowedHook = (args, next) => {
         const activities = next(args);
@@ -999,7 +1011,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         -10,
         dialogBuildHook
       );
-      const dictionaryHook = (args, next) => {
+      const dictionaryHook = nonReentrantHook((args, next) => {
         const keyword = typeof args[0] === "string" ? args[0] : "";
         for (const integration of [...this.#customActivityIntegrations]) {
           const resolved = this.#callActivityIntegration(
@@ -1009,14 +1021,14 @@ One of mods you are using is using an old version of SDK. It will work for now b
           if (resolved !== void 0) return resolved;
         }
         return next(args);
-      };
+      });
       this.#tryInstallActivityHook(
         "ActivityDictionaryText",
         typeof ActivityDictionaryText === "function",
         10,
         dictionaryHook
       );
-      const runHook = (args, next) => {
+      const runHook = nonReentrantHook((args, next) => {
         for (const integration of [...this.#customActivityIntegrations]) {
           const handled = this.#callActivityIntegration(
             integration,
@@ -1025,14 +1037,14 @@ One of mods you are using is using an old version of SDK. It will work for now b
           if (handled) return void 0;
         }
         return next(args);
-      };
+      });
       this.#tryInstallActivityHook(
         "ActivityRun",
         typeof ActivityRun === "function",
         10,
         runHook
       );
-      const activityButtonHook = (args, next) => {
+      const activityButtonHook = nonReentrantHook((args, next) => {
         const itemActivity = args[1];
         const activityName = itemActivity?.Activity?.Name;
         if (typeof activityName === "string") {
@@ -1054,7 +1066,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
           });
         }
         return button;
-      };
+      });
       this.#tryInstallActivityHook(
         "ElementButton.CreateForActivity",
         typeof ElementButton === "object" && ElementButton !== null && typeof ElementButton.CreateForActivity === "function",
@@ -1078,6 +1090,14 @@ One of mods you are using is using an old version of SDK. It will work for now b
         10,
         preferenceHook
       );
+      this.#ensureActivityHookHealth();
+    }
+    #ensureActivityHookHealth() {
+      const names = this.#modApi ? CRITICAL_CUSTOM_ACTIVITY_HOOKS : this.#installedActivityHooks;
+      for (const name of names) {
+        const hook = this.#resilientHooks.get(name);
+        if (hook) this.#ensureDirectHook(name, hook);
+      }
     }
     #tryInstallActivityHook(name, available, priority, hook) {
       if (!available || this.#installedActivityHooks.has(name)) return;
@@ -2122,7 +2142,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 20,
+    schemaVersion: 21,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -2205,6 +2225,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     linkMusic: {
       playlists: [{ id: "main", name: "My playlist", tracks: [] }],
       activePlaylistId: "main",
+      uploadRetention: "auto",
       repeatMode: "off",
       shuffle: false,
       volume: 70
@@ -2291,7 +2312,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkRoom = isRecord3(source.linkRoom) ? source.linkRoom : {};
     const linkMusic = isRecord3(source.linkMusic) ? source.linkMusic : {};
     return {
-      schemaVersion: 20,
+      schemaVersion: 21,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -2460,10 +2481,14 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return {
       playlists,
       activePlaylistId,
+      uploadRetention: sanitizeMusicUploadRetention(value.uploadRetention),
       repeatMode: value.repeatMode === "all" || value.repeatMode === "one" ? value.repeatMode : "off",
       shuffle: booleanOr(value.shuffle, DEFAULT_SETTINGS.linkMusic.shuffle),
       volume: integerInRange3(value.volume, 0, 100, DEFAULT_SETTINGS.linkMusic.volume)
     };
+  }
+  function sanitizeMusicUploadRetention(value) {
+    return value === "auto" || value === "1d" || value === "3d" || value === "7d" || value === "30d" ? value : DEFAULT_SETTINGS.linkMusic.uploadRetention;
   }
   function sanitizeImageUploads(value, sourceSchema) {
     return {
@@ -3607,7 +3632,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
   };
   function activityImageUrl(image) {
-    return `Assets/Female3DCG/Activity/${canonicalVanillaActivityImage(image)}.png`;
+    return `./Assets/Female3DCG/Activity/${canonicalVanillaActivityImage(image)}.png`;
   }
   function canonicalVanillaActivityImage(image) {
     const canonical = VANILLA_ACTIVITY_IMAGE_ALIASES[image] ?? image;
@@ -9273,7 +9298,7 @@ select:focus-visible {
   function normalizeWaifuVaultUploadConfig(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const retention = value.retention;
-    return retention === "1d" || retention === "3d" || retention === "7d" || retention === "30d" ? { retention } : null;
+    return retention === "auto" || retention === "1d" || retention === "3d" || retention === "7d" || retention === "30d" ? { retention } : null;
   }
   async function prepareLocalImage(file) {
     await validateLocalImageFile(file);
@@ -9371,7 +9396,7 @@ select:focus-visible {
   }
   function waifuVaultUploadUrl(retention) {
     const url = new URL(WAIFUVAULT_UPLOAD_ENDPOINT);
-    url.searchParams.set("expires", retention);
+    if (retention !== "auto") url.searchParams.set("expires", retention);
     url.searchParams.set("hide_filename", "true");
     return url.href;
   }
@@ -9947,7 +9972,12 @@ select:focus-visible {
     #musicTitleInput = element("input", { className: "kl-search" });
     #musicUrlInput = element("input", { className: "kl-search" });
     #musicFileInput = element("input");
-    #musicFileMode = element("select", { className: "kl-select" });
+    #musicFileMode = element("select", {
+      className: "kl-select kl-music-file-mode"
+    });
+    #musicUploadRetention = element("select", {
+      className: "kl-select kl-music-upload-retention"
+    });
     #musicAddButton = element("button", {
       className: "kl-text-button kl-text-button--primary",
       type: "button",
@@ -14163,6 +14193,27 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         selectOption2("local", "Keep only on this device"),
         selectOption2("hosted", "Share temporarily via WaifuVault")
       );
+      this.#musicUploadRetention.replaceChildren(
+        selectOption2("auto", "Maximum available (30\u2013365 days)"),
+        selectOption2("30d", "30 days"),
+        selectOption2("7d", "7 days"),
+        selectOption2("3d", "3 days"),
+        selectOption2("1d", "1 day")
+      );
+      this.#musicFileMode.addEventListener("change", () => {
+        this.#musicUploadRetention.disabled = this.#musicFileMode.value !== "hosted";
+      });
+      this.#musicUploadRetention.addEventListener("change", () => {
+        const config = normalizeWaifuVaultUploadConfig({
+          retention: this.#musicUploadRetention.value
+        });
+        if (!config) return;
+        this.settings.update((draft) => {
+          draft.linkMusic.uploadRetention = config.retention;
+        });
+        void this.#renderMusicPage();
+      });
+      this.#musicUploadRetention.disabled = true;
       this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
       this.#musicQueueSearch.type = "search";
       this.#musicQueueSearch.placeholder = "Search this playlist";
@@ -14195,9 +14246,15 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         element("label", {}, element("span", { text: "Audio files" }), this.#musicFileInput),
         element("label", {}, element("span", { text: "File handling" }), this.#musicFileMode),
         element(
+          "label",
+          {},
+          element("span", { text: "Shared-link lifetime" }),
+          this.#musicUploadRetention
+        ),
+        element(
           "p",
           { className: "kl-setting-help" },
-          "Local files stay in this browser. WaifuVault creates public bearer links. ",
+          "Local files stay in this browser without a KikiLink expiry. WaifuVault creates public bearer links. ",
           this.#musicShareLifetime
         ),
         this.#musicAddStatus,
@@ -14324,8 +14381,9 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
     async #renderMusicPage(forceLocalRefresh = false) {
       const token = ++this.#musicRenderToken;
       const settings = this.settings.get().linkMusic;
-      const sharing = this.settings.get().linkChat.imageUploads;
-      this.#musicShareLifetime.textContent = sharing.enabled ? `Current lifetime: ${formatRetention(sharing.retention)}.` : "Sharing is currently disabled in Chat settings.";
+      this.#musicUploadRetention.value = settings.uploadRetention;
+      this.#musicUploadRetention.disabled = this.#musicFileMode.value !== "hosted";
+      this.#musicShareLifetime.textContent = settings.uploadRetention === "auto" ? "Anonymous uploads cannot be permanent; maximum lifetime is 30\u2013365 days based on file size." : `Selected lifetime: ${formatRetention(settings.uploadRetention)}.`;
       this.#playlistSelect.replaceChildren(
         ...settings.playlists.map((playlist2) => selectOption2(playlist2.id, `${playlist2.name} \xB7 ${playlist2.tracks.length}`))
       );
@@ -14445,9 +14503,10 @@ ${track.source}`.toLocaleLowerCase().includes(query));
             let locator;
             let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
             if (this.#musicFileMode.value === "hosted") {
-              const uploadSettings = this.settings.get().linkChat.imageUploads;
-              const uploadConfig = uploadSettings.enabled ? normalizeWaifuVaultUploadConfig(uploadSettings) : null;
-              if (!uploadConfig) throw new Error("Enable WaifuVault sharing in Chat settings first");
+              const uploadConfig = normalizeWaifuVaultUploadConfig({
+                retention: this.settings.get().linkMusic.uploadRetention
+              });
+              if (!uploadConfig) throw new Error("Choose a valid shared-track lifetime");
               this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to WaifuVault\u2026`;
               locator = await uploadMusicToWaifuVault(file, uploadConfig, void 0, (progress) => {
                 const amount = progress.percent === void 0 ? "" : ` \xB7 ${progress.percent}%`;
@@ -17653,6 +17712,7 @@ ${expanded}` : expanded;
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   }
   function formatRetention(value) {
+    if (value === "auto") return "the maximum available lifetime";
     const days = Number.parseInt(value, 10);
     return `${days} day${days === 1 ? "" : "s"}`;
   }
@@ -19051,7 +19111,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.22.2");
+    const app = new KikiLinkApp("0.22.3");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

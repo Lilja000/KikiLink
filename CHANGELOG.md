@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.22.3 - 2026-08-26
+
+- Fixed Custom Activity cards losing their label and selected vanilla picture, then falling through
+  to Bondage Club's missing `ChatSelf-...-KikiLinkCustom_...` dictionary entry when used. The three
+  critical activity boundaries now remain healthy after a late BC or addon function replacement.
+- Added a dedicated shared-track lifetime selector directly to Music: maximum provider lifetime,
+  30, 7, 3, or 1 day. Music uploads no longer inherit or require the Chat image-upload switch.
+- Made the default maximum option omit a custom expiry so anonymous WaifuVault policy selects its
+  longest size-based lifetime, while clearly explaining that anonymous uploads are not permanent.
+
 ## 0.22.2 - 2026-08-26
 
 - Removed the previous upload providers, permissions, endpoints, labels, and documentation. Every

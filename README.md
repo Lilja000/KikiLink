@@ -11,11 +11,10 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.22.2` moves every hosted upload to WaifuVault, with anonymous expiring links and one
-narrow Tampermonkey connection permission. Manually added Gallery files now stay in an
-account-isolated device database without being uploaded. Music also switches to a collision-free
-responsive layout with compact playlist management. The running version remains visible as tiny
-translucent digits in the lower-left corner.
+Version `0.22.3` repairs Custom Activity labels, selected vanilla pictures, and execution even when
+another addon replaces a live Bondage Club activity hook. Music now owns its WaifuVault lifetime
+setting, including the provider's maximum anonymous lifetime alongside 30, 7, 3, and 1 day choices.
+The running version remains visible as tiny translucent digits in the lower-left corner.
 
 ## Link Deck
 
@@ -158,6 +157,8 @@ so they can follow that same account to another device.
 - Browser/OS Media Session controls for play, pause, seeking, and previous/next where supported
 - Direct HTTPS tracks, local browser-only files up to 80 MB, or explicitly shared expiring
   WaifuVault tracks with generic filenames
+- A Music-local lifetime selector offers 1, 3, 7, or 30 days plus WaifuVault's maximum anonymous
+  size-based lifetime (roughly 30–365 days); public anonymous uploads cannot be permanent
 - Playlist actions live in one compact Manage menu, and the library/player switch to a single
   scrollable column before controls can overlap on medium or narrow screens
 - Local blobs stay in an account-isolated IndexedDB on the current device; playlist metadata and

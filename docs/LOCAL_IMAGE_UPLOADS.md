@@ -5,10 +5,14 @@ messages. It does not add a KikiLink media server or require an image-host accou
 
 ## Provider choice
 
-Shared files use WaifuVault's anonymous API. The sender chooses a declared lifetime of 1, 3, 7, or
-30 days. KikiLink stores only that preference locally and sends no account token, cookie, or original
-filename. WaifuVault accepts general file types; KikiLink restricts each UI to formats that its image,
-music, or Bondage Club room-media consumer can actually use.
+Shared files use WaifuVault's anonymous API. Chat images and room audio use a declared lifetime of
+1, 3, 7, or 30 days. Music has its own selector with those choices plus `Maximum available`; that
+option omits a custom expiry and lets WaifuVault apply its size-based anonymous lifetime, published
+as roughly 30–365 days. Anonymous uploads cannot be permanent: unlimited expiry requires provider
+credentials that KikiLink neither requests nor sends. KikiLink stores only the selected preference
+locally and sends no account token, cookie, or original filename. WaifuVault accepts general file
+types; KikiLink restricts each UI to formats that its image, music, or Bondage Club room-media
+consumer can actually use.
 
 WaifuVault links are public bearer links until they expire: anyone who obtains one can request the
 image. Expiry is useful retention, not access control or proof of immediate secure deletion. A

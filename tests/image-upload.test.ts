@@ -58,6 +58,7 @@ describe("local image uploads", () => {
   });
 
   it("accepts only supported WaifuVault lifetimes", () => {
+    expect(normalizeWaifuVaultUploadConfig({ retention: "auto" })).toEqual({ retention: "auto" });
     expect(normalizeWaifuVaultUploadConfig({ retention: "1d" })).toEqual({ retention: "1d" });
     expect(normalizeWaifuVaultUploadConfig({ retention: "30d" })).toEqual({ retention: "30d" });
     expect(normalizeWaifuVaultUploadConfig({ retention: "12h" })).toBeNull();
@@ -150,17 +151,17 @@ describe("local image uploads", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("uploads a generically named expiring playlist track to WaifuVault", async () => {
+  it("lets WaifuVault choose its maximum anonymous lifetime for a playlist track", async () => {
     const request = vi.fn<typeof fetch>(async () =>
       new Response(waifuResponse("https://waifuvault.moe/f/track_123.ogg"), { status: 200 }),
     );
     const file = new File([bytes(1, 2, 3)], "private title.ogg", { type: "audio/ogg" });
 
-    await expect(uploadMusicToWaifuVault(file, { retention: "7d" }, request)).resolves.toBe(
+    await expect(uploadMusicToWaifuVault(file, { retention: "auto" }, request)).resolves.toBe(
       "https://waifuvault.moe/f/track_123.ogg",
     );
     expect(request.mock.calls[0]?.[0]).toBe(
-      "https://waifuvault.moe/rest?expires=7d&hide_filename=true",
+      "https://waifuvault.moe/rest?hide_filename=true",
     );
     const form = request.mock.calls[0]?.[1]?.body as FormData;
     expect((form.get("file") as File).name).toBe("kikilink-track.ogg");

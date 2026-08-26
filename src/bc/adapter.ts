@@ -24,6 +24,11 @@ const KIKILINK_BEEP_TYPE = "KikiLink";
 const KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
 const MAX_PROTOCOL_PAYLOAD = 700;
 const CUSTOM_ACTIVITY_HOOK_COUNT = 6;
+const CRITICAL_CUSTOM_ACTIVITY_HOOKS = [
+  "ActivityDictionaryText",
+  "ActivityRun",
+  "ElementButton.CreateForActivity",
+] as const;
 const CHARACTER_OVERLAY_HOOK_NAME = "ChatRoomDrawCharacterStatusIcons";
 
 interface RecentIncoming {
@@ -43,6 +48,24 @@ type ResilientHook = (args: any[], next: (args: any[]) => any) => any;
 interface DirectHookRegistration {
   isCurrent(): boolean;
   unhook(): void;
+}
+
+/**
+ * The same critical hook is deliberately present in ModSDK and in a small live outer guard. When
+ * the guard delegates into ModSDK, skip the duplicate KikiLink invocation while preserving every
+ * other addon and the native function in that chain.
+ */
+function nonReentrantHook(hook: ResilientHook): ResilientHook {
+  let active = false;
+  return (args, next) => {
+    if (active) return next(args);
+    active = true;
+    try {
+      return hook(args, next);
+    } finally {
+      active = false;
+    }
+  };
 }
 
 export type BCCharacterOverlayRenderer = (
@@ -931,12 +954,7 @@ export class BCAdapter {
   #ensureActivityHooks(): void {
     if (!this.#compatibilityHooksInitialized) return;
     this.#ensureRoomMessageHook();
-    if (!this.#modApi) {
-      for (const name of this.#installedActivityHooks) {
-        const hook = this.#resilientHooks.get(name);
-        if (hook) this.#ensureDirectHook(name, hook);
-      }
-    }
+    this.#ensureActivityHookHealth();
     if (this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT) return;
 
     const allowedHook: ResilientHook = (args, next) => {
@@ -987,7 +1005,7 @@ export class BCAdapter {
       dialogBuildHook,
     );
 
-    const dictionaryHook: ResilientHook = (args, next) => {
+    const dictionaryHook = nonReentrantHook((args, next) => {
       const keyword = typeof args[0] === "string" ? args[0] : "";
       for (const integration of [...this.#customActivityIntegrations]) {
         const resolved = this.#callActivityIntegration(integration, () =>
@@ -996,7 +1014,7 @@ export class BCAdapter {
         if (resolved !== undefined) return resolved;
       }
       return next(args);
-    };
+    });
     this.#tryInstallActivityHook(
       "ActivityDictionaryText",
       typeof ActivityDictionaryText === "function",
@@ -1004,7 +1022,7 @@ export class BCAdapter {
       dictionaryHook,
     );
 
-    const runHook: ResilientHook = (args, next) => {
+    const runHook = nonReentrantHook((args, next) => {
       for (const integration of [...this.#customActivityIntegrations]) {
         const handled = this.#callActivityIntegration(integration, () =>
           integration.run(args[0], args[1], args[2], args[3]),
@@ -1012,7 +1030,7 @@ export class BCAdapter {
         if (handled) return undefined;
       }
       return next(args);
-    };
+    });
     this.#tryInstallActivityHook(
       "ActivityRun",
       typeof ActivityRun === "function",
@@ -1020,7 +1038,7 @@ export class BCAdapter {
       runHook,
     );
 
-    const activityButtonHook: ResilientHook = (args, next) => {
+    const activityButtonHook = nonReentrantHook((args, next) => {
       const itemActivity = args[1];
       const activityName = itemActivity?.Activity?.Name;
       if (typeof activityName === "string") {
@@ -1041,7 +1059,7 @@ export class BCAdapter {
         });
       }
       return button;
-    };
+    });
     this.#tryInstallActivityHook(
       "ElementButton.CreateForActivity",
       typeof ElementButton === "object" &&
@@ -1069,8 +1087,20 @@ export class BCAdapter {
       preferenceHook,
     );
 
-    // BC initializes some menu functions lazily. The timer retries only the entrypoints that did
-    // not exist yet; hooks already registered in ModSDK stay inside its shared router.
+    // BC initializes some menu functions lazily. The timer retries missing entrypoints and keeps
+    // the three user-visible custom-activity boundaries healthy if another addon replaces a live
+    // ModSDK router after registration.
+    this.#ensureActivityHookHealth();
+  }
+
+  #ensureActivityHookHealth(): void {
+    const names: Iterable<string> = this.#modApi
+      ? CRITICAL_CUSTOM_ACTIVITY_HOOKS
+      : this.#installedActivityHooks;
+    for (const name of names) {
+      const hook = this.#resilientHooks.get(name);
+      if (hook) this.#ensureDirectHook(name, hook);
+    }
   }
 
   #tryInstallActivityHook(

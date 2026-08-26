@@ -626,7 +626,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
 }
 
 export function activityImageUrl(image: string): string {
-  return `Assets/Female3DCG/Activity/${canonicalVanillaActivityImage(image)}.png`;
+  return `./Assets/Female3DCG/Activity/${canonicalVanillaActivityImage(image)}.png`;
 }
 
 export function canonicalVanillaActivityImage(image: string): string {

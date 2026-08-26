@@ -164,7 +164,7 @@ describe("native Custom Activities", () => {
     expect(canonicalVanillaActivityImage("Spank")).toBe("Slap");
     expect(canonicalVanillaActivityImage("PenetrateFast")).toBe("PenetrateSlow");
     expect(canonicalVanillaActivityImage("LSCG_Choke")).toBe("Caress");
-    expect(activityImageUrl("LSCG_Choke")).toBe("Assets/Female3DCG/Activity/Caress.png");
+    expect(activityImageUrl("LSCG_Choke")).toBe("./Assets/Female3DCG/Activity/Caress.png");
   });
 
   it("outlines every body zone, draws the selected zone last, and picks the smallest overlap", () => {
@@ -267,8 +267,12 @@ describe("native Custom Activities", () => {
     });
     expect(globalThis.ActivityFemale3DCGOrdering.at(-1)).toBe(custom?.Name);
     expect(service.resolveText(`Activity${custom?.Name}`)).toBe("Elbow touch");
+    expect(service.resolveText(`Label-ChatSelf-ItemArms-${custom?.Name}`)).toBe("Elbow touch");
+    expect(service.resolveText(`ChatSelf-ItemArms-${custom?.Name}`)).toBe(
+      "{me} touches {target's} arm and {target's gender} elbow.",
+    );
     expect(service.resolveImage(custom?.Name ?? "")).toBe(
-      "Assets/Female3DCG/Activity/Caress.png",
+      "./Assets/Female3DCG/Activity/Caress.png",
     );
 
     const button = document.createElement("button");

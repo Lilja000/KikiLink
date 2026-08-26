@@ -344,7 +344,12 @@ export class LinkChatView {
   readonly #musicTitleInput = element("input", { className: "kl-search" }) as HTMLInputElement;
   readonly #musicUrlInput = element("input", { className: "kl-search" }) as HTMLInputElement;
   readonly #musicFileInput = element("input") as HTMLInputElement;
-  readonly #musicFileMode = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #musicFileMode = element("select", {
+    className: "kl-select kl-music-file-mode",
+  }) as HTMLSelectElement;
+  readonly #musicUploadRetention = element("select", {
+    className: "kl-select kl-music-upload-retention",
+  }) as HTMLSelectElement;
   readonly #musicAddButton = element("button", {
     className: "kl-text-button kl-text-button--primary",
     type: "button",
@@ -4956,6 +4961,27 @@ export class LinkChatView {
       selectOption("local", "Keep only on this device"),
       selectOption("hosted", "Share temporarily via WaifuVault"),
     );
+    this.#musicUploadRetention.replaceChildren(
+      selectOption("auto", "Maximum available (30–365 days)"),
+      selectOption("30d", "30 days"),
+      selectOption("7d", "7 days"),
+      selectOption("3d", "3 days"),
+      selectOption("1d", "1 day"),
+    );
+    this.#musicFileMode.addEventListener("change", () => {
+      this.#musicUploadRetention.disabled = this.#musicFileMode.value !== "hosted";
+    });
+    this.#musicUploadRetention.addEventListener("change", () => {
+      const config = normalizeWaifuVaultUploadConfig({
+        retention: this.#musicUploadRetention.value,
+      });
+      if (!config) return;
+      this.settings.update((draft) => {
+        draft.linkMusic.uploadRetention = config.retention;
+      });
+      void this.#renderMusicPage();
+    });
+    this.#musicUploadRetention.disabled = true;
     this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
     this.#musicQueueSearch.type = "search";
     this.#musicQueueSearch.placeholder = "Search this playlist";
@@ -4989,9 +5015,15 @@ export class LinkChatView {
       element("label", {}, element("span", { text: "Audio files" }), this.#musicFileInput),
       element("label", {}, element("span", { text: "File handling" }), this.#musicFileMode),
       element(
+        "label",
+        {},
+        element("span", { text: "Shared-link lifetime" }),
+        this.#musicUploadRetention,
+      ),
+      element(
         "p",
         { className: "kl-setting-help" },
-        "Local files stay in this browser. WaifuVault creates public bearer links. ",
+        "Local files stay in this browser without a KikiLink expiry. WaifuVault creates public bearer links. ",
         this.#musicShareLifetime,
       ),
       this.#musicAddStatus,
@@ -5123,10 +5155,11 @@ export class LinkChatView {
   async #renderMusicPage(forceLocalRefresh = false): Promise<void> {
     const token = ++this.#musicRenderToken;
     const settings = this.settings.get().linkMusic;
-    const sharing = this.settings.get().linkChat.imageUploads;
-    this.#musicShareLifetime.textContent = sharing.enabled
-      ? `Current lifetime: ${formatRetention(sharing.retention)}.`
-      : "Sharing is currently disabled in Chat settings.";
+    this.#musicUploadRetention.value = settings.uploadRetention;
+    this.#musicUploadRetention.disabled = this.#musicFileMode.value !== "hosted";
+    this.#musicShareLifetime.textContent = settings.uploadRetention === "auto"
+      ? "Anonymous uploads cannot be permanent; maximum lifetime is 30–365 days based on file size."
+      : `Selected lifetime: ${formatRetention(settings.uploadRetention)}.`;
     this.#playlistSelect.replaceChildren(
       ...settings.playlists.map((playlist) => selectOption(playlist.id, `${playlist.name} · ${playlist.tracks.length}`)),
     );
@@ -5261,11 +5294,10 @@ export class LinkChatView {
           let locator: string;
           let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
           if (this.#musicFileMode.value === "hosted") {
-            const uploadSettings = this.settings.get().linkChat.imageUploads;
-            const uploadConfig = uploadSettings.enabled
-              ? normalizeWaifuVaultUploadConfig(uploadSettings)
-              : null;
-            if (!uploadConfig) throw new Error("Enable WaifuVault sharing in Chat settings first");
+            const uploadConfig = normalizeWaifuVaultUploadConfig({
+              retention: this.settings.get().linkMusic.uploadRetention,
+            });
+            if (!uploadConfig) throw new Error("Choose a valid shared-track lifetime");
             this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to WaifuVault…`;
             locator = await uploadMusicToWaifuVault(file, uploadConfig, undefined, (progress) => {
               const amount = progress.percent === undefined ? "" : ` · ${progress.percent}%`;
@@ -9009,6 +9041,7 @@ function formatBytes(value: number): string {
 }
 
 function formatRetention(value: WaifuVaultUploadConfig["retention"]): string {
+  if (value === "auto") return "the maximum available lifetime";
   const days = Number.parseInt(value, 10);
   return `${days} day${days === 1 ? "" : "s"}`;
 }

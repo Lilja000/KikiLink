@@ -1,6 +1,6 @@
 # Custom Activities data and compatibility
 
-KikiLink 0.20.5 stores user-created activities under the authenticated BC MemberNumber and registers
+KikiLink stores user-created activities under the authenticated BC MemberNumber and registers
 them beside Bondage Club's vanilla activities at runtime. There is no public activity library or
 remote index; the private library is also included in that account's bounded `ExtensionSettings`
 snapshot so it can follow the same account to another device.
@@ -48,6 +48,12 @@ The activity uses `MaxProgress: 0`; optional arousal is not delegated to the van
 KikiLink intercepts only its own runtime names, reuses the chosen vanilla picture, and appends the
 upper-left Blossom marker after Bondage Club creates the native button. Other activities and hook
 handlers keep their normal chain.
+
+The label lookup, native-button picture, and action runner also have a narrow live health guard
+outside the shared ModSDK router. If BC hot reload or a late addon replaces that router, KikiLink
+wraps the new function on the next lifecycle check. Vanilla calls still continue through the new
+chain, while KikiLink runtime names cannot fall through to nonexistent `ActivityDictionary.csv`
+entries or generated activity-image filenames.
 
 ## Visible action and optional effect
 

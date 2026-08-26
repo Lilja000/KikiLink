@@ -487,6 +487,18 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-music-playlist-menu > summary")?.textContent).toBe("Manage");
     expect(shadow?.querySelector(".kl-music-playlist-actions")?.textContent).toContain("Duplicate");
     expect(shadow?.querySelector("style")?.textContent).toContain("@media (max-width: 900px)");
+    const musicFileMode = shadow?.querySelector<HTMLSelectElement>(".kl-music-file-mode");
+    const musicLifetime = shadow?.querySelector<HTMLSelectElement>(".kl-music-upload-retention");
+    if (!musicFileMode || !musicLifetime) throw new Error("Missing Music sharing controls");
+    expect(musicLifetime.value).toBe("auto");
+    expect(musicLifetime.disabled).toBe(true);
+    musicFileMode.value = "hosted";
+    musicFileMode.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(musicLifetime.disabled).toBe(false);
+    musicLifetime.value = "30d";
+    musicLifetime.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(settings.get().linkMusic.uploadRetention).toBe("30d");
+    expect(settings.get().linkChat.imageUploads.retention).toBe("7d");
     musicTitle.value = "Moon Song";
     musicUrl.value = "https://waifuvault.moe/f/moon.mp3";
     shadow?.querySelector<HTMLButtonElement>(".kl-music-add .kl-text-button--primary")?.click();

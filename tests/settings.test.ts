@@ -140,7 +140,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(20);
+    expect(settings.schemaVersion).toBe(21);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -264,7 +264,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(20);
+    expect(settings.schemaVersion).toBe(21);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -288,7 +288,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(20);
+    expect(settings.schemaVersion).toBe(21);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -354,7 +354,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(20);
+    expect(settings.schemaVersion).toBe(21);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -530,7 +530,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(20);
+    expect(settings.schemaVersion).toBe(21);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -624,7 +624,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(20);
+    expect(settings.schemaVersion).toBe(21);
     expect(settings.linkRoom.presets[0]).toMatchObject({
       id: "moon_room",
       label: "Moon Garden",
@@ -637,11 +637,23 @@ describe("SettingsStore", () => {
     });
     expect(settings.linkMusic).toMatchObject({
       activePlaylistId: "night",
+      uploadRetention: "auto",
       repeatMode: "all",
       shuffle: true,
       volume: 42,
     });
     expect(settings.linkMusic.playlists[0]?.tracks).toHaveLength(2);
     expect(settings.linkMusic.playlists[0]?.tracks[1]?.source).toBe("hosted");
+  });
+
+  it("keeps Music upload lifetime independent and rejects a fake permanent option", () => {
+    expect(sanitizeSettings({
+      schemaVersion: 21,
+      linkMusic: { uploadRetention: "30d" },
+    }).linkMusic.uploadRetention).toBe("30d");
+    expect(sanitizeSettings({
+      schemaVersion: 21,
+      linkMusic: { uploadRetention: "forever" },
+    }).linkMusic.uploadRetention).toBe("auto");
   });
 });

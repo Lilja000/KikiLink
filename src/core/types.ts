@@ -24,6 +24,7 @@ export type PresenceState = PresenceStatus | "unknown";
 export type PresenceSource = "kikilink" | "room" | "friend-list" | "unknown";
 export type ImagePreviewPreference = "ask" | "always" | "never";
 export type ImageUploadRetention = "1d" | "3d" | "7d" | "30d";
+export type MusicUploadRetention = "auto" | ImageUploadRetention;
 export type ReactionTrigger =
   | "beep-received"
   | "room-join"
@@ -253,7 +254,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 20;
+  schemaVersion: 21;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -333,6 +334,7 @@ export interface KikiLinkSettings {
   linkMusic: {
     playlists: MusicPlaylist[];
     activePlaylistId: string;
+    uploadRetention: MusicUploadRetention;
     repeatMode: MusicRepeatMode;
     shuffle: boolean;
     volume: number;
