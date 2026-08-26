@@ -98,6 +98,7 @@ export interface BCLobbyFriend {
 
 export interface BCLobbyRoom {
   name: string;
+  creator?: string;
   description: string;
   language: string;
   memberCount: number;
@@ -108,6 +109,8 @@ export interface BCLobbyRoom {
   mapType: string;
   friends: BCLobbyFriend[];
 }
+
+export type BCRoomSearchSpace = "" | "X" | "M";
 
 export type BCRoomMemberAction = "kick" | "promote" | "demote" | "whitelist" | "unwhitelist";
 
@@ -616,7 +619,32 @@ export class BCAdapter {
     });
   }
 
-  async searchRooms(query = ""): Promise<BCLobbyRoom[]> {
+  getRoomSearchSpace(): BCRoomSearchSpace {
+    let roomSpace: unknown;
+    try {
+      roomSpace = typeof ChatRoomData === "object" && ChatRoomData !== null
+        ? ChatRoomData.Space
+        : undefined;
+    } catch {
+      // Another addon's cross-realm wrapper can make one source unreadable; use the account fallback.
+    }
+    if (roomSpace === "" || roomSpace === "X" || roomSpace === "M") {
+      return roomSpace;
+    }
+    try {
+      const lastRoomSpace = typeof Player === "object" && Player !== null
+        ? Player.LastChatRoom?.Space
+        : undefined;
+      return normalizeRoomSearchSpace(lastRoomSpace);
+    } catch {
+      return "";
+    }
+  }
+
+  async searchRooms(
+    query = "",
+    space: BCRoomSearchSpace = this.getRoomSearchSpace(),
+  ): Promise<BCLobbyRoom[]> {
     if (typeof ServerRoomSearch !== "function") {
       throw new Error("Bondage Club's room search is still loading");
     }
@@ -624,6 +652,8 @@ export class BCAdapter {
     const request: BCServerRoomSearchRequest = {
       Query: normalizedQuery,
       Language: "",
+      Space: normalizeRoomSearchSpace(space),
+      Game: "",
       FullRooms: true,
       ShowLocked: true,
       SearchDescs: true,
@@ -1598,6 +1628,7 @@ function normalizeLobbyRoom(value: BCServerRoomSearchData): BCLobbyRoom | undefi
     const access = cleanStringArray(value.Access, 8, 30);
     return {
       name,
+      ...(cleanText(value.Creator, 80) ? { creator: cleanText(value.Creator, 80) } : {}),
       description: cleanText(value.Description, 200),
       language: cleanText(value.Language, 12),
       memberCount: boundedInteger(value.MemberCount, 0, 100, 0),
@@ -1612,6 +1643,10 @@ function normalizeLobbyRoom(value: BCServerRoomSearchData): BCLobbyRoom | undefi
     // Firefox can deny reads from objects created in another userscript compartment.
     return undefined;
   }
+}
+
+function normalizeRoomSearchSpace(value: unknown): BCRoomSearchSpace {
+  return value === "X" || value === "M" ? value : "";
 }
 
 function normalizeRoomMediaUrl(value: string, kind: "image" | "audio"): string | undefined {

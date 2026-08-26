@@ -19,6 +19,10 @@ declare global {
       Name?: string;
       Stage?: number;
     }>;
+    LastChatRoom?: {
+      Name?: string;
+      Space?: string;
+    } | null;
     ExtensionSettings?: Record<string, unknown>;
   }
 

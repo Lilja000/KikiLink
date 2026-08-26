@@ -25,7 +25,8 @@ const userscriptHeader = `// ==UserScript==
 // @run-at       document-end
 // @inject-into  page
 // @sandbox      raw
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      catbox.moe
 // ==/UserScript==`;
 
 await rm(outDir, { recursive: true, force: true });

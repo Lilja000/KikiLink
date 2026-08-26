@@ -1,6 +1,7 @@
 import type {
   BCAdapter,
   BCLobbyRoom,
+  BCRoomSearchSpace,
   BCRoomAdminPlayer,
   BCRoomMemberAction,
 } from "../../bc/adapter";
@@ -304,6 +305,10 @@ export class LinkChatView {
   readonly #roomLobbiesPanel = element("div", { className: "kl-room-subpanel kl-lobbies-panel" });
   readonly #roomPresetsPanel = element("div", { className: "kl-room-subpanel kl-room-presets-panel" });
   readonly #lobbyQuery = element("input", { className: "kl-search kl-lobby-search" }) as HTMLInputElement;
+  readonly #lobbySpaceSelect = element("select", {
+    className: "kl-select kl-lobby-space",
+    ariaLabel: "Lobby space",
+  }) as HTMLSelectElement;
   readonly #lobbyRefreshButton = element("button", {
     className: "kl-icon-button kl-lobby-refresh",
     type: "button",
@@ -342,6 +347,12 @@ export class LinkChatView {
   });
   readonly #musicAddStatus = element("div", { className: "kl-music-add-status" });
   readonly #musicQueue = element("div", { className: "kl-music-queue" });
+  readonly #musicQueueSearch = element("input", {
+    className: "kl-search kl-music-queue-search",
+    ariaLabel: "Search current playlist",
+  }) as HTMLInputElement;
+  readonly #musicQueueSummary = element("span", { className: "kl-music-queue-summary" });
+  readonly #musicArtwork = element("div", { className: "kl-music-artwork" });
   readonly #musicNowTitle = element("strong", { className: "kl-music-now-title", text: "Nothing playing" });
   readonly #musicNowSource = element("span", { className: "kl-music-now-source", text: "Choose a track" });
   readonly #musicProgress = element("input", { className: "kl-music-progress" }) as HTMLInputElement;
@@ -374,6 +385,20 @@ export class LinkChatView {
     text: "Shuffle",
   });
   readonly #musicVolume = element("input", { className: "kl-volume-input" }) as HTMLInputElement;
+  readonly #musicMuteButton = element("button", {
+    className: "kl-text-button kl-music-mode",
+    type: "button",
+    text: "Mute",
+  });
+  readonly #musicPlaybackRate = element("select", {
+    className: "kl-select kl-music-rate",
+    ariaLabel: "Playback speed",
+  }) as HTMLSelectElement;
+  readonly #musicSleepSelect = element("select", {
+    className: "kl-select kl-music-sleep",
+    ariaLabel: "Sleep timer",
+  }) as HTMLSelectElement;
+  readonly #musicSleepStatus = element("span", { className: "kl-music-sleep-status" });
   readonly #audio = document.createElement("audio");
   readonly #settingsPage = element("section", {
     className: "kl-settings-page",
@@ -638,6 +663,10 @@ export class LinkChatView {
   #localImageError: string | undefined;
   #activeTrackId: string | undefined;
   #musicObjectUrl: string | undefined;
+  #localMusicTrackIds: Set<string> | undefined;
+  #localMusicTrackIdsPromise: Promise<Set<string>> | undefined;
+  #musicSleepTimer: ReturnType<typeof setTimeout> | undefined;
+  #musicStopAfterTrack = false;
   #roomPlaylistSyncEnabled = false;
   #lastRoomSyncedTrackUrl = "";
 
@@ -759,6 +788,8 @@ export class LinkChatView {
     this.#presenceUnsubscribe = undefined;
     this.#audio.pause();
     this.#audio.removeAttribute("src");
+    this.#clearMusicSleepTimer();
+    this.#clearMediaSession();
     this.#releaseMusicObjectUrl();
     this.#roomBadge.destroy();
     this.#host.remove();
@@ -4256,6 +4287,18 @@ export class LinkChatView {
     });
     this.#lobbyRefreshButton.append(kikiIcon("refresh"));
     this.#lobbyRefreshButton.addEventListener("click", () => void this.#refreshLobbies());
+    this.#lobbySpaceSelect.replaceChildren(
+      selectOption("", "♀ Female"),
+      selectOption("X", "♀♂ Mixed"),
+      selectOption("M", "♂ Male"),
+    );
+    this.#lobbySpaceSelect.value = typeof this.adapter.getRoomSearchSpace === "function"
+      ? this.adapter.getRoomSearchSpace()
+      : "";
+    this.#lobbySpaceSelect.addEventListener("change", () => {
+      this.#lobbyRooms = [];
+      void this.#refreshLobbies();
+    });
     this.#roomLobbiesPanel.append(
       element(
         "div",
@@ -4269,7 +4312,13 @@ export class LinkChatView {
             text: "Rooms containing your friends stay at the top. KikiLink refreshes only when you ask.",
           }),
         ),
-        element("div", { className: "kl-lobby-search-wrap" }, this.#lobbyQuery, this.#lobbyRefreshButton),
+        element(
+          "div",
+          { className: "kl-lobby-search-wrap" },
+          this.#lobbySpaceSelect,
+          this.#lobbyQuery,
+          this.#lobbyRefreshButton,
+        ),
       ),
       this.#lobbyStatus,
       this.#lobbyList,
@@ -4282,7 +4331,10 @@ export class LinkChatView {
     this.#lobbyStatus.textContent = "Refreshing Bondage Club rooms…";
     this.#lobbyStatus.dataset.state = "loading";
     try {
-      const rooms = await this.adapter.searchRooms(this.#lobbyQuery.value);
+      const rooms = await this.adapter.searchRooms(
+        this.#lobbyQuery.value,
+        this.#lobbySpaceSelect.value as BCRoomSearchSpace,
+      );
       if (token !== this.#lobbyRenderToken) return;
       this.#lobbyRooms = rooms;
       const friendNumbers = rooms.flatMap((room) => room.friends.map((friend) => friend.memberNumber));
@@ -4307,7 +4359,7 @@ export class LinkChatView {
     );
     const friendRoomCount = rooms.filter((room) => room.friends.length > 0).length;
     this.#lobbyStatus.textContent = rooms.length === 0
-      ? "No rooms match this filter."
+      ? `No rooms returned for ${lobbySpaceLabel(this.#lobbySpaceSelect.value)}.`
       : `${rooms.length} rooms · ${friendRoomCount} with friends`;
     this.#lobbyStatus.dataset.state = rooms.length > 0 ? "ready" : "empty";
     this.#lobbyList.replaceChildren(...rooms.map((room) => this.#lobbyCard(room)));
@@ -4327,6 +4379,7 @@ export class LinkChatView {
     }
     const flags = [
       room.language,
+      room.creator ? `by ${room.creator}` : "",
       room.mapType,
       room.locked ? "Locked" : "",
       room.privateRoom ? "Private" : "",
@@ -4736,11 +4789,29 @@ export class LinkChatView {
       void this.#renderMusicPage();
     });
     this.#newPlaylistButton.addEventListener("click", () => this.#createPlaylist());
+    const renamePlaylist = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Rename",
+      onClick: () => this.#renameActivePlaylist(),
+    });
+    const duplicatePlaylist = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Duplicate",
+      onClick: () => this.#duplicateActivePlaylist(),
+    });
+    const clearPlaylist = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Clear",
+      onClick: () => void this.#clearActivePlaylist(),
+    });
     const deletePlaylist = element("button", {
       className: "kl-text-button kl-text-button--danger",
       type: "button",
-      text: "Delete playlist",
-      onClick: () => this.#deleteActivePlaylist(),
+      text: "Delete",
+      onClick: () => void this.#deleteActivePlaylist(),
     });
 
     this.#musicTitleInput.type = "text";
@@ -4751,11 +4822,16 @@ export class LinkChatView {
     this.#musicUrlInput.maxLength = 500;
     this.#musicFileInput.type = "file";
     this.#musicFileInput.accept = "audio/*,video/mp4,.aac,.flac,.m4a,.mp3,.mp4,.oga,.ogg,.opus,.wav,.webm";
+    this.#musicFileInput.multiple = true;
     this.#musicFileMode.replaceChildren(
       selectOption("local", "Keep only on this device"),
       selectOption("catbox", "Upload permanently to Catbox"),
     );
     this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
+    this.#musicQueueSearch.type = "search";
+    this.#musicQueueSearch.placeholder = "Search this playlist";
+    this.#musicQueueSearch.autocomplete = "off";
+    this.#musicQueueSearch.addEventListener("input", () => void this.#renderMusicPage());
 
     const library = element(
       "section",
@@ -4764,7 +4840,20 @@ export class LinkChatView {
         "div",
         { className: "kl-music-playlist-toolbar" },
         element("label", {}, element("span", { text: "Playlist" }), this.#playlistSelect),
-        deletePlaylist,
+        element(
+          "div",
+          { className: "kl-music-playlist-actions" },
+          renamePlaylist,
+          duplicatePlaylist,
+          clearPlaylist,
+          deletePlaylist,
+        ),
+      ),
+      element(
+        "div",
+        { className: "kl-music-queue-tools" },
+        element("div", { className: "kl-music-queue-search-wrap" }, kikiIcon("search"), this.#musicQueueSearch),
+        this.#musicQueueSummary,
       ),
       this.#musicQueue,
     );
@@ -4783,6 +4872,44 @@ export class LinkChatView {
       }),
       this.#musicAddStatus,
       this.#musicAddButton,
+    );
+    this.#musicArtwork.replaceChildren(
+      element("span", { className: "kl-music-artwork-ring" }),
+      element("span", { className: "kl-music-artwork-center" }, kikiIcon("music")),
+    );
+    this.#musicPlaybackRate.replaceChildren(
+      selectOption("0.75", "0.75×"),
+      selectOption("1", "1×"),
+      selectOption("1.25", "1.25×"),
+      selectOption("1.5", "1.5×"),
+      selectOption("2", "2×"),
+    );
+    this.#musicPlaybackRate.value = "1";
+    this.#musicPlaybackRate.addEventListener("change", () => {
+      this.#audio.playbackRate = Number(this.#musicPlaybackRate.value) || 1;
+    });
+    this.#musicSleepSelect.replaceChildren(
+      selectOption("off", "Sleep timer off"),
+      selectOption("end", "After this track"),
+      selectOption("15", "After 15 minutes"),
+      selectOption("30", "After 30 minutes"),
+      selectOption("60", "After 1 hour"),
+    );
+    this.#musicSleepSelect.value = "off";
+    this.#musicSleepSelect.addEventListener("change", () => this.#setMusicSleepTimer());
+    const nowPlaying = element(
+      "section",
+      { className: "kl-music-now-card" },
+      element("div", { className: "kl-music-now-eyebrow", text: "NOW PLAYING" }),
+      this.#musicArtwork,
+      element("div", { className: "kl-music-now-card-copy" }, this.#musicNowTitle, this.#musicNowSource),
+      element(
+        "div",
+        { className: "kl-music-session-options" },
+        element("label", {}, element("span", { text: "Speed" }), this.#musicPlaybackRate),
+        element("label", {}, element("span", { text: "Sleep" }), this.#musicSleepSelect),
+      ),
+      this.#musicSleepStatus,
     );
 
     this.#musicProgress.type = "range";
@@ -4803,6 +4930,10 @@ export class LinkChatView {
     this.#musicNextButton.addEventListener("click", () => void this.#nextTrack(false));
     this.#musicRepeatButton.addEventListener("click", () => this.#cycleMusicRepeat());
     this.#musicShuffleButton.addEventListener("click", () => this.#toggleMusicShuffle());
+    this.#musicMuteButton.addEventListener("click", () => {
+      this.#audio.muted = !this.#audio.muted;
+      this.#renderMusicTransport();
+    });
     this.#musicVolume.type = "range";
     this.#musicVolume.min = "0";
     this.#musicVolume.max = "100";
@@ -4824,21 +4955,26 @@ export class LinkChatView {
       void this.#syncPlayingTrackToRoom();
     });
     this.#audio.addEventListener("pause", () => this.#renderMusicTransport());
-    this.#audio.addEventListener("ended", () => void this.#nextTrack(true));
+    this.#audio.addEventListener("ended", () => {
+      if (this.#musicStopAfterTrack) {
+        this.#musicStopAfterTrack = false;
+        this.#musicSleepSelect.value = "off";
+        this.#musicSleepStatus.textContent = "Stopped after the track.";
+        this.#stopMusic();
+        return;
+      }
+      void this.#nextTrack(true);
+    });
     this.#audio.addEventListener("error", () => {
       if (this.#activeTrackId) this.#toast("This track could not be played by the browser.", "error");
       this.#renderMusicTransport();
     });
 
+    this.#installMediaSessionHandlers();
+
     const player = element(
       "footer",
       { className: "kl-music-player" },
-      element(
-        "div",
-        { className: "kl-music-now" },
-        kikiIcon("music", "kl-music-now-icon"),
-        element("div", {}, this.#musicNowTitle, this.#musicNowSource),
-      ),
       element("div", { className: "kl-music-seek" }, this.#musicProgress, this.#musicTime),
       element(
         "div",
@@ -4848,18 +4984,19 @@ export class LinkChatView {
         this.#musicPlayButton,
         this.#musicNextButton,
         this.#musicRepeatButton,
+        this.#musicMuteButton,
         element("label", { className: "kl-music-volume" }, element("span", { text: "Volume" }), this.#musicVolume),
       ),
     );
     this.#musicPage.append(
       header,
-      element("div", { className: "kl-music-body" }, library, add),
+      element("div", { className: "kl-music-body" }, library, element("div", { className: "kl-music-side" }, nowPlaying, add)),
       player,
     );
     void this.#renderMusicPage();
   }
 
-  async #renderMusicPage(): Promise<void> {
+  async #renderMusicPage(forceLocalRefresh = false): Promise<void> {
     const token = ++this.#musicRenderToken;
     const settings = this.settings.get().linkMusic;
     this.#playlistSelect.replaceChildren(
@@ -4876,14 +5013,24 @@ export class LinkChatView {
     this.#musicRepeatButton.dataset.active = String(settings.repeatMode !== "off");
     this.#musicShuffleButton.dataset.active = String(settings.shuffle);
     const playlist = activePlaylist(settings.playlists, settings.activePlaylistId);
-    const localTracks = new Set((await this.musicStore.list().catch(() => [])).map((track) => track.id));
+    const localTracks = await this.#getLocalMusicTrackIds(forceLocalRefresh);
     if (token !== this.#musicRenderToken) return;
+    const query = this.#musicQueueSearch.value.trim().toLocaleLowerCase();
+    const visibleTracks = playlist.tracks
+      .map((track, index) => ({ track, index }))
+      .filter(({ track }) => !query || `${track.title}\n${track.source}`.toLocaleLowerCase().includes(query));
+    this.#musicQueueSummary.textContent = query
+      ? `${visibleTracks.length} of ${playlist.tracks.length} tracks`
+      : `${playlist.tracks.length} track${playlist.tracks.length === 1 ? "" : "s"}`;
     this.#musicQueue.replaceChildren(
-      ...playlist.tracks.map((track, index) => this.#musicTrackRow(track, index, localTracks)),
+      ...visibleTracks.map(({ track, index }) => this.#musicTrackRow(track, index, localTracks)),
     );
-    if (playlist.tracks.length === 0) {
+    if (visibleTracks.length === 0) {
       this.#musicQueue.append(
-        element("div", { className: "kl-gallery-empty", text: "This playlist is empty." }),
+        element("div", {
+          className: "kl-gallery-empty",
+          text: playlist.tracks.length === 0 ? "This playlist is empty." : "No matching tracks.",
+        }),
       );
     }
     this.#renderMusicTransport();
@@ -4899,6 +5046,45 @@ export class LinkChatView {
       onClick: () => void this.#playTrack(track),
     }, kikiIcon(this.#activeTrackId === track.id && !this.#audio.paused ? "pause" : "play"));
     play.disabled = unavailable;
+    const menu = element("details", { className: "kl-music-track-menu" });
+    const menuToggle = element("summary", {
+      className: "kl-icon-button",
+      title: `Actions for ${track.title}`,
+      ariaLabel: `Actions for ${track.title}`,
+    }, kikiIcon("more"));
+    const actions = element(
+      "div",
+      { className: "kl-music-track-menu-popover" },
+      element("button", {
+        type: "button",
+        text: "Rename",
+        onClick: () => this.#renameMusicTrack(track),
+      }),
+      element("button", {
+        type: "button",
+        text: "Move up",
+        onClick: () => this.#moveMusicTrack(track, -1),
+      }),
+      element("button", {
+        type: "button",
+        text: "Move down",
+        onClick: () => this.#moveMusicTrack(track, 1),
+      }),
+    );
+    if (track.source !== "local") {
+      const original = element("a", { text: "Open original" });
+      original.href = track.locator;
+      original.target = "_blank";
+      original.rel = "noopener noreferrer";
+      actions.append(original);
+    }
+    actions.append(element("button", {
+      className: "kl-music-track-delete",
+      type: "button",
+      text: "Remove",
+      onClick: () => void this.#removeMusicTrack(track),
+    }));
+    menu.append(menuToggle, actions);
     const row = element(
       "article",
       { className: "kl-music-track" },
@@ -4918,15 +5104,10 @@ export class LinkChatView {
                 : "Direct link",
         }),
       ),
-      element("button", {
-        className: "kl-icon-button kl-music-track-remove",
-        type: "button",
-        title: "Remove from playlist",
-        ariaLabel: `Remove ${track.title}`,
-        onClick: () => void this.#removeMusicTrack(track),
-      }, kikiIcon("trash")),
+      menu,
     );
     row.dataset.active = String(this.#activeTrackId === track.id);
+    row.dataset.trackId = track.id;
     return row;
   }
 
@@ -4934,53 +5115,79 @@ export class LinkChatView {
     if (this.#musicAddButton.disabled) return;
     this.#musicAddButton.disabled = true;
     this.#musicAddStatus.textContent = "";
+    const staged: MusicTrack[] = [];
+    let committed = false;
     try {
       const trackCount = this.settings.get().linkMusic.playlists.reduce(
         (total, playlist) => total + playlist.tracks.length,
         0,
       );
-      if (trackCount >= 100) throw new Error("KikiLink supports up to 100 saved tracks");
-      const file = this.#musicFileInput.files?.[0];
-      let source: MusicTrack["source"];
-      let locator: string;
-      let fallbackTitle: string;
-      if (file) {
-        fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
-        if (this.#musicFileMode.value === "catbox") {
-          this.#musicAddStatus.textContent = "Uploading to Catbox…";
-          locator = await uploadMusicToCatbox(file);
-          source = "catbox";
-        } else {
-          this.#musicAddStatus.textContent = "Saving on this device…";
-          const stored = await this.musicStore.add(file);
-          locator = stored.id;
-          fallbackTitle = stored.name;
-          source = "local";
+      const files = [...(this.#musicFileInput.files ?? [])];
+      const addCount = Math.max(1, files.length);
+      if (trackCount + addCount > 100) {
+        throw new Error(`You can add ${Math.max(0, 100 - trackCount)} more tracks`);
+      }
+      if (files.length > 0) {
+        for (const [index, file] of files.entries()) {
+          let source: MusicTrack["source"];
+          let locator: string;
+          let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
+          if (this.#musicFileMode.value === "catbox") {
+            this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to Catbox…`;
+            locator = await uploadMusicToCatbox(file, undefined, (progress) => {
+              const amount = progress.percent === undefined ? "" : ` · ${progress.percent}%`;
+              this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length}${amount}`;
+            });
+            source = "catbox";
+          } else {
+            this.#musicAddStatus.textContent = `Saving ${index + 1}/${files.length} on this device…`;
+            const localTrackIds = await this.#getLocalMusicTrackIds();
+            const stored = await this.musicStore.add(file);
+            locator = stored.id;
+            fallbackTitle = stored.name.replace(/\.[^.]+$/u, "");
+            source = "local";
+            localTrackIds.add(stored.id);
+          }
+          staged.push({
+            id: createLocalId("track"),
+            title: ((files.length === 1 ? this.#musicTitleInput.value.trim() : "") || fallbackTitle || "Untitled track").slice(0, 80),
+            source,
+            locator,
+            addedAt: Date.now(),
+          });
         }
       } else {
-        locator = normalizeAudioTrackUrl(this.#musicUrlInput.value);
-        source = "url";
-        fallbackTitle = trackTitleFromUrl(locator);
+        const locator = normalizeAudioTrackUrl(this.#musicUrlInput.value);
+        staged.push({
+          id: createLocalId("track"),
+          title: (this.#musicTitleInput.value.trim() || trackTitleFromUrl(locator) || "Untitled track").slice(0, 80),
+          source: "url",
+          locator,
+          addedAt: Date.now(),
+        });
       }
-      const title = (this.#musicTitleInput.value.trim() || fallbackTitle || "Untitled track").slice(0, 80);
-      const track: MusicTrack = {
-        id: createLocalId("track"),
-        title,
-        source,
-        locator,
-        addedAt: Date.now(),
-      };
-      this.settings.update((draft) => {
-        const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
-        playlist.tracks.push(track);
-      });
+      this.#appendMusicTracks(staged);
+      committed = true;
       this.#musicTitleInput.value = "";
       this.#musicUrlInput.value = "";
       this.#musicFileInput.value = "";
-      this.#musicAddStatus.textContent = `Added “${title}”.`;
+      this.#musicAddStatus.textContent = staged.length === 1
+        ? `Added “${staged[0]!.title}”.`
+        : `Added ${staged.length} tracks.`;
       await this.#renderMusicPage();
     } catch (error) {
-      this.#musicAddStatus.textContent = error instanceof Error ? error.message : "The track could not be added.";
+      const message = error instanceof Error ? error.message : "The track could not be added.";
+      if (staged.length > 0 && !committed) {
+        this.#appendMusicTracks(staged);
+        committed = true;
+        this.#musicTitleInput.value = "";
+        this.#musicUrlInput.value = "";
+        this.#musicFileInput.value = "";
+        await this.#renderMusicPage();
+        this.#musicAddStatus.textContent = `Added ${staged.length}; stopped because: ${message}`;
+      } else {
+        this.#musicAddStatus.textContent = message;
+      }
       this.#toast(this.#musicAddStatus.textContent, "error");
     } finally {
       this.#musicAddButton.disabled = false;
@@ -5003,7 +5210,58 @@ export class LinkChatView {
     void this.#renderMusicPage();
   }
 
-  #deleteActivePlaylist(): void {
+  #renameActivePlaylist(): void {
+    const music = this.settings.get().linkMusic;
+    const playlist = activePlaylist(music.playlists, music.activePlaylistId);
+    const value = typeof prompt === "function" ? prompt("Playlist name", playlist.name) : playlist.name;
+    const name = value?.trim().slice(0, 60);
+    if (!name || name === playlist.name) return;
+    this.settings.update((draft) => {
+      activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId).name = name;
+    });
+    void this.#renderMusicPage();
+  }
+
+  #duplicateActivePlaylist(): void {
+    const music = this.settings.get().linkMusic;
+    if (music.playlists.length >= 8) {
+      this.#toast("KikiLink supports up to 8 playlists.", "error");
+      return;
+    }
+    const playlist = activePlaylist(music.playlists, music.activePlaylistId);
+    const total = music.playlists.reduce((count, candidate) => count + candidate.tracks.length, 0);
+    if (total + playlist.tracks.length > 100) {
+      this.#toast("Duplicating this playlist would exceed 100 saved tracks.", "error");
+      return;
+    }
+    const id = createLocalId("playlist");
+    this.settings.update((draft) => {
+      const source = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+      draft.linkMusic.playlists.push({
+        id,
+        name: `${source.name} copy`.slice(0, 60),
+        tracks: source.tracks.map((track) => ({ ...track, id: createLocalId("track"), addedAt: Date.now() })),
+      });
+      draft.linkMusic.activePlaylistId = id;
+    });
+    void this.#renderMusicPage();
+  }
+
+  async #clearActivePlaylist(): Promise<void> {
+    const music = this.settings.get().linkMusic;
+    const playlist = activePlaylist(music.playlists, music.activePlaylistId);
+    if (playlist.tracks.length === 0) return;
+    if (typeof confirm === "function" && !confirm(`Remove all tracks from “${playlist.name}”?`)) return;
+    const removed = [...playlist.tracks];
+    if (this.#activeTrackId && removed.some((track) => track.id === this.#activeTrackId)) this.#stopMusic();
+    this.settings.update((draft) => {
+      activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId).tracks = [];
+    });
+    await this.#deleteOrphanedLocalTracks(removed);
+    await this.#renderMusicPage();
+  }
+
+  async #deleteActivePlaylist(): Promise<void> {
     const music = this.settings.get().linkMusic;
     const playlist = activePlaylist(music.playlists, music.activePlaylistId);
     if (music.playlists.length <= 1) {
@@ -5011,13 +5269,15 @@ export class LinkChatView {
       return;
     }
     if (typeof confirm === "function" && !confirm(`Delete playlist “${playlist.name}”?`)) return;
-    const removedTrackIds = new Set(playlist.tracks.map((track) => track.id));
+    const removed = [...playlist.tracks];
+    const removedTrackIds = new Set(removed.map((track) => track.id));
     if (this.#activeTrackId && removedTrackIds.has(this.#activeTrackId)) this.#stopMusic();
     this.settings.update((draft) => {
       draft.linkMusic.playlists = draft.linkMusic.playlists.filter((candidate) => candidate.id !== playlist.id);
       draft.linkMusic.activePlaylistId = draft.linkMusic.playlists[0]!.id;
     });
-    void this.#renderMusicPage();
+    await this.#deleteOrphanedLocalTracks(removed);
+    await this.#renderMusicPage();
   }
 
   async #removeMusicTrack(track: MusicTrack): Promise<void> {
@@ -5026,13 +5286,32 @@ export class LinkChatView {
       const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
       playlist.tracks = playlist.tracks.filter((candidate) => candidate.id !== track.id);
     });
-    if (track.source === "local") {
-      const stillUsed = this.settings.get().linkMusic.playlists.some((playlist) =>
-        playlist.tracks.some((candidate) => candidate.source === "local" && candidate.locator === track.locator),
-      );
-      if (!stillUsed) await this.musicStore.delete(track.locator).catch(() => undefined);
-    }
+    await this.#deleteOrphanedLocalTracks([track]);
     await this.#renderMusicPage();
+  }
+
+  #renameMusicTrack(track: MusicTrack): void {
+    const value = typeof prompt === "function" ? prompt("Track title", track.title) : track.title;
+    const title = value?.trim().slice(0, 80);
+    if (!title || title === track.title) return;
+    this.settings.update((draft) => {
+      const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+      const saved = playlist.tracks.find((candidate) => candidate.id === track.id);
+      if (saved) saved.title = title;
+    });
+    void this.#renderMusicPage();
+  }
+
+  #moveMusicTrack(track: MusicTrack, direction: -1 | 1): void {
+    this.settings.update((draft) => {
+      const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+      const index = playlist.tracks.findIndex((candidate) => candidate.id === track.id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= playlist.tracks.length) return;
+      const [moved] = playlist.tracks.splice(index, 1);
+      if (moved) playlist.tracks.splice(target, 0, moved);
+    });
+    void this.#renderMusicPage();
   }
 
   async #playTrack(track: MusicTrack): Promise<void> {
@@ -5153,14 +5432,18 @@ export class LinkChatView {
     this.#musicPlayButton.replaceChildren(kikiIcon(track && !this.#audio.paused ? "pause" : "play"));
     this.#musicPlayButton.title = track && !this.#audio.paused ? "Pause" : "Play";
     this.#musicPlayButton.setAttribute("aria-label", this.#musicPlayButton.title);
+    this.#musicArtwork.dataset.playing = String(Boolean(track && !this.#audio.paused));
+    this.#musicMuteButton.textContent = this.#audio.muted ? "Unmute" : "Mute";
+    this.#musicMuteButton.dataset.active = String(this.#audio.muted);
     this.#renderMusicProgress();
     for (const row of this.#musicQueue.querySelectorAll<HTMLElement>(".kl-music-track")) {
       const button = row.querySelector<HTMLButtonElement>(".kl-music-track-play");
       if (!button) continue;
-      const rowTitle = row.querySelector("strong")?.textContent;
-      const active = rowTitle === track?.title && row.dataset.active === "true";
+      const active = row.dataset.trackId === track?.id;
+      row.dataset.active = String(active);
       button.replaceChildren(kikiIcon(active && !this.#audio.paused ? "pause" : "play"));
     }
+    this.#updateMediaSession(track);
   }
 
   #renderMusicProgress(): void {
@@ -5173,6 +5456,7 @@ export class LinkChatView {
       : "0";
     this.#musicProgress.disabled = duration <= 0;
     this.#musicTime.textContent = `${formatAudioTime(current)} / ${formatAudioTime(duration)}`;
+    this.#updateMediaSessionPosition(current, duration);
   }
 
   #stopMusic(): void {
@@ -5181,6 +5465,160 @@ export class LinkChatView {
     this.#activeTrackId = undefined;
     this.#releaseMusicObjectUrl();
     this.#renderMusicTransport();
+  }
+
+  #appendMusicTracks(tracks: MusicTrack[]): void {
+    if (tracks.length === 0) return;
+    this.settings.update((draft) => {
+      const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+      playlist.tracks.push(...tracks);
+    });
+  }
+
+  async #getLocalMusicTrackIds(force = false): Promise<Set<string>> {
+    if (!force && this.#localMusicTrackIds) return this.#localMusicTrackIds;
+    if (!force && this.#localMusicTrackIdsPromise) return this.#localMusicTrackIdsPromise;
+    const load = this.musicStore.list()
+      .catch(() => [])
+      .then((tracks) => {
+        this.#localMusicTrackIds = new Set(tracks.map((track) => track.id));
+        return this.#localMusicTrackIds;
+      });
+    this.#localMusicTrackIdsPromise = load;
+    try {
+      return await load;
+    } finally {
+      if (this.#localMusicTrackIdsPromise === load) this.#localMusicTrackIdsPromise = undefined;
+    }
+  }
+
+  async #deleteOrphanedLocalTracks(tracks: MusicTrack[]): Promise<void> {
+    const locators = new Set(
+      tracks.filter((track) => track.source === "local").map((track) => track.locator),
+    );
+    if (locators.size === 0) return;
+    const stillUsed = new Set(
+      this.settings.get().linkMusic.playlists.flatMap((playlist) =>
+        playlist.tracks.filter((track) => track.source === "local").map((track) => track.locator),
+      ),
+    );
+    const localTrackIds = await this.#getLocalMusicTrackIds();
+    await Promise.all([...locators]
+      .filter((locator) => !stillUsed.has(locator))
+      .map(async (locator) => {
+        await this.musicStore.delete(locator).catch(() => undefined);
+        localTrackIds.delete(locator);
+      }));
+  }
+
+  #setMusicSleepTimer(): void {
+    this.#clearMusicSleepTimer();
+    const value = this.#musicSleepSelect.value;
+    if (value === "off") {
+      this.#musicSleepStatus.textContent = "";
+      return;
+    }
+    if (value === "end") {
+      this.#musicStopAfterTrack = true;
+      this.#musicSleepStatus.textContent = "Playback will stop after this track.";
+      return;
+    }
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes) || minutes <= 0) return;
+    const stopAt = Date.now() + minutes * 60_000;
+    this.#musicSleepStatus.textContent = `Stops at ${new Date(stopAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
+    this.#musicSleepTimer = setTimeout(() => {
+      this.#musicSleepTimer = undefined;
+      this.#musicSleepSelect.value = "off";
+      this.#musicSleepStatus.textContent = "Sleep timer finished.";
+      this.#stopMusic();
+    }, minutes * 60_000);
+  }
+
+  #clearMusicSleepTimer(): void {
+    if (this.#musicSleepTimer !== undefined) clearTimeout(this.#musicSleepTimer);
+    this.#musicSleepTimer = undefined;
+    this.#musicStopAfterTrack = false;
+  }
+
+  #installMediaSessionHandlers(): void {
+    if (!("mediaSession" in navigator)) return;
+    const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
+      play: () => void this.#toggleMusicPlayback(),
+      pause: () => this.#audio.pause(),
+      previoustrack: () => void this.#previousTrack(),
+      nexttrack: () => void this.#nextTrack(false),
+      seekbackward: (details) => {
+        this.#audio.currentTime = Math.max(0, this.#audio.currentTime - (details.seekOffset ?? 10));
+      },
+      seekforward: (details) => {
+        this.#audio.currentTime = Math.min(this.#audio.duration || Infinity, this.#audio.currentTime + (details.seekOffset ?? 10));
+      },
+      seekto: (details) => {
+        if (typeof details.seekTime === "number") this.#audio.currentTime = details.seekTime;
+      },
+    };
+    for (const [action, handler] of Object.entries(handlers) as [MediaSessionAction, MediaSessionActionHandler][]) {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch {
+        // Some browsers expose Media Session but only implement a subset of actions.
+      }
+    }
+  }
+
+  #updateMediaSession(track: MusicTrack | undefined): void {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      navigator.mediaSession.playbackState = track
+        ? this.#audio.paused ? "paused" : "playing"
+        : "none";
+      if (!track) {
+        navigator.mediaSession.metadata = null;
+        return;
+      }
+      if (typeof MediaMetadata === "function") {
+        const music = this.settings.get().linkMusic;
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: track.title,
+          artist: "KikiLink",
+          album: activePlaylist(music.playlists, music.activePlaylistId).name,
+          artwork: [{ src: KIKILINK_EMBLEM_DATA_URL, type: "image/webp" }],
+        });
+      }
+    } catch {
+      // Media metadata is a progressive enhancement and must never stop playback.
+    }
+  }
+
+  #updateMediaSessionPosition(current: number, duration: number): void {
+    if (!("mediaSession" in navigator) || duration <= 0) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: this.#audio.playbackRate || 1,
+        position: Math.max(0, Math.min(current, duration)),
+      });
+    } catch {
+      // Firefox and older Chromium versions may expose only part of Media Session.
+    }
+  }
+
+  #clearMediaSession(): void {
+    if (!("mediaSession" in navigator)) return;
+    for (const action of ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"] as MediaSessionAction[]) {
+      try {
+        navigator.mediaSession.setActionHandler(action, null);
+      } catch {
+        // Ignore unsupported actions during teardown.
+      }
+    }
+    try {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = "none";
+    } catch {
+      // Ignore partial Media Session implementations.
+    }
   }
 
   #releaseMusicObjectUrl(): void {
@@ -8295,6 +8733,10 @@ function formatAudioTime(value: number): string {
   const seconds = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${(seconds % 60).toString().padStart(2, "0")}`;
+}
+
+function lobbySpaceLabel(value: string): string {
+  return value === "X" ? "Mixed" : value === "M" ? "Male" : "Female";
 }
 
 function rosterRelationshipLabel(relationship: PlayerRelationship): string {

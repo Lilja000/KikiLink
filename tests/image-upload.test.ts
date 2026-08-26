@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CloudinaryImageUploader,
   detectLocalImageType,
@@ -12,6 +12,10 @@ import {
   validateLocalImageFile,
   type PreparedLocalImage,
 } from "../src/modules/link-chat/image-upload";
+
+afterEach(() => {
+  Reflect.deleteProperty(globalThis, "GM_xmlhttpRequest");
+});
 
 describe("local image uploads", () => {
   it("recognizes only supported image signatures", () => {
@@ -157,6 +161,35 @@ describe("local image uploads", () => {
     expect(request.mock.calls[0]?.[0]).toBe("https://catbox.moe/user/api.php");
     const form = request.mock.calls[0]?.[1]?.body as FormData;
     expect((form.get("fileToUpload") as File).name).toBe("kikilink-track.ogg");
+  });
+
+  it("uses Tampermonkey's background request for Catbox and reports upload progress", async () => {
+    const progress = vi.fn();
+    let details: KikiLinkGmXhrDetails | undefined;
+    globalThis.GM_xmlhttpRequest = vi.fn((requestDetails: KikiLinkGmXhrDetails) => {
+      details = requestDetails;
+      queueMicrotask(() => {
+        requestDetails.onprogress?.({ loaded: 50, total: 100, lengthComputable: true });
+        requestDetails.onload({
+          status: 200,
+          responseText: "https://files.catbox.moe/firefox_track.mp3\n",
+        });
+      });
+      return { abort: vi.fn() };
+    });
+    const file = new File([bytes(1, 2, 3)], "private title.mp3", { type: "audio/mpeg" });
+
+    await expect(uploadMusicToCatbox(file, undefined, progress)).resolves.toBe(
+      "https://files.catbox.moe/firefox_track.mp3",
+    );
+    expect(details).toMatchObject({
+      method: "POST",
+      url: "https://catbox.moe/user/api.php",
+      anonymous: true,
+      timeout: 300_000,
+    });
+    expect((details?.data as FormData).get("reqtype")).toBe("fileupload");
+    expect(progress).toHaveBeenCalledWith({ loaded: 50, total: 100, percent: 50 });
   });
 
   it("uploads only the prepared generic WebP and validates the returned direct URL", async () => {

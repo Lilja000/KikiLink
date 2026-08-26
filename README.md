@@ -11,10 +11,10 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.22.0` adds a compact native lobby directory, account-scoped room presets, a device-aware
-music player with playlists and optional room following, an unmistakable profile/time control in the
-top bar, automatic lightweight profile avatars, and tolerant Custom Activity variables. The running
-version remains visible as tiny translucent digits in the lower-left corner.
+Version `0.22.1` fixes Firefox Catbox/Litterbox uploads through Tampermonkey's permissioned network
+bridge, restores live Lobbies while already inside a room, and upgrades Music with a searchable queue,
+batch imports, upload progress, playlist and track tools, speed, mute, sleep timers, and system media
+controls. The running version remains visible as tiny translucent digits in the lower-left corner.
 
 ## Link Deck
 
@@ -147,8 +147,11 @@ so they can follow that same account to another device.
 
 ## Music & Playlists
 
-- A dedicated compact music player with multiple playlists, a queue, seek bar, previous/next,
-  shuffle, repeat-one/repeat-all, and independent volume
+- A lacquer-and-gold now-playing card with a searchable queue, seek bar, previous/next, shuffle,
+  repeat-one/repeat-all, independent volume, mute, playback speed, and a sleep timer
+- Rename, duplicate, clear, and delete playlists; rename, reorder, open, or remove individual tracks
+- Select several local files in one pass and see live progress during sequential Catbox uploads
+- Browser/OS Media Session controls for play, pause, seeking, and previous/next where supported
 - Direct HTTPS tracks, local browser-only files up to 80 MB, or explicitly uploaded permanent
   Catbox tracks with generic filenames
 - Local blobs stay in an account-isolated IndexedDB on the current device; playlist metadata and

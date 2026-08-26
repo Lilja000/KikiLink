@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.22.1 - 2026-08-26
+
+- Fixed Firefox `NetworkError when attempting to fetch resource` for Catbox and Litterbox uploads.
+  Uploads now use Tampermonkey's narrowly granted background request with an explicit `catbox.moe`
+  connection permission, while KikiLink remains in the page realm required by Bondage Club.
+- Matched LianChat's live room-directory request by always sending Bondage Club's `Space`, `Game`,
+  and full-room fields. Added a compact Female/Mixed/Male selector and kept friend rooms first.
+- Redesigned Music around a lacquer-and-gold now-playing card and searchable queue. Added batch file
+  import, Catbox progress, playlist rename/duplicate/clear, track rename/reorder/original-link tools,
+  mute, playback speed, sleep timers, and browser Media Session controls.
+- Cached device-local track availability instead of reopening and scanning IndexedDB on every music
+  render, and now removes orphaned local blobs when clearing or deleting playlists.
+
 ## 0.22.0 - 2026-08-26
 
 - Replaced the ambiguous top-bar Online pill with a compact profile cell containing the current

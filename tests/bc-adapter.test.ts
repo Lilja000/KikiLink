@@ -367,6 +367,7 @@ describe("BCAdapter", () => {
       Name: "Kiki",
       FriendNames: new Map(),
     };
+    globalThis.ChatRoomData = { Space: "X" };
     const roomSearch = vi.fn(async (_query: string, _request: BCServerRoomSearchRequest) => ({
       value: [
         {
@@ -401,6 +402,8 @@ describe("BCAdapter", () => {
 
     expect(roomSearch).toHaveBeenCalledWith("MOON", expect.objectContaining({
       Query: "MOON",
+      Space: "X",
+      Game: "",
       FullRooms: true,
       ShowLocked: true,
     }));

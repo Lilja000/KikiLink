@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.22.0
+// @version      0.22.1
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -16,7 +16,8 @@
 // @run-at       document-end
 // @inject-into  page
 // @sandbox      raw
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      catbox.moe
 // ==/UserScript==
 "use strict";
 (() => {
@@ -696,7 +697,23 @@ One of mods you are using is using an old version of SDK. It will work for now b
         Action: "Update"
       });
     }
-    async searchRooms(query = "") {
+    getRoomSearchSpace() {
+      let roomSpace;
+      try {
+        roomSpace = typeof ChatRoomData === "object" && ChatRoomData !== null ? ChatRoomData.Space : void 0;
+      } catch {
+      }
+      if (roomSpace === "" || roomSpace === "X" || roomSpace === "M") {
+        return roomSpace;
+      }
+      try {
+        const lastRoomSpace = typeof Player === "object" && Player !== null ? Player.LastChatRoom?.Space : void 0;
+        return normalizeRoomSearchSpace(lastRoomSpace);
+      } catch {
+        return "";
+      }
+    }
+    async searchRooms(query = "", space = this.getRoomSearchSpace()) {
       if (typeof ServerRoomSearch !== "function") {
         throw new Error("Bondage Club's room search is still loading");
       }
@@ -704,6 +721,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const request = {
         Query: normalizedQuery,
         Language: "",
+        Space: normalizeRoomSearchSpace(space),
+        Game: "",
         FullRooms: true,
         ShowLocked: true,
         SearchDescs: true
@@ -1487,6 +1506,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const access = cleanStringArray(value.Access, 8, 30);
       return {
         name,
+        ...cleanText(value.Creator, 80) ? { creator: cleanText(value.Creator, 80) } : {},
         description: cleanText(value.Description, 200),
         language: cleanText(value.Language, 12),
         memberCount: boundedInteger(value.MemberCount, 0, 100, 0),
@@ -1500,6 +1520,9 @@ One of mods you are using is using an old version of SDK. It will work for now b
     } catch {
       return void 0;
     }
+  }
+  function normalizeRoomSearchSpace(value) {
+    return value === "X" || value === "M" ? value : "";
   }
   function normalizeRoomMediaUrl(value, kind) {
     const candidate = value.trim();
@@ -8770,7 +8793,7 @@ select:focus-visible {
 .kl-room-preset-create { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .kl-lobby-toolbar h2,
 .kl-room-preset-create h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); }
-.kl-lobby-search-wrap { width: min(380px, 48%); display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: 7px; }
+.kl-lobby-search-wrap { width: min(520px, 60%); display: grid; grid-template-columns: 122px minmax(0, 1fr) 42px; gap: 7px; }
 .kl-lobby-refresh { width: 42px; height: 42px; }
 .kl-lobby-refresh:disabled .kl-icon { animation: kl-spin 900ms linear infinite; }
 .kl-room-directory-status { margin-bottom: 9px; color: var(--kl-muted); font-size: var(--kl-type-xs); }
@@ -8808,18 +8831,28 @@ select:focus-visible {
 .kl-room-preset-copy > small { color: var(--kl-muted); }
 .kl-room-preset-actions { display: flex; gap: 6px; }
 
-/* Full music features live in one primary page, with a persistent transport at the bottom. */
+/* Music keeps the deep lacquer/gold KikiLink language while staying dense enough for a queue. */
 .kl-music-page { grid-template-rows: auto minmax(0, 1fr) auto; }
-.kl-music-body { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.75fr); gap: 14px; padding: 16px; overflow: hidden; }
+.kl-music-body { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(270px, 0.72fr); gap: 14px; padding: 16px; overflow: hidden; }
 .kl-music-library,
-.kl-music-add { min-width: 0; min-height: 0; display: grid; align-content: start; gap: 10px; padding: 13px; border: 1px solid var(--kl-border); border-radius: 15px; background: var(--kl-surface); }
-.kl-music-library { grid-template-rows: auto minmax(0, 1fr); }
-.kl-music-add { overflow-y: auto; }
+.kl-music-add,
+.kl-music-now-card { min-width: 0; min-height: 0; display: grid; align-content: start; gap: 10px; padding: 13px; border: 1px solid var(--kl-border); border-radius: 15px; background: var(--kl-surface); }
+.kl-music-library { grid-template-rows: auto auto minmax(0, 1fr); }
+.kl-music-side { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; overflow-y: auto; }
+.kl-music-add { overflow: visible; }
 .kl-music-add h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); }
 .kl-music-add label,
-.kl-music-playlist-toolbar label { display: grid; gap: 5px; color: var(--kl-muted); font-size: var(--kl-type-xs); font-weight: 800; }
-.kl-music-playlist-toolbar { display: flex; align-items: end; gap: 7px; }
+.kl-music-playlist-toolbar label,
+.kl-music-session-options label { display: grid; gap: 5px; color: var(--kl-muted); font-size: var(--kl-type-xs); font-weight: 800; }
+.kl-music-playlist-toolbar { display: grid; grid-template-columns: minmax(170px, 1fr) auto; align-items: end; gap: 9px; }
 .kl-music-playlist-toolbar label { min-width: 0; flex: 1 1 auto; }
+.kl-music-playlist-actions { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.kl-music-playlist-actions .kl-text-button { min-height: 34px; padding: 4px 8px; font-size: var(--kl-type-xxs); }
+.kl-music-queue-tools { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.kl-music-queue-search-wrap { min-width: 0; flex: 1 1 auto; position: relative; }
+.kl-music-queue-search-wrap > .kl-icon { position: absolute; left: 10px; top: 50%; width: 16px; height: 16px; color: var(--kl-meta); transform: translateY(-50%); pointer-events: none; }
+.kl-music-queue-search { width: 100%; padding-left: 34px; }
+.kl-music-queue-summary { flex: 0 0 auto; color: var(--kl-meta); font-size: var(--kl-type-xxs); font-variant-numeric: tabular-nums; }
 .kl-music-add-divider { display: flex; align-items: center; gap: 8px; color: var(--kl-meta); font-size: var(--kl-type-xxs); text-transform: uppercase; }
 .kl-music-add-divider::before,
 .kl-music-add-divider::after { content: ""; height: 1px; flex: 1 1 auto; background: var(--kl-border); }
@@ -8830,29 +8863,49 @@ select:focus-visible {
 .kl-music-track[data-active="true"] { border-color: color-mix(in srgb, var(--kl-accent), transparent 48%); background: color-mix(in srgb, var(--kl-accent), transparent 91%); }
 .kl-music-track-number { color: var(--kl-meta); font-size: var(--kl-type-xs); text-align: center; }
 .kl-music-track-play,
-.kl-music-track-remove { width: 34px; height: 34px; border-radius: 9px; }
+.kl-music-track-menu > summary { width: 34px; height: 34px; border-radius: 9px; }
 .kl-music-track-copy { min-width: 0; display: grid; gap: 1px; }
 .kl-music-track-copy strong,
 .kl-music-track-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kl-music-track-copy span { color: var(--kl-muted); font-size: var(--kl-type-xxs); }
-.kl-music-track-remove { color: var(--kl-muted); }
-.kl-music-player { display: grid; grid-template-columns: minmax(150px, 0.7fr) minmax(180px, 1fr) auto; gap: 14px; align-items: center; padding: 10px 15px; border-top: 1px solid var(--kl-border); background: var(--kl-composer-bg); }
-.kl-music-now { min-width: 0; display: flex; align-items: center; gap: 9px; }
-.kl-music-now-icon { width: 26px; height: 26px; color: var(--kl-gold); }
-.kl-music-now > div { min-width: 0; display: grid; }
+.kl-music-track-menu { position: relative; color: var(--kl-muted); }
+.kl-music-track-menu > summary { display: grid; place-items: center; list-style: none; cursor: pointer; }
+.kl-music-track-menu > summary::-webkit-details-marker { display: none; }
+.kl-music-track-menu-popover { position: absolute; z-index: 12; right: 0; top: calc(100% + 4px); width: 142px; display: grid; gap: 2px; padding: 5px; border: 1px solid var(--kl-border-strong); border-radius: 11px; background: var(--kl-panel-bg); box-shadow: 0 12px 30px rgba(0, 0, 0, .28); }
+.kl-music-track-menu-popover button,
+.kl-music-track-menu-popover a { min-height: 31px; display: flex; align-items: center; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--kl-text); font: inherit; font-size: var(--kl-type-xs); text-align: left; text-decoration: none; cursor: pointer; }
+.kl-music-track-menu-popover button:hover,
+.kl-music-track-menu-popover a:hover { background: var(--kl-surface-2); color: var(--kl-gold); }
+.kl-music-track-menu-popover .kl-music-track-delete { color: var(--kl-danger); }
+.kl-music-now-card { position: relative; justify-items: center; overflow: hidden; padding: 17px; background: radial-gradient(circle at 50% 36%, color-mix(in srgb, var(--kl-accent), transparent 76%), transparent 43%), linear-gradient(145deg, color-mix(in srgb, var(--kl-surface), #090708 16%), var(--kl-surface)); }
+.kl-music-now-card::before { content: "\u7D46"; position: absolute; right: 7px; top: -17px; color: color-mix(in srgb, var(--kl-gold), transparent 93%); font: 700 86px/1 Georgia, serif; pointer-events: none; }
+.kl-music-now-eyebrow { position: relative; z-index: 1; color: var(--kl-gold); font-size: var(--kl-type-xxs); font-weight: 900; letter-spacing: .17em; }
+.kl-music-artwork { position: relative; width: 112px; height: 112px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--kl-gold), transparent 46%); border-radius: 50%; background: repeating-radial-gradient(circle, #171316 0 3px, #0e0c0d 4px 6px); box-shadow: 0 14px 28px rgba(0, 0, 0, .32), inset 0 0 0 8px rgba(0, 0, 0, .24); }
+.kl-music-artwork[data-playing="true"] { animation: kl-music-turntable 8s linear infinite; }
+.kl-music-artwork-ring { position: absolute; inset: 15px; border: 1px solid color-mix(in srgb, var(--kl-gold), transparent 65%); border-radius: 50%; }
+.kl-music-artwork-center { width: 42px; height: 42px; display: grid; place-items: center; border: 2px solid color-mix(in srgb, var(--kl-gold), transparent 24%); border-radius: 50%; background: var(--kl-accent); color: var(--kl-accent-foreground); }
+.kl-music-artwork-center .kl-icon { width: 21px; height: 21px; }
+.kl-music-now-card-copy { position: relative; z-index: 1; min-width: 0; width: 100%; display: grid; gap: 3px; text-align: center; }
+.kl-music-now-card-copy .kl-music-now-title { font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); }
+.kl-music-session-options { width: 100%; display: grid; grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr); gap: 8px; }
+.kl-music-rate,
+.kl-music-sleep { width: 100%; }
+.kl-music-sleep-status { min-height: 16px; color: var(--kl-meta); font-size: var(--kl-type-xxs); text-align: center; }
+.kl-music-player { display: grid; grid-template-columns: minmax(180px, 1fr) auto; gap: 14px; align-items: center; padding: 10px 15px; border-top: 1px solid var(--kl-border); background: var(--kl-composer-bg); }
 .kl-music-now-title,
 .kl-music-now-source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kl-music-now-source { color: var(--kl-muted); font-size: var(--kl-type-xxs); }
 .kl-music-seek { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
 .kl-music-progress { width: 100%; accent-color: var(--kl-accent); }
 .kl-music-time { color: var(--kl-meta); font-size: var(--kl-type-xxs); font-variant-numeric: tabular-nums; }
-.kl-music-controls { display: flex; align-items: center; gap: 5px; }
+.kl-music-controls { display: flex; align-items: center; justify-content: flex-end; gap: 5px; flex-wrap: wrap; }
 .kl-music-play { border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 20%); background: var(--kl-accent); color: var(--kl-accent-foreground); }
 .kl-music-mode { min-height: 34px; padding: 4px 8px; color: var(--kl-muted); font-size: var(--kl-type-xxs); }
 .kl-music-mode[data-active="true"] { border-color: var(--kl-border-strong); color: var(--kl-gold); }
 .kl-music-volume { display: grid; grid-template-columns: auto 74px; gap: 5px; align-items: center; color: var(--kl-muted); font-size: var(--kl-type-xxs); }
 .kl-music-volume .kl-volume-input { width: 74px; }
 @keyframes kl-spin { to { transform: rotate(360deg); } }
+@keyframes kl-music-turntable { to { transform: rotate(360deg); } }
 @keyframes kl-image-loading { to { background-position: -240% 0; } }
 .kl-message-side-actions {
   display: flex;
@@ -8910,9 +8963,11 @@ select:focus-visible {
   .kl-music-body { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
   .kl-music-library { min-height: 310px; }
   .kl-music-queue { max-height: 260px; }
+  .kl-music-side { overflow: visible; }
+  .kl-music-playlist-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .kl-music-playlist-actions { justify-content: flex-start; }
   .kl-music-player { grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 9px 12px; }
   .kl-music-controls { justify-content: center; flex-wrap: wrap; }
-  .kl-music-now { display: none; }
 }
 
 @media (max-width: 410px) {
@@ -8928,6 +8983,9 @@ select:focus-visible {
   .kl-room-subnav-button { flex: 1 1 0; padding-inline: 5px; }
   .kl-lobbies-panel,
   .kl-room-presets-panel { padding: 12px; }
+  .kl-lobby-search-wrap { grid-template-columns: 104px minmax(0, 1fr) 40px; }
+  .kl-music-queue-tools { align-items: stretch; flex-direction: column; gap: 5px; }
+  .kl-music-queue-summary { align-self: flex-end; }
   .kl-lobby-card-footer { flex-wrap: wrap; }
   .kl-lobby-flags { flex-basis: 100%; }
   .kl-room-preset-card { grid-template-columns: minmax(0, 1fr); }
@@ -8957,7 +9015,7 @@ select:focus-visible {
   var LITTERBOX_UPLOAD_ENDPOINT = "https://litterbox.catbox.moe/resources/internals/api.php";
   var CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
   var LitterboxImageUploader = class {
-    constructor(request = globalThis.fetch.bind(globalThis)) {
+    constructor(request) {
       this.request = request;
     }
     request;
@@ -8972,36 +9030,23 @@ select:focus-visible {
       form.append("reqtype", "fileupload");
       form.append("time", normalizedConfig.retention);
       form.append("fileToUpload", preparedImageFile(image));
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
-      try {
-        const response = await this.request(LITTERBOX_UPLOAD_ENDPOINT, {
-          method: "POST",
-          body: form,
-          credentials: "omit",
-          referrerPolicy: "no-referrer",
-          signal: controller.signal
-        });
-        const payload = (await response.text().catch(() => "")).trim();
-        if (!response.ok) {
-          throw new Error(cleanProviderError(payload) || `Image host returned HTTP ${response.status}`);
-        }
-        const directUrl = normalizeImageUrl(payload);
-        if (!directUrl || !isExpectedLitterboxUrl(directUrl)) {
-          throw new Error("The temporary image host returned an unexpected link");
-        }
-        return directUrl;
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          throw new Error("The image upload timed out");
-        }
-        throw error;
-      } finally {
-        clearTimeout(timer);
+      const response = await uploadMultipart(
+        LITTERBOX_UPLOAD_ENDPOINT,
+        form,
+        IMAGE_UPLOAD_TIMEOUT_MS,
+        this.request
+      );
+      if (!response.ok) {
+        throw new Error(cleanProviderError(response.body) || `Image host returned HTTP ${response.status}`);
       }
+      const directUrl = normalizeImageUrl(response.body.trim());
+      if (!directUrl || !isExpectedLitterboxUrl(directUrl)) {
+        throw new Error("The temporary image host returned an unexpected link");
+      }
+      return directUrl;
     }
   };
-  async function uploadLocalRoomAudio(file, config, request = globalThis.fetch.bind(globalThis)) {
+  async function uploadLocalRoomAudio(file, config, request) {
     const normalizedConfig = normalizeLitterboxUploadConfig(config);
     if (!normalizedConfig) throw new Error("Choose a valid temporary music lifetime");
     if (file.size <= 0) throw new Error("Choose a non-empty audio file");
@@ -9018,33 +9063,20 @@ select:focus-visible {
         lastModified: 0
       })
     );
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
-    try {
-      const response = await request(LITTERBOX_UPLOAD_ENDPOINT, {
-        method: "POST",
-        body: form,
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-        signal: controller.signal
-      });
-      const payload = (await response.text().catch(() => "")).trim();
-      if (!response.ok) {
-        throw new Error(cleanProviderError(payload) || `Audio host returned HTTP ${response.status}`);
-      }
-      const url = normalizeLitterboxAudioUrl(payload);
-      if (!url) throw new Error("The temporary audio host returned an unexpected link");
-      return url;
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw new Error("The music upload timed out");
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
+    const response = await uploadMultipart(
+      LITTERBOX_UPLOAD_ENDPOINT,
+      form,
+      IMAGE_UPLOAD_TIMEOUT_MS,
+      request
+    );
+    if (!response.ok) {
+      throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
     }
+    const url = normalizeLitterboxAudioUrl(response.body.trim());
+    if (!url) throw new Error("The temporary audio host returned an unexpected link");
+    return url;
   }
-  async function uploadMusicToCatbox(file, request = globalThis.fetch.bind(globalThis)) {
+  async function uploadMusicToCatbox(file, request, onProgress) {
     if (file.size <= 0) throw new Error("Choose a non-empty audio file");
     if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
     const extension = playlistAudioExtension(file);
@@ -9058,31 +9090,19 @@ select:focus-visible {
         lastModified: 0
       })
     );
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12e4);
-    try {
-      const response = await request(CATBOX_UPLOAD_ENDPOINT, {
-        method: "POST",
-        body: form,
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-        signal: controller.signal
-      });
-      const payload = (await response.text().catch(() => "")).trim();
-      if (!response.ok) {
-        throw new Error(cleanProviderError(payload) || `Audio host returned HTTP ${response.status}`);
-      }
-      const url = normalizeCatboxAudioUrl(payload);
-      if (!url) throw new Error("Catbox returned an unexpected track link");
-      return url;
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw new Error("The Catbox upload timed out");
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
+    const response = await uploadMultipart(
+      CATBOX_UPLOAD_ENDPOINT,
+      form,
+      3e5,
+      request,
+      onProgress
+    );
+    if (!response.ok) {
+      throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
     }
+    const url = normalizeCatboxAudioUrl(response.body.trim());
+    if (!url) throw new Error("Catbox returned an unexpected track link");
+    return url;
   }
   function normalizeLitterboxUploadConfig(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -9248,6 +9268,67 @@ select:focus-visible {
       type: "image/webp",
       lastModified: 0
     });
+  }
+  async function uploadMultipart(endpoint, form, timeoutMs, request, onProgress) {
+    if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request);
+    if (typeof GM_xmlhttpRequest === "function") {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: "POST",
+          url: endpoint,
+          data: form,
+          anonymous: true,
+          timeout: timeoutMs,
+          onprogress: (event) => {
+            const loaded = Number.isFinite(event.loaded) ? Math.max(0, event.loaded) : 0;
+            const total = Number.isFinite(event.total) && (event.total ?? 0) > 0 ? event.total : void 0;
+            onProgress?.({
+              loaded,
+              ...total === void 0 ? {} : { total, percent: Math.min(100, Math.round(loaded / total * 100)) }
+            });
+          },
+          onload: (response) => resolve({
+            ok: response.status >= 200 && response.status < 300,
+            status: response.status,
+            body: response.responseText ?? ""
+          }),
+          onerror: (response) => reject(
+            new Error(response.status ? `Upload network request failed with HTTP ${response.status}` : "The upload host could not be reached")
+          ),
+          onabort: () => reject(new Error("The upload was cancelled")),
+          ontimeout: () => reject(new Error("The upload timed out"))
+        });
+      });
+    }
+    return uploadMultipartWithFetch(endpoint, form, timeoutMs, globalThis.fetch.bind(globalThis));
+  }
+  async function uploadMultipartWithFetch(endpoint, form, timeoutMs, request) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await request(endpoint, {
+        method: "POST",
+        body: form,
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        signal: controller.signal
+      });
+      return {
+        ok: response.ok,
+        status: response.status,
+        body: await response.text().catch(() => "")
+      };
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("The upload timed out");
+      }
+      if (error instanceof TypeError) {
+        throw new Error("The upload was blocked by the browser network policy");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
   function cleanProviderError(value) {
     return value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 180);
@@ -9666,6 +9747,10 @@ select:focus-visible {
     #roomLobbiesPanel = element("div", { className: "kl-room-subpanel kl-lobbies-panel" });
     #roomPresetsPanel = element("div", { className: "kl-room-subpanel kl-room-presets-panel" });
     #lobbyQuery = element("input", { className: "kl-search kl-lobby-search" });
+    #lobbySpaceSelect = element("select", {
+      className: "kl-select kl-lobby-space",
+      ariaLabel: "Lobby space"
+    });
     #lobbyRefreshButton = element("button", {
       className: "kl-icon-button kl-lobby-refresh",
       type: "button",
@@ -9704,6 +9789,12 @@ select:focus-visible {
     });
     #musicAddStatus = element("div", { className: "kl-music-add-status" });
     #musicQueue = element("div", { className: "kl-music-queue" });
+    #musicQueueSearch = element("input", {
+      className: "kl-search kl-music-queue-search",
+      ariaLabel: "Search current playlist"
+    });
+    #musicQueueSummary = element("span", { className: "kl-music-queue-summary" });
+    #musicArtwork = element("div", { className: "kl-music-artwork" });
     #musicNowTitle = element("strong", { className: "kl-music-now-title", text: "Nothing playing" });
     #musicNowSource = element("span", { className: "kl-music-now-source", text: "Choose a track" });
     #musicProgress = element("input", { className: "kl-music-progress" });
@@ -9736,6 +9827,20 @@ select:focus-visible {
       text: "Shuffle"
     });
     #musicVolume = element("input", { className: "kl-volume-input" });
+    #musicMuteButton = element("button", {
+      className: "kl-text-button kl-music-mode",
+      type: "button",
+      text: "Mute"
+    });
+    #musicPlaybackRate = element("select", {
+      className: "kl-select kl-music-rate",
+      ariaLabel: "Playback speed"
+    });
+    #musicSleepSelect = element("select", {
+      className: "kl-select kl-music-sleep",
+      ariaLabel: "Sleep timer"
+    });
+    #musicSleepStatus = element("span", { className: "kl-music-sleep-status" });
     #audio = document.createElement("audio");
     #settingsPage = element("section", {
       className: "kl-settings-page",
@@ -9982,6 +10087,10 @@ select:focus-visible {
     #localImageError;
     #activeTrackId;
     #musicObjectUrl;
+    #localMusicTrackIds;
+    #localMusicTrackIdsPromise;
+    #musicSleepTimer;
+    #musicStopAfterTrack = false;
     #roomPlaylistSyncEnabled = false;
     #lastRoomSyncedTrackUrl = "";
     #handleOutsidePointerDown = (event) => {
@@ -10066,6 +10175,8 @@ select:focus-visible {
       this.#presenceUnsubscribe = void 0;
       this.#audio.pause();
       this.#audio.removeAttribute("src");
+      this.#clearMusicSleepTimer();
+      this.#clearMediaSession();
       this.#releaseMusicObjectUrl();
       this.#roomBadge.destroy();
       this.#host.remove();
@@ -13292,6 +13403,16 @@ select:focus-visible {
       });
       this.#lobbyRefreshButton.append(kikiIcon("refresh"));
       this.#lobbyRefreshButton.addEventListener("click", () => void this.#refreshLobbies());
+      this.#lobbySpaceSelect.replaceChildren(
+        selectOption2("", "\u2640 Female"),
+        selectOption2("X", "\u2640\u2642 Mixed"),
+        selectOption2("M", "\u2642 Male")
+      );
+      this.#lobbySpaceSelect.value = typeof this.adapter.getRoomSearchSpace === "function" ? this.adapter.getRoomSearchSpace() : "";
+      this.#lobbySpaceSelect.addEventListener("change", () => {
+        this.#lobbyRooms = [];
+        void this.#refreshLobbies();
+      });
       this.#roomLobbiesPanel.append(
         element(
           "div",
@@ -13305,7 +13426,13 @@ select:focus-visible {
               text: "Rooms containing your friends stay at the top. KikiLink refreshes only when you ask."
             })
           ),
-          element("div", { className: "kl-lobby-search-wrap" }, this.#lobbyQuery, this.#lobbyRefreshButton)
+          element(
+            "div",
+            { className: "kl-lobby-search-wrap" },
+            this.#lobbySpaceSelect,
+            this.#lobbyQuery,
+            this.#lobbyRefreshButton
+          )
         ),
         this.#lobbyStatus,
         this.#lobbyList
@@ -13317,7 +13444,10 @@ select:focus-visible {
       this.#lobbyStatus.textContent = "Refreshing Bondage Club rooms\u2026";
       this.#lobbyStatus.dataset.state = "loading";
       try {
-        const rooms = await this.adapter.searchRooms(this.#lobbyQuery.value);
+        const rooms = await this.adapter.searchRooms(
+          this.#lobbyQuery.value,
+          this.#lobbySpaceSelect.value
+        );
         if (token !== this.#lobbyRenderToken) return;
         this.#lobbyRooms = rooms;
         const friendNumbers = rooms.flatMap((room) => room.friends.map((friend) => friend.memberNumber));
@@ -13340,7 +13470,7 @@ ${room.description}
 ${room.language}`.toLocaleLowerCase().includes(filter)
       );
       const friendRoomCount = rooms.filter((room) => room.friends.length > 0).length;
-      this.#lobbyStatus.textContent = rooms.length === 0 ? "No rooms match this filter." : `${rooms.length} rooms \xB7 ${friendRoomCount} with friends`;
+      this.#lobbyStatus.textContent = rooms.length === 0 ? `No rooms returned for ${lobbySpaceLabel(this.#lobbySpaceSelect.value)}.` : `${rooms.length} rooms \xB7 ${friendRoomCount} with friends`;
       this.#lobbyStatus.dataset.state = rooms.length > 0 ? "ready" : "empty";
       this.#lobbyList.replaceChildren(...rooms.map((room) => this.#lobbyCard(room)));
     }
@@ -13358,6 +13488,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       }
       const flags = [
         room.language,
+        room.creator ? `by ${room.creator}` : "",
         room.mapType,
         room.locked ? "Locked" : "",
         room.privateRoom ? "Private" : ""
@@ -13723,11 +13854,29 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         void this.#renderMusicPage();
       });
       this.#newPlaylistButton.addEventListener("click", () => this.#createPlaylist());
+      const renamePlaylist = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Rename",
+        onClick: () => this.#renameActivePlaylist()
+      });
+      const duplicatePlaylist = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Duplicate",
+        onClick: () => this.#duplicateActivePlaylist()
+      });
+      const clearPlaylist = element("button", {
+        className: "kl-text-button",
+        type: "button",
+        text: "Clear",
+        onClick: () => void this.#clearActivePlaylist()
+      });
       const deletePlaylist = element("button", {
         className: "kl-text-button kl-text-button--danger",
         type: "button",
-        text: "Delete playlist",
-        onClick: () => this.#deleteActivePlaylist()
+        text: "Delete",
+        onClick: () => void this.#deleteActivePlaylist()
       });
       this.#musicTitleInput.type = "text";
       this.#musicTitleInput.placeholder = "Track title (optional)";
@@ -13737,11 +13886,16 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#musicUrlInput.maxLength = 500;
       this.#musicFileInput.type = "file";
       this.#musicFileInput.accept = "audio/*,video/mp4,.aac,.flac,.m4a,.mp3,.mp4,.oga,.ogg,.opus,.wav,.webm";
+      this.#musicFileInput.multiple = true;
       this.#musicFileMode.replaceChildren(
         selectOption2("local", "Keep only on this device"),
         selectOption2("catbox", "Upload permanently to Catbox")
       );
       this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
+      this.#musicQueueSearch.type = "search";
+      this.#musicQueueSearch.placeholder = "Search this playlist";
+      this.#musicQueueSearch.autocomplete = "off";
+      this.#musicQueueSearch.addEventListener("input", () => void this.#renderMusicPage());
       const library = element(
         "section",
         { className: "kl-music-library" },
@@ -13749,7 +13903,20 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
           "div",
           { className: "kl-music-playlist-toolbar" },
           element("label", {}, element("span", { text: "Playlist" }), this.#playlistSelect),
-          deletePlaylist
+          element(
+            "div",
+            { className: "kl-music-playlist-actions" },
+            renamePlaylist,
+            duplicatePlaylist,
+            clearPlaylist,
+            deletePlaylist
+          )
+        ),
+        element(
+          "div",
+          { className: "kl-music-queue-tools" },
+          element("div", { className: "kl-music-queue-search-wrap" }, kikiIcon("search"), this.#musicQueueSearch),
+          this.#musicQueueSummary
         ),
         this.#musicQueue
       );
@@ -13769,6 +13936,44 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         this.#musicAddStatus,
         this.#musicAddButton
       );
+      this.#musicArtwork.replaceChildren(
+        element("span", { className: "kl-music-artwork-ring" }),
+        element("span", { className: "kl-music-artwork-center" }, kikiIcon("music"))
+      );
+      this.#musicPlaybackRate.replaceChildren(
+        selectOption2("0.75", "0.75\xD7"),
+        selectOption2("1", "1\xD7"),
+        selectOption2("1.25", "1.25\xD7"),
+        selectOption2("1.5", "1.5\xD7"),
+        selectOption2("2", "2\xD7")
+      );
+      this.#musicPlaybackRate.value = "1";
+      this.#musicPlaybackRate.addEventListener("change", () => {
+        this.#audio.playbackRate = Number(this.#musicPlaybackRate.value) || 1;
+      });
+      this.#musicSleepSelect.replaceChildren(
+        selectOption2("off", "Sleep timer off"),
+        selectOption2("end", "After this track"),
+        selectOption2("15", "After 15 minutes"),
+        selectOption2("30", "After 30 minutes"),
+        selectOption2("60", "After 1 hour")
+      );
+      this.#musicSleepSelect.value = "off";
+      this.#musicSleepSelect.addEventListener("change", () => this.#setMusicSleepTimer());
+      const nowPlaying = element(
+        "section",
+        { className: "kl-music-now-card" },
+        element("div", { className: "kl-music-now-eyebrow", text: "NOW PLAYING" }),
+        this.#musicArtwork,
+        element("div", { className: "kl-music-now-card-copy" }, this.#musicNowTitle, this.#musicNowSource),
+        element(
+          "div",
+          { className: "kl-music-session-options" },
+          element("label", {}, element("span", { text: "Speed" }), this.#musicPlaybackRate),
+          element("label", {}, element("span", { text: "Sleep" }), this.#musicSleepSelect)
+        ),
+        this.#musicSleepStatus
+      );
       this.#musicProgress.type = "range";
       this.#musicProgress.min = "0";
       this.#musicProgress.max = "1000";
@@ -13787,6 +13992,10 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#musicNextButton.addEventListener("click", () => void this.#nextTrack(false));
       this.#musicRepeatButton.addEventListener("click", () => this.#cycleMusicRepeat());
       this.#musicShuffleButton.addEventListener("click", () => this.#toggleMusicShuffle());
+      this.#musicMuteButton.addEventListener("click", () => {
+        this.#audio.muted = !this.#audio.muted;
+        this.#renderMusicTransport();
+      });
       this.#musicVolume.type = "range";
       this.#musicVolume.min = "0";
       this.#musicVolume.max = "100";
@@ -13807,20 +14016,24 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         void this.#syncPlayingTrackToRoom();
       });
       this.#audio.addEventListener("pause", () => this.#renderMusicTransport());
-      this.#audio.addEventListener("ended", () => void this.#nextTrack(true));
+      this.#audio.addEventListener("ended", () => {
+        if (this.#musicStopAfterTrack) {
+          this.#musicStopAfterTrack = false;
+          this.#musicSleepSelect.value = "off";
+          this.#musicSleepStatus.textContent = "Stopped after the track.";
+          this.#stopMusic();
+          return;
+        }
+        void this.#nextTrack(true);
+      });
       this.#audio.addEventListener("error", () => {
         if (this.#activeTrackId) this.#toast("This track could not be played by the browser.", "error");
         this.#renderMusicTransport();
       });
+      this.#installMediaSessionHandlers();
       const player = element(
         "footer",
         { className: "kl-music-player" },
-        element(
-          "div",
-          { className: "kl-music-now" },
-          kikiIcon("music", "kl-music-now-icon"),
-          element("div", {}, this.#musicNowTitle, this.#musicNowSource)
-        ),
         element("div", { className: "kl-music-seek" }, this.#musicProgress, this.#musicTime),
         element(
           "div",
@@ -13830,17 +14043,18 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
           this.#musicPlayButton,
           this.#musicNextButton,
           this.#musicRepeatButton,
+          this.#musicMuteButton,
           element("label", { className: "kl-music-volume" }, element("span", { text: "Volume" }), this.#musicVolume)
         )
       );
       this.#musicPage.append(
         header,
-        element("div", { className: "kl-music-body" }, library, add),
+        element("div", { className: "kl-music-body" }, library, element("div", { className: "kl-music-side" }, nowPlaying, add)),
         player
       );
       void this.#renderMusicPage();
     }
-    async #renderMusicPage() {
+    async #renderMusicPage(forceLocalRefresh = false) {
       const token = ++this.#musicRenderToken;
       const settings = this.settings.get().linkMusic;
       this.#playlistSelect.replaceChildren(
@@ -13853,14 +14067,21 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#musicRepeatButton.dataset.active = String(settings.repeatMode !== "off");
       this.#musicShuffleButton.dataset.active = String(settings.shuffle);
       const playlist = activePlaylist(settings.playlists, settings.activePlaylistId);
-      const localTracks = new Set((await this.musicStore.list().catch(() => [])).map((track) => track.id));
+      const localTracks = await this.#getLocalMusicTrackIds(forceLocalRefresh);
       if (token !== this.#musicRenderToken) return;
+      const query = this.#musicQueueSearch.value.trim().toLocaleLowerCase();
+      const visibleTracks = playlist.tracks.map((track, index) => ({ track, index })).filter(({ track }) => !query || `${track.title}
+${track.source}`.toLocaleLowerCase().includes(query));
+      this.#musicQueueSummary.textContent = query ? `${visibleTracks.length} of ${playlist.tracks.length} tracks` : `${playlist.tracks.length} track${playlist.tracks.length === 1 ? "" : "s"}`;
       this.#musicQueue.replaceChildren(
-        ...playlist.tracks.map((track, index) => this.#musicTrackRow(track, index, localTracks))
+        ...visibleTracks.map(({ track, index }) => this.#musicTrackRow(track, index, localTracks))
       );
-      if (playlist.tracks.length === 0) {
+      if (visibleTracks.length === 0) {
         this.#musicQueue.append(
-          element("div", { className: "kl-gallery-empty", text: "This playlist is empty." })
+          element("div", {
+            className: "kl-gallery-empty",
+            text: playlist.tracks.length === 0 ? "This playlist is empty." : "No matching tracks."
+          })
         );
       }
       this.#renderMusicTransport();
@@ -13875,6 +14096,45 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         onClick: () => void this.#playTrack(track)
       }, kikiIcon(this.#activeTrackId === track.id && !this.#audio.paused ? "pause" : "play"));
       play.disabled = unavailable;
+      const menu = element("details", { className: "kl-music-track-menu" });
+      const menuToggle = element("summary", {
+        className: "kl-icon-button",
+        title: `Actions for ${track.title}`,
+        ariaLabel: `Actions for ${track.title}`
+      }, kikiIcon("more"));
+      const actions = element(
+        "div",
+        { className: "kl-music-track-menu-popover" },
+        element("button", {
+          type: "button",
+          text: "Rename",
+          onClick: () => this.#renameMusicTrack(track)
+        }),
+        element("button", {
+          type: "button",
+          text: "Move up",
+          onClick: () => this.#moveMusicTrack(track, -1)
+        }),
+        element("button", {
+          type: "button",
+          text: "Move down",
+          onClick: () => this.#moveMusicTrack(track, 1)
+        })
+      );
+      if (track.source !== "local") {
+        const original = element("a", { text: "Open original" });
+        original.href = track.locator;
+        original.target = "_blank";
+        original.rel = "noopener noreferrer";
+        actions.append(original);
+      }
+      actions.append(element("button", {
+        className: "kl-music-track-delete",
+        type: "button",
+        text: "Remove",
+        onClick: () => void this.#removeMusicTrack(track)
+      }));
+      menu.append(menuToggle, actions);
       const row = element(
         "article",
         { className: "kl-music-track" },
@@ -13888,68 +14148,87 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
             text: unavailable ? "Local file missing on this device" : track.source === "local" ? "On this device" : track.source === "catbox" ? "Catbox" : "Direct link"
           })
         ),
-        element("button", {
-          className: "kl-icon-button kl-music-track-remove",
-          type: "button",
-          title: "Remove from playlist",
-          ariaLabel: `Remove ${track.title}`,
-          onClick: () => void this.#removeMusicTrack(track)
-        }, kikiIcon("trash"))
+        menu
       );
       row.dataset.active = String(this.#activeTrackId === track.id);
+      row.dataset.trackId = track.id;
       return row;
     }
     async #addMusicTrack() {
       if (this.#musicAddButton.disabled) return;
       this.#musicAddButton.disabled = true;
       this.#musicAddStatus.textContent = "";
+      const staged = [];
+      let committed = false;
       try {
         const trackCount = this.settings.get().linkMusic.playlists.reduce(
           (total, playlist) => total + playlist.tracks.length,
           0
         );
-        if (trackCount >= 100) throw new Error("KikiLink supports up to 100 saved tracks");
-        const file = this.#musicFileInput.files?.[0];
-        let source;
-        let locator;
-        let fallbackTitle;
-        if (file) {
-          fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
-          if (this.#musicFileMode.value === "catbox") {
-            this.#musicAddStatus.textContent = "Uploading to Catbox\u2026";
-            locator = await uploadMusicToCatbox(file);
-            source = "catbox";
-          } else {
-            this.#musicAddStatus.textContent = "Saving on this device\u2026";
-            const stored = await this.musicStore.add(file);
-            locator = stored.id;
-            fallbackTitle = stored.name;
-            source = "local";
+        const files = [...this.#musicFileInput.files ?? []];
+        const addCount = Math.max(1, files.length);
+        if (trackCount + addCount > 100) {
+          throw new Error(`You can add ${Math.max(0, 100 - trackCount)} more tracks`);
+        }
+        if (files.length > 0) {
+          for (const [index, file] of files.entries()) {
+            let source;
+            let locator;
+            let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
+            if (this.#musicFileMode.value === "catbox") {
+              this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to Catbox\u2026`;
+              locator = await uploadMusicToCatbox(file, void 0, (progress) => {
+                const amount = progress.percent === void 0 ? "" : ` \xB7 ${progress.percent}%`;
+                this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length}${amount}`;
+              });
+              source = "catbox";
+            } else {
+              this.#musicAddStatus.textContent = `Saving ${index + 1}/${files.length} on this device\u2026`;
+              const localTrackIds = await this.#getLocalMusicTrackIds();
+              const stored = await this.musicStore.add(file);
+              locator = stored.id;
+              fallbackTitle = stored.name.replace(/\.[^.]+$/u, "");
+              source = "local";
+              localTrackIds.add(stored.id);
+            }
+            staged.push({
+              id: createLocalId("track"),
+              title: ((files.length === 1 ? this.#musicTitleInput.value.trim() : "") || fallbackTitle || "Untitled track").slice(0, 80),
+              source,
+              locator,
+              addedAt: Date.now()
+            });
           }
         } else {
-          locator = normalizeAudioTrackUrl(this.#musicUrlInput.value);
-          source = "url";
-          fallbackTitle = trackTitleFromUrl(locator);
+          const locator = normalizeAudioTrackUrl(this.#musicUrlInput.value);
+          staged.push({
+            id: createLocalId("track"),
+            title: (this.#musicTitleInput.value.trim() || trackTitleFromUrl(locator) || "Untitled track").slice(0, 80),
+            source: "url",
+            locator,
+            addedAt: Date.now()
+          });
         }
-        const title = (this.#musicTitleInput.value.trim() || fallbackTitle || "Untitled track").slice(0, 80);
-        const track = {
-          id: createLocalId("track"),
-          title,
-          source,
-          locator,
-          addedAt: Date.now()
-        };
-        this.settings.update((draft) => {
-          const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
-          playlist.tracks.push(track);
-        });
+        this.#appendMusicTracks(staged);
+        committed = true;
         this.#musicTitleInput.value = "";
         this.#musicUrlInput.value = "";
         this.#musicFileInput.value = "";
-        this.#musicAddStatus.textContent = `Added \u201C${title}\u201D.`;
+        this.#musicAddStatus.textContent = staged.length === 1 ? `Added \u201C${staged[0].title}\u201D.` : `Added ${staged.length} tracks.`;
         await this.#renderMusicPage();
       } catch (error) {
-        this.#musicAddStatus.textContent = error instanceof Error ? error.message : "The track could not be added.";
+        const message = error instanceof Error ? error.message : "The track could not be added.";
+        if (staged.length > 0 && !committed) {
+          this.#appendMusicTracks(staged);
+          committed = true;
+          this.#musicTitleInput.value = "";
+          this.#musicUrlInput.value = "";
+          this.#musicFileInput.value = "";
+          await this.#renderMusicPage();
+          this.#musicAddStatus.textContent = `Added ${staged.length}; stopped because: ${message}`;
+        } else {
+          this.#musicAddStatus.textContent = message;
+        }
         this.#toast(this.#musicAddStatus.textContent, "error");
       } finally {
         this.#musicAddButton.disabled = false;
@@ -13970,7 +14249,55 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       });
       void this.#renderMusicPage();
     }
-    #deleteActivePlaylist() {
+    #renameActivePlaylist() {
+      const music = this.settings.get().linkMusic;
+      const playlist = activePlaylist(music.playlists, music.activePlaylistId);
+      const value = typeof prompt === "function" ? prompt("Playlist name", playlist.name) : playlist.name;
+      const name = value?.trim().slice(0, 60);
+      if (!name || name === playlist.name) return;
+      this.settings.update((draft) => {
+        activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId).name = name;
+      });
+      void this.#renderMusicPage();
+    }
+    #duplicateActivePlaylist() {
+      const music = this.settings.get().linkMusic;
+      if (music.playlists.length >= 8) {
+        this.#toast("KikiLink supports up to 8 playlists.", "error");
+        return;
+      }
+      const playlist = activePlaylist(music.playlists, music.activePlaylistId);
+      const total = music.playlists.reduce((count2, candidate) => count2 + candidate.tracks.length, 0);
+      if (total + playlist.tracks.length > 100) {
+        this.#toast("Duplicating this playlist would exceed 100 saved tracks.", "error");
+        return;
+      }
+      const id = createLocalId("playlist");
+      this.settings.update((draft) => {
+        const source = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+        draft.linkMusic.playlists.push({
+          id,
+          name: `${source.name} copy`.slice(0, 60),
+          tracks: source.tracks.map((track) => ({ ...track, id: createLocalId("track"), addedAt: Date.now() }))
+        });
+        draft.linkMusic.activePlaylistId = id;
+      });
+      void this.#renderMusicPage();
+    }
+    async #clearActivePlaylist() {
+      const music = this.settings.get().linkMusic;
+      const playlist = activePlaylist(music.playlists, music.activePlaylistId);
+      if (playlist.tracks.length === 0) return;
+      if (typeof confirm === "function" && !confirm(`Remove all tracks from \u201C${playlist.name}\u201D?`)) return;
+      const removed = [...playlist.tracks];
+      if (this.#activeTrackId && removed.some((track) => track.id === this.#activeTrackId)) this.#stopMusic();
+      this.settings.update((draft) => {
+        activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId).tracks = [];
+      });
+      await this.#deleteOrphanedLocalTracks(removed);
+      await this.#renderMusicPage();
+    }
+    async #deleteActivePlaylist() {
       const music = this.settings.get().linkMusic;
       const playlist = activePlaylist(music.playlists, music.activePlaylistId);
       if (music.playlists.length <= 1) {
@@ -13978,13 +14305,15 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         return;
       }
       if (typeof confirm === "function" && !confirm(`Delete playlist \u201C${playlist.name}\u201D?`)) return;
-      const removedTrackIds = new Set(playlist.tracks.map((track) => track.id));
+      const removed = [...playlist.tracks];
+      const removedTrackIds = new Set(removed.map((track) => track.id));
       if (this.#activeTrackId && removedTrackIds.has(this.#activeTrackId)) this.#stopMusic();
       this.settings.update((draft) => {
         draft.linkMusic.playlists = draft.linkMusic.playlists.filter((candidate) => candidate.id !== playlist.id);
         draft.linkMusic.activePlaylistId = draft.linkMusic.playlists[0].id;
       });
-      void this.#renderMusicPage();
+      await this.#deleteOrphanedLocalTracks(removed);
+      await this.#renderMusicPage();
     }
     async #removeMusicTrack(track) {
       if (this.#activeTrackId === track.id) this.#stopMusic();
@@ -13992,13 +14321,30 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
         playlist.tracks = playlist.tracks.filter((candidate) => candidate.id !== track.id);
       });
-      if (track.source === "local") {
-        const stillUsed = this.settings.get().linkMusic.playlists.some(
-          (playlist) => playlist.tracks.some((candidate) => candidate.source === "local" && candidate.locator === track.locator)
-        );
-        if (!stillUsed) await this.musicStore.delete(track.locator).catch(() => void 0);
-      }
+      await this.#deleteOrphanedLocalTracks([track]);
       await this.#renderMusicPage();
+    }
+    #renameMusicTrack(track) {
+      const value = typeof prompt === "function" ? prompt("Track title", track.title) : track.title;
+      const title = value?.trim().slice(0, 80);
+      if (!title || title === track.title) return;
+      this.settings.update((draft) => {
+        const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+        const saved = playlist.tracks.find((candidate) => candidate.id === track.id);
+        if (saved) saved.title = title;
+      });
+      void this.#renderMusicPage();
+    }
+    #moveMusicTrack(track, direction) {
+      this.settings.update((draft) => {
+        const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+        const index = playlist.tracks.findIndex((candidate) => candidate.id === track.id);
+        const target = index + direction;
+        if (index < 0 || target < 0 || target >= playlist.tracks.length) return;
+        const [moved] = playlist.tracks.splice(index, 1);
+        if (moved) playlist.tracks.splice(target, 0, moved);
+      });
+      void this.#renderMusicPage();
     }
     async #playTrack(track) {
       let source;
@@ -14102,14 +14448,18 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#musicPlayButton.replaceChildren(kikiIcon(track && !this.#audio.paused ? "pause" : "play"));
       this.#musicPlayButton.title = track && !this.#audio.paused ? "Pause" : "Play";
       this.#musicPlayButton.setAttribute("aria-label", this.#musicPlayButton.title);
+      this.#musicArtwork.dataset.playing = String(Boolean(track && !this.#audio.paused));
+      this.#musicMuteButton.textContent = this.#audio.muted ? "Unmute" : "Mute";
+      this.#musicMuteButton.dataset.active = String(this.#audio.muted);
       this.#renderMusicProgress();
       for (const row of this.#musicQueue.querySelectorAll(".kl-music-track")) {
         const button = row.querySelector(".kl-music-track-play");
         if (!button) continue;
-        const rowTitle = row.querySelector("strong")?.textContent;
-        const active = rowTitle === track?.title && row.dataset.active === "true";
+        const active = row.dataset.trackId === track?.id;
+        row.dataset.active = String(active);
         button.replaceChildren(kikiIcon(active && !this.#audio.paused ? "pause" : "play"));
       }
+      this.#updateMediaSession(track);
     }
     #renderMusicProgress() {
       const duration = Number.isFinite(this.#audio.duration) && this.#audio.duration > 0 ? this.#audio.duration : 0;
@@ -14117,6 +14467,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#musicProgress.value = duration > 0 ? Math.round(Math.min(1, current / duration) * 1e3).toString() : "0";
       this.#musicProgress.disabled = duration <= 0;
       this.#musicTime.textContent = `${formatAudioTime(current)} / ${formatAudioTime(duration)}`;
+      this.#updateMediaSessionPosition(current, duration);
     }
     #stopMusic() {
       this.#audio.pause();
@@ -14124,6 +14475,140 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#activeTrackId = void 0;
       this.#releaseMusicObjectUrl();
       this.#renderMusicTransport();
+    }
+    #appendMusicTracks(tracks) {
+      if (tracks.length === 0) return;
+      this.settings.update((draft) => {
+        const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+        playlist.tracks.push(...tracks);
+      });
+    }
+    async #getLocalMusicTrackIds(force = false) {
+      if (!force && this.#localMusicTrackIds) return this.#localMusicTrackIds;
+      if (!force && this.#localMusicTrackIdsPromise) return this.#localMusicTrackIdsPromise;
+      const load = this.musicStore.list().catch(() => []).then((tracks) => {
+        this.#localMusicTrackIds = new Set(tracks.map((track) => track.id));
+        return this.#localMusicTrackIds;
+      });
+      this.#localMusicTrackIdsPromise = load;
+      try {
+        return await load;
+      } finally {
+        if (this.#localMusicTrackIdsPromise === load) this.#localMusicTrackIdsPromise = void 0;
+      }
+    }
+    async #deleteOrphanedLocalTracks(tracks) {
+      const locators = new Set(
+        tracks.filter((track) => track.source === "local").map((track) => track.locator)
+      );
+      if (locators.size === 0) return;
+      const stillUsed = new Set(
+        this.settings.get().linkMusic.playlists.flatMap(
+          (playlist) => playlist.tracks.filter((track) => track.source === "local").map((track) => track.locator)
+        )
+      );
+      const localTrackIds = await this.#getLocalMusicTrackIds();
+      await Promise.all([...locators].filter((locator) => !stillUsed.has(locator)).map(async (locator) => {
+        await this.musicStore.delete(locator).catch(() => void 0);
+        localTrackIds.delete(locator);
+      }));
+    }
+    #setMusicSleepTimer() {
+      this.#clearMusicSleepTimer();
+      const value = this.#musicSleepSelect.value;
+      if (value === "off") {
+        this.#musicSleepStatus.textContent = "";
+        return;
+      }
+      if (value === "end") {
+        this.#musicStopAfterTrack = true;
+        this.#musicSleepStatus.textContent = "Playback will stop after this track.";
+        return;
+      }
+      const minutes = Number(value);
+      if (!Number.isFinite(minutes) || minutes <= 0) return;
+      const stopAt = Date.now() + minutes * 6e4;
+      this.#musicSleepStatus.textContent = `Stops at ${new Date(stopAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
+      this.#musicSleepTimer = setTimeout(() => {
+        this.#musicSleepTimer = void 0;
+        this.#musicSleepSelect.value = "off";
+        this.#musicSleepStatus.textContent = "Sleep timer finished.";
+        this.#stopMusic();
+      }, minutes * 6e4);
+    }
+    #clearMusicSleepTimer() {
+      if (this.#musicSleepTimer !== void 0) clearTimeout(this.#musicSleepTimer);
+      this.#musicSleepTimer = void 0;
+      this.#musicStopAfterTrack = false;
+    }
+    #installMediaSessionHandlers() {
+      if (!("mediaSession" in navigator)) return;
+      const handlers = {
+        play: () => void this.#toggleMusicPlayback(),
+        pause: () => this.#audio.pause(),
+        previoustrack: () => void this.#previousTrack(),
+        nexttrack: () => void this.#nextTrack(false),
+        seekbackward: (details) => {
+          this.#audio.currentTime = Math.max(0, this.#audio.currentTime - (details.seekOffset ?? 10));
+        },
+        seekforward: (details) => {
+          this.#audio.currentTime = Math.min(this.#audio.duration || Infinity, this.#audio.currentTime + (details.seekOffset ?? 10));
+        },
+        seekto: (details) => {
+          if (typeof details.seekTime === "number") this.#audio.currentTime = details.seekTime;
+        }
+      };
+      for (const [action, handler] of Object.entries(handlers)) {
+        try {
+          navigator.mediaSession.setActionHandler(action, handler);
+        } catch {
+        }
+      }
+    }
+    #updateMediaSession(track) {
+      if (!("mediaSession" in navigator)) return;
+      try {
+        navigator.mediaSession.playbackState = track ? this.#audio.paused ? "paused" : "playing" : "none";
+        if (!track) {
+          navigator.mediaSession.metadata = null;
+          return;
+        }
+        if (typeof MediaMetadata === "function") {
+          const music = this.settings.get().linkMusic;
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: track.title,
+            artist: "KikiLink",
+            album: activePlaylist(music.playlists, music.activePlaylistId).name,
+            artwork: [{ src: kikilink_emblem_default, type: "image/webp" }]
+          });
+        }
+      } catch {
+      }
+    }
+    #updateMediaSessionPosition(current, duration) {
+      if (!("mediaSession" in navigator) || duration <= 0) return;
+      try {
+        navigator.mediaSession.setPositionState({
+          duration,
+          playbackRate: this.#audio.playbackRate || 1,
+          position: Math.max(0, Math.min(current, duration))
+        });
+      } catch {
+      }
+    }
+    #clearMediaSession() {
+      if (!("mediaSession" in navigator)) return;
+      for (const action of ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"]) {
+        try {
+          navigator.mediaSession.setActionHandler(action, null);
+        } catch {
+        }
+      }
+      try {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = "none";
+      } catch {
+      }
     }
     #releaseMusicObjectUrl() {
       if (!this.#musicObjectUrl) return;
@@ -16784,6 +17269,9 @@ ${expanded}` : expanded;
     const minutes = Math.floor(seconds / 60);
     return `${minutes}:${(seconds % 60).toString().padStart(2, "0")}`;
   }
+  function lobbySpaceLabel(value) {
+    return value === "X" ? "Mixed" : value === "M" ? "Male" : "Female";
+  }
   function rosterRelationshipLabel(relationship) {
     if (relationship === "owner") return "Owner";
     if (relationship === "lover") return "Lover";
@@ -18284,7 +18772,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.22.0");
+    const app = new KikiLinkApp("0.22.1");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

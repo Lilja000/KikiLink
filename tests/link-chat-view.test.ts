@@ -243,6 +243,7 @@ describe("LinkChatView", () => {
       updateRoomCustomization,
       runRoomMemberAction,
       applyRoomPreset,
+      getRoomSearchSpace: () => "X",
       searchRooms,
       joinRoom: vi.fn(),
       canSendBeep: () => true,
@@ -294,6 +295,7 @@ describe("LinkChatView", () => {
       ?.click();
     await vi.waitFor(() => {
       expect(searchRooms).toHaveBeenCalledOnce();
+      expect(searchRooms).toHaveBeenCalledWith("", "X");
       expect(shadow?.querySelector(".kl-lobby-card")?.textContent).toContain("Friends Lounge");
       expect(shadow?.querySelector(".kl-lobby-friend-avatar")?.getAttribute("title")).toContain("Reina");
     });
@@ -476,6 +478,12 @@ describe("LinkChatView", () => {
     const musicTitle = shadow?.querySelector<HTMLInputElement>(".kl-music-add input[type=text]");
     const musicUrl = shadow?.querySelector<HTMLInputElement>(".kl-music-add input[type=url]");
     if (!musicTitle || !musicUrl) throw new Error("Missing music controls");
+    expect(shadow?.querySelector<HTMLInputElement>(".kl-music-add input[type=file]")?.multiple).toBe(true);
+    expect(shadow?.querySelector(".kl-music-artwork")).not.toBeNull();
+    expect(shadow?.querySelector(".kl-music-queue-search")).not.toBeNull();
+    expect(shadow?.querySelector(".kl-music-rate")).not.toBeNull();
+    expect(shadow?.querySelector(".kl-music-sleep")).not.toBeNull();
+    expect(shadow?.querySelector(".kl-music-playlist-actions")?.textContent).toContain("Duplicate");
     musicTitle.value = "Moon Song";
     musicUrl.value = "https://files.catbox.moe/moon.mp3";
     shadow?.querySelector<HTMLButtonElement>(".kl-music-add .kl-text-button--primary")?.click();
@@ -486,6 +494,30 @@ describe("LinkChatView", () => {
         locator: "https://files.catbox.moe/moon.mp3",
       });
     });
+    const queueSearch = shadow?.querySelector<HTMLInputElement>(".kl-music-queue-search");
+    if (!queueSearch) throw new Error("Missing queue search");
+    queueSearch.value = "moon";
+    queueSearch.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-music-queue-summary")?.textContent).toBe("1 of 1 tracks");
+    });
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-music-playlist-actions button") ?? [])]
+      .find((button) => button.textContent === "Duplicate")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(settings.get().linkMusic.playlists).toHaveLength(2);
+      expect(settings.get().linkMusic.playlists[1]?.tracks[0]?.title).toBe("Moon Song");
+    });
+    const speed = shadow?.querySelector<HTMLSelectElement>(".kl-music-rate");
+    if (!speed) throw new Error("Missing music speed");
+    speed.value = "1.5";
+    speed.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(speed.value).toBe("1.5");
+    const sleep = shadow?.querySelector<HTMLSelectElement>(".kl-music-sleep");
+    if (!sleep) throw new Error("Missing music sleep timer");
+    sleep.value = "end";
+    sleep.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(shadow?.querySelector(".kl-music-sleep-status")?.textContent).toContain("after this track");
 
     shadow?.querySelector<HTMLButtonElement>('button[title="LinkChat"]')?.click();
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(

@@ -71,6 +71,13 @@ afterEach(async () => {
 });
 
 describe("published userscript runtime", () => {
+  it("keeps page-realm BC access while granting only the Catbox upload bridge", () => {
+    expect(USER_SCRIPT).toContain("// @sandbox      raw");
+    expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
+    expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
+    expect(USER_SCRIPT).not.toContain("// @grant        none");
+  });
+
   it("joins Echo and AFC in one ModSDK status-icon router in the built userscript", async () => {
     const calls: string[] = [];
     vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -384,7 +391,8 @@ describe("published userscript runtime", () => {
     );
 
     expect(USER_SCRIPT).toContain("// @sandbox      raw");
-    expect(USER_SCRIPT).toContain("// @grant        none");
+    expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
+    expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
     expect(USER_SCRIPT).not.toContain("unsafeWindow");
     expect(USER_SCRIPT).not.toContain("installBCPageContextBridge");
     expect(window.eval("typeof ServerSendBeepMessage")).toBe("function");
@@ -445,8 +453,8 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.22.0");
-    expect(version?.textContent).toBe("0.22.0");
+    expect(api.getVersion()).toBe("0.22.1");
+    expect(version?.textContent).toBe("0.22.1");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);

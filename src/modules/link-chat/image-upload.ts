@@ -14,6 +14,20 @@ const CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
 const CLOUD_NAME_PATTERN = /^[a-z0-9_-]{1,64}$/iu;
 const UPLOAD_PRESET_PATTERN = /^[a-z0-9_-]{1,128}$/iu;
 
+export interface UploadProgress {
+  loaded: number;
+  total?: number;
+  percent?: number;
+}
+
+type UploadProgressListener = (progress: UploadProgress) => void;
+
+interface MultipartUploadResponse {
+  ok: boolean;
+  status: number;
+  body: string;
+}
+
 export type LitterboxRetention = "1h" | "12h" | "24h" | "72h";
 
 export interface LitterboxUploadConfig {
@@ -49,7 +63,7 @@ interface CloudinaryUploadResponse {
  * only when `upload` is called explicitly.
  */
 export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploadConfig> {
-  constructor(private readonly request: typeof fetch = globalThis.fetch.bind(globalThis)) {}
+  constructor(private readonly request?: typeof fetch) {}
 
   prepare(file: File): Promise<PreparedLocalImage> {
     return prepareLocalImage(file);
@@ -64,42 +78,28 @@ export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploa
     form.append("reqtype", "fileupload");
     form.append("time", normalizedConfig.retention);
     form.append("fileToUpload", preparedImageFile(image));
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
-
-    try {
-      const response = await this.request(LITTERBOX_UPLOAD_ENDPOINT, {
-        method: "POST",
-        body: form,
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-        signal: controller.signal,
-      });
-      const payload = (await response.text().catch(() => "")).trim();
-      if (!response.ok) {
-        throw new Error(cleanProviderError(payload) || `Image host returned HTTP ${response.status}`);
-      }
-
-      const directUrl = normalizeImageUrl(payload);
-      if (!directUrl || !isExpectedLitterboxUrl(directUrl)) {
-        throw new Error("The temporary image host returned an unexpected link");
-      }
-      return directUrl;
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw new Error("The image upload timed out");
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
+    const response = await uploadMultipart(
+      LITTERBOX_UPLOAD_ENDPOINT,
+      form,
+      IMAGE_UPLOAD_TIMEOUT_MS,
+      this.request,
+    );
+    if (!response.ok) {
+      throw new Error(cleanProviderError(response.body) || `Image host returned HTTP ${response.status}`);
     }
+
+    const directUrl = normalizeImageUrl(response.body.trim());
+    if (!directUrl || !isExpectedLitterboxUrl(directUrl)) {
+      throw new Error("The temporary image host returned an unexpected link");
+    }
+    return directUrl;
   }
 }
 
 export async function uploadLocalRoomAudio(
   file: File,
   config: LitterboxUploadConfig,
-  request: typeof fetch = globalThis.fetch.bind(globalThis),
+  request?: typeof fetch,
 ): Promise<string> {
   const normalizedConfig = normalizeLitterboxUploadConfig(config);
   if (!normalizedConfig) throw new Error("Choose a valid temporary music lifetime");
@@ -118,37 +118,25 @@ export async function uploadLocalRoomAudio(
       lastModified: 0,
     }),
   );
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
-  try {
-    const response = await request(LITTERBOX_UPLOAD_ENDPOINT, {
-      method: "POST",
-      body: form,
-      credentials: "omit",
-      referrerPolicy: "no-referrer",
-      signal: controller.signal,
-    });
-    const payload = (await response.text().catch(() => "")).trim();
-    if (!response.ok) {
-      throw new Error(cleanProviderError(payload) || `Audio host returned HTTP ${response.status}`);
-    }
-    const url = normalizeLitterboxAudioUrl(payload);
-    if (!url) throw new Error("The temporary audio host returned an unexpected link");
-    return url;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("The music upload timed out");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
+  const response = await uploadMultipart(
+    LITTERBOX_UPLOAD_ENDPOINT,
+    form,
+    IMAGE_UPLOAD_TIMEOUT_MS,
+    request,
+  );
+  if (!response.ok) {
+    throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
   }
+  const url = normalizeLitterboxAudioUrl(response.body.trim());
+  if (!url) throw new Error("The temporary audio host returned an unexpected link");
+  return url;
 }
 
 /** Uploads an explicitly selected track to permanent, public Catbox storage. */
 export async function uploadMusicToCatbox(
   file: File,
-  request: typeof fetch = globalThis.fetch.bind(globalThis),
+  request?: typeof fetch,
+  onProgress?: UploadProgressListener,
 ): Promise<string> {
   if (file.size <= 0) throw new Error("Choose a non-empty audio file");
   if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
@@ -164,31 +152,19 @@ export async function uploadMusicToCatbox(
       lastModified: 0,
     }),
   );
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120_000);
-  try {
-    const response = await request(CATBOX_UPLOAD_ENDPOINT, {
-      method: "POST",
-      body: form,
-      credentials: "omit",
-      referrerPolicy: "no-referrer",
-      signal: controller.signal,
-    });
-    const payload = (await response.text().catch(() => "")).trim();
-    if (!response.ok) {
-      throw new Error(cleanProviderError(payload) || `Audio host returned HTTP ${response.status}`);
-    }
-    const url = normalizeCatboxAudioUrl(payload);
-    if (!url) throw new Error("Catbox returned an unexpected track link");
-    return url;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("The Catbox upload timed out");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
+  const response = await uploadMultipart(
+    CATBOX_UPLOAD_ENDPOINT,
+    form,
+    300_000,
+    request,
+    onProgress,
+  );
+  if (!response.ok) {
+    throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
   }
+  const url = normalizeCatboxAudioUrl(response.body.trim());
+  if (!url) throw new Error("Catbox returned an unexpected track link");
+  return url;
 }
 
 export class CloudinaryImageUploader implements LocalImageUploader<CloudinaryUploadConfig> {
@@ -506,6 +482,86 @@ function preparedImageFile(image: PreparedLocalImage): File {
     type: "image/webp",
     lastModified: 0,
   });
+}
+
+async function uploadMultipart(
+  endpoint: string,
+  form: FormData,
+  timeoutMs: number,
+  request?: typeof fetch,
+  onProgress?: UploadProgressListener,
+): Promise<MultipartUploadResponse> {
+  if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request);
+  if (typeof GM_xmlhttpRequest === "function") {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: endpoint,
+        data: form,
+        anonymous: true,
+        timeout: timeoutMs,
+        onprogress: (event) => {
+          const loaded = Number.isFinite(event.loaded) ? Math.max(0, event.loaded) : 0;
+          const total = Number.isFinite(event.total) && (event.total ?? 0) > 0
+            ? event.total
+            : undefined;
+          onProgress?.({
+            loaded,
+            ...(total === undefined
+              ? {}
+              : { total, percent: Math.min(100, Math.round((loaded / total) * 100)) }),
+          });
+        },
+        onload: (response) => resolve({
+          ok: response.status >= 200 && response.status < 300,
+          status: response.status,
+          body: response.responseText ?? "",
+        }),
+        onerror: (response) => reject(
+          new Error(response.status
+            ? `Upload network request failed with HTTP ${response.status}`
+            : "The upload host could not be reached"),
+        ),
+        onabort: () => reject(new Error("The upload was cancelled")),
+        ontimeout: () => reject(new Error("The upload timed out")),
+      });
+    });
+  }
+  return uploadMultipartWithFetch(endpoint, form, timeoutMs, globalThis.fetch.bind(globalThis));
+}
+
+async function uploadMultipartWithFetch(
+  endpoint: string,
+  form: FormData,
+  timeoutMs: number,
+  request: typeof fetch,
+): Promise<MultipartUploadResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await request(endpoint, {
+      method: "POST",
+      body: form,
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      body: await response.text().catch(() => ""),
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("The upload timed out");
+    }
+    if (error instanceof TypeError) {
+      throw new Error("The upload was blocked by the browser network policy");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function cleanProviderError(value: string): string {
