@@ -176,6 +176,19 @@ describe("LinkChatView", () => {
     let roomAdmin = true;
     const updateRoomCustomization = vi.fn();
     const runRoomMemberAction = vi.fn();
+    const applyRoomPreset = vi.fn();
+    const searchRooms = vi.fn(async () => [{
+      name: "Friends Lounge",
+      description: "Meet friends",
+      language: "EN",
+      memberCount: 4,
+      memberLimit: 10,
+      canJoin: true,
+      locked: false,
+      privateRoom: false,
+      mapType: "",
+      friends: [{ memberNumber: 123, memberName: "Reina" }],
+    }]);
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
@@ -194,6 +207,28 @@ describe("LinkChatView", () => {
           sizeMode: 2,
           musicSync: false,
         },
+        settings: {
+          name: "Moon Garden",
+          description: "Quiet room",
+          background: "Boudoir",
+          limit: 10,
+          game: "",
+          space: "X",
+          language: "EN",
+          visibility: ["All"],
+          access: ["All"],
+          blockCategory: [],
+          admins: [999],
+          whitelist: [123],
+          blacklist: [],
+          custom: {
+            imageUrl: "https://files.catbox.moe/old.webp",
+            imageFilter: "",
+            musicUrl: "https://cdn.example/old.mp3",
+            sizeMode: 2,
+            musicSync: false,
+          },
+        },
         players: [
           {
             memberNumber: 123,
@@ -207,6 +242,9 @@ describe("LinkChatView", () => {
       }),
       updateRoomCustomization,
       runRoomMemberAction,
+      applyRoomPreset,
+      searchRooms,
+      joinRoom: vi.fn(),
       canSendBeep: () => true,
       isReady: () => true,
       isInChatRoom: () => true,
@@ -250,6 +288,27 @@ describe("LinkChatView", () => {
       .find((button) => button.textContent === "Make admin")
       ?.click();
     expect(runRoomMemberAction).toHaveBeenCalledWith(123, "promote");
+
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-room-subnav-button") ?? [])]
+      .find((button) => button.textContent === "Lobbies")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(searchRooms).toHaveBeenCalledOnce();
+      expect(shadow?.querySelector(".kl-lobby-card")?.textContent).toContain("Friends Lounge");
+      expect(shadow?.querySelector(".kl-lobby-friend-avatar")?.getAttribute("title")).toContain("Reina");
+    });
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-room-subnav-button") ?? [])]
+      .find((button) => button.textContent === "Presets")
+      ?.click();
+    const presetName = shadow?.querySelector<HTMLInputElement>(".kl-preset-name");
+    if (!presetName) throw new Error("Missing room preset name");
+    presetName.value = "Saved Garden";
+    shadow?.querySelector<HTMLButtonElement>(".kl-room-preset-create .kl-text-button--primary")?.click();
+    expect(settings.get().linkRoom.presets[0]?.label).toBe("Saved Garden");
+    shadow?.querySelector<HTMLButtonElement>(".kl-room-preset-card .kl-text-button--primary")?.click();
+    expect(applyRoomPreset).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "Moon Garden", admins: [999] }),
+    );
 
     shadow?.querySelector<HTMLButtonElement>('.kl-nav-item[data-target="chat"]')?.click();
     shadow?.querySelector<HTMLButtonElement>(".kl-sidebar-heading-actions button")?.click();
@@ -408,8 +467,25 @@ describe("LinkChatView", () => {
     );
     expect(
       shadow?.querySelectorAll('.kl-feature-nav .kl-nav-item:not([data-target="settings"])'),
-    ).toHaveLength(5);
+    ).toHaveLength(6);
     expect(shadow?.querySelector('.kl-nav-item[data-target="home"] svg.kl-nav-icon')).not.toBeNull();
+    expect(shadow?.querySelector(".kl-presence-trigger-name")?.textContent).toBe("Kiki");
+    expect(shadow?.querySelector(".kl-local-clock")?.textContent).toMatch(/\d/);
+
+    shadow?.querySelector<HTMLButtonElement>('.kl-nav-item[data-target="music"]')?.click();
+    const musicTitle = shadow?.querySelector<HTMLInputElement>(".kl-music-add input[type=text]");
+    const musicUrl = shadow?.querySelector<HTMLInputElement>(".kl-music-add input[type=url]");
+    if (!musicTitle || !musicUrl) throw new Error("Missing music controls");
+    musicTitle.value = "Moon Song";
+    musicUrl.value = "https://files.catbox.moe/moon.mp3";
+    shadow?.querySelector<HTMLButtonElement>(".kl-music-add .kl-text-button--primary")?.click();
+    await vi.waitFor(() => {
+      expect(settings.get().linkMusic.playlists[0]?.tracks[0]).toMatchObject({
+        title: "Moon Song",
+        source: "url",
+        locator: "https://files.catbox.moe/moon.mp3",
+      });
+    });
 
     shadow?.querySelector<HTMLButtonElement>('button[title="LinkChat"]')?.click();
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.workspace).toBe(
@@ -825,9 +901,10 @@ describe("LinkChatView", () => {
       /\.kl-image-preview img \{[^}]*width: 100%;[^}]*height: auto;/,
     );
     const remoteAvatar = shadow?.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar");
-    expect(remoteAvatar?.querySelector("img")).toBeNull();
-    expect(remoteAvatar?.dataset.avatarState).toBe("available");
-    expect(remoteAvatar?.getAttribute("aria-label")).toContain("Show Reina's KikiLink avatar");
+    expect(remoteAvatar?.querySelector<HTMLImageElement>("img")?.src).toBe(
+      "https://i.imgur.com/reina.png",
+    );
+    expect(remoteAvatar?.getAttribute("aria-label")).toBeNull();
 
     shadow?.querySelector<HTMLButtonElement>(".kl-attach-image")?.click();
     const imageInput = shadow?.querySelector<HTMLInputElement>(".kl-image-url");
@@ -845,16 +922,8 @@ describe("LinkChatView", () => {
     await vi.waitFor(() => {
       expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain("Whisper");
       expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain("Player note");
-      expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain(
+      expect(shadow?.querySelector(".kl-profile-menu")?.textContent).not.toContain(
         "Show profile avatar",
-      );
-    });
-    const showAvatar = [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action") ?? [])]
-      .find((button) => button.textContent?.includes("Show profile avatar"));
-    showAvatar?.click();
-    await vi.waitFor(() => {
-      expect(remoteAvatar?.querySelector<HTMLImageElement>("img")?.src).toBe(
-        "https://i.imgur.com/reina.png",
       );
     });
     const allowedAvatarImage = remoteAvatar?.querySelector("img");

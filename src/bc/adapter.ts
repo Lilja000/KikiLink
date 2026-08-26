@@ -6,6 +6,7 @@ import type {
   KikiLinkEvents,
   OnlineFriend,
   PlayerRelationship,
+  RoomPresetData,
   RoomCharacter,
 } from "../core/types";
 import type { EventBus } from "../core/event-bus";
@@ -86,7 +87,26 @@ export interface BCRoomAdminSnapshot {
   roomName: string;
   isAdmin: boolean;
   customization: BCRoomCustomization;
+  settings: RoomPresetData;
   players: BCRoomAdminPlayer[];
+}
+
+export interface BCLobbyFriend {
+  memberNumber: number;
+  memberName: string;
+}
+
+export interface BCLobbyRoom {
+  name: string;
+  description: string;
+  language: string;
+  memberCount: number;
+  memberLimit: number;
+  canJoin: boolean;
+  locked: boolean;
+  privateRoom: boolean;
+  mapType: string;
+  friends: BCLobbyFriend[];
 }
 
 export type BCRoomMemberAction = "kick" | "promote" | "demote" | "whitelist" | "unwhitelist";
@@ -457,6 +477,28 @@ export class BCAdapter {
               : 1,
           musicSync: typeof custom?.MusicStart === "number",
         },
+        settings: {
+          name: cleanName(ChatRoomData.Name) ?? "Current room",
+          description: cleanText(ChatRoomData.Description, 200),
+          background: cleanText(ChatRoomData.Background, 120),
+          limit: boundedInteger(ChatRoomData.Limit, 2, 20, 10),
+          game: cleanText(ChatRoomData.Game, 40),
+          space: cleanText(ChatRoomData.Space, 20),
+          language: cleanText(ChatRoomData.Language, 12),
+          visibility: cleanStringArray(ChatRoomData.Visibility, 8, 30),
+          access: cleanStringArray(ChatRoomData.Access, 8, 30),
+          blockCategory: cleanStringArray(ChatRoomData.BlockCategory, 24, 40),
+          admins: cleanMemberNumberArray(admins, 20),
+          whitelist: cleanMemberNumberArray(whitelist, 100),
+          blacklist: cleanMemberNumberArray(ChatRoomData.Ban, 100),
+          custom: {
+            imageUrl: cleanText(custom?.ImageURL, 500),
+            imageFilter: cleanText(custom?.ImageFilter, 120),
+            musicUrl: cleanText(custom?.MusicURL, 500),
+            sizeMode: boundedInteger(custom?.SizeMode, 1, 3, 1),
+            musicSync: typeof custom?.MusicStart === "number",
+          },
+        },
         players: this.getRoomCharacters().map((character) => ({
           ...character,
           admin: admins.includes(character.memberNumber),
@@ -514,6 +556,125 @@ export class BCAdapter {
       Room: room,
       Action: "Update",
     });
+  }
+
+  applyRoomPreset(preset: RoomPresetData): void {
+    const snapshot = this.getRoomAdminSnapshot();
+    if (!snapshot) throw new Error("Open a Bondage Club chat room first");
+    if (!snapshot.isAdmin) throw new Error("Only a room administrator can apply room presets");
+    if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
+
+    const current = ChatRoomData as BCChatRoomData;
+    const room = typeof ChatRoomGetSettings === "function"
+      ? ChatRoomGetSettings(current)
+      : { ...current };
+    const ownMemberNumber = this.getOwnMemberNumber();
+    const admins = cleanMemberNumberArray(preset.admins, 20);
+    if (!admins.includes(ownMemberNumber)) admins.unshift(ownMemberNumber);
+    room.Name = cleanText(preset.name, 80) || snapshot.roomName;
+    room.Description = cleanText(preset.description, 200);
+    room.Background = cleanText(preset.background, 120);
+    room.Limit = boundedInteger(preset.limit, 2, 20, 10);
+    room.Game = cleanText(preset.game, 40);
+    room.Space = cleanText(preset.space, 20);
+    room.Language = cleanText(preset.language, 12);
+    room.Visibility = cleanStringArray(preset.visibility, 8, 30);
+    room.Access = cleanStringArray(preset.access, 8, 30);
+    room.BlockCategory = cleanStringArray(preset.blockCategory, 24, 40);
+    room.Admin = admins;
+    room.Whitelist = cleanMemberNumberArray(preset.whitelist, 100);
+    room.Ban = cleanMemberNumberArray(preset.blacklist, 100);
+
+    const custom: NonNullable<BCChatRoomData["Custom"]> = {
+      ...(current.Custom ?? {}),
+      SizeMode: boundedInteger(preset.custom.sizeMode, 1, 3, 1),
+    };
+    const imageUrl = normalizeRoomMediaUrl(preset.custom.imageUrl, "image");
+    const musicUrl = normalizeRoomMediaUrl(preset.custom.musicUrl, "audio");
+    if (imageUrl) custom.ImageURL = imageUrl;
+    else delete custom.ImageURL;
+    if (musicUrl) custom.MusicURL = musicUrl;
+    else delete custom.MusicURL;
+    const imageFilter = cleanText(preset.custom.imageFilter, 120);
+    if (imageFilter) custom.ImageFilter = imageFilter;
+    else delete custom.ImageFilter;
+    if (preset.custom.musicSync && musicUrl) {
+      custom.MusicStart = typeof CurrentTime === "number" && Number.isFinite(CurrentTime)
+        ? CurrentTime
+        : Date.now();
+    } else {
+      delete custom.MusicStart;
+    }
+    room.Custom = custom;
+    ServerSend("ChatRoomAdmin", {
+      MemberNumber:
+        typeof Player.ID === "number" && Number.isSafeInteger(Player.ID)
+          ? Player.ID
+          : Player.MemberNumber,
+      Room: room,
+      Action: "Update",
+    });
+  }
+
+  async searchRooms(query = ""): Promise<BCLobbyRoom[]> {
+    if (typeof ServerRoomSearch !== "function") {
+      throw new Error("Bondage Club's room search is still loading");
+    }
+    const normalizedQuery = query.trim().slice(0, 40).toLocaleUpperCase();
+    const request: BCServerRoomSearchRequest = {
+      Query: normalizedQuery,
+      Language: "",
+      FullRooms: true,
+      ShowLocked: true,
+      SearchDescs: true,
+    };
+    try {
+      const search = ServerRoomSearch as unknown as {
+        (data: BCServerRoomSearchRequest): Promise<BCServerRoomSearchResult>;
+        (query: string, data: BCServerRoomSearchRequest): Promise<BCServerRoomSearchResult>;
+      };
+      let response: BCServerRoomSearchResult;
+      try {
+        // Current BC accepts a query identity followed by the actual bounded request. Calling this
+        // shape first also survives wrappers whose Function.length was erased by another addon.
+        response = await search(normalizedQuery, request);
+      } catch {
+        // Compatibility with older clients that exposed only the request argument.
+        response = await search(request);
+      }
+      if (
+        response &&
+        !Array.isArray(response) &&
+        typeof response === "object" &&
+        (response.err || response.error)
+      ) {
+        throw new Error("Room search returned an error");
+      }
+      const value = Array.isArray(response)
+        ? response
+        : response && typeof response === "object" && Array.isArray(response.value)
+          ? response.value
+          : [];
+      return value
+        .map((candidate) => normalizeLobbyRoom(candidate))
+        .filter((candidate): candidate is BCLobbyRoom => candidate !== undefined)
+        .sort((left, right) =>
+          Number(right.friends.length > 0) - Number(left.friends.length > 0) ||
+          right.friends.length - left.friends.length ||
+          Number(right.canJoin) - Number(left.canJoin) ||
+          left.name.localeCompare(right.name),
+        );
+    } catch (error) {
+      this.#logger.warn("Room directory could not be read", error);
+      throw new Error("Bondage Club could not refresh the room list");
+    }
+  }
+
+  joinRoom(name: string): void {
+    const roomName = cleanText(name, 80);
+    if (!roomName) throw new Error("Choose a room first");
+    if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
+    ServerSend("ChatRoomJoin", { Name: roomName });
   }
 
   runRoomMemberAction(memberNumber: number, action: BCRoomMemberAction): void {
@@ -1372,6 +1533,85 @@ function cleanName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const name = value.trim();
   return name || undefined;
+}
+
+function cleanText(value: unknown, maxLength: number): string {
+  return typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, maxLength)
+    : "";
+}
+
+function boundedInteger(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
+    ? value
+    : fallback;
+}
+
+function cleanStringArray(value: unknown, limit: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const result = new Set<string>();
+  for (const candidate of value) {
+    const text = cleanText(candidate, maxLength);
+    if (text) result.add(text);
+    if (result.size >= limit) break;
+  }
+  return [...result];
+}
+
+function cleanMemberNumberArray(value: unknown, limit: number): number[] {
+  if (!Array.isArray(value)) return [];
+  const result = new Set<number>();
+  for (const candidate of value) {
+    if (typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0) {
+      result.add(candidate);
+    }
+    if (result.size >= limit) break;
+  }
+  return [...result];
+}
+
+function normalizeLobbyRoom(value: BCServerRoomSearchData): BCLobbyRoom | undefined {
+  try {
+    if (!value || typeof value !== "object") return undefined;
+    const name = cleanText(value.Name, 80);
+    if (!name) return undefined;
+    const friends: BCLobbyFriend[] = [];
+    const friendIds = new Set<number>();
+    if (Array.isArray(value.Friends)) {
+      for (const friend of value.Friends.slice(0, 12)) {
+        if (!friend || typeof friend !== "object") continue;
+        const memberNumber = friend.MemberNumber;
+        if (!Number.isSafeInteger(memberNumber) || memberNumber < 0 || friendIds.has(memberNumber)) {
+          continue;
+        }
+        friends.push({
+          memberNumber,
+          memberName:
+            cleanText(friend.MemberNickname, 80) ||
+            cleanText(friend.MemberName, 80) ||
+            `Member ${memberNumber}`,
+        });
+        friendIds.add(memberNumber);
+      }
+    }
+    const visibility = cleanStringArray(value.Visibility, 8, 30);
+    const access = cleanStringArray(value.Access, 8, 30);
+    return {
+      name,
+      description: cleanText(value.Description, 200),
+      language: cleanText(value.Language, 12),
+      memberCount: boundedInteger(value.MemberCount, 0, 100, 0),
+      memberLimit: boundedInteger(value.MemberLimit, 1, 100, 10),
+      canJoin: value.CanJoin === true,
+      locked: value.Locked === true || (access.length > 0 && !access.includes("All")),
+      privateRoom: value.Private === true || (visibility.length > 0 && !visibility.includes("All")),
+      mapType: cleanText(value.MapType, 40),
+      friends,
+    };
+  } catch {
+    // Firefox can deny reads from objects created in another userscript compartment.
+    return undefined;
+  }
 }
 
 function normalizeRoomMediaUrl(value: string, kind: "image" | "audio"): string | undefined {

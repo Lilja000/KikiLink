@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 18,
+  schemaVersion: 19,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -89,6 +89,16 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     },
     enabled: false,
     rules: [],
+  },
+  linkRoom: {
+    presets: [],
+  },
+  linkMusic: {
+    playlists: [{ id: "main", name: "My playlist", tracks: [] }],
+    activePlaylistId: "main",
+    repeatMode: "off",
+    shuffle: false,
+    volume: 70,
   },
 };
 
@@ -189,9 +199,11 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkActivities = isRecord(source.linkActivities) ? source.linkActivities : {};
   const linkRoster = isRecord(source.linkRoster) ? source.linkRoster : {};
   const linkReactions = isRecord(source.linkReactions) ? source.linkReactions : {};
+  const linkRoom = isRecord(source.linkRoom) ? source.linkRoom : {};
+  const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 18,
+    schemaVersion: 19,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -302,6 +314,103 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
       enabled: booleanOr(linkReactions.enabled, DEFAULT_SETTINGS.linkReactions.enabled),
       rules: sanitizeReactionRules(linkReactions.rules),
     },
+    linkRoom: {
+      presets: sanitizeRoomPresets(linkRoom.presets),
+    },
+    linkMusic: sanitizeMusicSettings(linkMusic),
+  };
+}
+
+function sanitizeRoomPresets(value: unknown): KikiLinkSettings["linkRoom"]["presets"] {
+  if (!Array.isArray(value)) return [];
+  const presets: KikiLinkSettings["linkRoom"]["presets"] = [];
+  const ids = new Set<string>();
+  for (const candidate of value.slice(0, 12)) {
+    if (!isRecord(candidate) || !isRecord(candidate.room)) continue;
+    const id = safeLocalId(candidate.id);
+    const label = cleanBoundedText(candidate.label, 60);
+    if (!id || !label || ids.has(id)) continue;
+    const room = candidate.room;
+    const custom = isRecord(room.custom) ? room.custom : {};
+    const savedAt = finiteTimestamp(candidate.savedAt);
+    presets.push({
+      id,
+      label,
+      savedAt,
+      room: {
+        name: cleanBoundedText(room.name, 80),
+        description: cleanBoundedText(room.description, 200),
+        background: cleanBoundedText(room.background, 120),
+        limit: integerInRange(room.limit, 2, 20, 10),
+        game: cleanBoundedText(room.game, 40),
+        space: cleanBoundedText(room.space, 20),
+        language: cleanBoundedText(room.language, 12),
+        visibility: sanitizeShortStringList(room.visibility, 8, 30),
+        access: sanitizeShortStringList(room.access, 8, 30),
+        blockCategory: sanitizeShortStringList(room.blockCategory, 24, 40),
+        admins: sanitizeMemberNumbers(room.admins, 20),
+        whitelist: sanitizeMemberNumbers(room.whitelist, 100),
+        blacklist: sanitizeMemberNumbers(room.blacklist, 100),
+        custom: {
+          imageUrl: sanitizeHttpsUrl(custom.imageUrl),
+          imageFilter: cleanBoundedText(custom.imageFilter, 120),
+          musicUrl: sanitizeHttpsUrl(custom.musicUrl),
+          sizeMode: integerInRange(custom.sizeMode, 1, 3, 1),
+          musicSync: booleanOr(custom.musicSync, false),
+        },
+      },
+    });
+    ids.add(id);
+  }
+  return presets.sort((left, right) => right.savedAt - left.savedAt);
+}
+
+function sanitizeMusicSettings(value: Record<string, unknown>): KikiLinkSettings["linkMusic"] {
+  const playlists: KikiLinkSettings["linkMusic"]["playlists"] = [];
+  const playlistIds = new Set<string>();
+  let trackBudget = 100;
+  if (Array.isArray(value.playlists)) {
+    for (const candidate of value.playlists.slice(0, 8)) {
+      if (!isRecord(candidate)) continue;
+      const id = safeLocalId(candidate.id);
+      const name = cleanBoundedText(candidate.name, 60);
+      if (!id || !name || playlistIds.has(id)) continue;
+      const tracks: KikiLinkSettings["linkMusic"]["playlists"][number]["tracks"] = [];
+      const trackIds = new Set<string>();
+      if (Array.isArray(candidate.tracks)) {
+        for (const track of candidate.tracks) {
+          if (trackBudget <= 0 || !isRecord(track)) break;
+          const trackId = safeLocalId(track.id);
+          const title = cleanBoundedText(track.title, 80);
+          const source = track.source === "catbox" || track.source === "local" ? track.source : "url";
+          const locator = source === "local" ? safeLocalId(track.locator) : sanitizeAudioUrl(track.locator);
+          if (!trackId || !title || !locator || trackIds.has(trackId)) continue;
+          tracks.push({
+            id: trackId,
+            title,
+            source,
+            locator,
+            addedAt: finiteTimestamp(track.addedAt),
+          });
+          trackIds.add(trackId);
+          trackBudget -= 1;
+        }
+      }
+      playlists.push({ id, name, tracks });
+      playlistIds.add(id);
+    }
+  }
+  if (playlists.length === 0) playlists.push(structuredClone(DEFAULT_SETTINGS.linkMusic.playlists[0]!));
+  const requestedActiveId = safeLocalId(value.activePlaylistId);
+  const activePlaylistId = playlists.some((playlist) => playlist.id === requestedActiveId)
+    ? requestedActiveId!
+    : playlists[0]!.id;
+  return {
+    playlists,
+    activePlaylistId,
+    repeatMode: value.repeatMode === "all" || value.repeatMode === "one" ? value.repeatMode : "off",
+    shuffle: booleanOr(value.shuffle, DEFAULT_SETTINGS.linkMusic.shuffle),
+    volume: integerInRange(value.volume, 0, 100, DEFAULT_SETTINGS.linkMusic.volume),
   };
 }
 
@@ -470,6 +579,71 @@ function sanitizeQuickActions(value: unknown): QuickAction[] {
     if (label && template) actions.push({ label, template });
   }
   return actions;
+}
+
+function safeLocalId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const id = value.trim().toLocaleLowerCase();
+  return /^[a-z0-9_-]{1,64}$/u.test(id) ? id : undefined;
+}
+
+function cleanBoundedText(value: unknown, maxLength: number): string {
+  return typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, maxLength)
+    : "";
+}
+
+function finiteTimestamp(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.min(Date.now(), Math.round(value))
+    : Date.now();
+}
+
+function sanitizeShortStringList(value: unknown, limit: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const result = new Set<string>();
+  for (const candidate of value) {
+    const text = cleanBoundedText(candidate, maxLength);
+    if (text) result.add(text);
+    if (result.size >= limit) break;
+  }
+  return [...result];
+}
+
+function sanitizeMemberNumbers(value: unknown, limit: number): number[] {
+  if (!Array.isArray(value)) return [];
+  const result = new Set<number>();
+  for (const candidate of value) {
+    if (typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0) {
+      result.add(candidate);
+    }
+    if (result.size >= limit) break;
+  }
+  return [...result];
+}
+
+function sanitizeHttpsUrl(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length > 500) return "";
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.username || url.password) return "";
+    return url.href.slice(0, 500);
+  } catch {
+    return "";
+  }
+}
+
+function sanitizeAudioUrl(value: unknown): string | undefined {
+  const url = sanitizeHttpsUrl(value);
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return /\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(parsed.pathname)
+      ? url
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function sanitizeLauncherPosition(value: unknown): { x: number; y: number } | null {

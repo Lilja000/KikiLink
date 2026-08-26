@@ -645,21 +645,21 @@ export function expandCustomActivityTemplate(
 ): string {
   const pronouns = context.pronouns ?? { subject: "they", object: "them", possessive: "their" };
   const values: Record<string, string> = {
-    "{target's gender}": pronouns.possessive,
-    "{target's}": possessiveName(context.targetName),
-    "{their}": pronouns.possessive,
-    "{they}": pronouns.subject,
-    "{them}": pronouns.object,
-    "{source}": context.sourceName,
-    "{me}": context.sourceName,
-    "{target}": context.targetName,
-    "{member}": context.targetMemberNumber?.toString() ?? "member",
+    "target's gender": pronouns.possessive,
+    "target's": possessiveName(context.targetName),
+    their: pronouns.possessive,
+    they: pronouns.subject,
+    them: pronouns.object,
+    source: context.sourceName,
+    me: context.sourceName,
+    target: context.targetName,
+    member: context.targetMemberNumber?.toString() ?? "member",
   };
   return template
     .trim()
     .replace(
-      /\{target's gender\}|\{target's\}|\{their\}|\{they\}|\{them\}|\{source\}|\{me\}|\{target\}|\{member\}/g,
-      (token) => values[token] ?? token,
+      /\{\s*(target's\s+gender|target's|their|they|them|source|me|target|member)\s*\}/giu,
+      (token, key: string) => values[key.toLocaleLowerCase().replace(/\s+/gu, " ")] ?? token,
     );
 }
 
@@ -667,11 +667,16 @@ export function expandActivityTemplate(
   template: string,
   context: { sourceName: string; target: RoomCharacter },
 ): string {
-  return template
-    .trim()
-    .replaceAll("{source}", context.sourceName)
-    .replaceAll("{target}", context.target.memberName)
-    .replaceAll("{member}", context.target.memberNumber.toString());
+  const values: Record<string, string> = {
+    source: context.sourceName,
+    me: context.sourceName,
+    target: context.target.memberName,
+    member: context.target.memberNumber.toString(),
+  };
+  return template.trim().replace(
+    /\{\s*(source|me|target|member)\s*\}/giu,
+    (token, key: string) => values[key.toLocaleLowerCase()] ?? token,
+  );
 }
 
 function parseActivityMeta(message: BCChatRoomMessage): ActivityMeta | undefined {

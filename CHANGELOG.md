@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.22.0 - 2026-08-26
+
+- Replaced the ambiguous top-bar Online pill with a compact profile cell containing the current
+  account's avatar, name, presence, and custom status. Added a minute-aligned local clock beside it
+  and kept both responsive on phones.
+- Decoupled profile avatars from shared-chat image privacy. KikiLink avatars now load automatically
+  in visible identity controls, while message and Gallery images still obey Ask first, Always show,
+  or Links only.
+- Fixed literal `{me}` leaking into room text by teaching both legacy and native Custom Activity
+  paths the same case-insensitive, whitespace-tolerant one-pass variables without reinterpreting
+  replacement names as templates.
+- Added a compact Lobbies subtool inside Room. It calls Bondage Club's native room-search API only
+  on open or explicit refresh, filters locally, sorts friend rooms first, and displays friend avatars
+  without adding another primary tab or another ModSDK hook.
+- Added up to twelve account-scoped Room Presets for ordinary room identity, access, roles, lists,
+  native/custom backgrounds, music, layout, and sync settings. Applying remains admin-only, preserves
+  the current user as an admin, and intentionally omits passwords and large map layouts.
+- Added a full Music destination with up to eight playlists and one hundred tracks, direct URLs,
+  device-only local files, explicit permanent Catbox upload, seeking, volume, queue removal,
+  previous/next, shuffle, and repeat modes.
+- Added a session-only Room follow switch. A current administrator can mirror each newly playing
+  remote MP3/MP4 track into native room music; local-only and unsupported tracks are refused with a
+  visible explanation, and repeated room updates are deduplicated.
+- Added account-isolated IndexedDB music storage, bounded schema-19 sanitization, Firefox-safe lobby
+  object copying, new native icon geometry, responsive layouts, and regressions for every new path.
+
 ## 0.21.1 - 2026-08-25
 
 - Added a branded About category with the KikiLink wolf emblem, creator identity, running version,

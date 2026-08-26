@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.21.1
+// @version      0.22.0
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -584,6 +584,28 @@ One of mods you are using is using an old version of SDK. It will work for now b
             sizeMode: typeof custom?.SizeMode === "number" && Number.isInteger(custom.SizeMode) && custom.SizeMode >= 1 && custom.SizeMode <= 3 ? custom.SizeMode : 1,
             musicSync: typeof custom?.MusicStart === "number"
           },
+          settings: {
+            name: cleanName(ChatRoomData.Name) ?? "Current room",
+            description: cleanText(ChatRoomData.Description, 200),
+            background: cleanText(ChatRoomData.Background, 120),
+            limit: boundedInteger(ChatRoomData.Limit, 2, 20, 10),
+            game: cleanText(ChatRoomData.Game, 40),
+            space: cleanText(ChatRoomData.Space, 20),
+            language: cleanText(ChatRoomData.Language, 12),
+            visibility: cleanStringArray(ChatRoomData.Visibility, 8, 30),
+            access: cleanStringArray(ChatRoomData.Access, 8, 30),
+            blockCategory: cleanStringArray(ChatRoomData.BlockCategory, 24, 40),
+            admins: cleanMemberNumberArray(admins, 20),
+            whitelist: cleanMemberNumberArray(whitelist, 100),
+            blacklist: cleanMemberNumberArray(ChatRoomData.Ban, 100),
+            custom: {
+              imageUrl: cleanText(custom?.ImageURL, 500),
+              imageFilter: cleanText(custom?.ImageFilter, 120),
+              musicUrl: cleanText(custom?.MusicURL, 500),
+              sizeMode: boundedInteger(custom?.SizeMode, 1, 3, 1),
+              musicSync: typeof custom?.MusicStart === "number"
+            }
+          },
           players: this.getRoomCharacters().map((character) => ({
             ...character,
             admin: admins.includes(character.memberNumber),
@@ -625,6 +647,92 @@ One of mods you are using is using an old version of SDK. It will work for now b
         Room: room,
         Action: "Update"
       });
+    }
+    applyRoomPreset(preset) {
+      const snapshot = this.getRoomAdminSnapshot();
+      if (!snapshot) throw new Error("Open a Bondage Club chat room first");
+      if (!snapshot.isAdmin) throw new Error("Only a room administrator can apply room presets");
+      if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
+      const current = ChatRoomData;
+      const room = typeof ChatRoomGetSettings === "function" ? ChatRoomGetSettings(current) : { ...current };
+      const ownMemberNumber = this.getOwnMemberNumber();
+      const admins = cleanMemberNumberArray(preset.admins, 20);
+      if (!admins.includes(ownMemberNumber)) admins.unshift(ownMemberNumber);
+      room.Name = cleanText(preset.name, 80) || snapshot.roomName;
+      room.Description = cleanText(preset.description, 200);
+      room.Background = cleanText(preset.background, 120);
+      room.Limit = boundedInteger(preset.limit, 2, 20, 10);
+      room.Game = cleanText(preset.game, 40);
+      room.Space = cleanText(preset.space, 20);
+      room.Language = cleanText(preset.language, 12);
+      room.Visibility = cleanStringArray(preset.visibility, 8, 30);
+      room.Access = cleanStringArray(preset.access, 8, 30);
+      room.BlockCategory = cleanStringArray(preset.blockCategory, 24, 40);
+      room.Admin = admins;
+      room.Whitelist = cleanMemberNumberArray(preset.whitelist, 100);
+      room.Ban = cleanMemberNumberArray(preset.blacklist, 100);
+      const custom = {
+        ...current.Custom ?? {},
+        SizeMode: boundedInteger(preset.custom.sizeMode, 1, 3, 1)
+      };
+      const imageUrl = normalizeRoomMediaUrl(preset.custom.imageUrl, "image");
+      const musicUrl = normalizeRoomMediaUrl(preset.custom.musicUrl, "audio");
+      if (imageUrl) custom.ImageURL = imageUrl;
+      else delete custom.ImageURL;
+      if (musicUrl) custom.MusicURL = musicUrl;
+      else delete custom.MusicURL;
+      const imageFilter = cleanText(preset.custom.imageFilter, 120);
+      if (imageFilter) custom.ImageFilter = imageFilter;
+      else delete custom.ImageFilter;
+      if (preset.custom.musicSync && musicUrl) {
+        custom.MusicStart = typeof CurrentTime === "number" && Number.isFinite(CurrentTime) ? CurrentTime : Date.now();
+      } else {
+        delete custom.MusicStart;
+      }
+      room.Custom = custom;
+      ServerSend("ChatRoomAdmin", {
+        MemberNumber: typeof Player.ID === "number" && Number.isSafeInteger(Player.ID) ? Player.ID : Player.MemberNumber,
+        Room: room,
+        Action: "Update"
+      });
+    }
+    async searchRooms(query = "") {
+      if (typeof ServerRoomSearch !== "function") {
+        throw new Error("Bondage Club's room search is still loading");
+      }
+      const normalizedQuery = query.trim().slice(0, 40).toLocaleUpperCase();
+      const request = {
+        Query: normalizedQuery,
+        Language: "",
+        FullRooms: true,
+        ShowLocked: true,
+        SearchDescs: true
+      };
+      try {
+        const search = ServerRoomSearch;
+        let response;
+        try {
+          response = await search(normalizedQuery, request);
+        } catch {
+          response = await search(request);
+        }
+        if (response && !Array.isArray(response) && typeof response === "object" && (response.err || response.error)) {
+          throw new Error("Room search returned an error");
+        }
+        const value = Array.isArray(response) ? response : response && typeof response === "object" && Array.isArray(response.value) ? response.value : [];
+        return value.map((candidate) => normalizeLobbyRoom(candidate)).filter((candidate) => candidate !== void 0).sort(
+          (left, right) => Number(right.friends.length > 0) - Number(left.friends.length > 0) || right.friends.length - left.friends.length || Number(right.canJoin) - Number(left.canJoin) || left.name.localeCompare(right.name)
+        );
+      } catch (error) {
+        this.#logger.warn("Room directory could not be read", error);
+        throw new Error("Bondage Club could not refresh the room list");
+      }
+    }
+    joinRoom(name) {
+      const roomName = cleanText(name, 80);
+      if (!roomName) throw new Error("Choose a room first");
+      if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
+      ServerSend("ChatRoomJoin", { Name: roomName });
     }
     runRoomMemberAction(memberNumber, action) {
       const snapshot = this.getRoomAdminSnapshot();
@@ -1327,6 +1435,72 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const name = value.trim();
     return name || void 0;
   }
+  function cleanText(value, maxLength) {
+    return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, maxLength) : "";
+  }
+  function boundedInteger(value, min, max, fallback) {
+    return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+  }
+  function cleanStringArray(value, limit, maxLength) {
+    if (!Array.isArray(value)) return [];
+    const result = /* @__PURE__ */ new Set();
+    for (const candidate of value) {
+      const text = cleanText(candidate, maxLength);
+      if (text) result.add(text);
+      if (result.size >= limit) break;
+    }
+    return [...result];
+  }
+  function cleanMemberNumberArray(value, limit) {
+    if (!Array.isArray(value)) return [];
+    const result = /* @__PURE__ */ new Set();
+    for (const candidate of value) {
+      if (typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0) {
+        result.add(candidate);
+      }
+      if (result.size >= limit) break;
+    }
+    return [...result];
+  }
+  function normalizeLobbyRoom(value) {
+    try {
+      if (!value || typeof value !== "object") return void 0;
+      const name = cleanText(value.Name, 80);
+      if (!name) return void 0;
+      const friends = [];
+      const friendIds = /* @__PURE__ */ new Set();
+      if (Array.isArray(value.Friends)) {
+        for (const friend of value.Friends.slice(0, 12)) {
+          if (!friend || typeof friend !== "object") continue;
+          const memberNumber = friend.MemberNumber;
+          if (!Number.isSafeInteger(memberNumber) || memberNumber < 0 || friendIds.has(memberNumber)) {
+            continue;
+          }
+          friends.push({
+            memberNumber,
+            memberName: cleanText(friend.MemberNickname, 80) || cleanText(friend.MemberName, 80) || `Member ${memberNumber}`
+          });
+          friendIds.add(memberNumber);
+        }
+      }
+      const visibility = cleanStringArray(value.Visibility, 8, 30);
+      const access = cleanStringArray(value.Access, 8, 30);
+      return {
+        name,
+        description: cleanText(value.Description, 200),
+        language: cleanText(value.Language, 12),
+        memberCount: boundedInteger(value.MemberCount, 0, 100, 0),
+        memberLimit: boundedInteger(value.MemberLimit, 1, 100, 10),
+        canJoin: value.CanJoin === true,
+        locked: value.Locked === true || access.length > 0 && !access.includes("All"),
+        privateRoom: value.Private === true || visibility.length > 0 && !visibility.includes("All"),
+        mapType: cleanText(value.MapType, 40),
+        friends
+      };
+    } catch {
+      return void 0;
+    }
+  }
   function normalizeRoomMediaUrl(value, kind) {
     const candidate = value.trim();
     if (!candidate) return void 0;
@@ -1782,8 +1956,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
   }
   function sanitizeCustomActivity(value, index) {
     if (!isRecord(value)) return void 0;
-    const name = cleanText(value.name, 40);
-    const template = cleanText(value.template, 500);
+    const name = cleanText2(value.name, 40);
+    const template = cleanText2(value.template, 500);
     if (!name || !template) return void 0;
     const sourceId = cleanId(value.id) || `activity-${index + 1}`;
     const targetGroup = safeAssetName(value.targetGroup, DEFAULT_CUSTOM_ACTIVITY_GROUP);
@@ -1806,14 +1980,14 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const activities = [];
     for (const entry of value.slice(0, MAX_CUSTOM_ACTIVITIES)) {
       if (!isRecord(entry)) continue;
-      const label = cleanText(entry.label, 32);
-      const template = cleanText(entry.template, 500);
+      const label = cleanText2(entry.label, 32);
+      const template = cleanText2(entry.template, 500);
       if (!label || !template) continue;
       activities.push({
         label,
         template,
-        category: cleanText(entry.category, 24) || "Uncategorized",
-        pack: cleanText(entry.pack, 32) || "My Activities",
+        category: cleanText2(entry.category, 24) || "Uncategorized",
+        pack: cleanText2(entry.pack, 32) || "My Activities",
         favorite: entry.favorite === true
       });
     }
@@ -1823,7 +1997,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const slug = activity.label.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 36);
     return `legacy-${slug || index + 1}`;
   }
-  function cleanText(value, limit) {
+  function cleanText2(value, limit) {
     return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit) : "";
   }
   function cleanId(value) {
@@ -1864,8 +2038,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const ids = /* @__PURE__ */ new Set();
     for (const [index, entry] of value.slice(0, MAX_REACTION_RULES).entries()) {
       if (!isRecord2(entry)) continue;
-      const label = cleanText2(entry.label, 32);
-      const template = cleanText2(entry.template, 500);
+      const label = cleanText3(entry.label, 32);
+      const template = cleanText3(entry.template, 500);
       if (!label || !template) continue;
       const scope = entry.scope === "friends" || entry.scope === "members" ? entry.scope : "anyone";
       const memberNumbers = sanitizeMemberNumbers(entry.memberNumbers);
@@ -1880,7 +2054,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
         trigger: entry.trigger === "room-join" || entry.trigger === "room-leave" || entry.trigger === "friend-online" ? entry.trigger : "beep-received",
         scope,
         memberNumbers,
-        textMatch: cleanText2(entry.textMatch, 80),
+        textMatch: cleanText3(entry.textMatch, 80),
         action: entry.action === "room-emote" ? "room-emote" : "notice",
         template,
         cooldownSeconds: integerInRange2(
@@ -1914,7 +2088,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function cleanIdentifier(value) {
     return typeof value === "string" ? value.trim().toLocaleLowerCase().replace(/[^a-z0-9_-]/gu, "-").slice(0, 48) : "";
   }
-  function cleanText2(value, maxLength) {
+  function cleanText3(value, maxLength) {
     return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, maxLength) : "";
   }
   function integerInRange2(value, min, max, fallback) {
@@ -1926,7 +2100,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 18,
+    schemaVersion: 19,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -2002,6 +2176,16 @@ One of mods you are using is using an old version of SDK. It will work for now b
       },
       enabled: false,
       rules: []
+    },
+    linkRoom: {
+      presets: []
+    },
+    linkMusic: {
+      playlists: [{ id: "main", name: "My playlist", tracks: [] }],
+      activePlaylistId: "main",
+      repeatMode: "off",
+      shuffle: false,
+      volume: 70
     }
   };
   var SETTINGS_KEY = "kikilink:settings:v1";
@@ -2082,8 +2266,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkActivities = isRecord3(source.linkActivities) ? source.linkActivities : {};
     const linkRoster = isRecord3(source.linkRoster) ? source.linkRoster : {};
     const linkReactions = isRecord3(source.linkReactions) ? source.linkReactions : {};
+    const linkRoom = isRecord3(source.linkRoom) ? source.linkRoom : {};
+    const linkMusic = isRecord3(source.linkMusic) ? source.linkMusic : {};
     return {
-      schemaVersion: 18,
+      schemaVersion: 19,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -2161,7 +2347,100 @@ One of mods you are using is using an old version of SDK. It will work for now b
         sounds: sanitizeNotificationSounds(linkReactions.sounds),
         enabled: booleanOr(linkReactions.enabled, DEFAULT_SETTINGS.linkReactions.enabled),
         rules: sanitizeReactionRules(linkReactions.rules)
+      },
+      linkRoom: {
+        presets: sanitizeRoomPresets(linkRoom.presets)
+      },
+      linkMusic: sanitizeMusicSettings(linkMusic)
+    };
+  }
+  function sanitizeRoomPresets(value) {
+    if (!Array.isArray(value)) return [];
+    const presets = [];
+    const ids = /* @__PURE__ */ new Set();
+    for (const candidate of value.slice(0, 12)) {
+      if (!isRecord3(candidate) || !isRecord3(candidate.room)) continue;
+      const id = safeLocalId(candidate.id);
+      const label = cleanBoundedText(candidate.label, 60);
+      if (!id || !label || ids.has(id)) continue;
+      const room = candidate.room;
+      const custom = isRecord3(room.custom) ? room.custom : {};
+      const savedAt = finiteTimestamp(candidate.savedAt);
+      presets.push({
+        id,
+        label,
+        savedAt,
+        room: {
+          name: cleanBoundedText(room.name, 80),
+          description: cleanBoundedText(room.description, 200),
+          background: cleanBoundedText(room.background, 120),
+          limit: integerInRange3(room.limit, 2, 20, 10),
+          game: cleanBoundedText(room.game, 40),
+          space: cleanBoundedText(room.space, 20),
+          language: cleanBoundedText(room.language, 12),
+          visibility: sanitizeShortStringList(room.visibility, 8, 30),
+          access: sanitizeShortStringList(room.access, 8, 30),
+          blockCategory: sanitizeShortStringList(room.blockCategory, 24, 40),
+          admins: sanitizeMemberNumbers2(room.admins, 20),
+          whitelist: sanitizeMemberNumbers2(room.whitelist, 100),
+          blacklist: sanitizeMemberNumbers2(room.blacklist, 100),
+          custom: {
+            imageUrl: sanitizeHttpsUrl(custom.imageUrl),
+            imageFilter: cleanBoundedText(custom.imageFilter, 120),
+            musicUrl: sanitizeHttpsUrl(custom.musicUrl),
+            sizeMode: integerInRange3(custom.sizeMode, 1, 3, 1),
+            musicSync: booleanOr(custom.musicSync, false)
+          }
+        }
+      });
+      ids.add(id);
+    }
+    return presets.sort((left, right) => right.savedAt - left.savedAt);
+  }
+  function sanitizeMusicSettings(value) {
+    const playlists = [];
+    const playlistIds = /* @__PURE__ */ new Set();
+    let trackBudget = 100;
+    if (Array.isArray(value.playlists)) {
+      for (const candidate of value.playlists.slice(0, 8)) {
+        if (!isRecord3(candidate)) continue;
+        const id = safeLocalId(candidate.id);
+        const name = cleanBoundedText(candidate.name, 60);
+        if (!id || !name || playlistIds.has(id)) continue;
+        const tracks = [];
+        const trackIds = /* @__PURE__ */ new Set();
+        if (Array.isArray(candidate.tracks)) {
+          for (const track of candidate.tracks) {
+            if (trackBudget <= 0 || !isRecord3(track)) break;
+            const trackId = safeLocalId(track.id);
+            const title = cleanBoundedText(track.title, 80);
+            const source = track.source === "catbox" || track.source === "local" ? track.source : "url";
+            const locator = source === "local" ? safeLocalId(track.locator) : sanitizeAudioUrl(track.locator);
+            if (!trackId || !title || !locator || trackIds.has(trackId)) continue;
+            tracks.push({
+              id: trackId,
+              title,
+              source,
+              locator,
+              addedAt: finiteTimestamp(track.addedAt)
+            });
+            trackIds.add(trackId);
+            trackBudget -= 1;
+          }
+        }
+        playlists.push({ id, name, tracks });
+        playlistIds.add(id);
       }
+    }
+    if (playlists.length === 0) playlists.push(structuredClone(DEFAULT_SETTINGS.linkMusic.playlists[0]));
+    const requestedActiveId = safeLocalId(value.activePlaylistId);
+    const activePlaylistId = playlists.some((playlist) => playlist.id === requestedActiveId) ? requestedActiveId : playlists[0].id;
+    return {
+      playlists,
+      activePlaylistId,
+      repeatMode: value.repeatMode === "all" || value.repeatMode === "one" ? value.repeatMode : "off",
+      shuffle: booleanOr(value.shuffle, DEFAULT_SETTINGS.linkMusic.shuffle),
+      volume: integerInRange3(value.volume, 0, 100, DEFAULT_SETTINGS.linkMusic.volume)
     };
   }
   function sanitizeImageUploads(value, sourceSchema) {
@@ -2281,6 +2560,58 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (label && template) actions.push({ label, template });
     }
     return actions;
+  }
+  function safeLocalId(value) {
+    if (typeof value !== "string") return void 0;
+    const id = value.trim().toLocaleLowerCase();
+    return /^[a-z0-9_-]{1,64}$/u.test(id) ? id : void 0;
+  }
+  function cleanBoundedText(value, maxLength) {
+    return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, maxLength) : "";
+  }
+  function finiteTimestamp(value) {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(Date.now(), Math.round(value)) : Date.now();
+  }
+  function sanitizeShortStringList(value, limit, maxLength) {
+    if (!Array.isArray(value)) return [];
+    const result = /* @__PURE__ */ new Set();
+    for (const candidate of value) {
+      const text = cleanBoundedText(candidate, maxLength);
+      if (text) result.add(text);
+      if (result.size >= limit) break;
+    }
+    return [...result];
+  }
+  function sanitizeMemberNumbers2(value, limit) {
+    if (!Array.isArray(value)) return [];
+    const result = /* @__PURE__ */ new Set();
+    for (const candidate of value) {
+      if (typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0) {
+        result.add(candidate);
+      }
+      if (result.size >= limit) break;
+    }
+    return [...result];
+  }
+  function sanitizeHttpsUrl(value) {
+    if (typeof value !== "string" || value.trim().length > 500) return "";
+    try {
+      const url = new URL(value.trim());
+      if (url.protocol !== "https:" || url.username || url.password) return "";
+      return url.href.slice(0, 500);
+    } catch {
+      return "";
+    }
+  }
+  function sanitizeAudioUrl(value) {
+    const url = sanitizeHttpsUrl(value);
+    if (!url) return void 0;
+    try {
+      const parsed = new URL(url);
+      return /\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(parsed.pathname) ? url : void 0;
+    } catch {
+      return void 0;
+    }
   }
   function sanitizeLauncherPosition(value) {
     if (!isRecord3(value)) return null;
@@ -3255,23 +3586,32 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function expandCustomActivityTemplate(template, context) {
     const pronouns = context.pronouns ?? { subject: "they", object: "them", possessive: "their" };
     const values = {
-      "{target's gender}": pronouns.possessive,
-      "{target's}": possessiveName(context.targetName),
-      "{their}": pronouns.possessive,
-      "{they}": pronouns.subject,
-      "{them}": pronouns.object,
-      "{source}": context.sourceName,
-      "{me}": context.sourceName,
-      "{target}": context.targetName,
-      "{member}": context.targetMemberNumber?.toString() ?? "member"
+      "target's gender": pronouns.possessive,
+      "target's": possessiveName(context.targetName),
+      their: pronouns.possessive,
+      they: pronouns.subject,
+      them: pronouns.object,
+      source: context.sourceName,
+      me: context.sourceName,
+      target: context.targetName,
+      member: context.targetMemberNumber?.toString() ?? "member"
     };
     return template.trim().replace(
-      /\{target's gender\}|\{target's\}|\{their\}|\{they\}|\{them\}|\{source\}|\{me\}|\{target\}|\{member\}/g,
-      (token) => values[token] ?? token
+      /\{\s*(target's\s+gender|target's|their|they|them|source|me|target|member)\s*\}/giu,
+      (token, key) => values[key.toLocaleLowerCase().replace(/\s+/gu, " ")] ?? token
     );
   }
   function expandActivityTemplate(template, context) {
-    return template.trim().replaceAll("{source}", context.sourceName).replaceAll("{target}", context.target.memberName).replaceAll("{member}", context.target.memberNumber.toString());
+    const values = {
+      source: context.sourceName,
+      me: context.sourceName,
+      target: context.target.memberName,
+      member: context.target.memberNumber.toString()
+    };
+    return template.trim().replace(
+      /\{\s*(source|me|target|member)\s*\}/giu,
+      (token, key) => values[key.toLocaleLowerCase()] ?? token
+    );
   }
   function parseActivityMeta(message) {
     if (message.Type !== "Action" || message.Content !== ACTION_CONTENT || !Array.isArray(message.Dictionary)) {
@@ -4406,15 +4746,15 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const now = Date.now();
     const lastSeenAt = validTime(value.lastSeenAt) ? value.lastSeenAt : 0;
     const firstSeenAt = validTime(value.firstSeenAt) ? Math.min(value.firstSeenAt, lastSeenAt || now) : lastSeenAt;
-    const displayName = cleanText3(value.displayName, 80) || `Member ${value.memberNumber}`;
-    const note = cleanText3(value.note, 2e3);
-    const lastRoomName = cleanText3(value.lastRoomName, 100);
+    const displayName = cleanText4(value.displayName, 80) || `Member ${value.memberNumber}`;
+    const note = cleanText4(value.note, 2e3);
+    const lastRoomName = cleanText4(value.lastRoomName, 100);
     const encounterCount = typeof value.encounterCount === "number" && Number.isInteger(value.encounterCount) && value.encounterCount >= 0 ? Math.min(value.encounterCount, 1e6) : 0;
     const tags = [];
     if (Array.isArray(value.tags)) {
       const seen = /* @__PURE__ */ new Set();
       for (const rawTag of value.tags.slice(0, 16)) {
-        const tag = cleanText3(rawTag, 24);
+        const tag = cleanText4(rawTag, 24);
         const key = tag.toLocaleLowerCase();
         if (!tag || seen.has(key)) continue;
         seen.add(key);
@@ -4498,7 +4838,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function validTime(value) {
     return typeof value === "number" && Number.isFinite(value) && value >= 0;
   }
-  function cleanText3(value, maxLength) {
+  function cleanText4(value, maxLength) {
     return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
   }
 
@@ -4670,6 +5010,127 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function cleanSoundName(value) {
     const name = value.replace(/\.[^.]+$/u, "").replace(/[\u0000-\u001f\u007f]/gu, "").trim();
     return (name || "Custom sound").slice(0, 60);
+  }
+
+  // src/storage/device-music-store.ts
+  var MAX_LOCAL_MUSIC_BYTES = 80 * 1024 * 1024;
+  var DATABASE_VERSION2 = 1;
+  var STORE_NAME2 = "tracks";
+  var DeviceMusicStore = class {
+    constructor(memberNumber) {
+      this.memberNumber = memberNumber;
+    }
+    memberNumber;
+    #memory = /* @__PURE__ */ new Map();
+    #databasePromise;
+    #databaseUnavailable = false;
+    async list() {
+      const database = await this.#database().catch(() => void 0);
+      const tracks = database ? await requestResult2(
+        database.transaction(STORE_NAME2, "readonly").objectStore(STORE_NAME2).getAll()
+      ) : [...this.#memory.values()];
+      return tracks.sort((left, right) => right.createdAt - left.createdAt);
+    }
+    async get(id) {
+      if (!validId(id)) return void 0;
+      const database = await this.#database().catch(() => void 0);
+      if (!database) return this.#memory.get(id);
+      return await requestResult2(
+        database.transaction(STORE_NAME2, "readonly").objectStore(STORE_NAME2).get(id)
+      );
+    }
+    async add(file) {
+      validateMusicFile(file);
+      const record = {
+        id: createId2(),
+        name: cleanName2(file.name),
+        mimeType: file.type || "application/octet-stream",
+        createdAt: Date.now(),
+        blob: file.slice(0, file.size, file.type)
+      };
+      const database = await this.#database().catch(() => void 0);
+      if (!database) {
+        this.#memory.set(record.id, record);
+        return record;
+      }
+      const transaction = database.transaction(STORE_NAME2, "readwrite");
+      transaction.objectStore(STORE_NAME2).put(record);
+      await transactionDone2(transaction);
+      return record;
+    }
+    async delete(id) {
+      if (!validId(id)) return;
+      this.#memory.delete(id);
+      const database = await this.#database().catch(() => void 0);
+      if (!database) return;
+      const transaction = database.transaction(STORE_NAME2, "readwrite");
+      transaction.objectStore(STORE_NAME2).delete(id);
+      await transactionDone2(transaction);
+    }
+    close() {
+      void this.#databasePromise?.then((database) => database.close()).catch(() => void 0);
+      this.#databasePromise = void 0;
+    }
+    #database() {
+      if (this.#databaseUnavailable || typeof indexedDB === "undefined") {
+        this.#databaseUnavailable = true;
+        return Promise.reject(new Error("IndexedDB is unavailable"));
+      }
+      this.#databasePromise ??= openDatabase2(databaseName2(this.memberNumber)).catch((error) => {
+        this.#databaseUnavailable = true;
+        this.#databasePromise = void 0;
+        throw error;
+      });
+      return this.#databasePromise;
+    }
+  };
+  function validateMusicFile(file) {
+    if (!(file instanceof Blob) || file.size <= 0) throw new Error("Choose a non-empty audio file");
+    if (file.size > MAX_LOCAL_MUSIC_BYTES) throw new Error("Local tracks must be smaller than 80 MB");
+    const supportedMime = file.type.toLocaleLowerCase().startsWith("audio/") || file.type === "video/mp4";
+    const supportedName = /\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(file.name);
+    if (!supportedMime && !supportedName) throw new Error("Choose an audio file supported by your browser");
+  }
+  function databaseName2(memberNumber) {
+    const account = Number.isSafeInteger(memberNumber) && memberNumber > 0 ? memberNumber : "guest";
+    return `kikilink-device-music-${account}`;
+  }
+  function openDatabase2(name) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(name, DATABASE_VERSION2);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(STORE_NAME2)) {
+          request.result.createObjectStore(STORE_NAME2, { keyPath: "id" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Unable to open local music storage"));
+      request.onblocked = () => reject(new Error("Local music storage is blocked by another tab"));
+    });
+  }
+  function requestResult2(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Local music storage request failed"));
+    });
+  }
+  function transactionDone2(transaction) {
+    return new Promise((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error ?? new Error("Local music storage failed"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("Local music storage was cancelled"));
+    });
+  }
+  function createId2() {
+    const random = typeof crypto === "object" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    return random.toLocaleLowerCase().replace(/[^a-z0-9_-]/gu, "").slice(0, 64);
+  }
+  function validId(value) {
+    return /^[a-z0-9_-]{1,64}$/iu.test(value);
+  }
+  function cleanName2(value) {
+    const name = value.replace(/\.[^.]+$/u, "").replace(/[\u0000-\u001f\u007f]/gu, " ").trim();
+    return (name || "Local track").slice(0, 80);
   }
 
   // src/modules/link-presence/link-presence-service.ts
@@ -6560,27 +7021,6 @@ button { color: inherit; }
   text-transform: uppercase;
 }
 .kl-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
-.kl-avatar[data-avatar-state="available"] {
-  cursor: pointer;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--kl-gold), transparent 20%);
-}
-.kl-avatar[data-avatar-state="available"]::after {
-  content: "+";
-  position: absolute;
-  right: 3px;
-  bottom: 3px;
-  width: 14px;
-  height: 14px;
-  display: grid;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--kl-gold), #000 26%);
-  border-radius: 999px;
-  background: var(--kl-gold);
-  color: #17100d;
-  font-size: 11px;
-  font-weight: 950;
-  line-height: 1;
-}
 
 .kl-conversation-main { min-width: 0; }
 .kl-conversation-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -7726,7 +8166,7 @@ select:focus-visible {
   .kl-feature-nav {
     grid-row: 2;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 4px;
     padding: 5px 7px calc(5px + env(safe-area-inset-bottom));
     border-top: 1px solid var(--kl-border);
@@ -8260,6 +8700,159 @@ select:focus-visible {
 .kl-room-player-badges span { padding: 2px 5px; border-radius: 999px; background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); font-size: 9px; font-weight: 900; }
 .kl-room-player-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .kl-room-player-actions .kl-text-button { min-height: 32px; padding: 4px 7px; font-size: var(--kl-type-xs); }
+
+/* Identity and local time stay visible in the top bar without turning it into another toolbar. */
+.kl-local-clock {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 45%);
+  color: var(--kl-meta);
+  font-size: var(--kl-type-xxs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+}
+.kl-presence-trigger {
+  position: relative;
+  min-width: 142px;
+  max-width: 210px;
+  min-height: 42px;
+  padding: 4px 25px 4px 5px;
+  border-radius: 12px;
+}
+.kl-presence-trigger-avatar { width: 32px; height: 32px; flex: 0 0 auto; border-radius: 9px; font-size: 12px; }
+.kl-presence-trigger-label { min-width: 0; display: grid; gap: 0; text-align: left; line-height: 1.15; }
+.kl-presence-trigger-name,
+.kl-presence-trigger-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-presence-trigger-name { color: var(--kl-text); font-size: var(--kl-type-sm); }
+.kl-presence-trigger-status { color: var(--kl-muted); font-size: var(--kl-type-xxs); font-weight: 650; }
+.kl-presence-trigger > .kl-presence-dot { position: absolute; right: 9px; top: 50%; margin-top: -4px; }
+.kl-presence-note {
+  display: inline-flex;
+  max-width: min(260px, 46vw);
+  margin-left: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--kl-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 28%);
+  color: var(--kl-muted);
+}
+
+/* Room is one primary destination; lobbies and presets remain compact subtools inside it. */
+.kl-room-subnav {
+  display: flex;
+  gap: 4px;
+  padding: 7px 18px;
+  border-bottom: 1px solid var(--kl-border);
+  background: color-mix(in srgb, var(--kl-surface), transparent 30%);
+}
+.kl-room-subnav-button {
+  min-height: 34px;
+  padding: 5px 13px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--kl-muted);
+  font: inherit;
+  font-size: var(--kl-type-sm);
+  font-weight: 800;
+  cursor: pointer;
+}
+.kl-room-subnav-button:hover { border-color: var(--kl-border); color: var(--kl-text); }
+.kl-room-subnav-button[data-active="true"] { border-color: var(--kl-border-strong); background: var(--kl-surface-2); color: var(--kl-text); box-shadow: inset 0 -2px var(--kl-accent); }
+.kl-room-content,
+.kl-room-subpanel { min-width: 0; min-height: 0; height: 100%; }
+.kl-room-content { overflow: hidden; }
+.kl-room-current-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.kl-lobbies-panel,
+.kl-room-presets-panel { overflow-y: auto; padding: 16px 18px 22px; }
+.kl-lobby-toolbar,
+.kl-room-preset-create { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.kl-lobby-toolbar h2,
+.kl-room-preset-create h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); }
+.kl-lobby-search-wrap { width: min(380px, 48%); display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: 7px; }
+.kl-lobby-refresh { width: 42px; height: 42px; }
+.kl-lobby-refresh:disabled .kl-icon { animation: kl-spin 900ms linear infinite; }
+.kl-room-directory-status { margin-bottom: 9px; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-room-directory-status[data-state="error"] { color: var(--kl-danger); }
+.kl-lobby-list,
+.kl-room-preset-list { display: grid; gap: 8px; }
+.kl-lobby-card {
+  display: grid;
+  gap: 6px;
+  padding: 11px 12px;
+  border: 1px solid var(--kl-border);
+  border-radius: 13px;
+  background: var(--kl-surface);
+}
+.kl-lobby-card[data-has-friends="true"] { border-color: color-mix(in srgb, var(--kl-gold), transparent 48%); background: color-mix(in srgb, var(--kl-gold), transparent 95%); }
+.kl-lobby-card-main { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.kl-lobby-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-lobby-count,
+.kl-lobby-friend-label { flex: 0 0 auto; padding: 2px 6px; border-radius: 999px; background: var(--kl-surface-2); color: var(--kl-muted); font-size: var(--kl-type-xxs); font-weight: 800; }
+.kl-lobby-friend-label { background: color-mix(in srgb, var(--kl-gold), transparent 84%); color: var(--kl-gold); }
+.kl-lobby-description { margin: 0; overflow: hidden; color: var(--kl-muted); font-size: var(--kl-type-xs); text-overflow: ellipsis; white-space: nowrap; }
+.kl-lobby-card-footer { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.kl-lobby-flags { min-width: 0; margin-right: auto; overflow: hidden; color: var(--kl-meta); font-size: var(--kl-type-xxs); text-overflow: ellipsis; white-space: nowrap; }
+.kl-lobby-friends { display: flex; flex: 0 0 auto; align-items: center; padding-left: 6px; }
+.kl-lobby-friend-avatar { width: 27px; height: 27px; margin-left: -6px; border: 2px solid var(--kl-panel-bg); border-radius: 9px; font-size: 9px; }
+.kl-lobby-friend-more { margin-left: 3px; color: var(--kl-muted); font-size: var(--kl-type-xxs); }
+.kl-lobby-join { min-height: 32px; padding: 4px 10px; }
+.kl-room-preset-create-actions { width: min(420px, 54%); display: flex; gap: 7px; }
+.kl-preset-name { min-width: 0; }
+.kl-room-preset-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--kl-border); border-radius: 13px; background: var(--kl-surface); }
+.kl-room-preset-copy { min-width: 0; display: grid; gap: 2px; }
+.kl-room-preset-copy > strong,
+.kl-room-preset-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-room-preset-copy > span,
+.kl-room-preset-copy > small { color: var(--kl-muted); }
+.kl-room-preset-actions { display: flex; gap: 6px; }
+
+/* Full music features live in one primary page, with a persistent transport at the bottom. */
+.kl-music-page { grid-template-rows: auto minmax(0, 1fr) auto; }
+.kl-music-body { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.75fr); gap: 14px; padding: 16px; overflow: hidden; }
+.kl-music-library,
+.kl-music-add { min-width: 0; min-height: 0; display: grid; align-content: start; gap: 10px; padding: 13px; border: 1px solid var(--kl-border); border-radius: 15px; background: var(--kl-surface); }
+.kl-music-library { grid-template-rows: auto minmax(0, 1fr); }
+.kl-music-add { overflow-y: auto; }
+.kl-music-add h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); }
+.kl-music-add label,
+.kl-music-playlist-toolbar label { display: grid; gap: 5px; color: var(--kl-muted); font-size: var(--kl-type-xs); font-weight: 800; }
+.kl-music-playlist-toolbar { display: flex; align-items: end; gap: 7px; }
+.kl-music-playlist-toolbar label { min-width: 0; flex: 1 1 auto; }
+.kl-music-add-divider { display: flex; align-items: center; gap: 8px; color: var(--kl-meta); font-size: var(--kl-type-xxs); text-transform: uppercase; }
+.kl-music-add-divider::before,
+.kl-music-add-divider::after { content: ""; height: 1px; flex: 1 1 auto; background: var(--kl-border); }
+.kl-music-add-status { min-height: 18px; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-music-queue { min-height: 0; display: grid; align-content: start; gap: 6px; overflow-y: auto; }
+.kl-music-track { display: grid; grid-template-columns: 22px 36px minmax(0, 1fr) 34px; gap: 7px; align-items: center; padding: 7px; border: 1px solid transparent; border-radius: 11px; }
+.kl-music-track:hover { border-color: var(--kl-border); background: var(--kl-surface-2); }
+.kl-music-track[data-active="true"] { border-color: color-mix(in srgb, var(--kl-accent), transparent 48%); background: color-mix(in srgb, var(--kl-accent), transparent 91%); }
+.kl-music-track-number { color: var(--kl-meta); font-size: var(--kl-type-xs); text-align: center; }
+.kl-music-track-play,
+.kl-music-track-remove { width: 34px; height: 34px; border-radius: 9px; }
+.kl-music-track-copy { min-width: 0; display: grid; gap: 1px; }
+.kl-music-track-copy strong,
+.kl-music-track-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-music-track-copy span { color: var(--kl-muted); font-size: var(--kl-type-xxs); }
+.kl-music-track-remove { color: var(--kl-muted); }
+.kl-music-player { display: grid; grid-template-columns: minmax(150px, 0.7fr) minmax(180px, 1fr) auto; gap: 14px; align-items: center; padding: 10px 15px; border-top: 1px solid var(--kl-border); background: var(--kl-composer-bg); }
+.kl-music-now { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.kl-music-now-icon { width: 26px; height: 26px; color: var(--kl-gold); }
+.kl-music-now > div { min-width: 0; display: grid; }
+.kl-music-now-title,
+.kl-music-now-source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kl-music-now-source { color: var(--kl-muted); font-size: var(--kl-type-xxs); }
+.kl-music-seek { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.kl-music-progress { width: 100%; accent-color: var(--kl-accent); }
+.kl-music-time { color: var(--kl-meta); font-size: var(--kl-type-xxs); font-variant-numeric: tabular-nums; }
+.kl-music-controls { display: flex; align-items: center; gap: 5px; }
+.kl-music-play { border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 20%); background: var(--kl-accent); color: var(--kl-accent-foreground); }
+.kl-music-mode { min-height: 34px; padding: 4px 8px; color: var(--kl-muted); font-size: var(--kl-type-xxs); }
+.kl-music-mode[data-active="true"] { border-color: var(--kl-border-strong); color: var(--kl-gold); }
+.kl-music-volume { display: grid; grid-template-columns: auto 74px; gap: 5px; align-items: center; color: var(--kl-muted); font-size: var(--kl-type-xxs); }
+.kl-music-volume .kl-volume-input { width: 74px; }
+@keyframes kl-spin { to { transform: rotate(360deg); } }
 @keyframes kl-image-loading { to { background-position: -240% 0; } }
 .kl-message-side-actions {
   display: flex;
@@ -8301,20 +8894,44 @@ select:focus-visible {
 .kl-text-button--danger { border-color: color-mix(in srgb, var(--kl-danger), transparent 50%); background: color-mix(in srgb, var(--kl-danger), transparent 90%); }
 
 @media (max-width: 720px) {
-  .kl-presence-trigger { width: 38px; min-height: 38px; justify-content: center; padding: 0; }
-  .kl-presence-trigger-label { display: none; }
+  .kl-presence-trigger { min-width: 118px; max-width: 150px; min-height: 42px; padding-right: 21px; }
+  .kl-presence-trigger-avatar { width: 32px; height: 32px; }
+  .kl-presence-trigger > .kl-presence-dot { right: 7px; }
   .kl-presence-options { grid-template-columns: minmax(0, 1fr); }
   .kl-composer-row { grid-template-columns: 44px minmax(0, 1fr) 48px; gap: 7px; }
   .kl-message-side-actions { opacity: 0.66; transform: none; }
   .kl-message-bubble[data-media="true"] { width: 94%; max-width: 94%; }
   .kl-image-card { min-width: 0; }
   .kl-chat-presence .kl-presence-note { display: none; }
+  .kl-lobby-toolbar,
+  .kl-room-preset-create { align-items: stretch; flex-direction: column; }
+  .kl-lobby-search-wrap,
+  .kl-room-preset-create-actions { width: 100%; }
+  .kl-music-body { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+  .kl-music-library { min-height: 310px; }
+  .kl-music-queue { max-height: 260px; }
+  .kl-music-player { grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 9px 12px; }
+  .kl-music-controls { justify-content: center; flex-wrap: wrap; }
+  .kl-music-now { display: none; }
 }
 
 @media (max-width: 410px) {
+  .kl-brand-copy { display: none; }
+  .kl-local-clock { display: block; margin-left: auto; }
+  .kl-presence-trigger { min-width: 96px; max-width: 112px; }
+  .kl-presence-trigger-name { font-size: var(--kl-type-xs); }
+  .kl-presence-trigger-status { max-width: 54px; }
   .kl-chat-number { display: none; }
   .kl-chat-presence::before { display: none; }
   .kl-profile-more { display: none; }
+  .kl-room-subnav { padding-inline: 9px; }
+  .kl-room-subnav-button { flex: 1 1 0; padding-inline: 5px; }
+  .kl-lobbies-panel,
+  .kl-room-presets-panel { padding: 12px; }
+  .kl-lobby-card-footer { flex-wrap: wrap; }
+  .kl-lobby-flags { flex-basis: 100%; }
+  .kl-room-preset-card { grid-template-columns: minmax(0, 1fr); }
+  .kl-room-preset-actions { justify-content: flex-end; }
 }
 
 :host([data-reduced-motion="true"]) *,
@@ -8334,9 +8951,11 @@ select:focus-visible {
   var MAX_LOCAL_IMAGE_EDGE = 2560;
   var MAX_LOCAL_IMAGE_PIXELS = 32e6;
   var MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
+  var MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
   var MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
   var IMAGE_UPLOAD_TIMEOUT_MS = 6e4;
   var LITTERBOX_UPLOAD_ENDPOINT = "https://litterbox.catbox.moe/resources/internals/api.php";
+  var CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
   var LitterboxImageUploader = class {
     constructor(request = globalThis.fetch.bind(globalThis)) {
       this.request = request;
@@ -8419,6 +9038,46 @@ select:focus-visible {
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         throw new Error("The music upload timed out");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async function uploadMusicToCatbox(file, request = globalThis.fetch.bind(globalThis)) {
+    if (file.size <= 0) throw new Error("Choose a non-empty audio file");
+    if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
+    const extension = playlistAudioExtension(file);
+    if (!extension) throw new Error("Choose an MP3, MP4, M4A, OGG, WAV, FLAC, AAC, or WebM track");
+    const form = new FormData();
+    form.append("reqtype", "fileupload");
+    form.append(
+      "fileToUpload",
+      new File([file], `kikilink-track.${extension}`, {
+        type: file.type || "application/octet-stream",
+        lastModified: 0
+      })
+    );
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12e4);
+    try {
+      const response = await request(CATBOX_UPLOAD_ENDPOINT, {
+        method: "POST",
+        body: form,
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        signal: controller.signal
+      });
+      const payload = (await response.text().catch(() => "")).trim();
+      if (!response.ok) {
+        throw new Error(cleanProviderError(payload) || `Audio host returned HTTP ${response.status}`);
+      }
+      const url = normalizeCatboxAudioUrl(payload);
+      if (!url) throw new Error("Catbox returned an unexpected track link");
+      return url;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("The Catbox upload timed out");
       }
       throw error;
     } finally {
@@ -8550,6 +9209,35 @@ select:focus-visible {
     };
     return mime ? byMime[mime] : void 0;
   }
+  function playlistAudioExtension(file) {
+    const named = file.name.toLocaleLowerCase().match(/\.(aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/u)?.[1];
+    if (named) return named;
+    const mime = file.type.toLocaleLowerCase().split(";", 1)[0];
+    const byMime = {
+      "audio/aac": "aac",
+      "audio/flac": "flac",
+      "audio/mp4": "m4a",
+      "video/mp4": "mp4",
+      "audio/mpeg": "mp3",
+      "audio/ogg": "ogg",
+      "audio/opus": "opus",
+      "audio/wav": "wav",
+      "audio/x-wav": "wav",
+      "audio/webm": "webm"
+    };
+    return mime ? byMime[mime] : void 0;
+  }
+  function normalizeCatboxAudioUrl(value) {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.hostname !== "files.catbox.moe" || url.username || url.password || url.search || url.hash || !/^\/[a-z0-9_-]+\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(url.pathname)) {
+        return void 0;
+      }
+      return url.href;
+    } catch {
+      return void 0;
+    }
+  }
   function validatePreparedImage(image) {
     if (image.blob.type !== "image/webp" || image.blob.size <= 0 || image.blob.size > MAX_PREPARED_IMAGE_BYTES || !Number.isSafeInteger(image.width) || image.width <= 0 || !Number.isSafeInteger(image.height) || image.height <= 0) {
       throw new Error("The prepared image is invalid");
@@ -8636,9 +9324,19 @@ select:focus-visible {
       ["circle", { cx: "12", cy: "12", r: "1" }, true],
       ["circle", { cx: "18.7", cy: "12", r: "1" }, true]
     ],
+    music: [
+      ["path", { d: "M9 18V6.7l10-2v10.8" }],
+      ["circle", { cx: "6.4", cy: "18.2", r: "2.6" }],
+      ["circle", { cx: "16.4", cy: "15.7", r: "2.6" }],
+      ["line", { x1: "9", y1: "10", x2: "19", y2: "8" }]
+    ],
     navigation: [
       ["circle", { cx: "12", cy: "12", r: "8.5" }],
       ["path", { d: "m15.7 8.3-2.1 5.3-5.3 2.1 2.1-5.3 5.3-2.1Z" }, true]
+    ],
+    next: [
+      ["path", { d: "m5.5 5 9 7-9 7V5Z" }, true],
+      ["line", { x1: "18.5", y1: "5", x2: "18.5", y2: "19" }]
     ],
     note: [
       ["path", { d: "M6 3.8h9.2L19 7.6v12.6H6V3.8Z" }],
@@ -8649,6 +9347,15 @@ select:focus-visible {
     pin: [
       ["path", { d: "m8 4 8 0-1.5 5 3 3H6.5l3-3L8 4Z" }, true],
       ["line", { x1: "12", y1: "12", x2: "12", y2: "20" }]
+    ],
+    play: [["path", { d: "m7 4.5 12 7.5-12 7.5v-15Z" }, true]],
+    pause: [
+      ["rect", { x: "6", y: "4.5", width: "4.2", height: "15", rx: "1" }, true],
+      ["rect", { x: "13.8", y: "4.5", width: "4.2", height: "15", rx: "1" }, true]
+    ],
+    previous: [
+      ["path", { d: "m18.5 5-9 7 9 7V5Z" }, true],
+      ["line", { x1: "5.5", y1: "5", x2: "5.5", y2: "19" }]
     ],
     plus: [
       ["line", { x1: "12", y1: "4.5", x2: "12", y2: "19.5" }],
@@ -8665,6 +9372,12 @@ select:focus-visible {
       ["path", { d: "M6.2 16.7h11.6l-1.5-2.2V10a4.3 4.3 0 0 0-8.6 0v4.5l-1.5 2.2Z" }],
       ["path", { d: "M10 19a2.3 2.3 0 0 0 4 0" }],
       ["line", { x1: "12", y1: "3.1", x2: "12", y2: "5.2" }]
+    ],
+    refresh: [
+      ["path", { d: "M19.2 8.4A7.7 7.7 0 0 0 5.6 6.2L3.7 8.4" }],
+      ["polyline", { points: "3.7 4.7 3.7 8.4 7.5 8.4" }],
+      ["path", { d: "M4.8 15.6a7.7 7.7 0 0 0 13.6 2.2l1.9-2.2" }],
+      ["polyline", { points: "20.3 19.3 20.3 15.6 16.5 15.6" }]
     ],
     reply: [
       ["polyline", { points: "9.5 7 4.2 11.7 9.5 16.4" }],
@@ -8747,6 +9460,8 @@ select:focus-visible {
       settings
     ), presence, imageUploader = new LitterboxImageUploader(), soundStore = new DeviceNotificationSoundStore(
       adapter.getOwnMemberNumber()
+    ), musicStore = new DeviceMusicStore(
+      adapter.getOwnMemberNumber()
     )) {
       this.adapter = adapter;
       this.service = service;
@@ -8756,6 +9471,7 @@ select:focus-visible {
       this.roster = roster;
       this.imageUploader = imageUploader;
       this.soundStore = soundStore;
+      this.musicStore = musicStore;
       this.presence = presence ?? new LinkPresenceService(adapter, settings, new EventBus(), version);
       this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence);
       this.#notificationSounds = new NotificationSoundService(
@@ -8770,6 +9486,7 @@ select:focus-visible {
     roster;
     imageUploader;
     soundStore;
+    musicStore;
     #host = document.createElement("div");
     #shadow = this.#host.attachShadow({ mode: "open" });
     #launcher = element("button", {
@@ -8823,6 +9540,12 @@ select:focus-visible {
       type: "button",
       title: "Room tools",
       ariaLabel: "Open room tools"
+    });
+    #musicNavButton = element("button", {
+      className: "kl-nav-item kl-music-button",
+      type: "button",
+      title: "Music & playlists",
+      ariaLabel: "Open music and playlists"
     });
     #settingsNavButton = element("button", {
       className: "kl-nav-item",
@@ -8938,6 +9661,82 @@ select:focus-visible {
     #roomPlayers = element("div", { className: "kl-room-player-list" });
     #roomImageFileInput = element("input");
     #roomMusicFileInput = element("input");
+    #roomSubnav = element("div", { className: "kl-room-subnav" });
+    #roomCurrentPanel = element("div", { className: "kl-room-subpanel kl-room-current-panel" });
+    #roomLobbiesPanel = element("div", { className: "kl-room-subpanel kl-lobbies-panel" });
+    #roomPresetsPanel = element("div", { className: "kl-room-subpanel kl-room-presets-panel" });
+    #lobbyQuery = element("input", { className: "kl-search kl-lobby-search" });
+    #lobbyRefreshButton = element("button", {
+      className: "kl-icon-button kl-lobby-refresh",
+      type: "button",
+      title: "Refresh room list",
+      ariaLabel: "Refresh room list"
+    });
+    #lobbyStatus = element("div", { className: "kl-room-directory-status" });
+    #lobbyList = element("div", { className: "kl-lobby-list" });
+    #presetName = element("input", { className: "kl-search kl-preset-name" });
+    #saveRoomPresetButton = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Save current room"
+    });
+    #roomPresetList = element("div", { className: "kl-room-preset-list" });
+    #roomPlaylistSync = element("input");
+    #roomPlaylistSyncStatus = element("p", { className: "kl-setting-help kl-room-playlist-sync-status" });
+    #musicPage = element("section", {
+      className: "kl-feature-page kl-music-page",
+      ariaLabel: "Music and playlists"
+    });
+    #playlistSelect = element("select", { className: "kl-select kl-playlist-select" });
+    #newPlaylistButton = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "New playlist"
+    });
+    #musicTitleInput = element("input", { className: "kl-search" });
+    #musicUrlInput = element("input", { className: "kl-search" });
+    #musicFileInput = element("input");
+    #musicFileMode = element("select", { className: "kl-select" });
+    #musicAddButton = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Add track"
+    });
+    #musicAddStatus = element("div", { className: "kl-music-add-status" });
+    #musicQueue = element("div", { className: "kl-music-queue" });
+    #musicNowTitle = element("strong", { className: "kl-music-now-title", text: "Nothing playing" });
+    #musicNowSource = element("span", { className: "kl-music-now-source", text: "Choose a track" });
+    #musicProgress = element("input", { className: "kl-music-progress" });
+    #musicTime = element("span", { className: "kl-music-time", text: "0:00 / 0:00" });
+    #musicPreviousButton = element("button", {
+      className: "kl-icon-button",
+      type: "button",
+      title: "Previous track",
+      ariaLabel: "Previous track"
+    });
+    #musicPlayButton = element("button", {
+      className: "kl-icon-button kl-music-play",
+      type: "button",
+      title: "Play",
+      ariaLabel: "Play"
+    });
+    #musicNextButton = element("button", {
+      className: "kl-icon-button",
+      type: "button",
+      title: "Next track",
+      ariaLabel: "Next track"
+    });
+    #musicRepeatButton = element("button", {
+      className: "kl-text-button kl-music-mode",
+      type: "button"
+    });
+    #musicShuffleButton = element("button", {
+      className: "kl-text-button kl-music-mode",
+      type: "button",
+      text: "Shuffle"
+    });
+    #musicVolume = element("input", { className: "kl-volume-input" });
+    #audio = document.createElement("audio");
     #settingsPage = element("section", {
       className: "kl-settings-page",
       ariaLabel: "KikiLink settings"
@@ -9053,7 +9852,11 @@ select:focus-visible {
       ariaLabel: "Change KikiLink status"
     });
     #presenceTriggerDot = element("span", { className: "kl-presence-dot" });
+    #presenceTriggerAvatar = element("div", { className: "kl-avatar kl-presence-trigger-avatar" });
     #presenceTriggerLabel = element("span", { className: "kl-presence-trigger-label" });
+    #presenceTriggerName = element("strong", { className: "kl-presence-trigger-name" });
+    #presenceTriggerStatus = element("span", { className: "kl-presence-trigger-status" });
+    #localClock = element("time", { className: "kl-local-clock" });
     #presenceDialog = element("dialog", { className: "kl-dialog kl-presence-dialog" });
     #presenceOptions = element("div", { className: "kl-presence-options" });
     #presenceEnabledToggle = element("input");
@@ -9133,6 +9936,8 @@ select:focus-visible {
     #selectedRosterMember;
     #rosterScope = "current";
     #workspaceView = "home";
+    #roomSubView = "current";
+    #lobbyRooms = [];
     #lastWorkspaceView = "home";
     #settingsReturnView = "home";
     #settingsSection = "appearance";
@@ -9147,7 +9952,10 @@ select:focus-visible {
     #finderSelectedIndex = 0;
     #finderRenderToken = 0;
     #galleryRenderToken = 0;
+    #lobbyRenderToken = 0;
+    #musicRenderToken = 0;
     #toastTimer;
+    #clockTimer;
     #launcherDrag;
     #panelDrag;
     #suppressLauncherClickUntil = 0;
@@ -9160,7 +9968,6 @@ select:focus-visible {
     #messageRenderPeer;
     #loadingOlderMessages = false;
     #renderedMessageIds = /* @__PURE__ */ new Set();
-    #allowedAvatarUrls = /* @__PURE__ */ new Set();
     #suppressProfileClickUntil = /* @__PURE__ */ new WeakMap();
     #profileMenuToken = 0;
     #aliasTarget;
@@ -9173,6 +9980,10 @@ select:focus-visible {
     #imageUploadToken = 0;
     #imagePrepareToken = 0;
     #localImageError;
+    #activeTrackId;
+    #musicObjectUrl;
+    #roomPlaylistSyncEnabled = false;
+    #lastRoomSyncedTrackUrl = "";
     #handleOutsidePointerDown = (event) => {
       if (this.#profileMenu.hidden) return;
       if (event.composedPath().includes(this.#host)) return;
@@ -9237,6 +10048,8 @@ select:focus-visible {
       this.#imageUploadBusy = false;
       this.#stopLocalTyping();
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
+      if (this.#clockTimer !== void 0) clearTimeout(this.#clockTimer);
+      this.#clockTimer = void 0;
       if (this.#presenceRenderFrame !== void 0) cancelAnimationFrame(this.#presenceRenderFrame);
       this.#presenceRenderFrame = void 0;
       this.#finderDialog.close();
@@ -9251,11 +10064,14 @@ select:focus-visible {
       document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
       this.#presenceUnsubscribe?.();
       this.#presenceUnsubscribe = void 0;
-      this.#allowedAvatarUrls.clear();
+      this.#audio.pause();
+      this.#audio.removeAttribute("src");
+      this.#releaseMusicObjectUrl();
       this.#roomBadge.destroy();
       this.#host.remove();
       void this.#notificationSounds.destroy();
       this.soundStore.close();
+      this.musicStore.close();
       this.#mounted = false;
     }
     isActiveConversation(peerNumber) {
@@ -9276,6 +10092,7 @@ select:focus-visible {
       if (this.#workspaceView === "activities") this.#renderActivitiesPage();
       if (this.#workspaceView === "roster") this.#renderRoster();
       if (this.#workspaceView === "room") void this.#renderRoomTools(true);
+      if (this.#workspaceView === "music") void this.#renderMusicPage();
     }
     async onMessage(peerNumber, incoming, message) {
       if (incoming && this.presence.getOwnStatus() !== "dnd" && this.settings.get().linkChat.openOnIncoming) {
@@ -9432,14 +10249,24 @@ select:focus-visible {
       );
       this.#finderTrigger.setAttribute("aria-keyshortcuts", "Control+K Meta+K");
       this.#finderTrigger.addEventListener("click", () => this.#openFinder());
-      this.#presenceTrigger.replaceChildren(this.#presenceTriggerDot, this.#presenceTriggerLabel);
+      this.#presenceTriggerLabel.replaceChildren(
+        this.#presenceTriggerName,
+        this.#presenceTriggerStatus
+      );
+      this.#presenceTrigger.replaceChildren(
+        this.#presenceTriggerAvatar,
+        this.#presenceTriggerLabel,
+        this.#presenceTriggerDot
+      );
       this.#presenceTrigger.addEventListener("click", () => this.#openPresenceDialog());
       this.#renderOwnPresence();
+      this.#scheduleClockUpdate();
       const topbar = element(
         "header",
         { className: "kl-topbar" },
         brand,
         this.#contextTitle,
+        this.#localClock,
         this.#presenceTrigger,
         this.#finderTrigger,
         this.#topbarSettingsButton,
@@ -9495,6 +10322,7 @@ select:focus-visible {
       this.#buildRosterPage();
       this.#buildGalleryPage();
       this.#buildRoomPage();
+      this.#buildMusicPage();
       this.#buildActivitiesPage();
       this.#buildSettingsPage();
       this.#workspace.append(
@@ -9503,6 +10331,7 @@ select:focus-visible {
         this.#galleryPage,
         this.#rosterPage,
         this.#roomPage,
+        this.#musicPage,
         this.#activitiesPage,
         this.#settingsPage
       );
@@ -9535,6 +10364,7 @@ select:focus-visible {
       this.#configureNavButton(this.#chatNavButton, "chat", "Chat", "chat");
       this.#configureNavButton(this.#rosterButton, "users", "Players", "roster");
       this.#configureNavButton(this.#roomNavButton, "location", "Room", "room");
+      this.#configureNavButton(this.#musicNavButton, "music", "Music", "music");
       this.#configureNavButton(this.#activitiesButton, "activities", "Custom", "activities");
       this.#configureNavButton(this.#settingsNavButton, "settings", "Settings", "settings");
       this.#rosterCount.hidden = true;
@@ -9544,6 +10374,7 @@ select:focus-visible {
         this.#chatNavButton,
         this.#rosterButton,
         this.#roomNavButton,
+        this.#musicNavButton,
         this.#activitiesButton,
         this.#settingsNavButton
       );
@@ -9572,6 +10403,11 @@ select:focus-visible {
       }
       if (target === "room") {
         void this.#openRoomTools();
+        return;
+      }
+      if (target === "music") {
+        this.#showWorkspace("music");
+        void this.#renderMusicPage();
         return;
       }
       if (target === "gallery") {
@@ -9775,12 +10611,13 @@ select:focus-visible {
       this.#galleryPage.hidden = view !== "gallery";
       this.#rosterPage.hidden = view !== "roster";
       this.#roomPage.hidden = view !== "room";
+      this.#musicPage.hidden = view !== "music";
       this.#activitiesPage.hidden = view !== "activities";
       this.#settingsPage.hidden = view !== "settings";
       if (view === "chat" && this.#activePeer === void 0) {
         this.#panel.dataset.mobileView = "list";
       }
-      this.#contextTitle.textContent = view === "home" ? "Home" : view === "chat" ? "Chat" : view === "gallery" ? "Media Gallery" : view === "roster" ? "Players" : view === "room" ? "Room Tools" : view === "activities" ? "Custom Activities" : "Settings";
+      this.#contextTitle.textContent = view === "home" ? "Home" : view === "chat" ? "Chat" : view === "gallery" ? "Media Gallery" : view === "roster" ? "Players" : view === "room" ? "Room Tools" : view === "music" ? "Music" : view === "activities" ? "Custom Activities" : "Settings";
       this.#updateNavigation();
     }
     #updateNavigation() {
@@ -10121,7 +10958,7 @@ select:focus-visible {
       this.#imagePreviewSelect.setAttribute("aria-label", "Remote image previews");
       const imagePreviews = this.#settingRow(
         "Image previews",
-        "Remote hosts can see your IP when an image loads. Ask first adds a one-time Show avatar action to player menus.",
+        "Controls images shared in chats. Small KikiLink profile avatars load automatically so player lists stay recognizable.",
         this.#imagePreviewSelect
       );
       this.#imageUploadsToggle.type = "checkbox";
@@ -11803,9 +12640,20 @@ select:focus-visible {
           category: "Destination",
           title: "Room Tools",
           detail: this.adapter.isInChatRoom() ? "Background, music, players, and roles" : "Enter a room first",
-          keywords: "room admin background music kick promote whitelist roles customization",
+          keywords: "room admin background music kick promote whitelist roles customization lobbies rooms directory refresh presets blacklist access",
           priority: 72,
           action: { kind: "workspace", target: "room" }
+        },
+        {
+          id: "destination-music",
+          kind: "destination",
+          icon: "music",
+          category: "Destination",
+          title: "Music & Playlists",
+          detail: `${settings.linkMusic.playlists.length} playlists \xB7 local files and Catbox`,
+          keywords: "music player playlist songs tracks audio catbox local seek shuffle repeat spotify room sync",
+          priority: 71,
+          action: { kind: "workspace", target: "music" }
         },
         {
           id: "destination-gallery",
@@ -12246,7 +13094,11 @@ select:focus-visible {
         className: "kl-text-button",
         type: "button",
         text: "Refresh room",
-        onClick: () => void this.#renderRoomTools(true)
+        onClick: () => {
+          if (this.#roomSubView === "lobbies") void this.#refreshLobbies();
+          else if (this.#roomSubView === "presets") this.#renderRoomPresets();
+          else void this.#renderRoomTools(true);
+        }
       });
       const header = element(
         "header",
@@ -12279,6 +13131,21 @@ select:focus-visible {
         "label",
         { className: "kl-switch" },
         this.#roomMusicSync,
+        element("span", { className: "kl-switch-track" })
+      );
+      this.#roomPlaylistSync.type = "checkbox";
+      this.#roomPlaylistSync.addEventListener("change", () => {
+        this.#roomPlaylistSyncEnabled = this.#roomPlaylistSync.checked;
+        if (this.#roomPlaylistSyncEnabled) void this.#syncPlayingTrackToRoom(true);
+        else {
+          this.#lastRoomSyncedTrackUrl = "";
+          this.#roomPlaylistSyncStatus.textContent = "Playlist follow is off.";
+        }
+      });
+      const playlistSyncSwitch = element(
+        "label",
+        { className: "kl-switch" },
+        this.#roomPlaylistSync,
         element("span", { className: "kl-switch-track" })
       );
       this.#roomImageFileInput.type = "file";
@@ -12343,6 +13210,12 @@ select:focus-visible {
           "Ask compatible BC clients to keep room playback aligned.",
           syncSwitch
         ),
+        this.#settingRow(
+          "Follow KikiLink playlist",
+          "While enabled, each compatible remote track you play becomes the room music. This switch is session-only.",
+          playlistSyncSwitch
+        ),
+        this.#roomPlaylistSyncStatus,
         element("p", {
           className: "kl-room-media-note",
           text: "Uploaded backgrounds and music use your temporary Litterbox lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use permanent HTTPS links."
@@ -12359,7 +13232,288 @@ select:focus-visible {
         }),
         this.#roomPlayers
       );
-      this.#roomPage.append(header, this.#roomAdminStatus, element("div", { className: "kl-room-grid" }, mediaForm, players));
+      this.#roomCurrentPanel.append(
+        this.#roomAdminStatus,
+        element("div", { className: "kl-room-grid" }, mediaForm, players)
+      );
+      this.#buildLobbyPanel();
+      this.#buildRoomPresetsPanel();
+      for (const [target, label] of [
+        ["current", "Room"],
+        ["lobbies", "Lobbies"],
+        ["presets", "Presets"]
+      ]) {
+        const button = element("button", {
+          className: "kl-room-subnav-button",
+          type: "button",
+          text: label,
+          onClick: () => this.#showRoomSubView(target)
+        });
+        button.dataset.roomSubview = target;
+        this.#roomSubnav.append(button);
+      }
+      const content = element(
+        "div",
+        { className: "kl-room-content" },
+        this.#roomCurrentPanel,
+        this.#roomLobbiesPanel,
+        this.#roomPresetsPanel
+      );
+      this.#roomPage.append(header, this.#roomSubnav, content);
+      this.#showRoomSubView("current", false);
+    }
+    #showRoomSubView(view, refresh = true) {
+      this.#roomSubView = view;
+      this.#roomCurrentPanel.hidden = view !== "current";
+      this.#roomLobbiesPanel.hidden = view !== "lobbies";
+      this.#roomPresetsPanel.hidden = view !== "presets";
+      for (const button of this.#roomSubnav.querySelectorAll("button")) {
+        button.dataset.active = String(button.dataset.roomSubview === view);
+      }
+      if (!refresh) return;
+      if (view === "current") void this.#renderRoomTools(true);
+      else if (view === "lobbies") {
+        if (this.#lobbyRooms.length > 0) this.#renderLobbies();
+        else void this.#refreshLobbies();
+      } else {
+        this.#renderRoomPresets();
+      }
+    }
+    #buildLobbyPanel() {
+      this.#lobbyQuery.type = "search";
+      this.#lobbyQuery.placeholder = "Filter rooms or descriptions";
+      this.#lobbyQuery.autocomplete = "off";
+      this.#lobbyQuery.addEventListener("input", () => this.#renderLobbies());
+      this.#lobbyQuery.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          void this.#refreshLobbies();
+        }
+      });
+      this.#lobbyRefreshButton.append(kikiIcon("refresh"));
+      this.#lobbyRefreshButton.addEventListener("click", () => void this.#refreshLobbies());
+      this.#roomLobbiesPanel.append(
+        element(
+          "div",
+          { className: "kl-lobby-toolbar" },
+          element(
+            "div",
+            {},
+            element("h2", { text: "Live lobbies" }),
+            element("p", {
+              className: "kl-setting-help",
+              text: "Rooms containing your friends stay at the top. KikiLink refreshes only when you ask."
+            })
+          ),
+          element("div", { className: "kl-lobby-search-wrap" }, this.#lobbyQuery, this.#lobbyRefreshButton)
+        ),
+        this.#lobbyStatus,
+        this.#lobbyList
+      );
+    }
+    async #refreshLobbies() {
+      const token = ++this.#lobbyRenderToken;
+      this.#lobbyRefreshButton.disabled = true;
+      this.#lobbyStatus.textContent = "Refreshing Bondage Club rooms\u2026";
+      this.#lobbyStatus.dataset.state = "loading";
+      try {
+        const rooms = await this.adapter.searchRooms(this.#lobbyQuery.value);
+        if (token !== this.#lobbyRenderToken) return;
+        this.#lobbyRooms = rooms;
+        const friendNumbers = rooms.flatMap((room) => room.friends.map((friend) => friend.memberNumber));
+        this.presence.requestMany(friendNumbers);
+        this.#renderLobbies();
+      } catch (error) {
+        if (token !== this.#lobbyRenderToken) return;
+        this.#lobbyStatus.textContent = error instanceof Error ? error.message : "The room list could not be refreshed.";
+        this.#lobbyStatus.dataset.state = "error";
+        this.#lobbyList.replaceChildren();
+      } finally {
+        if (token === this.#lobbyRenderToken) this.#lobbyRefreshButton.disabled = false;
+      }
+    }
+    #renderLobbies() {
+      const filter = this.#lobbyQuery.value.trim().toLocaleLowerCase();
+      const rooms = this.#lobbyRooms.filter(
+        (room) => !filter || `${room.name}
+${room.description}
+${room.language}`.toLocaleLowerCase().includes(filter)
+      );
+      const friendRoomCount = rooms.filter((room) => room.friends.length > 0).length;
+      this.#lobbyStatus.textContent = rooms.length === 0 ? "No rooms match this filter." : `${rooms.length} rooms \xB7 ${friendRoomCount} with friends`;
+      this.#lobbyStatus.dataset.state = rooms.length > 0 ? "ready" : "empty";
+      this.#lobbyList.replaceChildren(...rooms.map((room) => this.#lobbyCard(room)));
+    }
+    #lobbyCard(room) {
+      const friends = element("div", { className: "kl-lobby-friends" });
+      if (room.friends.length > 0) {
+        for (const friend of room.friends.slice(0, 5)) {
+          const avatar = this.#avatar(friend.memberName, friend.memberNumber, "kl-lobby-friend-avatar");
+          avatar.title = `${friend.memberName} \xB7 #${friend.memberNumber}`;
+          friends.append(avatar);
+        }
+        if (room.friends.length > 5) {
+          friends.append(element("span", { className: "kl-lobby-friend-more", text: `+${room.friends.length - 5}` }));
+        }
+      }
+      const flags = [
+        room.language,
+        room.mapType,
+        room.locked ? "Locked" : "",
+        room.privateRoom ? "Private" : ""
+      ].filter(Boolean);
+      const join = element("button", {
+        className: "kl-text-button kl-lobby-join",
+        type: "button",
+        text: room.canJoin ? "Join" : "Unavailable",
+        onClick: () => this.#joinLobby(room)
+      });
+      join.disabled = !room.canJoin;
+      const card = element(
+        "article",
+        { className: "kl-lobby-card" },
+        element(
+          "div",
+          { className: "kl-lobby-card-main" },
+          element("strong", { className: "kl-lobby-name", text: room.name }),
+          element("span", {
+            className: "kl-lobby-count",
+            text: `${room.memberCount}/${room.memberLimit}`
+          }),
+          room.friends.length > 0 ? element("span", { className: "kl-lobby-friend-label", text: `${room.friends.length} friend${room.friends.length === 1 ? "" : "s"}` }) : null
+        ),
+        room.description ? element("p", { className: "kl-lobby-description", text: room.description }) : null,
+        element(
+          "div",
+          { className: "kl-lobby-card-footer" },
+          element("span", { className: "kl-lobby-flags", text: flags.join(" \xB7 ") || "Public room" }),
+          friends,
+          join
+        )
+      );
+      card.dataset.hasFriends = String(room.friends.length > 0);
+      return card;
+    }
+    #joinLobby(room) {
+      if (this.adapter.isInChatRoom() && typeof confirm === "function" && !confirm(`Leave the current room and join \u201C${room.name}\u201D?`)) {
+        return;
+      }
+      try {
+        this.adapter.joinRoom(room.name);
+        this.#toast(`Joining ${room.name}\u2026`);
+        this.close();
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "Could not join this room.", "error");
+      }
+    }
+    #buildRoomPresetsPanel() {
+      this.#presetName.type = "text";
+      this.#presetName.placeholder = "Preset name (for example: Moon Garden)";
+      this.#presetName.maxLength = 60;
+      this.#saveRoomPresetButton.addEventListener("click", () => this.#saveCurrentRoomPreset());
+      this.#roomPresetsPanel.append(
+        element(
+          "div",
+          { className: "kl-room-preset-create" },
+          element(
+            "div",
+            {},
+            element("h2", { text: "Room presets" }),
+            element("p", {
+              className: "kl-setting-help",
+              text: "Save the room name, description, BC background, custom media, limits, access, admins, whitelist, and blacklist. Passwords and large map layouts are never copied."
+            })
+          ),
+          element("div", { className: "kl-room-preset-create-actions" }, this.#presetName, this.#saveRoomPresetButton)
+        ),
+        this.#roomPresetList
+      );
+    }
+    #saveCurrentRoomPreset() {
+      const snapshot = this.adapter.getRoomAdminSnapshot();
+      if (!snapshot) {
+        this.#toast("Enter a chat room before saving a preset.", "error");
+        return;
+      }
+      const label = this.#presetName.value.trim() || snapshot.roomName;
+      const preset = {
+        id: createLocalId("room"),
+        label: label.slice(0, 60),
+        savedAt: Date.now(),
+        room: structuredClone(snapshot.settings)
+      };
+      this.settings.update((draft) => {
+        draft.linkRoom.presets = [preset, ...draft.linkRoom.presets].slice(0, 12);
+      });
+      this.#presetName.value = "";
+      this.#renderRoomPresets();
+      this.#toast(`Saved room preset \u201C${preset.label}\u201D.`);
+    }
+    #renderRoomPresets() {
+      const presets = this.settings.get().linkRoom.presets;
+      if (presets.length === 0) {
+        this.#roomPresetList.replaceChildren(
+          element("div", { className: "kl-gallery-empty", text: "No room presets yet." })
+        );
+        return;
+      }
+      this.#roomPresetList.replaceChildren(...presets.map((preset) => this.#roomPresetCard(preset)));
+    }
+    #roomPresetCard(preset) {
+      const detail = [
+        `${preset.room.limit} players`,
+        preset.room.language || "Any language",
+        `${preset.room.admins.length} admins`,
+        `${preset.room.whitelist.length} whitelist`,
+        `${preset.room.blacklist.length} blacklist`
+      ].join(" \xB7 ");
+      return element(
+        "article",
+        { className: "kl-room-preset-card" },
+        element(
+          "div",
+          { className: "kl-room-preset-copy" },
+          element("strong", { text: preset.label }),
+          element("span", { text: preset.room.name }),
+          element("small", { text: detail })
+        ),
+        element(
+          "div",
+          { className: "kl-room-preset-actions" },
+          element("button", {
+            className: "kl-text-button kl-text-button--primary",
+            type: "button",
+            text: "Apply",
+            onClick: () => this.#applyRoomPreset(preset)
+          }),
+          element("button", {
+            className: "kl-icon-button",
+            type: "button",
+            title: "Delete preset",
+            ariaLabel: `Delete ${preset.label}`,
+            onClick: () => this.#deleteRoomPreset(preset)
+          }, kikiIcon("trash"))
+        )
+      );
+    }
+    #applyRoomPreset(preset) {
+      if (typeof confirm === "function" && !confirm(`Apply \u201C${preset.label}\u201D to the current room? This updates the live room settings.`)) {
+        return;
+      }
+      try {
+        this.adapter.applyRoomPreset(preset.room);
+        this.#toast(`Applying room preset \u201C${preset.label}\u201D\u2026`);
+        setTimeout(() => void this.#renderRoomTools(true), 700);
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "The room preset could not be applied.", "error");
+      }
+    }
+    #deleteRoomPreset(preset) {
+      if (typeof confirm === "function" && !confirm(`Delete room preset \u201C${preset.label}\u201D?`)) return;
+      this.settings.update((draft) => {
+        draft.linkRoom.presets = draft.linkRoom.presets.filter((candidate) => candidate.id !== preset.id);
+      });
+      this.#renderRoomPresets();
     }
     async #openRoomTools(refreshFields = true) {
       this.#showWorkspace("room");
@@ -12374,11 +13528,17 @@ select:focus-visible {
           element("div", { className: "kl-gallery-empty", text: "No active room." })
         );
         this.#setRoomControlsEnabled(false);
+        this.#roomPlaylistSyncEnabled = false;
+        this.#roomPlaylistSync.checked = false;
+        this.#roomPlaylistSyncStatus.textContent = "Enter a room to follow the playlist.";
         return;
       }
       this.#roomAdminStatus.textContent = snapshot.isAdmin ? `${snapshot.roomName} \xB7 You are a room administrator` : `${snapshot.roomName} \xB7 View only (administrator rights required to make changes)`;
       this.#roomAdminStatus.dataset.state = snapshot.isAdmin ? "admin" : "readonly";
       this.#setRoomControlsEnabled(snapshot.isAdmin);
+      this.#roomPlaylistSync.checked = snapshot.isAdmin && this.#roomPlaylistSyncEnabled;
+      this.#roomPlaylistSyncStatus.textContent = snapshot.isAdmin ? this.#roomPlaylistSyncEnabled ? "Following the Music tab. A new compatible track will update this room automatically." : "Playlist follow is off." : "Only a room administrator can make room music follow the playlist.";
+      if (!snapshot.isAdmin) this.#roomPlaylistSyncEnabled = false;
       if (refreshFields) {
         this.#roomImageUrl.value = snapshot.customization.imageUrl;
         this.#roomMusicUrl.value = snapshot.customization.musicUrl;
@@ -12403,7 +13563,8 @@ select:focus-visible {
         this.#roomMusicSync,
         this.#roomSaveButton,
         this.#roomImageFileInput,
-        this.#roomMusicFileInput
+        this.#roomMusicFileInput,
+        this.#roomPlaylistSync
       ]) {
         control.disabled = !enabled;
       }
@@ -12537,6 +13698,470 @@ select:focus-visible {
           "error"
         );
         await this.#renderRoomTools(false);
+      }
+    }
+    #buildMusicPage() {
+      const header = element(
+        "header",
+        { className: "kl-feature-page-header" },
+        element(
+          "div",
+          { className: "kl-feature-page-heading" },
+          element("div", { className: "kl-feature-page-eyebrow", text: "YOUR MUSIC" }),
+          element("h1", { className: "kl-feature-page-title", text: "Music & Playlists" }),
+          element("p", {
+            className: "kl-feature-page-subtitle",
+            text: "A small private player for local files and direct or Catbox tracks."
+          })
+        ),
+        this.#newPlaylistButton
+      );
+      this.#playlistSelect.addEventListener("change", () => {
+        this.settings.update((draft) => {
+          draft.linkMusic.activePlaylistId = this.#playlistSelect.value;
+        });
+        void this.#renderMusicPage();
+      });
+      this.#newPlaylistButton.addEventListener("click", () => this.#createPlaylist());
+      const deletePlaylist = element("button", {
+        className: "kl-text-button kl-text-button--danger",
+        type: "button",
+        text: "Delete playlist",
+        onClick: () => this.#deleteActivePlaylist()
+      });
+      this.#musicTitleInput.type = "text";
+      this.#musicTitleInput.placeholder = "Track title (optional)";
+      this.#musicTitleInput.maxLength = 80;
+      this.#musicUrlInput.type = "url";
+      this.#musicUrlInput.placeholder = "https://\u2026/track.mp3";
+      this.#musicUrlInput.maxLength = 500;
+      this.#musicFileInput.type = "file";
+      this.#musicFileInput.accept = "audio/*,video/mp4,.aac,.flac,.m4a,.mp3,.mp4,.oga,.ogg,.opus,.wav,.webm";
+      this.#musicFileMode.replaceChildren(
+        selectOption2("local", "Keep only on this device"),
+        selectOption2("catbox", "Upload permanently to Catbox")
+      );
+      this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
+      const library = element(
+        "section",
+        { className: "kl-music-library" },
+        element(
+          "div",
+          { className: "kl-music-playlist-toolbar" },
+          element("label", {}, element("span", { text: "Playlist" }), this.#playlistSelect),
+          deletePlaylist
+        ),
+        this.#musicQueue
+      );
+      const add = element(
+        "section",
+        { className: "kl-music-add" },
+        element("h2", { text: "Add a track" }),
+        element("label", {}, element("span", { text: "Title" }), this.#musicTitleInput),
+        element("label", {}, element("span", { text: "Direct HTTPS audio URL" }), this.#musicUrlInput),
+        element("div", { className: "kl-music-add-divider", text: "or choose a file" }),
+        this.#musicFileInput,
+        this.#musicFileMode,
+        element("p", {
+          className: "kl-setting-help",
+          text: "Local files stay in this browser. Catbox files become public bearer links and are not automatically deleted."
+        }),
+        this.#musicAddStatus,
+        this.#musicAddButton
+      );
+      this.#musicProgress.type = "range";
+      this.#musicProgress.min = "0";
+      this.#musicProgress.max = "1000";
+      this.#musicProgress.step = "1";
+      this.#musicProgress.value = "0";
+      this.#musicProgress.addEventListener("input", () => {
+        if (!Number.isFinite(this.#audio.duration) || this.#audio.duration <= 0) return;
+        this.#audio.currentTime = Number(this.#musicProgress.value) / 1e3 * this.#audio.duration;
+        this.#renderMusicProgress();
+      });
+      this.#musicPreviousButton.append(kikiIcon("previous"));
+      this.#musicPlayButton.append(kikiIcon("play"));
+      this.#musicNextButton.append(kikiIcon("next"));
+      this.#musicPreviousButton.addEventListener("click", () => void this.#previousTrack());
+      this.#musicPlayButton.addEventListener("click", () => void this.#toggleMusicPlayback());
+      this.#musicNextButton.addEventListener("click", () => void this.#nextTrack(false));
+      this.#musicRepeatButton.addEventListener("click", () => this.#cycleMusicRepeat());
+      this.#musicShuffleButton.addEventListener("click", () => this.#toggleMusicShuffle());
+      this.#musicVolume.type = "range";
+      this.#musicVolume.min = "0";
+      this.#musicVolume.max = "100";
+      this.#musicVolume.step = "1";
+      this.#musicVolume.addEventListener("input", () => {
+        const volume = Math.max(0, Math.min(100, Number(this.#musicVolume.value) || 0));
+        this.#audio.volume = volume / 100;
+        this.settings.update((draft) => {
+          draft.linkMusic.volume = volume;
+        });
+      });
+      this.#audio.preload = "metadata";
+      this.#audio.addEventListener("timeupdate", () => this.#renderMusicProgress());
+      this.#audio.addEventListener("loadedmetadata", () => this.#renderMusicProgress());
+      this.#audio.addEventListener("durationchange", () => this.#renderMusicProgress());
+      this.#audio.addEventListener("play", () => {
+        this.#renderMusicTransport();
+        void this.#syncPlayingTrackToRoom();
+      });
+      this.#audio.addEventListener("pause", () => this.#renderMusicTransport());
+      this.#audio.addEventListener("ended", () => void this.#nextTrack(true));
+      this.#audio.addEventListener("error", () => {
+        if (this.#activeTrackId) this.#toast("This track could not be played by the browser.", "error");
+        this.#renderMusicTransport();
+      });
+      const player = element(
+        "footer",
+        { className: "kl-music-player" },
+        element(
+          "div",
+          { className: "kl-music-now" },
+          kikiIcon("music", "kl-music-now-icon"),
+          element("div", {}, this.#musicNowTitle, this.#musicNowSource)
+        ),
+        element("div", { className: "kl-music-seek" }, this.#musicProgress, this.#musicTime),
+        element(
+          "div",
+          { className: "kl-music-controls" },
+          this.#musicShuffleButton,
+          this.#musicPreviousButton,
+          this.#musicPlayButton,
+          this.#musicNextButton,
+          this.#musicRepeatButton,
+          element("label", { className: "kl-music-volume" }, element("span", { text: "Volume" }), this.#musicVolume)
+        )
+      );
+      this.#musicPage.append(
+        header,
+        element("div", { className: "kl-music-body" }, library, add),
+        player
+      );
+      void this.#renderMusicPage();
+    }
+    async #renderMusicPage() {
+      const token = ++this.#musicRenderToken;
+      const settings = this.settings.get().linkMusic;
+      this.#playlistSelect.replaceChildren(
+        ...settings.playlists.map((playlist2) => selectOption2(playlist2.id, `${playlist2.name} \xB7 ${playlist2.tracks.length}`))
+      );
+      this.#playlistSelect.value = settings.activePlaylistId;
+      this.#musicVolume.value = settings.volume.toString();
+      this.#audio.volume = settings.volume / 100;
+      this.#musicRepeatButton.textContent = settings.repeatMode === "one" ? "Repeat one" : settings.repeatMode === "all" ? "Repeat all" : "Repeat off";
+      this.#musicRepeatButton.dataset.active = String(settings.repeatMode !== "off");
+      this.#musicShuffleButton.dataset.active = String(settings.shuffle);
+      const playlist = activePlaylist(settings.playlists, settings.activePlaylistId);
+      const localTracks = new Set((await this.musicStore.list().catch(() => [])).map((track) => track.id));
+      if (token !== this.#musicRenderToken) return;
+      this.#musicQueue.replaceChildren(
+        ...playlist.tracks.map((track, index) => this.#musicTrackRow(track, index, localTracks))
+      );
+      if (playlist.tracks.length === 0) {
+        this.#musicQueue.append(
+          element("div", { className: "kl-gallery-empty", text: "This playlist is empty." })
+        );
+      }
+      this.#renderMusicTransport();
+    }
+    #musicTrackRow(track, index, localTracks) {
+      const unavailable = track.source === "local" && !localTracks.has(track.locator);
+      const play = element("button", {
+        className: "kl-icon-button kl-music-track-play",
+        type: "button",
+        title: unavailable ? "Local file is unavailable on this device" : `Play ${track.title}`,
+        ariaLabel: unavailable ? `${track.title} unavailable` : `Play ${track.title}`,
+        onClick: () => void this.#playTrack(track)
+      }, kikiIcon(this.#activeTrackId === track.id && !this.#audio.paused ? "pause" : "play"));
+      play.disabled = unavailable;
+      const row = element(
+        "article",
+        { className: "kl-music-track" },
+        element("span", { className: "kl-music-track-number", text: (index + 1).toString() }),
+        play,
+        element(
+          "div",
+          { className: "kl-music-track-copy" },
+          element("strong", { text: track.title }),
+          element("span", {
+            text: unavailable ? "Local file missing on this device" : track.source === "local" ? "On this device" : track.source === "catbox" ? "Catbox" : "Direct link"
+          })
+        ),
+        element("button", {
+          className: "kl-icon-button kl-music-track-remove",
+          type: "button",
+          title: "Remove from playlist",
+          ariaLabel: `Remove ${track.title}`,
+          onClick: () => void this.#removeMusicTrack(track)
+        }, kikiIcon("trash"))
+      );
+      row.dataset.active = String(this.#activeTrackId === track.id);
+      return row;
+    }
+    async #addMusicTrack() {
+      if (this.#musicAddButton.disabled) return;
+      this.#musicAddButton.disabled = true;
+      this.#musicAddStatus.textContent = "";
+      try {
+        const trackCount = this.settings.get().linkMusic.playlists.reduce(
+          (total, playlist) => total + playlist.tracks.length,
+          0
+        );
+        if (trackCount >= 100) throw new Error("KikiLink supports up to 100 saved tracks");
+        const file = this.#musicFileInput.files?.[0];
+        let source;
+        let locator;
+        let fallbackTitle;
+        if (file) {
+          fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
+          if (this.#musicFileMode.value === "catbox") {
+            this.#musicAddStatus.textContent = "Uploading to Catbox\u2026";
+            locator = await uploadMusicToCatbox(file);
+            source = "catbox";
+          } else {
+            this.#musicAddStatus.textContent = "Saving on this device\u2026";
+            const stored = await this.musicStore.add(file);
+            locator = stored.id;
+            fallbackTitle = stored.name;
+            source = "local";
+          }
+        } else {
+          locator = normalizeAudioTrackUrl(this.#musicUrlInput.value);
+          source = "url";
+          fallbackTitle = trackTitleFromUrl(locator);
+        }
+        const title = (this.#musicTitleInput.value.trim() || fallbackTitle || "Untitled track").slice(0, 80);
+        const track = {
+          id: createLocalId("track"),
+          title,
+          source,
+          locator,
+          addedAt: Date.now()
+        };
+        this.settings.update((draft) => {
+          const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+          playlist.tracks.push(track);
+        });
+        this.#musicTitleInput.value = "";
+        this.#musicUrlInput.value = "";
+        this.#musicFileInput.value = "";
+        this.#musicAddStatus.textContent = `Added \u201C${title}\u201D.`;
+        await this.#renderMusicPage();
+      } catch (error) {
+        this.#musicAddStatus.textContent = error instanceof Error ? error.message : "The track could not be added.";
+        this.#toast(this.#musicAddStatus.textContent, "error");
+      } finally {
+        this.#musicAddButton.disabled = false;
+      }
+    }
+    #createPlaylist() {
+      if (this.settings.get().linkMusic.playlists.length >= 8) {
+        this.#toast("KikiLink supports up to 8 playlists.", "error");
+        return;
+      }
+      const value = typeof prompt === "function" ? prompt("Playlist name", "New playlist") : "New playlist";
+      const name = value?.trim().slice(0, 60);
+      if (!name) return;
+      const id = createLocalId("playlist");
+      this.settings.update((draft) => {
+        draft.linkMusic.playlists.push({ id, name, tracks: [] });
+        draft.linkMusic.activePlaylistId = id;
+      });
+      void this.#renderMusicPage();
+    }
+    #deleteActivePlaylist() {
+      const music = this.settings.get().linkMusic;
+      const playlist = activePlaylist(music.playlists, music.activePlaylistId);
+      if (music.playlists.length <= 1) {
+        this.#toast("Keep at least one playlist.", "error");
+        return;
+      }
+      if (typeof confirm === "function" && !confirm(`Delete playlist \u201C${playlist.name}\u201D?`)) return;
+      const removedTrackIds = new Set(playlist.tracks.map((track) => track.id));
+      if (this.#activeTrackId && removedTrackIds.has(this.#activeTrackId)) this.#stopMusic();
+      this.settings.update((draft) => {
+        draft.linkMusic.playlists = draft.linkMusic.playlists.filter((candidate) => candidate.id !== playlist.id);
+        draft.linkMusic.activePlaylistId = draft.linkMusic.playlists[0].id;
+      });
+      void this.#renderMusicPage();
+    }
+    async #removeMusicTrack(track) {
+      if (this.#activeTrackId === track.id) this.#stopMusic();
+      this.settings.update((draft) => {
+        const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+        playlist.tracks = playlist.tracks.filter((candidate) => candidate.id !== track.id);
+      });
+      if (track.source === "local") {
+        const stillUsed = this.settings.get().linkMusic.playlists.some(
+          (playlist) => playlist.tracks.some((candidate) => candidate.source === "local" && candidate.locator === track.locator)
+        );
+        if (!stillUsed) await this.musicStore.delete(track.locator).catch(() => void 0);
+      }
+      await this.#renderMusicPage();
+    }
+    async #playTrack(track) {
+      let source;
+      if (track.source === "local") {
+        const stored = await this.musicStore.get(track.locator);
+        if (!stored) {
+          this.#toast("This local track is not stored on this device.", "error");
+          await this.#renderMusicPage();
+          return;
+        }
+        this.#releaseMusicObjectUrl();
+        source = URL.createObjectURL(stored.blob);
+        this.#musicObjectUrl = source;
+      } else {
+        this.#releaseMusicObjectUrl();
+        source = track.locator;
+      }
+      this.#activeTrackId = track.id;
+      this.#audio.src = source;
+      this.#audio.load();
+      try {
+        await this.#audio.play();
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "The browser blocked playback.", "error");
+      }
+      await this.#renderMusicPage();
+    }
+    async #toggleMusicPlayback() {
+      if (!this.#activeTrackId) {
+        const settings = this.settings.get().linkMusic;
+        const first = activePlaylist(settings.playlists, settings.activePlaylistId).tracks[0];
+        if (first) await this.#playTrack(first);
+        return;
+      }
+      if (this.#audio.paused) {
+        try {
+          await this.#audio.play();
+        } catch (error) {
+          this.#toast(error instanceof Error ? error.message : "The browser blocked playback.", "error");
+        }
+      } else {
+        this.#audio.pause();
+      }
+    }
+    async #previousTrack() {
+      if (this.#audio.currentTime > 3) {
+        this.#audio.currentTime = 0;
+        return;
+      }
+      const settings = this.settings.get().linkMusic;
+      const tracks = activePlaylist(settings.playlists, settings.activePlaylistId).tracks;
+      if (tracks.length === 0) return;
+      const index = tracks.findIndex((track) => track.id === this.#activeTrackId);
+      const previous = tracks[(index <= 0 ? tracks.length : index) - 1];
+      if (previous) await this.#playTrack(previous);
+    }
+    async #nextTrack(fromEnded) {
+      const settings = this.settings.get().linkMusic;
+      const tracks = activePlaylist(settings.playlists, settings.activePlaylistId).tracks;
+      if (tracks.length === 0) return;
+      if (fromEnded && settings.repeatMode === "one") {
+        this.#audio.currentTime = 0;
+        await this.#audio.play().catch(() => void 0);
+        return;
+      }
+      const index = tracks.findIndex((track) => track.id === this.#activeTrackId);
+      let nextIndex = index + 1;
+      if (settings.shuffle && tracks.length > 1) {
+        do
+          nextIndex = Math.floor(Math.random() * tracks.length);
+        while (nextIndex === index);
+      } else if (nextIndex >= tracks.length) {
+        if (!fromEnded || settings.repeatMode === "all") nextIndex = 0;
+        else {
+          this.#audio.pause();
+          this.#audio.currentTime = 0;
+          this.#renderMusicTransport();
+          return;
+        }
+      }
+      const next = tracks[Math.max(0, nextIndex)];
+      if (next) await this.#playTrack(next);
+    }
+    #cycleMusicRepeat() {
+      this.settings.update((draft) => {
+        draft.linkMusic.repeatMode = draft.linkMusic.repeatMode === "off" ? "all" : draft.linkMusic.repeatMode === "all" ? "one" : "off";
+      });
+      void this.#renderMusicPage();
+    }
+    #toggleMusicShuffle() {
+      this.settings.update((draft) => {
+        draft.linkMusic.shuffle = !draft.linkMusic.shuffle;
+      });
+      void this.#renderMusicPage();
+    }
+    #renderMusicTransport() {
+      const settings = this.settings.get().linkMusic;
+      const track = settings.playlists.flatMap((playlist) => playlist.tracks).find((candidate) => candidate.id === this.#activeTrackId);
+      this.#musicNowTitle.textContent = track?.title ?? "Nothing playing";
+      this.#musicNowSource.textContent = track ? track.source === "local" ? "On this device" : track.source === "catbox" ? "Catbox" : "Direct link" : "Choose a track";
+      this.#musicPlayButton.replaceChildren(kikiIcon(track && !this.#audio.paused ? "pause" : "play"));
+      this.#musicPlayButton.title = track && !this.#audio.paused ? "Pause" : "Play";
+      this.#musicPlayButton.setAttribute("aria-label", this.#musicPlayButton.title);
+      this.#renderMusicProgress();
+      for (const row of this.#musicQueue.querySelectorAll(".kl-music-track")) {
+        const button = row.querySelector(".kl-music-track-play");
+        if (!button) continue;
+        const rowTitle = row.querySelector("strong")?.textContent;
+        const active = rowTitle === track?.title && row.dataset.active === "true";
+        button.replaceChildren(kikiIcon(active && !this.#audio.paused ? "pause" : "play"));
+      }
+    }
+    #renderMusicProgress() {
+      const duration = Number.isFinite(this.#audio.duration) && this.#audio.duration > 0 ? this.#audio.duration : 0;
+      const current = Number.isFinite(this.#audio.currentTime) ? this.#audio.currentTime : 0;
+      this.#musicProgress.value = duration > 0 ? Math.round(Math.min(1, current / duration) * 1e3).toString() : "0";
+      this.#musicProgress.disabled = duration <= 0;
+      this.#musicTime.textContent = `${formatAudioTime(current)} / ${formatAudioTime(duration)}`;
+    }
+    #stopMusic() {
+      this.#audio.pause();
+      this.#audio.removeAttribute("src");
+      this.#activeTrackId = void 0;
+      this.#releaseMusicObjectUrl();
+      this.#renderMusicTransport();
+    }
+    #releaseMusicObjectUrl() {
+      if (!this.#musicObjectUrl) return;
+      URL.revokeObjectURL(this.#musicObjectUrl);
+      this.#musicObjectUrl = void 0;
+    }
+    async #syncPlayingTrackToRoom(force = false) {
+      if (!this.#roomPlaylistSyncEnabled || !this.#activeTrackId || this.#audio.paused) return;
+      const settings = this.settings.get().linkMusic;
+      const track = settings.playlists.flatMap((playlist) => playlist.tracks).find((candidate) => candidate.id === this.#activeTrackId);
+      const roomUrl = track && track.source !== "local" ? normalizeRoomTrackUrl(track.locator) : void 0;
+      if (!roomUrl) {
+        this.#roomPlaylistSyncStatus.textContent = "This track is device-only or not an MP3/MP4 URL, so BC cannot use it as room music.";
+        if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
+        return;
+      }
+      if (!force && roomUrl === this.#lastRoomSyncedTrackUrl) return;
+      const snapshot = this.adapter.getRoomAdminSnapshot();
+      if (!snapshot?.isAdmin) {
+        this.#roomPlaylistSyncEnabled = false;
+        this.#roomPlaylistSync.checked = false;
+        this.#roomPlaylistSyncStatus.textContent = "Playlist follow stopped because you are not a room administrator.";
+        if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
+        return;
+      }
+      try {
+        this.adapter.updateRoomCustomization({
+          ...snapshot.customization,
+          musicUrl: roomUrl,
+          musicSync: true
+        });
+        this.#lastRoomSyncedTrackUrl = roomUrl;
+        this.#roomMusicUrl.value = roomUrl;
+        this.#roomMusicSync.checked = true;
+        this.#roomPlaylistSyncStatus.textContent = `Room now follows \u201C${track?.title ?? "current track"}\u201D.`;
+      } catch (error) {
+        this.#roomPlaylistSyncStatus.textContent = error instanceof Error ? error.message : "The room music could not be updated.";
+        if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
       }
     }
     #buildRosterPage() {
@@ -13093,16 +14718,41 @@ select:focus-visible {
     }
     #renderOwnPresence() {
       const enabled = this.settings.get().linkPresence.enabled;
-      const snapshot = this.presence.get(this.adapter.getOwnMemberNumber());
+      const ownMemberNumber = this.adapter.getOwnMemberNumber();
+      const ownName = this.adapter.getOwnName();
+      const snapshot = this.presence.get(ownMemberNumber);
       const label = enabled ? presenceLabel(snapshot.status) : "Presence off";
       this.#presenceTriggerDot.dataset.status = enabled ? snapshot.status : "unknown";
-      this.#presenceTriggerLabel.textContent = label;
-      this.#presenceTrigger.title = snapshot.statusMessage ? `${label} \xB7 ${snapshot.statusMessage}` : `KikiLink status: ${label}`;
+      this.#presenceTriggerName.textContent = ownName;
+      this.#presenceTriggerStatus.textContent = snapshot.statusMessage ? `${label} \xB7 ${snapshot.statusMessage}` : label;
+      this.#renderAvatar(this.#presenceTriggerAvatar, ownName, ownMemberNumber, snapshot.avatarUrl);
+      this.#presenceTrigger.title = snapshot.statusMessage ? `${ownName}: ${label} \xB7 ${snapshot.statusMessage}` : `KikiLink status: ${label}`;
       this.#homePresence.replaceChildren(
         presenceDot(enabled ? snapshot.status : "unknown"),
         element("span", { text: label })
       );
       this.#homePresence.title = this.#presenceTrigger.title;
+    }
+    #scheduleClockUpdate() {
+      if (this.#clockTimer !== void 0) clearTimeout(this.#clockTimer);
+      const now = /* @__PURE__ */ new Date();
+      this.#localClock.dateTime = now.toISOString();
+      this.#localClock.textContent = new Intl.DateTimeFormat(void 0, {
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(now);
+      this.#localClock.title = `Local time \xB7 ${new Intl.DateTimeFormat(void 0, {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(now)}`;
+      this.#clockTimer = setTimeout(
+        () => this.#scheduleClockUpdate(),
+        Math.max(1e3, 6e4 - Date.now() % 6e4 + 25)
+      );
     }
     #renderActivePresence() {
       this.#chatPresence.replaceChildren();
@@ -13794,17 +15444,6 @@ select:focus-visible {
         this.#profileMenuAction("chat", "Message", "Open LinkChat", () => {
           void this.openChat(memberNumber, nativeName);
         }),
-        snapshot.avatarUrl && this.settings.get().linkChat.imagePreviews === "ask" && !this.#allowedAvatarUrls.has(snapshot.avatarUrl) ? this.#profileMenuAction(
-          "image",
-          "Show profile avatar",
-          "Load this remote image once",
-          () => {
-            if (!snapshot.avatarUrl) return;
-            this.#allowedAvatarUrls.add(snapshot.avatarUrl);
-            this.#schedulePresenceRender(memberNumber);
-            this.#toast("Profile avatar allowed for this session.");
-          }
-        ) : null,
         this.#profileMenuAction(
           "whisper",
           "Whisper",
@@ -14890,46 +16529,19 @@ ${expanded}` : expanded;
       return avatar;
     }
     #renderAvatar(target, name, memberNumber, explicitUrl) {
-      const own = memberNumber === this.adapter.getOwnMemberNumber();
-      const url = explicitUrl ?? this.presence.get(memberNumber).avatarUrl;
-      const previewPolicy = this.settings.get().linkChat.imagePreviews;
-      const candidateUrl = url && !own && previewPolicy === "ask" && !this.#allowedAvatarUrls.has(url) ? url : "";
-      const allowedUrl = url && (own || previewPolicy === "always" || previewPolicy === "ask" && this.#allowedAvatarUrls.has(url)) ? url : "";
-      if (target.dataset.avatarName === name && target.dataset.avatarUrl === allowedUrl && target.dataset.avatarCandidate === candidateUrl && target.childNodes.length > 0) {
+      const allowedUrl = explicitUrl ?? this.presence.get(memberNumber).avatarUrl ?? "";
+      if (target.dataset.avatarName === name && target.dataset.avatarUrl === allowedUrl && target.childNodes.length > 0) {
         return;
       }
       target.dataset.kikilinkAvatar = "true";
       target.dataset.avatarName = name;
       target.dataset.avatarUrl = allowedUrl;
-      target.dataset.avatarCandidate = candidateUrl;
       target.dataset.avatarMemberNumber = memberNumber.toString();
-      if (candidateUrl) {
-        target.setAttribute("aria-label", `Show ${name}'s KikiLink avatar`);
-      } else {
-        target.removeAttribute("aria-label");
-      }
-      if (target.dataset.avatarConsentBound !== "true") {
-        target.dataset.avatarConsentBound = "true";
-        target.addEventListener("click", (event) => {
-          const candidate = target.dataset.avatarCandidate;
-          const candidateMemberNumber = Number(target.dataset.avatarMemberNumber);
-          if (!candidate || !Number.isSafeInteger(candidateMemberNumber)) return;
-          event.preventDefault();
-          event.stopPropagation();
-          this.#allowedAvatarUrls.add(candidate);
-          this.#renderAvatar(
-            target,
-            target.dataset.avatarName || this.adapter.getMemberName(candidateMemberNumber),
-            candidateMemberNumber
-          );
-          this.#schedulePresenceRender(candidateMemberNumber);
-          this.#toast("Profile avatar shown for this session.");
-        });
-      }
+      target.removeAttribute("aria-label");
       const fallback = () => {
         if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
         target.replaceChildren(document.createTextNode(avatarText(name)));
-        target.dataset.avatarState = candidateUrl ? "available" : "initials";
+        target.dataset.avatarState = "initials";
       };
       fallback();
       if (!allowedUrl) return;
@@ -15127,6 +16739,50 @@ ${expanded}` : expanded;
     const option = element("option", { text: label });
     option.value = value;
     return option;
+  }
+  function activePlaylist(playlists, activeId) {
+    const playlist = playlists.find((candidate) => candidate.id === activeId) ?? playlists[0];
+    if (!playlist) throw new Error("Create a playlist first");
+    return playlist;
+  }
+  function createLocalId(prefix) {
+    const random = typeof crypto === "object" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    return `${prefix}-${random}`.toLocaleLowerCase().replace(/[^a-z0-9_-]/gu, "").slice(0, 64);
+  }
+  function normalizeAudioTrackUrl(value) {
+    const candidate = value.trim();
+    if (!candidate || candidate.length > 500) throw new Error("Enter a direct HTTPS audio link");
+    let url;
+    try {
+      url = new URL(candidate);
+    } catch {
+      throw new Error("Enter a valid direct HTTPS audio link");
+    }
+    if (url.protocol !== "https:" || url.username || url.password || !/\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(url.pathname)) {
+      throw new Error("Use a direct HTTPS audio link ending in a supported audio extension");
+    }
+    return url.href;
+  }
+  function normalizeRoomTrackUrl(value) {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && !url.username && !url.password && /\.(?:mp3|mp4)$/iu.test(url.pathname) ? url.href : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function trackTitleFromUrl(value) {
+    try {
+      const file = new URL(value).pathname.split("/").at(-1) ?? "";
+      return decodeURIComponent(file).replace(/\.[^.]+$/u, "").replace(/[_-]+/gu, " ").trim().slice(0, 80);
+    } catch {
+      return "Untitled track";
+    }
+  }
+  function formatAudioTime(value) {
+    const seconds = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${(seconds % 60).toString().padStart(2, "0")}`;
   }
   function rosterRelationshipLabel(relationship) {
     if (relationship === "owner") return "Owner";
@@ -16069,34 +17725,34 @@ ${expanded}` : expanded;
   }
   function sanitizeConversation(value) {
     if (!isRecord6(value) || !validMemberNumber4(value.peerNumber)) return void 0;
-    const peerName = cleanText4(value.peerName, 80) || `Member ${value.peerNumber}`;
+    const peerName = cleanText5(value.peerName, 80) || `Member ${value.peerNumber}`;
     const lastDirection = value.lastDirection === "outgoing" ? "outgoing" : "incoming";
-    const localAlias = cleanText4(value.localAlias, 80);
+    const localAlias = cleanText5(value.localAlias, 80);
     const hiddenAt = validTime2(value.hiddenAt) ? value.hiddenAt : void 0;
     return {
       peerNumber: value.peerNumber,
       peerName,
       ...localAlias ? { localAlias } : {},
       ...hiddenAt !== void 0 ? { hiddenAt } : {},
-      lastMessage: cleanText4(value.lastMessage, 1e3),
+      lastMessage: cleanText5(value.lastMessage, 1e3),
       lastMessageAt: validTime2(value.lastMessageAt) ? value.lastMessageAt : 0,
       lastDirection,
       unread: integerInRange4(value.unread, 0, 1e5, 0),
       pinned: value.pinned === true,
-      draft: cleanText4(value.draft, 1e3)
+      draft: cleanText5(value.draft, 1e3)
     };
   }
   function sanitizeMessage(value) {
     if (!isRecord6(value) || !validMemberNumber4(value.peerNumber) || typeof value.id !== "string" || !value.id.trim() || value.id.length > 200 || !validTime2(value.sentAt)) {
       return void 0;
     }
-    const roomName = cleanText4(value.roomName, 100);
+    const roomName = cleanText5(value.roomName, 100);
     return {
       id: value.id,
       direction: value.direction === "outgoing" ? "outgoing" : "incoming",
       peerNumber: value.peerNumber,
-      peerName: cleanText4(value.peerName, 80) || `Member ${value.peerNumber}`,
-      content: cleanText4(value.content, 1e3),
+      peerName: cleanText5(value.peerName, 80) || `Member ${value.peerNumber}`,
+      content: cleanText5(value.content, 1e3),
       sentAt: value.sentAt,
       includeRoom: value.includeRoom === true,
       ...roomName ? { roomName } : {},
@@ -16133,7 +17789,7 @@ ${expanded}` : expanded;
   }
   function personPriority(value) {
     if (!isRecord6(value)) return 0;
-    const notebook = value.favorite === true || cleanText4(value.note, 1).length > 0 || Array.isArray(value.tags) && value.tags.length > 0;
+    const notebook = value.favorite === true || cleanText5(value.note, 1).length > 0 || Array.isArray(value.tags) && value.tags.length > 0;
     const lastSeen = validTime2(value.lastSeenAt) ? value.lastSeenAt : 0;
     return (notebook ? 10 ** 15 : 0) + lastSeen;
   }
@@ -16166,7 +17822,7 @@ ${expanded}` : expanded;
   function integerInRange4(value, min, max, fallback) {
     return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
   }
-  function cleanText4(value, limit) {
+  function cleanText5(value, limit) {
     return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit) : "";
   }
   function isRecord6(value) {
@@ -16175,28 +17831,28 @@ ${expanded}` : expanded;
 
   // src/storage/indexeddb-chat-repository.ts
   var DATABASE_NAME = "kikilink";
-  var DATABASE_VERSION2 = 1;
+  var DATABASE_VERSION3 = 1;
   var MESSAGE_STORE = "messages";
   var CONVERSATION_STORE = "conversations";
   var PEER_TIME_INDEX = "peer-time";
   var TIME_INDEX = "time";
   var IndexedDbChatRepository = class {
-    constructor(databaseName2 = DATABASE_NAME) {
-      this.databaseName = databaseName2;
+    constructor(databaseName3 = DATABASE_NAME) {
+      this.databaseName = databaseName3;
     }
     databaseName;
     #databasePromise;
     async addMessage(message) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
-      const done = transactionDone2(transaction);
+      const done = transactionDone3(transaction);
       transaction.objectStore(MESSAGE_STORE).put(message);
       await done;
     }
     async getMessages(peerNumber, limit = 200) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readonly");
-      const done = transactionDone2(transaction);
+      const done = transactionDone3(transaction);
       const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
       const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
       const messages = [];
@@ -16210,8 +17866,8 @@ ${expanded}` : expanded;
     async getConversation(peerNumber) {
       const database = await this.#database();
       const transaction = database.transaction(CONVERSATION_STORE, "readonly");
-      const done = transactionDone2(transaction);
-      const value = await requestResult2(
+      const done = transactionDone3(transaction);
+      const value = await requestResult3(
         transaction.objectStore(CONVERSATION_STORE).get(peerNumber)
       );
       await done;
@@ -16220,8 +17876,8 @@ ${expanded}` : expanded;
     async listConversations() {
       const database = await this.#database();
       const transaction = database.transaction(CONVERSATION_STORE, "readonly");
-      const done = transactionDone2(transaction);
-      const values = await requestResult2(
+      const done = transactionDone3(transaction);
+      const values = await requestResult3(
         transaction.objectStore(CONVERSATION_STORE).getAll()
       );
       await done;
@@ -16230,14 +17886,14 @@ ${expanded}` : expanded;
     async putConversation(conversation) {
       const database = await this.#database();
       const transaction = database.transaction(CONVERSATION_STORE, "readwrite");
-      const done = transactionDone2(transaction);
+      const done = transactionDone3(transaction);
       transaction.objectStore(CONVERSATION_STORE).put(conversation);
       await done;
     }
     async deleteConversation(peerNumber) {
       const database = await this.#database();
       const transaction = database.transaction([MESSAGE_STORE, CONVERSATION_STORE], "readwrite");
-      const done = transactionDone2(transaction);
+      const done = transactionDone3(transaction);
       transaction.objectStore(CONVERSATION_STORE).delete(peerNumber);
       const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
       const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
@@ -16250,7 +17906,7 @@ ${expanded}` : expanded;
     async deleteMessagesOlderThan(timestamp) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
-      const done = transactionDone2(transaction);
+      const done = transactionDone3(transaction);
       const index = transaction.objectStore(MESSAGE_STORE).index(TIME_INDEX);
       const range = IDBKeyRange.upperBound(timestamp, true);
       let removed = 0;
@@ -16265,7 +17921,7 @@ ${expanded}` : expanded;
     async trimConversation(peerNumber, keepNewest) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
-      const done = transactionDone2(transaction);
+      const done = transactionDone3(transaction);
       const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
       const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
       let visited = 0;
@@ -16284,7 +17940,7 @@ ${expanded}` : expanded;
     async clearAll() {
       const database = await this.#database();
       const transaction = database.transaction([MESSAGE_STORE, CONVERSATION_STORE], "readwrite");
-      const done = transactionDone2(transaction);
+      const done = transactionDone3(transaction);
       transaction.objectStore(MESSAGE_STORE).clear();
       transaction.objectStore(CONVERSATION_STORE).clear();
       await done;
@@ -16295,13 +17951,13 @@ ${expanded}` : expanded;
       this.#databasePromise = void 0;
     }
     #database() {
-      this.#databasePromise ??= openDatabase2(this.databaseName);
+      this.#databasePromise ??= openDatabase3(this.databaseName);
       return this.#databasePromise;
     }
   };
-  function openDatabase2(databaseName2) {
+  function openDatabase3(databaseName3) {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(databaseName2, DATABASE_VERSION2);
+      const request = indexedDB.open(databaseName3, DATABASE_VERSION3);
       request.onerror = () => reject(request.error ?? new Error("Unable to open KikiLink storage"));
       request.onblocked = () => reject(new Error("KikiLink storage upgrade is blocked"));
       request.onupgradeneeded = () => {
@@ -16318,13 +17974,13 @@ ${expanded}` : expanded;
       request.onsuccess = () => resolve(request.result);
     });
   }
-  function requestResult2(request) {
+  function requestResult3(request) {
     return new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("KikiLink storage request failed"));
     });
   }
-  function transactionDone2(transaction) {
+  function transactionDone3(transaction) {
     return new Promise((resolve, reject) => {
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(transaction.error ?? new Error("KikiLink transaction aborted"));
@@ -16628,7 +18284,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.21.1");
+    const app = new KikiLinkApp("0.22.0");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

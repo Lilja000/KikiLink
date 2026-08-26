@@ -43,4 +43,13 @@ describe("LinkActivitiesService", () => {
       }),
     ).toBe("greets {source}; {source} sees Ki$ki.");
   });
+
+  it("expands the custom {me} alias in legacy room activities with tolerant spacing and case", () => {
+    expect(
+      expandActivityTemplate("{ ME } smiles; {me} greets { target }.", {
+        sourceName: "Kiki",
+        target: { memberNumber: 7, memberName: "Lua" },
+      }),
+    ).toBe("Kiki smiles; Kiki greets Lua.");
+  });
 });

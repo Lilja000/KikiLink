@@ -140,7 +140,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(18);
+    expect(settings.schemaVersion).toBe(19);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -264,7 +264,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(18);
+    expect(settings.schemaVersion).toBe(19);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -288,7 +288,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(18);
+    expect(settings.schemaVersion).toBe(19);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -354,7 +354,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(18);
+    expect(settings.schemaVersion).toBe(19);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -530,7 +530,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(18);
+    expect(settings.schemaVersion).toBe(19);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -577,5 +577,70 @@ describe("SettingsStore", () => {
       saved: [{ url: "https://files.catbox.moe/keep.webp", addedAt: 200 }],
       hiddenUrls: ["https://files.catbox.moe/hidden.png"],
     });
+  });
+
+  it("bounds room presets and playlist metadata while preserving device-only track references", () => {
+    const settings = sanitizeSettings({
+      schemaVersion: 19,
+      linkRoom: {
+        presets: [{
+          id: "Moon_Room",
+          label: " Moon Garden ",
+          savedAt: 100,
+          room: {
+            name: "Garden",
+            description: "Quiet room",
+            background: "Boudoir",
+            limit: 8,
+            admins: [0, 0, -1],
+            whitelist: [123],
+            blacklist: [456],
+            visibility: ["All"],
+            access: ["All"],
+            blockCategory: ["Extreme"],
+            custom: {
+              imageUrl: "https://files.catbox.moe/room.webp",
+              musicUrl: "https://files.catbox.moe/song.mp3",
+              sizeMode: 2,
+              musicSync: true,
+            },
+          },
+        }],
+      },
+      linkMusic: {
+        activePlaylistId: "night",
+        repeatMode: "all",
+        shuffle: true,
+        volume: 42,
+        playlists: [{
+          id: "night",
+          name: "Night songs",
+          tracks: [
+            { id: "local-one", title: "Local", source: "local", locator: "blob-one", addedAt: 50 },
+            { id: "remote-one", title: "Remote", source: "catbox", locator: "https://files.catbox.moe/song.mp3", addedAt: 60 },
+            { id: "bad", title: "Bad", source: "url", locator: "javascript:alert(1)", addedAt: 70 },
+          ],
+        }],
+      },
+    });
+
+    expect(settings.schemaVersion).toBe(19);
+    expect(settings.linkRoom.presets[0]).toMatchObject({
+      id: "moon_room",
+      label: "Moon Garden",
+      room: {
+        admins: [0],
+        whitelist: [123],
+        blacklist: [456],
+        custom: { sizeMode: 2, musicSync: true },
+      },
+    });
+    expect(settings.linkMusic).toMatchObject({
+      activePlaylistId: "night",
+      repeatMode: "all",
+      shuffle: true,
+      volume: 42,
+    });
+    expect(settings.linkMusic.playlists[0]?.tracks).toHaveLength(2);
   });
 });

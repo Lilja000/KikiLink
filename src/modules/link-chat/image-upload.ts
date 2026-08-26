@@ -4,11 +4,13 @@ export const MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_LOCAL_IMAGE_EDGE = 2_560;
 export const MAX_LOCAL_IMAGE_PIXELS = 32_000_000;
 export const MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
+export const MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
 
 const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
 const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const LITTERBOX_UPLOAD_ENDPOINT =
   "https://litterbox.catbox.moe/resources/internals/api.php";
+const CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
 const CLOUD_NAME_PATTERN = /^[a-z0-9_-]{1,64}$/iu;
 const UPLOAD_PRESET_PATTERN = /^[a-z0-9_-]{1,128}$/iu;
 
@@ -136,6 +138,52 @@ export async function uploadLocalRoomAudio(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("The music upload timed out");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Uploads an explicitly selected track to permanent, public Catbox storage. */
+export async function uploadMusicToCatbox(
+  file: File,
+  request: typeof fetch = globalThis.fetch.bind(globalThis),
+): Promise<string> {
+  if (file.size <= 0) throw new Error("Choose a non-empty audio file");
+  if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
+  const extension = playlistAudioExtension(file);
+  if (!extension) throw new Error("Choose an MP3, MP4, M4A, OGG, WAV, FLAC, AAC, or WebM track");
+
+  const form = new FormData();
+  form.append("reqtype", "fileupload");
+  form.append(
+    "fileToUpload",
+    new File([file], `kikilink-track.${extension}`, {
+      type: file.type || "application/octet-stream",
+      lastModified: 0,
+    }),
+  );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120_000);
+  try {
+    const response = await request(CATBOX_UPLOAD_ENDPOINT, {
+      method: "POST",
+      body: form,
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    });
+    const payload = (await response.text().catch(() => "")).trim();
+    if (!response.ok) {
+      throw new Error(cleanProviderError(payload) || `Audio host returned HTTP ${response.status}`);
+    }
+    const url = normalizeCatboxAudioUrl(payload);
+    if (!url) throw new Error("Catbox returned an unexpected track link");
+    return url;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("The Catbox upload timed out");
     }
     throw error;
   } finally {
@@ -398,6 +446,45 @@ function roomAudioExtension(file: File): string | undefined {
     "video/mp4": "mp4",
   };
   return mime ? byMime[mime] : undefined;
+}
+
+function playlistAudioExtension(file: File): string | undefined {
+  const named = file.name.toLocaleLowerCase().match(/\.(aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/u)?.[1];
+  if (named) return named;
+  const mime = file.type.toLocaleLowerCase().split(";", 1)[0];
+  const byMime: Record<string, string> = {
+    "audio/aac": "aac",
+    "audio/flac": "flac",
+    "audio/mp4": "m4a",
+    "video/mp4": "mp4",
+    "audio/mpeg": "mp3",
+    "audio/ogg": "ogg",
+    "audio/opus": "opus",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/webm": "webm",
+  };
+  return mime ? byMime[mime] : undefined;
+}
+
+function normalizeCatboxAudioUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "files.catbox.moe" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !/^\/[a-z0-9_-]+\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(url.pathname)
+    ) {
+      return undefined;
+    }
+    return url.href;
+  } catch {
+    return undefined;
+  }
 }
 
 function validatePreparedImage(image: PreparedLocalImage): void {

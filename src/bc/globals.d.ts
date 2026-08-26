@@ -137,6 +137,42 @@ declare global {
     Private?: true;
   }
 
+  interface BCServerRoomSearchRequest {
+    Query: string;
+    Space?: string[] | string;
+    Game?: string;
+    FullRooms?: boolean;
+    Language: string | string[];
+    SearchDescs?: boolean;
+    ShowLocked?: boolean;
+    MapTypes?: string[];
+  }
+
+  interface BCServerRoomSearchData {
+    Name: string;
+    Language: string;
+    Creator?: string;
+    CreatorMemberNumber?: number;
+    Creation?: number;
+    MemberCount: number;
+    MemberLimit: number;
+    Description: string;
+    BlockCategory?: string[];
+    Game?: string;
+    Friends?: BCOnlineFriendInfo[];
+    Space?: string;
+    Visibility?: string[];
+    Access?: string[];
+    Private?: boolean;
+    Locked?: boolean;
+    CanJoin: boolean;
+    MapType?: string;
+  }
+
+  type BCServerRoomSearchResult =
+    | BCServerRoomSearchData[]
+    | { err?: unknown; error?: unknown; value?: BCServerRoomSearchData[] };
+
   interface BCAccountQueryResponse {
     Query: string;
     Result: unknown;
@@ -249,6 +285,11 @@ declare global {
   function ServerPlayerIsInChatRoom(): boolean;
   function ChatRoomPlayerIsAdmin(): boolean;
   function ChatRoomGetSettings(room: BCChatRoomData): BCChatRoomData;
+  function ServerRoomSearch(data: BCServerRoomSearchRequest): Promise<BCServerRoomSearchResult>;
+  function ServerRoomSearch(
+    query: string,
+    data: BCServerRoomSearchRequest,
+  ): Promise<BCServerRoomSearchResult>;
   function CharacterNickname(character: BCCharacter): string;
   function ChatRoomDrawCharacterStatusIcons(
     character: BCCharacter,

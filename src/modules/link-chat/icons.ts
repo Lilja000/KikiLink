@@ -16,12 +16,18 @@ export type KikiLinkIconName =
   | "location"
   | "lock"
   | "more"
+  | "music"
   | "navigation"
+  | "next"
   | "note"
   | "pin"
+  | "play"
+  | "pause"
+  | "previous"
   | "plus"
   | "profile"
   | "reactions"
+  | "refresh"
   | "reply"
   | "search"
   | "send"
@@ -108,9 +114,19 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
     ["circle", { cx: "12", cy: "12", r: "1" }, true],
     ["circle", { cx: "18.7", cy: "12", r: "1" }, true],
   ],
+  music: [
+    ["path", { d: "M9 18V6.7l10-2v10.8" }],
+    ["circle", { cx: "6.4", cy: "18.2", r: "2.6" }],
+    ["circle", { cx: "16.4", cy: "15.7", r: "2.6" }],
+    ["line", { x1: "9", y1: "10", x2: "19", y2: "8" }],
+  ],
   navigation: [
     ["circle", { cx: "12", cy: "12", r: "8.5" }],
     ["path", { d: "m15.7 8.3-2.1 5.3-5.3 2.1 2.1-5.3 5.3-2.1Z" }, true],
+  ],
+  next: [
+    ["path", { d: "m5.5 5 9 7-9 7V5Z" }, true],
+    ["line", { x1: "18.5", y1: "5", x2: "18.5", y2: "19" }],
   ],
   note: [
     ["path", { d: "M6 3.8h9.2L19 7.6v12.6H6V3.8Z" }],
@@ -121,6 +137,15 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
   pin: [
     ["path", { d: "m8 4 8 0-1.5 5 3 3H6.5l3-3L8 4Z" }, true],
     ["line", { x1: "12", y1: "12", x2: "12", y2: "20" }],
+  ],
+  play: [["path", { d: "m7 4.5 12 7.5-12 7.5v-15Z" }, true]],
+  pause: [
+    ["rect", { x: "6", y: "4.5", width: "4.2", height: "15", rx: "1" }, true],
+    ["rect", { x: "13.8", y: "4.5", width: "4.2", height: "15", rx: "1" }, true],
+  ],
+  previous: [
+    ["path", { d: "m18.5 5-9 7 9 7V5Z" }, true],
+    ["line", { x1: "5.5", y1: "5", x2: "5.5", y2: "19" }],
   ],
   plus: [
     ["line", { x1: "12", y1: "4.5", x2: "12", y2: "19.5" }],
@@ -137,6 +162,12 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
     ["path", { d: "M6.2 16.7h11.6l-1.5-2.2V10a4.3 4.3 0 0 0-8.6 0v4.5l-1.5 2.2Z" }],
     ["path", { d: "M10 19a2.3 2.3 0 0 0 4 0" }],
     ["line", { x1: "12", y1: "3.1", x2: "12", y2: "5.2" }],
+  ],
+  refresh: [
+    ["path", { d: "M19.2 8.4A7.7 7.7 0 0 0 5.6 6.2L3.7 8.4" }],
+    ["polyline", { points: "3.7 4.7 3.7 8.4 7.5 8.4" }],
+    ["path", { d: "M4.8 15.6a7.7 7.7 0 0 0 13.6 2.2l1.9-2.2" }],
+    ["polyline", { points: "20.3 19.3 20.3 15.6 16.5 15.6" }],
   ],
   reply: [
     ["polyline", { points: "9.5 7 4.2 11.7 9.5 16.4" }],

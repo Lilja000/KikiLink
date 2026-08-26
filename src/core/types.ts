@@ -34,6 +34,53 @@ export type ReactionAction = "notice" | "room-emote";
 export type NotificationSoundPreset = "chime" | "sparkle" | "pop";
 export type NotificationSoundChoice = NotificationSoundPreset | `custom:${string}`;
 export type LinkNotificationKind = "chat" | "friend-online" | "room-join";
+export type MusicTrackSource = "url" | "catbox" | "local";
+export type MusicRepeatMode = "off" | "all" | "one";
+
+export interface RoomPresetData {
+  name: string;
+  description: string;
+  background: string;
+  limit: number;
+  game: string;
+  space: string;
+  language: string;
+  visibility: string[];
+  access: string[];
+  blockCategory: string[];
+  admins: number[];
+  whitelist: number[];
+  blacklist: number[];
+  custom: {
+    imageUrl: string;
+    imageFilter: string;
+    musicUrl: string;
+    sizeMode: number;
+    musicSync: boolean;
+  };
+}
+
+export interface RoomPreset {
+  id: string;
+  label: string;
+  savedAt: number;
+  room: RoomPresetData;
+}
+
+export interface MusicTrack {
+  id: string;
+  title: string;
+  source: MusicTrackSource;
+  /** A direct HTTPS URL for remote tracks, or the locally stored record id. */
+  locator: string;
+  addedAt: number;
+}
+
+export interface MusicPlaylist {
+  id: string;
+  name: string;
+  tracks: MusicTrack[];
+}
 
 export interface OnlineFriend {
   memberNumber: number;
@@ -206,7 +253,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 18;
+  schemaVersion: 19;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -279,6 +326,16 @@ export interface KikiLinkSettings {
     };
     enabled: boolean;
     rules: ReactionRule[];
+  };
+  linkRoom: {
+    presets: RoomPreset[];
+  };
+  linkMusic: {
+    playlists: MusicPlaylist[];
+    activePlaylistId: string;
+    repeatMode: MusicRepeatMode;
+    shuffle: boolean;
+    volume: number;
   };
 }
 

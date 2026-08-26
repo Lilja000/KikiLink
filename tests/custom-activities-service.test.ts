@@ -682,6 +682,14 @@ describe("native Custom Activities", () => {
         pronouns: { subject: "she", object: "her", possessive: "her" },
       }),
     ).toBe("{target} greets {me}; she offer her hand to {target}.");
+
+    expect(
+      expandCustomActivityTemplate("{ ME } greets { TARGET }; { They } wave.", {
+        sourceName: "Kiki",
+        targetName: "Lua",
+        pronouns: { subject: "she", object: "her", possessive: "her" },
+      }),
+    ).toBe("Kiki greets Lua; she wave.");
   });
 });
 

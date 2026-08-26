@@ -36,6 +36,7 @@ afterEach(() => {
     "ChatRoomSetTarget",
     "InformationSheetLoadCharacter",
     "ServerSend",
+    "ServerRoomSearch",
     "ServerIsLoggedIn",
     "ServerPlayerIsInChatRoom",
     "ChatRoomPlayerIsAdmin",
@@ -293,6 +294,118 @@ describe("BCAdapter", () => {
       Action: "Kick",
       Publish: true,
     });
+  });
+
+  it("captures and applies bounded room presets while preserving the current admin", () => {
+    const send = vi.fn();
+    globalThis.CurrentScreen = "ChatRoom";
+    globalThis.Player = {
+      ID: 0,
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = {
+      Name: "Old room",
+      Description: "Old",
+      Admin: [999],
+      Whitelist: [],
+      Ban: [],
+      Limit: 10,
+      Custom: {},
+    };
+    globalThis.ChatRoomCharacter = [globalThis.Player];
+    globalThis.ChatRoomPlayerIsAdmin = () => true;
+    globalThis.ChatRoomGetSettings = (room) => structuredClone(room);
+    globalThis.ServerSend = send;
+    globalThis.CurrentTime = 321;
+
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.22.0");
+    expect(adapter.getRoomAdminSnapshot()?.settings).toMatchObject({
+      name: "Old room",
+      admins: [999],
+      blacklist: [],
+    });
+    adapter.applyRoomPreset({
+      name: "Moon Garden",
+      description: "Quiet",
+      background: "Boudoir",
+      limit: 8,
+      game: "",
+      space: "X",
+      language: "EN",
+      visibility: ["All"],
+      access: ["All"],
+      blockCategory: ["Extreme"],
+      admins: [123],
+      whitelist: [456],
+      blacklist: [789],
+      custom: {
+        imageUrl: "https://files.catbox.moe/moon.webp",
+        imageFilter: "",
+        musicUrl: "https://files.catbox.moe/song.mp3",
+        sizeMode: 2,
+        musicSync: true,
+      },
+    });
+    expect(send).toHaveBeenCalledWith("ChatRoomAdmin", expect.objectContaining({
+      MemberNumber: 0,
+      Action: "Update",
+      Room: expect.objectContaining({
+        Name: "Moon Garden",
+        Admin: [999, 123],
+        Whitelist: [456],
+        Ban: [789],
+        Custom: expect.objectContaining({ MusicStart: 321, SizeMode: 2 }),
+      }),
+    }));
+  });
+
+  it("reads the native lobby directory and sorts rooms containing friends first", async () => {
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    const roomSearch = vi.fn(async (_query: string, _request: BCServerRoomSearchRequest) => ({
+      value: [
+        {
+          Name: "Open room",
+          Language: "EN",
+          MemberCount: 2,
+          MemberLimit: 10,
+          Description: "Public",
+          Friends: [],
+          CanJoin: true,
+        },
+        {
+          Name: "Friends room",
+          Language: "EN",
+          MemberCount: 5,
+          MemberLimit: 10,
+          Description: "Known people",
+          Friends: [{
+            Type: "Friend",
+            MemberNumber: 123,
+            MemberName: "AccountReina",
+            MemberNickname: "Reina",
+          }],
+          CanJoin: true,
+        },
+      ],
+    }));
+    globalThis.ServerRoomSearch = roomSearch as unknown as typeof ServerRoomSearch;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.22.0");
+
+    const rooms = await adapter.searchRooms("moon");
+
+    expect(roomSearch).toHaveBeenCalledWith("MOON", expect.objectContaining({
+      Query: "MOON",
+      FullRooms: true,
+      ShowLocked: true,
+    }));
+    expect(rooms.map((room) => room.name)).toEqual(["Friends room", "Open room"]);
+    expect(rooms[0]?.friends).toEqual([{ memberNumber: 123, memberName: "Reina" }]);
   });
 
   it("opens native Whisper and profile actions for a current-room nickname", () => {

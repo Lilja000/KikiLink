@@ -11,10 +11,10 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.21.1` adds a branded About page, reliable visible-player Presence discovery, tappable
-privacy-aware profile avatars, and a proper Gallery library that accepts links or local uploads
-without sending them through a chat. The running version remains visible as tiny translucent digits
-in the lower-left corner.
+Version `0.22.0` adds a compact native lobby directory, account-scoped room presets, a device-aware
+music player with playlists and optional room following, an unmistakable profile/time control in the
+top bar, automatic lightweight profile avatars, and tolerant Custom Activity variables. The running
+version remains visible as tiny translucent digits in the lower-left corner.
 
 ## Link Deck
 
@@ -24,9 +24,9 @@ in the lower-left corner.
 - Action-first cards use familiar names and visible verbs for Chat, Players, Custom Activities,
   Gallery, and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
-- Your KikiLink presence is always one quiet top-bar control away
-- Five clear primary destinations: Home, Chat, Players, Room, and Custom Activities
-- Persistent feature rail on desktop and a focused five-item bottom bar on phones
+- Your avatar, name, presence, custom status, and local time remain visible in the top bar
+- Six clear primary destinations: Home, Chat, Players, Room, Music, and Custom Activities
+- Persistent feature rail on desktop and a focused six-item bottom bar on phones
 - Players and Custom Activities stay inside the workspace instead of opening blocking dialogs
 - Settings is a full workspace with Appearance, Navigation, Chat, Players, Activities, Alerts, and About categories
 - Configurable launcher behavior: open Home, the last section, or LinkChat directly
@@ -56,7 +56,8 @@ in the lower-left corner.
 - Live list of everyone else in the current chat room, using character nicknames first
 - Presence dots and KikiLink status labels in player lists and detail cards
 - Visible player lists discover compatible KikiLink Presence through a quiet rate-limited queue
-- Privacy-aware remote avatars show a clear one-time tap affordance when `Ask first` is selected
+- Small profile avatars load automatically in player identity controls; chat-image privacy remains
+  governed independently by `Ask first`, `Always show`, or `Links only`
 - Account-derived Friend, Owner, Lover, Whitelist, Blacklist, and Ghosted badges
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - Private notes and searchable tags for individual players
@@ -127,6 +128,13 @@ so they can follow that same account to another device.
 
 - A Room destination that reads the current room and enables editing only for native room admins
 - Background URL, native resize mode, music URL, and synchronized playback controls
+- Compact `Room`, `Lobbies`, and `Presets` subtools without another primary navigation tab
+- Manual native room-directory refresh, local filtering, friend-first ordering, and up to five
+  automatically loaded friend avatars per lobby
+- Account-scoped room presets for name, description, native/custom backgrounds, music, size,
+  language, access, limits, admins, whitelist, blacklist, and blocked categories
+- Applying a preset requires current room-admin rights and always preserves the current user as an admin;
+  passwords and large map layouts are deliberately excluded
 - Explicit native Kick, Promote/Demote, and room Whitelist/Unwhitelist actions; Kick asks for confirmation
 - Local image preparation and temporary Litterbox upload can fill the room background field;
   renamed MP3/MP4 room audio up to 20 MB can fill the music field
@@ -136,6 +144,18 @@ so they can follow that same account to another device.
 - Gallery Remove hides only the local/account-scoped card; it does not delete chats or hosted files
 - Gallery cards keep full image proportions, expose only `Show original`, reopen the source chat, and
   can fill the room background field for administrators
+
+## Music & Playlists
+
+- A dedicated compact music player with multiple playlists, a queue, seek bar, previous/next,
+  shuffle, repeat-one/repeat-all, and independent volume
+- Direct HTTPS tracks, local browser-only files up to 80 MB, or explicitly uploaded permanent
+  Catbox tracks with generic filenames
+- Local blobs stay in an account-isolated IndexedDB on the current device; playlist metadata and
+  remote URLs follow the signed-in BC account within KikiLink's bounded settings mirror
+- Missing local files are clearly marked after moving to another device instead of silently failing
+- A session-only Room switch lets an administrator make compatible remote MP3/MP4 tracks follow the
+  current playlist, updating room music only when the playing track changes
 
 ## About
 
@@ -153,7 +173,8 @@ so they can follow that same account to another device.
   item-action icons, or visual duplicates
 - Mobile layouts keep the character, expandable two-column slot grid, horizontally scrolling
   picture gallery, and save controls usable inside one predictable scroll area
-- Quick `{me}`, `{target}`, `{target's}`, and `{target's gender}` variables with a live preview
+- Quick `{me}`, `{source}`, `{target}`, `{target's}`, and `{target's gender}` variables with a live
+  preview; known variables tolerate capitalization and accidental inner spacing
 - Other-character targeting by default; self-only and both modes live inside `Advanced`
 - Optional arousal is off by default and exposes a bounded `1–20` base-amount slider only when enabled
 - Saved actions wait for Bondage Club's live registry and stay registered beside vanilla activities

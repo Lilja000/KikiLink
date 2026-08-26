@@ -1,5 +1,6 @@
 import type {
   BCAdapter,
+  BCLobbyRoom,
   BCRoomAdminPlayer,
   BCRoomMemberAction,
 } from "../../bc/adapter";
@@ -10,6 +11,8 @@ import type {
   LinkNotification,
   LinkReactionFired,
   LinkMessage,
+  MusicPlaylist,
+  MusicTrack,
   NotificationSoundChoice,
   NotificationSoundPreset,
   PlayerRelationship,
@@ -17,6 +20,7 @@ import type {
   PresenceStatus,
   QuickAction,
   ReactionRule,
+  RoomPreset,
   RosterEntry,
   SettingsSection,
 } from "../../core/types";
@@ -36,6 +40,10 @@ import {
   type DeviceNotificationSound,
   type NotificationSoundStore,
 } from "../../storage/device-notification-sound-store";
+import {
+  DeviceMusicStore,
+  type MusicStore,
+} from "../../storage/device-music-store";
 import {
   conversationDisplayName,
   galleryMediaProvider,
@@ -59,6 +67,7 @@ import {
   LitterboxImageUploader,
   normalizeLitterboxUploadConfig,
   uploadLocalRoomAudio,
+  uploadMusicToCatbox,
   type LitterboxUploadConfig,
   type LocalImageUploader,
   type PreparedLocalImage,
@@ -67,8 +76,9 @@ import { kikiIcon, type KikiLinkIconName } from "./icons";
 import { RoomBlossomBadge } from "./blossom";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/branding/kikilink-emblem.webp";
 
-type WorkspaceView = "home" | "chat" | "gallery" | "roster" | "room" | "activities" | "settings";
+type WorkspaceView = "home" | "chat" | "gallery" | "roster" | "room" | "music" | "activities" | "settings";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
+type RoomSubView = "current" | "lobbies" | "presets";
 type FeatureTarget = WorkspaceView;
 type HomeAction =
   | { kind: "new-chat" }
@@ -168,6 +178,12 @@ export class LinkChatView {
     type: "button",
     title: "Room tools",
     ariaLabel: "Open room tools",
+  });
+  readonly #musicNavButton = element("button", {
+    className: "kl-nav-item kl-music-button",
+    type: "button",
+    title: "Music & playlists",
+    ariaLabel: "Open music and playlists",
   });
   readonly #settingsNavButton = element("button", {
     className: "kl-nav-item",
@@ -283,6 +299,82 @@ export class LinkChatView {
   readonly #roomPlayers = element("div", { className: "kl-room-player-list" });
   readonly #roomImageFileInput = element("input") as HTMLInputElement;
   readonly #roomMusicFileInput = element("input") as HTMLInputElement;
+  readonly #roomSubnav = element("div", { className: "kl-room-subnav" });
+  readonly #roomCurrentPanel = element("div", { className: "kl-room-subpanel kl-room-current-panel" });
+  readonly #roomLobbiesPanel = element("div", { className: "kl-room-subpanel kl-lobbies-panel" });
+  readonly #roomPresetsPanel = element("div", { className: "kl-room-subpanel kl-room-presets-panel" });
+  readonly #lobbyQuery = element("input", { className: "kl-search kl-lobby-search" }) as HTMLInputElement;
+  readonly #lobbyRefreshButton = element("button", {
+    className: "kl-icon-button kl-lobby-refresh",
+    type: "button",
+    title: "Refresh room list",
+    ariaLabel: "Refresh room list",
+  });
+  readonly #lobbyStatus = element("div", { className: "kl-room-directory-status" });
+  readonly #lobbyList = element("div", { className: "kl-lobby-list" });
+  readonly #presetName = element("input", { className: "kl-search kl-preset-name" }) as HTMLInputElement;
+  readonly #saveRoomPresetButton = element("button", {
+    className: "kl-text-button kl-text-button--primary",
+    type: "button",
+    text: "Save current room",
+  });
+  readonly #roomPresetList = element("div", { className: "kl-room-preset-list" });
+  readonly #roomPlaylistSync = element("input") as HTMLInputElement;
+  readonly #roomPlaylistSyncStatus = element("p", { className: "kl-setting-help kl-room-playlist-sync-status" });
+  readonly #musicPage = element("section", {
+    className: "kl-feature-page kl-music-page",
+    ariaLabel: "Music and playlists",
+  });
+  readonly #playlistSelect = element("select", { className: "kl-select kl-playlist-select" }) as HTMLSelectElement;
+  readonly #newPlaylistButton = element("button", {
+    className: "kl-text-button",
+    type: "button",
+    text: "New playlist",
+  });
+  readonly #musicTitleInput = element("input", { className: "kl-search" }) as HTMLInputElement;
+  readonly #musicUrlInput = element("input", { className: "kl-search" }) as HTMLInputElement;
+  readonly #musicFileInput = element("input") as HTMLInputElement;
+  readonly #musicFileMode = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #musicAddButton = element("button", {
+    className: "kl-text-button kl-text-button--primary",
+    type: "button",
+    text: "Add track",
+  });
+  readonly #musicAddStatus = element("div", { className: "kl-music-add-status" });
+  readonly #musicQueue = element("div", { className: "kl-music-queue" });
+  readonly #musicNowTitle = element("strong", { className: "kl-music-now-title", text: "Nothing playing" });
+  readonly #musicNowSource = element("span", { className: "kl-music-now-source", text: "Choose a track" });
+  readonly #musicProgress = element("input", { className: "kl-music-progress" }) as HTMLInputElement;
+  readonly #musicTime = element("span", { className: "kl-music-time", text: "0:00 / 0:00" });
+  readonly #musicPreviousButton = element("button", {
+    className: "kl-icon-button",
+    type: "button",
+    title: "Previous track",
+    ariaLabel: "Previous track",
+  });
+  readonly #musicPlayButton = element("button", {
+    className: "kl-icon-button kl-music-play",
+    type: "button",
+    title: "Play",
+    ariaLabel: "Play",
+  });
+  readonly #musicNextButton = element("button", {
+    className: "kl-icon-button",
+    type: "button",
+    title: "Next track",
+    ariaLabel: "Next track",
+  });
+  readonly #musicRepeatButton = element("button", {
+    className: "kl-text-button kl-music-mode",
+    type: "button",
+  });
+  readonly #musicShuffleButton = element("button", {
+    className: "kl-text-button kl-music-mode",
+    type: "button",
+    text: "Shuffle",
+  });
+  readonly #musicVolume = element("input", { className: "kl-volume-input" }) as HTMLInputElement;
+  readonly #audio = document.createElement("audio");
   readonly #settingsPage = element("section", {
     className: "kl-settings-page",
     ariaLabel: "KikiLink settings",
@@ -398,7 +490,11 @@ export class LinkChatView {
     ariaLabel: "Change KikiLink status",
   });
   readonly #presenceTriggerDot = element("span", { className: "kl-presence-dot" });
+  readonly #presenceTriggerAvatar = element("div", { className: "kl-avatar kl-presence-trigger-avatar" });
   readonly #presenceTriggerLabel = element("span", { className: "kl-presence-trigger-label" });
+  readonly #presenceTriggerName = element("strong", { className: "kl-presence-trigger-name" });
+  readonly #presenceTriggerStatus = element("span", { className: "kl-presence-trigger-status" });
+  readonly #localClock = element("time", { className: "kl-local-clock" });
   readonly #presenceDialog = element("dialog", { className: "kl-dialog kl-presence-dialog" });
   readonly #presenceOptions = element("div", { className: "kl-presence-options" });
   readonly #presenceEnabledToggle = element("input") as HTMLInputElement;
@@ -478,6 +574,8 @@ export class LinkChatView {
   #selectedRosterMember: number | undefined;
   #rosterScope: RosterScope = "current";
   #workspaceView: WorkspaceView = "home";
+  #roomSubView: RoomSubView = "current";
+  #lobbyRooms: BCLobbyRoom[] = [];
   #lastWorkspaceView: PrimaryWorkspaceView = "home";
   #settingsReturnView: PrimaryWorkspaceView = "home";
   #settingsSection: SettingsSection = "appearance";
@@ -492,7 +590,10 @@ export class LinkChatView {
   #finderSelectedIndex = 0;
   #finderRenderToken = 0;
   #galleryRenderToken = 0;
+  #lobbyRenderToken = 0;
+  #musicRenderToken = 0;
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
+  #clockTimer: ReturnType<typeof setTimeout> | undefined;
   #launcherDrag:
     | {
         pointerId: number;
@@ -523,7 +624,6 @@ export class LinkChatView {
   #messageRenderPeer: number | undefined;
   #loadingOlderMessages = false;
   readonly #renderedMessageIds = new Set<string>();
-  readonly #allowedAvatarUrls = new Set<string>();
   readonly #suppressProfileClickUntil = new WeakMap<HTMLElement, number>();
   #profileMenuToken = 0;
   #aliasTarget: { memberNumber: number; nativeName: string } | undefined;
@@ -536,6 +636,10 @@ export class LinkChatView {
   #imageUploadToken = 0;
   #imagePrepareToken = 0;
   #localImageError: string | undefined;
+  #activeTrackId: string | undefined;
+  #musicObjectUrl: string | undefined;
+  #roomPlaylistSyncEnabled = false;
+  #lastRoomSyncedTrackUrl = "";
 
   readonly #handleOutsidePointerDown = (event: PointerEvent): void => {
     if (this.#profileMenu.hidden) return;
@@ -568,6 +672,9 @@ export class LinkChatView {
     presence?: LinkPresenceService,
     private readonly imageUploader: LocalImageUploader<LitterboxUploadConfig> = new LitterboxImageUploader(),
     private readonly soundStore: NotificationSoundStore = new DeviceNotificationSoundStore(
+      adapter.getOwnMemberNumber(),
+    ),
+    private readonly musicStore: MusicStore = new DeviceMusicStore(
       adapter.getOwnMemberNumber(),
     ),
   ) {
@@ -634,6 +741,8 @@ export class LinkChatView {
     this.#imageUploadBusy = false;
     this.#stopLocalTyping();
     if (this.#toastTimer !== undefined) clearTimeout(this.#toastTimer);
+    if (this.#clockTimer !== undefined) clearTimeout(this.#clockTimer);
+    this.#clockTimer = undefined;
     if (this.#presenceRenderFrame !== undefined) cancelAnimationFrame(this.#presenceRenderFrame);
     this.#presenceRenderFrame = undefined;
     this.#finderDialog.close();
@@ -648,11 +757,14 @@ export class LinkChatView {
     document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
     this.#presenceUnsubscribe?.();
     this.#presenceUnsubscribe = undefined;
-    this.#allowedAvatarUrls.clear();
+    this.#audio.pause();
+    this.#audio.removeAttribute("src");
+    this.#releaseMusicObjectUrl();
     this.#roomBadge.destroy();
     this.#host.remove();
     void this.#notificationSounds.destroy();
     this.soundStore.close();
+    this.musicStore.close();
     this.#mounted = false;
   }
 
@@ -680,6 +792,7 @@ export class LinkChatView {
     if (this.#workspaceView === "activities") this.#renderActivitiesPage();
     if (this.#workspaceView === "roster") this.#renderRoster();
     if (this.#workspaceView === "room") void this.#renderRoomTools(true);
+    if (this.#workspaceView === "music") void this.#renderMusicPage();
   }
 
   async onMessage(
@@ -876,14 +989,24 @@ export class LinkChatView {
     );
     this.#finderTrigger.setAttribute("aria-keyshortcuts", "Control+K Meta+K");
     this.#finderTrigger.addEventListener("click", () => this.#openFinder());
-    this.#presenceTrigger.replaceChildren(this.#presenceTriggerDot, this.#presenceTriggerLabel);
+    this.#presenceTriggerLabel.replaceChildren(
+      this.#presenceTriggerName,
+      this.#presenceTriggerStatus,
+    );
+    this.#presenceTrigger.replaceChildren(
+      this.#presenceTriggerAvatar,
+      this.#presenceTriggerLabel,
+      this.#presenceTriggerDot,
+    );
     this.#presenceTrigger.addEventListener("click", () => this.#openPresenceDialog());
     this.#renderOwnPresence();
+    this.#scheduleClockUpdate();
     const topbar = element(
       "header",
       { className: "kl-topbar" },
       brand,
       this.#contextTitle,
+      this.#localClock,
       this.#presenceTrigger,
       this.#finderTrigger,
       this.#topbarSettingsButton,
@@ -943,6 +1066,7 @@ export class LinkChatView {
     this.#buildRosterPage();
     this.#buildGalleryPage();
     this.#buildRoomPage();
+    this.#buildMusicPage();
     this.#buildActivitiesPage();
     this.#buildSettingsPage();
     this.#workspace.append(
@@ -951,6 +1075,7 @@ export class LinkChatView {
       this.#galleryPage,
       this.#rosterPage,
       this.#roomPage,
+      this.#musicPage,
       this.#activitiesPage,
       this.#settingsPage,
     );
@@ -1000,6 +1125,7 @@ export class LinkChatView {
     this.#configureNavButton(this.#chatNavButton, "chat", "Chat", "chat");
     this.#configureNavButton(this.#rosterButton, "users", "Players", "roster");
     this.#configureNavButton(this.#roomNavButton, "location", "Room", "room");
+    this.#configureNavButton(this.#musicNavButton, "music", "Music", "music");
     this.#configureNavButton(this.#activitiesButton, "activities", "Custom", "activities");
     this.#configureNavButton(this.#settingsNavButton, "settings", "Settings", "settings");
     this.#rosterCount.hidden = true;
@@ -1009,6 +1135,7 @@ export class LinkChatView {
       this.#chatNavButton,
       this.#rosterButton,
       this.#roomNavButton,
+      this.#musicNavButton,
       this.#activitiesButton,
       this.#settingsNavButton,
     );
@@ -1044,6 +1171,11 @@ export class LinkChatView {
     }
     if (target === "room") {
       void this.#openRoomTools();
+      return;
+    }
+    if (target === "music") {
+      this.#showWorkspace("music");
+      void this.#renderMusicPage();
       return;
     }
     if (target === "gallery") {
@@ -1262,6 +1394,7 @@ export class LinkChatView {
     this.#galleryPage.hidden = view !== "gallery";
     this.#rosterPage.hidden = view !== "roster";
     this.#roomPage.hidden = view !== "room";
+    this.#musicPage.hidden = view !== "music";
     this.#activitiesPage.hidden = view !== "activities";
     this.#settingsPage.hidden = view !== "settings";
     if (view === "chat" && this.#activePeer === undefined) {
@@ -1278,6 +1411,8 @@ export class LinkChatView {
               ? "Players"
               : view === "room"
                 ? "Room Tools"
+                : view === "music"
+                  ? "Music"
                 : view === "activities"
                   ? "Custom Activities"
                   : "Settings";
@@ -1646,7 +1781,7 @@ export class LinkChatView {
     this.#imagePreviewSelect.setAttribute("aria-label", "Remote image previews");
     const imagePreviews = this.#settingRow(
       "Image previews",
-      "Remote hosts can see your IP when an image loads. Ask first adds a one-time Show avatar action to player menus.",
+      "Controls images shared in chats. Small KikiLink profile avatars load automatically so player lists stay recognizable.",
       this.#imagePreviewSelect,
     );
 
@@ -3423,9 +3558,20 @@ export class LinkChatView {
         category: "Destination",
         title: "Room Tools",
         detail: this.adapter.isInChatRoom() ? "Background, music, players, and roles" : "Enter a room first",
-        keywords: "room admin background music kick promote whitelist roles customization",
+        keywords: "room admin background music kick promote whitelist roles customization lobbies rooms directory refresh presets blacklist access",
         priority: 72,
         action: { kind: "workspace", target: "room" },
+      },
+      {
+        id: "destination-music",
+        kind: "destination",
+        icon: "music",
+        category: "Destination",
+        title: "Music & Playlists",
+        detail: `${settings.linkMusic.playlists.length} playlists · local files and Catbox`,
+        keywords: "music player playlist songs tracks audio catbox local seek shuffle repeat spotify room sync",
+        priority: 71,
+        action: { kind: "workspace", target: "music" },
       },
       {
         id: "destination-gallery",
@@ -3908,7 +4054,11 @@ export class LinkChatView {
       className: "kl-text-button",
       type: "button",
       text: "Refresh room",
-      onClick: () => void this.#renderRoomTools(true),
+      onClick: () => {
+        if (this.#roomSubView === "lobbies") void this.#refreshLobbies();
+        else if (this.#roomSubView === "presets") this.#renderRoomPresets();
+        else void this.#renderRoomTools(true);
+      },
     });
     const header = element(
       "header",
@@ -3942,6 +4092,21 @@ export class LinkChatView {
       "label",
       { className: "kl-switch" },
       this.#roomMusicSync,
+      element("span", { className: "kl-switch-track" }),
+    );
+    this.#roomPlaylistSync.type = "checkbox";
+    this.#roomPlaylistSync.addEventListener("change", () => {
+      this.#roomPlaylistSyncEnabled = this.#roomPlaylistSync.checked;
+      if (this.#roomPlaylistSyncEnabled) void this.#syncPlayingTrackToRoom(true);
+      else {
+        this.#lastRoomSyncedTrackUrl = "";
+        this.#roomPlaylistSyncStatus.textContent = "Playlist follow is off.";
+      }
+    });
+    const playlistSyncSwitch = element(
+      "label",
+      { className: "kl-switch" },
+      this.#roomPlaylistSync,
       element("span", { className: "kl-switch-track" }),
     );
     this.#roomImageFileInput.type = "file";
@@ -4007,6 +4172,12 @@ export class LinkChatView {
         "Ask compatible BC clients to keep room playback aligned.",
         syncSwitch,
       ),
+      this.#settingRow(
+        "Follow KikiLink playlist",
+        "While enabled, each compatible remote track you play becomes the room music. This switch is session-only.",
+        playlistSyncSwitch,
+      ),
+      this.#roomPlaylistSyncStatus,
       element("p", {
         className: "kl-room-media-note",
         text: "Uploaded backgrounds and music use your temporary Litterbox lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use permanent HTTPS links.",
@@ -4023,7 +4194,313 @@ export class LinkChatView {
       }),
       this.#roomPlayers,
     );
-    this.#roomPage.append(header, this.#roomAdminStatus, element("div", { className: "kl-room-grid" }, mediaForm, players));
+    this.#roomCurrentPanel.append(
+      this.#roomAdminStatus,
+      element("div", { className: "kl-room-grid" }, mediaForm, players),
+    );
+    this.#buildLobbyPanel();
+    this.#buildRoomPresetsPanel();
+    for (const [target, label] of [
+      ["current", "Room"],
+      ["lobbies", "Lobbies"],
+      ["presets", "Presets"],
+    ] as const) {
+      const button = element("button", {
+        className: "kl-room-subnav-button",
+        type: "button",
+        text: label,
+        onClick: () => this.#showRoomSubView(target),
+      });
+      button.dataset.roomSubview = target;
+      this.#roomSubnav.append(button);
+    }
+    const content = element(
+      "div",
+      { className: "kl-room-content" },
+      this.#roomCurrentPanel,
+      this.#roomLobbiesPanel,
+      this.#roomPresetsPanel,
+    );
+    this.#roomPage.append(header, this.#roomSubnav, content);
+    this.#showRoomSubView("current", false);
+  }
+
+  #showRoomSubView(view: RoomSubView, refresh = true): void {
+    this.#roomSubView = view;
+    this.#roomCurrentPanel.hidden = view !== "current";
+    this.#roomLobbiesPanel.hidden = view !== "lobbies";
+    this.#roomPresetsPanel.hidden = view !== "presets";
+    for (const button of this.#roomSubnav.querySelectorAll<HTMLButtonElement>("button")) {
+      button.dataset.active = String(button.dataset.roomSubview === view);
+    }
+    if (!refresh) return;
+    if (view === "current") void this.#renderRoomTools(true);
+    else if (view === "lobbies") {
+      if (this.#lobbyRooms.length > 0) this.#renderLobbies();
+      else void this.#refreshLobbies();
+    } else {
+      this.#renderRoomPresets();
+    }
+  }
+
+  #buildLobbyPanel(): void {
+    this.#lobbyQuery.type = "search";
+    this.#lobbyQuery.placeholder = "Filter rooms or descriptions";
+    this.#lobbyQuery.autocomplete = "off";
+    this.#lobbyQuery.addEventListener("input", () => this.#renderLobbies());
+    this.#lobbyQuery.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void this.#refreshLobbies();
+      }
+    });
+    this.#lobbyRefreshButton.append(kikiIcon("refresh"));
+    this.#lobbyRefreshButton.addEventListener("click", () => void this.#refreshLobbies());
+    this.#roomLobbiesPanel.append(
+      element(
+        "div",
+        { className: "kl-lobby-toolbar" },
+        element(
+          "div",
+          {},
+          element("h2", { text: "Live lobbies" }),
+          element("p", {
+            className: "kl-setting-help",
+            text: "Rooms containing your friends stay at the top. KikiLink refreshes only when you ask.",
+          }),
+        ),
+        element("div", { className: "kl-lobby-search-wrap" }, this.#lobbyQuery, this.#lobbyRefreshButton),
+      ),
+      this.#lobbyStatus,
+      this.#lobbyList,
+    );
+  }
+
+  async #refreshLobbies(): Promise<void> {
+    const token = ++this.#lobbyRenderToken;
+    this.#lobbyRefreshButton.disabled = true;
+    this.#lobbyStatus.textContent = "Refreshing Bondage Club rooms…";
+    this.#lobbyStatus.dataset.state = "loading";
+    try {
+      const rooms = await this.adapter.searchRooms(this.#lobbyQuery.value);
+      if (token !== this.#lobbyRenderToken) return;
+      this.#lobbyRooms = rooms;
+      const friendNumbers = rooms.flatMap((room) => room.friends.map((friend) => friend.memberNumber));
+      this.presence.requestMany(friendNumbers);
+      this.#renderLobbies();
+    } catch (error) {
+      if (token !== this.#lobbyRenderToken) return;
+      this.#lobbyStatus.textContent = error instanceof Error
+        ? error.message
+        : "The room list could not be refreshed.";
+      this.#lobbyStatus.dataset.state = "error";
+      this.#lobbyList.replaceChildren();
+    } finally {
+      if (token === this.#lobbyRenderToken) this.#lobbyRefreshButton.disabled = false;
+    }
+  }
+
+  #renderLobbies(): void {
+    const filter = this.#lobbyQuery.value.trim().toLocaleLowerCase();
+    const rooms = this.#lobbyRooms.filter((room) =>
+      !filter || `${room.name}\n${room.description}\n${room.language}`.toLocaleLowerCase().includes(filter),
+    );
+    const friendRoomCount = rooms.filter((room) => room.friends.length > 0).length;
+    this.#lobbyStatus.textContent = rooms.length === 0
+      ? "No rooms match this filter."
+      : `${rooms.length} rooms · ${friendRoomCount} with friends`;
+    this.#lobbyStatus.dataset.state = rooms.length > 0 ? "ready" : "empty";
+    this.#lobbyList.replaceChildren(...rooms.map((room) => this.#lobbyCard(room)));
+  }
+
+  #lobbyCard(room: BCLobbyRoom): HTMLElement {
+    const friends = element("div", { className: "kl-lobby-friends" });
+    if (room.friends.length > 0) {
+      for (const friend of room.friends.slice(0, 5)) {
+        const avatar = this.#avatar(friend.memberName, friend.memberNumber, "kl-lobby-friend-avatar");
+        avatar.title = `${friend.memberName} · #${friend.memberNumber}`;
+        friends.append(avatar);
+      }
+      if (room.friends.length > 5) {
+        friends.append(element("span", { className: "kl-lobby-friend-more", text: `+${room.friends.length - 5}` }));
+      }
+    }
+    const flags = [
+      room.language,
+      room.mapType,
+      room.locked ? "Locked" : "",
+      room.privateRoom ? "Private" : "",
+    ].filter(Boolean);
+    const join = element("button", {
+      className: "kl-text-button kl-lobby-join",
+      type: "button",
+      text: room.canJoin ? "Join" : "Unavailable",
+      onClick: () => this.#joinLobby(room),
+    });
+    join.disabled = !room.canJoin;
+    const card = element(
+      "article",
+      { className: "kl-lobby-card" },
+      element(
+        "div",
+        { className: "kl-lobby-card-main" },
+        element("strong", { className: "kl-lobby-name", text: room.name }),
+        element("span", {
+          className: "kl-lobby-count",
+          text: `${room.memberCount}/${room.memberLimit}`,
+        }),
+        room.friends.length > 0
+          ? element("span", { className: "kl-lobby-friend-label", text: `${room.friends.length} friend${room.friends.length === 1 ? "" : "s"}` })
+          : null,
+      ),
+      room.description
+        ? element("p", { className: "kl-lobby-description", text: room.description })
+        : null,
+      element(
+        "div",
+        { className: "kl-lobby-card-footer" },
+        element("span", { className: "kl-lobby-flags", text: flags.join(" · ") || "Public room" }),
+        friends,
+        join,
+      ),
+    );
+    card.dataset.hasFriends = String(room.friends.length > 0);
+    return card;
+  }
+
+  #joinLobby(room: BCLobbyRoom): void {
+    if (
+      this.adapter.isInChatRoom() &&
+      typeof confirm === "function" &&
+      !confirm(`Leave the current room and join “${room.name}”?`)
+    ) {
+      return;
+    }
+    try {
+      this.adapter.joinRoom(room.name);
+      this.#toast(`Joining ${room.name}…`);
+      this.close();
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "Could not join this room.", "error");
+    }
+  }
+
+  #buildRoomPresetsPanel(): void {
+    this.#presetName.type = "text";
+    this.#presetName.placeholder = "Preset name (for example: Moon Garden)";
+    this.#presetName.maxLength = 60;
+    this.#saveRoomPresetButton.addEventListener("click", () => this.#saveCurrentRoomPreset());
+    this.#roomPresetsPanel.append(
+      element(
+        "div",
+        { className: "kl-room-preset-create" },
+        element(
+          "div",
+          {},
+          element("h2", { text: "Room presets" }),
+          element("p", {
+            className: "kl-setting-help",
+            text: "Save the room name, description, BC background, custom media, limits, access, admins, whitelist, and blacklist. Passwords and large map layouts are never copied.",
+          }),
+        ),
+        element("div", { className: "kl-room-preset-create-actions" }, this.#presetName, this.#saveRoomPresetButton),
+      ),
+      this.#roomPresetList,
+    );
+  }
+
+  #saveCurrentRoomPreset(): void {
+    const snapshot = this.adapter.getRoomAdminSnapshot();
+    if (!snapshot) {
+      this.#toast("Enter a chat room before saving a preset.", "error");
+      return;
+    }
+    const label = this.#presetName.value.trim() || snapshot.roomName;
+    const preset: RoomPreset = {
+      id: createLocalId("room"),
+      label: label.slice(0, 60),
+      savedAt: Date.now(),
+      room: structuredClone(snapshot.settings),
+    };
+    this.settings.update((draft) => {
+      draft.linkRoom.presets = [preset, ...draft.linkRoom.presets].slice(0, 12);
+    });
+    this.#presetName.value = "";
+    this.#renderRoomPresets();
+    this.#toast(`Saved room preset “${preset.label}”.`);
+  }
+
+  #renderRoomPresets(): void {
+    const presets = this.settings.get().linkRoom.presets;
+    if (presets.length === 0) {
+      this.#roomPresetList.replaceChildren(
+        element("div", { className: "kl-gallery-empty", text: "No room presets yet." }),
+      );
+      return;
+    }
+    this.#roomPresetList.replaceChildren(...presets.map((preset) => this.#roomPresetCard(preset)));
+  }
+
+  #roomPresetCard(preset: RoomPreset): HTMLElement {
+    const detail = [
+      `${preset.room.limit} players`,
+      preset.room.language || "Any language",
+      `${preset.room.admins.length} admins`,
+      `${preset.room.whitelist.length} whitelist`,
+      `${preset.room.blacklist.length} blacklist`,
+    ].join(" · ");
+    return element(
+      "article",
+      { className: "kl-room-preset-card" },
+      element(
+        "div",
+        { className: "kl-room-preset-copy" },
+        element("strong", { text: preset.label }),
+        element("span", { text: preset.room.name }),
+        element("small", { text: detail }),
+      ),
+      element(
+        "div",
+        { className: "kl-room-preset-actions" },
+        element("button", {
+          className: "kl-text-button kl-text-button--primary",
+          type: "button",
+          text: "Apply",
+          onClick: () => this.#applyRoomPreset(preset),
+        }),
+        element("button", {
+          className: "kl-icon-button",
+          type: "button",
+          title: "Delete preset",
+          ariaLabel: `Delete ${preset.label}`,
+          onClick: () => this.#deleteRoomPreset(preset),
+        }, kikiIcon("trash")),
+      ),
+    );
+  }
+
+  #applyRoomPreset(preset: RoomPreset): void {
+    if (
+      typeof confirm === "function" &&
+      !confirm(`Apply “${preset.label}” to the current room? This updates the live room settings.`)
+    ) {
+      return;
+    }
+    try {
+      this.adapter.applyRoomPreset(preset.room);
+      this.#toast(`Applying room preset “${preset.label}”…`);
+      setTimeout(() => void this.#renderRoomTools(true), 700);
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "The room preset could not be applied.", "error");
+    }
+  }
+
+  #deleteRoomPreset(preset: RoomPreset): void {
+    if (typeof confirm === "function" && !confirm(`Delete room preset “${preset.label}”?`)) return;
+    this.settings.update((draft) => {
+      draft.linkRoom.presets = draft.linkRoom.presets.filter((candidate) => candidate.id !== preset.id);
+    });
+    this.#renderRoomPresets();
   }
 
   async #openRoomTools(refreshFields = true): Promise<void> {
@@ -4040,6 +4517,9 @@ export class LinkChatView {
         element("div", { className: "kl-gallery-empty", text: "No active room." }),
       );
       this.#setRoomControlsEnabled(false);
+      this.#roomPlaylistSyncEnabled = false;
+      this.#roomPlaylistSync.checked = false;
+      this.#roomPlaylistSyncStatus.textContent = "Enter a room to follow the playlist.";
       return;
     }
     this.#roomAdminStatus.textContent = snapshot.isAdmin
@@ -4047,6 +4527,13 @@ export class LinkChatView {
       : `${snapshot.roomName} · View only (administrator rights required to make changes)`;
     this.#roomAdminStatus.dataset.state = snapshot.isAdmin ? "admin" : "readonly";
     this.#setRoomControlsEnabled(snapshot.isAdmin);
+    this.#roomPlaylistSync.checked = snapshot.isAdmin && this.#roomPlaylistSyncEnabled;
+    this.#roomPlaylistSyncStatus.textContent = snapshot.isAdmin
+      ? this.#roomPlaylistSyncEnabled
+        ? "Following the Music tab. A new compatible track will update this room automatically."
+        : "Playlist follow is off."
+      : "Only a room administrator can make room music follow the playlist.";
+    if (!snapshot.isAdmin) this.#roomPlaylistSyncEnabled = false;
     if (refreshFields) {
       this.#roomImageUrl.value = snapshot.customization.imageUrl;
       this.#roomMusicUrl.value = snapshot.customization.musicUrl;
@@ -4073,6 +4560,7 @@ export class LinkChatView {
       this.#roomSaveButton,
       this.#roomImageFileInput,
       this.#roomMusicFileInput,
+      this.#roomPlaylistSync,
     ]) {
       control.disabled = !enabled;
     }
@@ -4221,6 +4709,521 @@ export class LinkChatView {
         "error",
       );
       await this.#renderRoomTools(false);
+    }
+  }
+
+  #buildMusicPage(): void {
+    const header = element(
+      "header",
+      { className: "kl-feature-page-header" },
+      element(
+        "div",
+        { className: "kl-feature-page-heading" },
+        element("div", { className: "kl-feature-page-eyebrow", text: "YOUR MUSIC" }),
+        element("h1", { className: "kl-feature-page-title", text: "Music & Playlists" }),
+        element("p", {
+          className: "kl-feature-page-subtitle",
+          text: "A small private player for local files and direct or Catbox tracks.",
+        }),
+      ),
+      this.#newPlaylistButton,
+    );
+
+    this.#playlistSelect.addEventListener("change", () => {
+      this.settings.update((draft) => {
+        draft.linkMusic.activePlaylistId = this.#playlistSelect.value;
+      });
+      void this.#renderMusicPage();
+    });
+    this.#newPlaylistButton.addEventListener("click", () => this.#createPlaylist());
+    const deletePlaylist = element("button", {
+      className: "kl-text-button kl-text-button--danger",
+      type: "button",
+      text: "Delete playlist",
+      onClick: () => this.#deleteActivePlaylist(),
+    });
+
+    this.#musicTitleInput.type = "text";
+    this.#musicTitleInput.placeholder = "Track title (optional)";
+    this.#musicTitleInput.maxLength = 80;
+    this.#musicUrlInput.type = "url";
+    this.#musicUrlInput.placeholder = "https://…/track.mp3";
+    this.#musicUrlInput.maxLength = 500;
+    this.#musicFileInput.type = "file";
+    this.#musicFileInput.accept = "audio/*,video/mp4,.aac,.flac,.m4a,.mp3,.mp4,.oga,.ogg,.opus,.wav,.webm";
+    this.#musicFileMode.replaceChildren(
+      selectOption("local", "Keep only on this device"),
+      selectOption("catbox", "Upload permanently to Catbox"),
+    );
+    this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
+
+    const library = element(
+      "section",
+      { className: "kl-music-library" },
+      element(
+        "div",
+        { className: "kl-music-playlist-toolbar" },
+        element("label", {}, element("span", { text: "Playlist" }), this.#playlistSelect),
+        deletePlaylist,
+      ),
+      this.#musicQueue,
+    );
+    const add = element(
+      "section",
+      { className: "kl-music-add" },
+      element("h2", { text: "Add a track" }),
+      element("label", {}, element("span", { text: "Title" }), this.#musicTitleInput),
+      element("label", {}, element("span", { text: "Direct HTTPS audio URL" }), this.#musicUrlInput),
+      element("div", { className: "kl-music-add-divider", text: "or choose a file" }),
+      this.#musicFileInput,
+      this.#musicFileMode,
+      element("p", {
+        className: "kl-setting-help",
+        text: "Local files stay in this browser. Catbox files become public bearer links and are not automatically deleted.",
+      }),
+      this.#musicAddStatus,
+      this.#musicAddButton,
+    );
+
+    this.#musicProgress.type = "range";
+    this.#musicProgress.min = "0";
+    this.#musicProgress.max = "1000";
+    this.#musicProgress.step = "1";
+    this.#musicProgress.value = "0";
+    this.#musicProgress.addEventListener("input", () => {
+      if (!Number.isFinite(this.#audio.duration) || this.#audio.duration <= 0) return;
+      this.#audio.currentTime = (Number(this.#musicProgress.value) / 1000) * this.#audio.duration;
+      this.#renderMusicProgress();
+    });
+    this.#musicPreviousButton.append(kikiIcon("previous"));
+    this.#musicPlayButton.append(kikiIcon("play"));
+    this.#musicNextButton.append(kikiIcon("next"));
+    this.#musicPreviousButton.addEventListener("click", () => void this.#previousTrack());
+    this.#musicPlayButton.addEventListener("click", () => void this.#toggleMusicPlayback());
+    this.#musicNextButton.addEventListener("click", () => void this.#nextTrack(false));
+    this.#musicRepeatButton.addEventListener("click", () => this.#cycleMusicRepeat());
+    this.#musicShuffleButton.addEventListener("click", () => this.#toggleMusicShuffle());
+    this.#musicVolume.type = "range";
+    this.#musicVolume.min = "0";
+    this.#musicVolume.max = "100";
+    this.#musicVolume.step = "1";
+    this.#musicVolume.addEventListener("input", () => {
+      const volume = Math.max(0, Math.min(100, Number(this.#musicVolume.value) || 0));
+      this.#audio.volume = volume / 100;
+      this.settings.update((draft) => {
+        draft.linkMusic.volume = volume;
+      });
+    });
+
+    this.#audio.preload = "metadata";
+    this.#audio.addEventListener("timeupdate", () => this.#renderMusicProgress());
+    this.#audio.addEventListener("loadedmetadata", () => this.#renderMusicProgress());
+    this.#audio.addEventListener("durationchange", () => this.#renderMusicProgress());
+    this.#audio.addEventListener("play", () => {
+      this.#renderMusicTransport();
+      void this.#syncPlayingTrackToRoom();
+    });
+    this.#audio.addEventListener("pause", () => this.#renderMusicTransport());
+    this.#audio.addEventListener("ended", () => void this.#nextTrack(true));
+    this.#audio.addEventListener("error", () => {
+      if (this.#activeTrackId) this.#toast("This track could not be played by the browser.", "error");
+      this.#renderMusicTransport();
+    });
+
+    const player = element(
+      "footer",
+      { className: "kl-music-player" },
+      element(
+        "div",
+        { className: "kl-music-now" },
+        kikiIcon("music", "kl-music-now-icon"),
+        element("div", {}, this.#musicNowTitle, this.#musicNowSource),
+      ),
+      element("div", { className: "kl-music-seek" }, this.#musicProgress, this.#musicTime),
+      element(
+        "div",
+        { className: "kl-music-controls" },
+        this.#musicShuffleButton,
+        this.#musicPreviousButton,
+        this.#musicPlayButton,
+        this.#musicNextButton,
+        this.#musicRepeatButton,
+        element("label", { className: "kl-music-volume" }, element("span", { text: "Volume" }), this.#musicVolume),
+      ),
+    );
+    this.#musicPage.append(
+      header,
+      element("div", { className: "kl-music-body" }, library, add),
+      player,
+    );
+    void this.#renderMusicPage();
+  }
+
+  async #renderMusicPage(): Promise<void> {
+    const token = ++this.#musicRenderToken;
+    const settings = this.settings.get().linkMusic;
+    this.#playlistSelect.replaceChildren(
+      ...settings.playlists.map((playlist) => selectOption(playlist.id, `${playlist.name} · ${playlist.tracks.length}`)),
+    );
+    this.#playlistSelect.value = settings.activePlaylistId;
+    this.#musicVolume.value = settings.volume.toString();
+    this.#audio.volume = settings.volume / 100;
+    this.#musicRepeatButton.textContent = settings.repeatMode === "one"
+      ? "Repeat one"
+      : settings.repeatMode === "all"
+        ? "Repeat all"
+        : "Repeat off";
+    this.#musicRepeatButton.dataset.active = String(settings.repeatMode !== "off");
+    this.#musicShuffleButton.dataset.active = String(settings.shuffle);
+    const playlist = activePlaylist(settings.playlists, settings.activePlaylistId);
+    const localTracks = new Set((await this.musicStore.list().catch(() => [])).map((track) => track.id));
+    if (token !== this.#musicRenderToken) return;
+    this.#musicQueue.replaceChildren(
+      ...playlist.tracks.map((track, index) => this.#musicTrackRow(track, index, localTracks)),
+    );
+    if (playlist.tracks.length === 0) {
+      this.#musicQueue.append(
+        element("div", { className: "kl-gallery-empty", text: "This playlist is empty." }),
+      );
+    }
+    this.#renderMusicTransport();
+  }
+
+  #musicTrackRow(track: MusicTrack, index: number, localTracks: Set<string>): HTMLElement {
+    const unavailable = track.source === "local" && !localTracks.has(track.locator);
+    const play = element("button", {
+      className: "kl-icon-button kl-music-track-play",
+      type: "button",
+      title: unavailable ? "Local file is unavailable on this device" : `Play ${track.title}`,
+      ariaLabel: unavailable ? `${track.title} unavailable` : `Play ${track.title}`,
+      onClick: () => void this.#playTrack(track),
+    }, kikiIcon(this.#activeTrackId === track.id && !this.#audio.paused ? "pause" : "play"));
+    play.disabled = unavailable;
+    const row = element(
+      "article",
+      { className: "kl-music-track" },
+      element("span", { className: "kl-music-track-number", text: (index + 1).toString() }),
+      play,
+      element(
+        "div",
+        { className: "kl-music-track-copy" },
+        element("strong", { text: track.title }),
+        element("span", {
+          text: unavailable
+            ? "Local file missing on this device"
+            : track.source === "local"
+              ? "On this device"
+              : track.source === "catbox"
+                ? "Catbox"
+                : "Direct link",
+        }),
+      ),
+      element("button", {
+        className: "kl-icon-button kl-music-track-remove",
+        type: "button",
+        title: "Remove from playlist",
+        ariaLabel: `Remove ${track.title}`,
+        onClick: () => void this.#removeMusicTrack(track),
+      }, kikiIcon("trash")),
+    );
+    row.dataset.active = String(this.#activeTrackId === track.id);
+    return row;
+  }
+
+  async #addMusicTrack(): Promise<void> {
+    if (this.#musicAddButton.disabled) return;
+    this.#musicAddButton.disabled = true;
+    this.#musicAddStatus.textContent = "";
+    try {
+      const trackCount = this.settings.get().linkMusic.playlists.reduce(
+        (total, playlist) => total + playlist.tracks.length,
+        0,
+      );
+      if (trackCount >= 100) throw new Error("KikiLink supports up to 100 saved tracks");
+      const file = this.#musicFileInput.files?.[0];
+      let source: MusicTrack["source"];
+      let locator: string;
+      let fallbackTitle: string;
+      if (file) {
+        fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
+        if (this.#musicFileMode.value === "catbox") {
+          this.#musicAddStatus.textContent = "Uploading to Catbox…";
+          locator = await uploadMusicToCatbox(file);
+          source = "catbox";
+        } else {
+          this.#musicAddStatus.textContent = "Saving on this device…";
+          const stored = await this.musicStore.add(file);
+          locator = stored.id;
+          fallbackTitle = stored.name;
+          source = "local";
+        }
+      } else {
+        locator = normalizeAudioTrackUrl(this.#musicUrlInput.value);
+        source = "url";
+        fallbackTitle = trackTitleFromUrl(locator);
+      }
+      const title = (this.#musicTitleInput.value.trim() || fallbackTitle || "Untitled track").slice(0, 80);
+      const track: MusicTrack = {
+        id: createLocalId("track"),
+        title,
+        source,
+        locator,
+        addedAt: Date.now(),
+      };
+      this.settings.update((draft) => {
+        const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+        playlist.tracks.push(track);
+      });
+      this.#musicTitleInput.value = "";
+      this.#musicUrlInput.value = "";
+      this.#musicFileInput.value = "";
+      this.#musicAddStatus.textContent = `Added “${title}”.`;
+      await this.#renderMusicPage();
+    } catch (error) {
+      this.#musicAddStatus.textContent = error instanceof Error ? error.message : "The track could not be added.";
+      this.#toast(this.#musicAddStatus.textContent, "error");
+    } finally {
+      this.#musicAddButton.disabled = false;
+    }
+  }
+
+  #createPlaylist(): void {
+    if (this.settings.get().linkMusic.playlists.length >= 8) {
+      this.#toast("KikiLink supports up to 8 playlists.", "error");
+      return;
+    }
+    const value = typeof prompt === "function" ? prompt("Playlist name", "New playlist") : "New playlist";
+    const name = value?.trim().slice(0, 60);
+    if (!name) return;
+    const id = createLocalId("playlist");
+    this.settings.update((draft) => {
+      draft.linkMusic.playlists.push({ id, name, tracks: [] });
+      draft.linkMusic.activePlaylistId = id;
+    });
+    void this.#renderMusicPage();
+  }
+
+  #deleteActivePlaylist(): void {
+    const music = this.settings.get().linkMusic;
+    const playlist = activePlaylist(music.playlists, music.activePlaylistId);
+    if (music.playlists.length <= 1) {
+      this.#toast("Keep at least one playlist.", "error");
+      return;
+    }
+    if (typeof confirm === "function" && !confirm(`Delete playlist “${playlist.name}”?`)) return;
+    const removedTrackIds = new Set(playlist.tracks.map((track) => track.id));
+    if (this.#activeTrackId && removedTrackIds.has(this.#activeTrackId)) this.#stopMusic();
+    this.settings.update((draft) => {
+      draft.linkMusic.playlists = draft.linkMusic.playlists.filter((candidate) => candidate.id !== playlist.id);
+      draft.linkMusic.activePlaylistId = draft.linkMusic.playlists[0]!.id;
+    });
+    void this.#renderMusicPage();
+  }
+
+  async #removeMusicTrack(track: MusicTrack): Promise<void> {
+    if (this.#activeTrackId === track.id) this.#stopMusic();
+    this.settings.update((draft) => {
+      const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+      playlist.tracks = playlist.tracks.filter((candidate) => candidate.id !== track.id);
+    });
+    if (track.source === "local") {
+      const stillUsed = this.settings.get().linkMusic.playlists.some((playlist) =>
+        playlist.tracks.some((candidate) => candidate.source === "local" && candidate.locator === track.locator),
+      );
+      if (!stillUsed) await this.musicStore.delete(track.locator).catch(() => undefined);
+    }
+    await this.#renderMusicPage();
+  }
+
+  async #playTrack(track: MusicTrack): Promise<void> {
+    let source: string;
+    if (track.source === "local") {
+      const stored = await this.musicStore.get(track.locator);
+      if (!stored) {
+        this.#toast("This local track is not stored on this device.", "error");
+        await this.#renderMusicPage();
+        return;
+      }
+      this.#releaseMusicObjectUrl();
+      source = URL.createObjectURL(stored.blob);
+      this.#musicObjectUrl = source;
+    } else {
+      this.#releaseMusicObjectUrl();
+      source = track.locator;
+    }
+    this.#activeTrackId = track.id;
+    this.#audio.src = source;
+    this.#audio.load();
+    try {
+      await this.#audio.play();
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "The browser blocked playback.", "error");
+    }
+    await this.#renderMusicPage();
+  }
+
+  async #toggleMusicPlayback(): Promise<void> {
+    if (!this.#activeTrackId) {
+      const settings = this.settings.get().linkMusic;
+      const first = activePlaylist(settings.playlists, settings.activePlaylistId).tracks[0];
+      if (first) await this.#playTrack(first);
+      return;
+    }
+    if (this.#audio.paused) {
+      try {
+        await this.#audio.play();
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "The browser blocked playback.", "error");
+      }
+    } else {
+      this.#audio.pause();
+    }
+  }
+
+  async #previousTrack(): Promise<void> {
+    if (this.#audio.currentTime > 3) {
+      this.#audio.currentTime = 0;
+      return;
+    }
+    const settings = this.settings.get().linkMusic;
+    const tracks = activePlaylist(settings.playlists, settings.activePlaylistId).tracks;
+    if (tracks.length === 0) return;
+    const index = tracks.findIndex((track) => track.id === this.#activeTrackId);
+    const previous = tracks[(index <= 0 ? tracks.length : index) - 1];
+    if (previous) await this.#playTrack(previous);
+  }
+
+  async #nextTrack(fromEnded: boolean): Promise<void> {
+    const settings = this.settings.get().linkMusic;
+    const tracks = activePlaylist(settings.playlists, settings.activePlaylistId).tracks;
+    if (tracks.length === 0) return;
+    if (fromEnded && settings.repeatMode === "one") {
+      this.#audio.currentTime = 0;
+      await this.#audio.play().catch(() => undefined);
+      return;
+    }
+    const index = tracks.findIndex((track) => track.id === this.#activeTrackId);
+    let nextIndex = index + 1;
+    if (settings.shuffle && tracks.length > 1) {
+      do nextIndex = Math.floor(Math.random() * tracks.length);
+      while (nextIndex === index);
+    } else if (nextIndex >= tracks.length) {
+      if (!fromEnded || settings.repeatMode === "all") nextIndex = 0;
+      else {
+        this.#audio.pause();
+        this.#audio.currentTime = 0;
+        this.#renderMusicTransport();
+        return;
+      }
+    }
+    const next = tracks[Math.max(0, nextIndex)];
+    if (next) await this.#playTrack(next);
+  }
+
+  #cycleMusicRepeat(): void {
+    this.settings.update((draft) => {
+      draft.linkMusic.repeatMode = draft.linkMusic.repeatMode === "off"
+        ? "all"
+        : draft.linkMusic.repeatMode === "all"
+          ? "one"
+          : "off";
+    });
+    void this.#renderMusicPage();
+  }
+
+  #toggleMusicShuffle(): void {
+    this.settings.update((draft) => {
+      draft.linkMusic.shuffle = !draft.linkMusic.shuffle;
+    });
+    void this.#renderMusicPage();
+  }
+
+  #renderMusicTransport(): void {
+    const settings = this.settings.get().linkMusic;
+    const track = settings.playlists.flatMap((playlist) => playlist.tracks)
+      .find((candidate) => candidate.id === this.#activeTrackId);
+    this.#musicNowTitle.textContent = track?.title ?? "Nothing playing";
+    this.#musicNowSource.textContent = track
+      ? track.source === "local"
+        ? "On this device"
+        : track.source === "catbox"
+          ? "Catbox"
+          : "Direct link"
+      : "Choose a track";
+    this.#musicPlayButton.replaceChildren(kikiIcon(track && !this.#audio.paused ? "pause" : "play"));
+    this.#musicPlayButton.title = track && !this.#audio.paused ? "Pause" : "Play";
+    this.#musicPlayButton.setAttribute("aria-label", this.#musicPlayButton.title);
+    this.#renderMusicProgress();
+    for (const row of this.#musicQueue.querySelectorAll<HTMLElement>(".kl-music-track")) {
+      const button = row.querySelector<HTMLButtonElement>(".kl-music-track-play");
+      if (!button) continue;
+      const rowTitle = row.querySelector("strong")?.textContent;
+      const active = rowTitle === track?.title && row.dataset.active === "true";
+      button.replaceChildren(kikiIcon(active && !this.#audio.paused ? "pause" : "play"));
+    }
+  }
+
+  #renderMusicProgress(): void {
+    const duration = Number.isFinite(this.#audio.duration) && this.#audio.duration > 0
+      ? this.#audio.duration
+      : 0;
+    const current = Number.isFinite(this.#audio.currentTime) ? this.#audio.currentTime : 0;
+    this.#musicProgress.value = duration > 0
+      ? Math.round(Math.min(1, current / duration) * 1000).toString()
+      : "0";
+    this.#musicProgress.disabled = duration <= 0;
+    this.#musicTime.textContent = `${formatAudioTime(current)} / ${formatAudioTime(duration)}`;
+  }
+
+  #stopMusic(): void {
+    this.#audio.pause();
+    this.#audio.removeAttribute("src");
+    this.#activeTrackId = undefined;
+    this.#releaseMusicObjectUrl();
+    this.#renderMusicTransport();
+  }
+
+  #releaseMusicObjectUrl(): void {
+    if (!this.#musicObjectUrl) return;
+    URL.revokeObjectURL(this.#musicObjectUrl);
+    this.#musicObjectUrl = undefined;
+  }
+
+  async #syncPlayingTrackToRoom(force = false): Promise<void> {
+    if (!this.#roomPlaylistSyncEnabled || !this.#activeTrackId || this.#audio.paused) return;
+    const settings = this.settings.get().linkMusic;
+    const track = settings.playlists.flatMap((playlist) => playlist.tracks)
+      .find((candidate) => candidate.id === this.#activeTrackId);
+    const roomUrl = track && track.source !== "local" ? normalizeRoomTrackUrl(track.locator) : undefined;
+    if (!roomUrl) {
+      this.#roomPlaylistSyncStatus.textContent = "This track is device-only or not an MP3/MP4 URL, so BC cannot use it as room music.";
+      if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
+      return;
+    }
+    if (!force && roomUrl === this.#lastRoomSyncedTrackUrl) return;
+    const snapshot = this.adapter.getRoomAdminSnapshot();
+    if (!snapshot?.isAdmin) {
+      this.#roomPlaylistSyncEnabled = false;
+      this.#roomPlaylistSync.checked = false;
+      this.#roomPlaylistSyncStatus.textContent = "Playlist follow stopped because you are not a room administrator.";
+      if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
+      return;
+    }
+    try {
+      this.adapter.updateRoomCustomization({
+        ...snapshot.customization,
+        musicUrl: roomUrl,
+        musicSync: true,
+      });
+      this.#lastRoomSyncedTrackUrl = roomUrl;
+      this.#roomMusicUrl.value = roomUrl;
+      this.#roomMusicSync.checked = true;
+      this.#roomPlaylistSyncStatus.textContent = `Room now follows “${track?.title ?? "current track"}”.`;
+    } catch (error) {
+      this.#roomPlaylistSyncStatus.textContent = error instanceof Error
+        ? error.message
+        : "The room music could not be updated.";
+      if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
     }
   }
 
@@ -4897,18 +5900,46 @@ export class LinkChatView {
 
   #renderOwnPresence(): void {
     const enabled = this.settings.get().linkPresence.enabled;
-    const snapshot = this.presence.get(this.adapter.getOwnMemberNumber());
+    const ownMemberNumber = this.adapter.getOwnMemberNumber();
+    const ownName = this.adapter.getOwnName();
+    const snapshot = this.presence.get(ownMemberNumber);
     const label = enabled ? presenceLabel(snapshot.status) : "Presence off";
     this.#presenceTriggerDot.dataset.status = enabled ? snapshot.status : "unknown";
-    this.#presenceTriggerLabel.textContent = label;
-    this.#presenceTrigger.title = snapshot.statusMessage
+    this.#presenceTriggerName.textContent = ownName;
+    this.#presenceTriggerStatus.textContent = snapshot.statusMessage
       ? `${label} · ${snapshot.statusMessage}`
+      : label;
+    this.#renderAvatar(this.#presenceTriggerAvatar, ownName, ownMemberNumber, snapshot.avatarUrl);
+    this.#presenceTrigger.title = snapshot.statusMessage
+      ? `${ownName}: ${label} · ${snapshot.statusMessage}`
       : `KikiLink status: ${label}`;
     this.#homePresence.replaceChildren(
       presenceDot(enabled ? snapshot.status : "unknown"),
       element("span", { text: label }),
     );
     this.#homePresence.title = this.#presenceTrigger.title;
+  }
+
+  #scheduleClockUpdate(): void {
+    if (this.#clockTimer !== undefined) clearTimeout(this.#clockTimer);
+    const now = new Date();
+    this.#localClock.dateTime = now.toISOString();
+    this.#localClock.textContent = new Intl.DateTimeFormat(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(now);
+    this.#localClock.title = `Local time · ${new Intl.DateTimeFormat(undefined, {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(now)}`;
+    this.#clockTimer = setTimeout(
+      () => this.#scheduleClockUpdate(),
+      Math.max(1_000, 60_000 - (Date.now() % 60_000) + 25),
+    );
   }
 
   #renderActivePresence(): void {
@@ -5679,21 +6710,6 @@ export class LinkChatView {
       this.#profileMenuAction("chat", "Message", "Open LinkChat", () => {
         void this.openChat(memberNumber, nativeName);
       }),
-      snapshot.avatarUrl &&
-        this.settings.get().linkChat.imagePreviews === "ask" &&
-        !this.#allowedAvatarUrls.has(snapshot.avatarUrl)
-        ? this.#profileMenuAction(
-            "image",
-            "Show profile avatar",
-            "Load this remote image once",
-            () => {
-              if (!snapshot.avatarUrl) return;
-              this.#allowedAvatarUrls.add(snapshot.avatarUrl);
-              this.#schedulePresenceRender(memberNumber);
-              this.#toast("Profile avatar allowed for this session.");
-            },
-          )
-        : null,
       this.#profileMenuAction(
         "whisper",
         "Whisper",
@@ -6957,27 +7973,10 @@ export class LinkChatView {
     memberNumber: number,
     explicitUrl?: string,
   ): void {
-    const own = memberNumber === this.adapter.getOwnMemberNumber();
-    const url = explicitUrl ?? this.presence.get(memberNumber).avatarUrl;
-    const previewPolicy = this.settings.get().linkChat.imagePreviews;
-    const candidateUrl =
-      url &&
-      !own &&
-      previewPolicy === "ask" &&
-      !this.#allowedAvatarUrls.has(url)
-        ? url
-        : "";
-    const allowedUrl =
-      url &&
-      (own ||
-        previewPolicy === "always" ||
-        (previewPolicy === "ask" && this.#allowedAvatarUrls.has(url)))
-        ? url
-        : "";
+    const allowedUrl = explicitUrl ?? this.presence.get(memberNumber).avatarUrl ?? "";
     if (
       target.dataset.avatarName === name &&
       target.dataset.avatarUrl === allowedUrl &&
-      target.dataset.avatarCandidate === candidateUrl &&
       target.childNodes.length > 0
     ) {
       return;
@@ -6985,35 +7984,12 @@ export class LinkChatView {
     target.dataset.kikilinkAvatar = "true";
     target.dataset.avatarName = name;
     target.dataset.avatarUrl = allowedUrl;
-    target.dataset.avatarCandidate = candidateUrl;
     target.dataset.avatarMemberNumber = memberNumber.toString();
-    if (candidateUrl) {
-      target.setAttribute("aria-label", `Show ${name}'s KikiLink avatar`);
-    } else {
-      target.removeAttribute("aria-label");
-    }
-    if (target.dataset.avatarConsentBound !== "true") {
-      target.dataset.avatarConsentBound = "true";
-      target.addEventListener("click", (event) => {
-        const candidate = target.dataset.avatarCandidate;
-        const candidateMemberNumber = Number(target.dataset.avatarMemberNumber);
-        if (!candidate || !Number.isSafeInteger(candidateMemberNumber)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        this.#allowedAvatarUrls.add(candidate);
-        this.#renderAvatar(
-          target,
-          target.dataset.avatarName || this.adapter.getMemberName(candidateMemberNumber),
-          candidateMemberNumber,
-        );
-        this.#schedulePresenceRender(candidateMemberNumber);
-        this.#toast("Profile avatar shown for this session.");
-      });
-    }
+    target.removeAttribute("aria-label");
     const fallback = (): void => {
       if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
       target.replaceChildren(document.createTextNode(avatarText(name)));
-      target.dataset.avatarState = candidateUrl ? "available" : "initials";
+      target.dataset.avatarState = "initials";
     };
     fallback();
     if (!allowedUrl) return;
@@ -7260,6 +8236,65 @@ function selectOption(value: string, label: string): HTMLOptionElement {
   const option = element("option", { text: label });
   option.value = value;
   return option;
+}
+
+function activePlaylist(playlists: MusicPlaylist[], activeId: string): MusicPlaylist {
+  const playlist = playlists.find((candidate) => candidate.id === activeId) ?? playlists[0];
+  if (!playlist) throw new Error("Create a playlist first");
+  return playlist;
+}
+
+function createLocalId(prefix: string): string {
+  const random = typeof crypto === "object" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${random}`.toLocaleLowerCase().replace(/[^a-z0-9_-]/gu, "").slice(0, 64);
+}
+
+function normalizeAudioTrackUrl(value: string): string {
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 500) throw new Error("Enter a direct HTTPS audio link");
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    throw new Error("Enter a valid direct HTTPS audio link");
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    !/\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(url.pathname)
+  ) {
+    throw new Error("Use a direct HTTPS audio link ending in a supported audio extension");
+  }
+  return url.href;
+}
+
+function normalizeRoomTrackUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && /\.(?:mp3|mp4)$/iu.test(url.pathname)
+      ? url.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function trackTitleFromUrl(value: string): string {
+  try {
+    const file = new URL(value).pathname.split("/").at(-1) ?? "";
+    return decodeURIComponent(file).replace(/\.[^.]+$/u, "").replace(/[_-]+/gu, " ").trim().slice(0, 80);
+  } catch {
+    return "Untitled track";
+  }
+}
+
+function formatAudioTime(value: number): string {
+  const seconds = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${(seconds % 60).toString().padStart(2, "0")}`;
 }
 
 function rosterRelationshipLabel(relationship: PlayerRelationship): string {

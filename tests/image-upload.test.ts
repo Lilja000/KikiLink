@@ -8,6 +8,7 @@ import {
   normalizeCloudinaryUploadConfig,
   normalizeLitterboxUploadConfig,
   uploadLocalRoomAudio,
+  uploadMusicToCatbox,
   validateLocalImageFile,
   type PreparedLocalImage,
 } from "../src/modules/link-chat/image-upload";
@@ -142,6 +143,20 @@ describe("local image uploads", () => {
       ),
     ).rejects.toThrow("MP3 or MP4");
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("uploads a generically named permanent playlist track to Catbox", async () => {
+    const request = vi.fn<typeof fetch>(async () =>
+      new Response("https://files.catbox.moe/track_123.ogg\n", { status: 200 }),
+    );
+    const file = new File([bytes(1, 2, 3)], "private title.ogg", { type: "audio/ogg" });
+
+    await expect(uploadMusicToCatbox(file, request)).resolves.toBe(
+      "https://files.catbox.moe/track_123.ogg",
+    );
+    expect(request.mock.calls[0]?.[0]).toBe("https://catbox.moe/user/api.php");
+    const form = request.mock.calls[0]?.[1]?.body as FormData;
+    expect((form.get("fileToUpload") as File).name).toBe("kikilink-track.ogg");
   });
 
   it("uploads only the prepared generic WebP and validates the returned direct URL", async () => {
