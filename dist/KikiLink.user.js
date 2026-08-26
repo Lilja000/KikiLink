@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.21.2
+// @version      0.21.1
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
 // @homepageURL  https://github.com/Lilja000/KikiLink
 // @supportURL   https://github.com/Lilja000/KikiLink/issues
-// @downloadURL  https://cdn.jsdelivr.net/gh/Lilja000/KikiLink@main/dist/KikiLink.user.js
-// @updateURL    https://cdn.jsdelivr.net/gh/Lilja000/KikiLink@main/dist/KikiLink.user.js
+// @downloadURL  https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js
+// @updateURL    https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js
 // @match        https://*.bondageprojects.elementfx.com/*
 // @match        https://*.bondageprojects.com/*
 // @match        https://*.bondage-europe.com/*
@@ -16628,7 +16628,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.21.2");
+    const app = new KikiLinkApp("0.21.1");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

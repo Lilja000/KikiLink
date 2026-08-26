@@ -71,13 +71,6 @@ afterEach(async () => {
 });
 
 describe("published userscript runtime", () => {
-  it("uses the Firefox-accessible jsDelivr install and update channel", () => {
-    const url = "https://cdn.jsdelivr.net/gh/Lilja000/KikiLink@main/dist/KikiLink.user.js";
-    expect(USER_SCRIPT).toContain(`// @downloadURL  ${url}`);
-    expect(USER_SCRIPT).toContain(`// @updateURL    ${url}`);
-    expect(USER_SCRIPT).not.toContain("raw.githubusercontent.com");
-  });
-
   it("joins Echo and AFC in one ModSDK status-icon router in the built userscript", async () => {
     const calls: string[] = [];
     vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -452,8 +445,8 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.21.2");
-    expect(version?.textContent).toBe("0.21.2");
+    expect(api.getVersion()).toBe("0.21.1");
+    expect(version?.textContent).toBe("0.21.1");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
