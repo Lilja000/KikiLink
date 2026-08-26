@@ -1,14 +1,30 @@
 # Changelog
 
+## 0.22.2 - 2026-08-26
+
+- Removed the previous upload providers, permissions, endpoints, labels, and documentation. Every
+  hosted image, room-audio, and playlist upload now uses WaifuVault's anonymous API with hidden
+  filenames and selectable 1, 3, 7, or 30 day expiry.
+- Changed manual local Gallery imports from temporary public uploads to durable, account-isolated
+  IndexedDB records. They remain on that device until explicitly deleted or the browser's site data
+  is cleared; selecting one for a room background performs a separate, explicit temporary share.
+- Made Gallery deletion truthful: device files are deleted from local storage, while linked chat
+  media remains non-destructive. The Gallery counter now includes device-only files.
+- Replaced the crowded Music playlist action row with a compact Manage menu and added an earlier
+  responsive single-column breakpoint, full-width narrow-screen volume control, and safer scrolling
+  so player, library, queue, and add-track cells do not overlap.
+- Migrated schema 19 hosted tracks and short lifetime choices without dropping saved playlists,
+  updated the userscript network allowlist, and added regressions for the new API and local Gallery.
+
 ## 0.22.1 - 2026-08-26
 
-- Fixed Firefox `NetworkError when attempting to fetch resource` for Catbox and Litterbox uploads.
-  Uploads now use Tampermonkey's narrowly granted background request with an explicit `catbox.moe`
+- Fixed Firefox `NetworkError when attempting to fetch resource` for public-host uploads.
+  Uploads now use Tampermonkey's narrowly granted background request with an explicit host
   connection permission, while KikiLink remains in the page realm required by Bondage Club.
 - Matched LianChat's live room-directory request by always sending Bondage Club's `Space`, `Game`,
   and full-room fields. Added a compact Female/Mixed/Male selector and kept friend rooms first.
 - Redesigned Music around a lacquer-and-gold now-playing card and searchable queue. Added batch file
-  import, Catbox progress, playlist rename/duplicate/clear, track rename/reorder/original-link tools,
+  import, upload progress, playlist rename/duplicate/clear, track rename/reorder/original-link tools,
   mute, playback speed, sleep timers, and browser Media Session controls.
 - Cached device-local track availability instead of reopening and scanning IndexedDB on every music
   render, and now removes orphaned local blobs when clearing or deleting playlists.
@@ -31,7 +47,7 @@
   native/custom backgrounds, music, layout, and sync settings. Applying remains admin-only, preserves
   the current user as an admin, and intentionally omits passwords and large map layouts.
 - Added a full Music destination with up to eight playlists and one hundred tracks, direct URLs,
-  device-only local files, explicit permanent Catbox upload, seeking, volume, queue removal,
+  device-only local files, explicit public-host upload, seeking, volume, queue removal,
   previous/next, shuffle, and repeat modes.
 - Added a session-only Room follow switch. A current administrator can mirror each newly playing
   remote MP3/MP4 track into native room music; local-only and unsupported tracks are refused with a
@@ -72,8 +88,8 @@
   live admin state and `ChatRoomAdmin` packets; Kick requires explicit confirmation.
 - Added explicit temporary room-music upload for BC-supported MP3/MP4 audio up to 20 MB. The provider
   receives a generic filename; the UI warns that embedded audio metadata is not stripped.
-- Added a lazy, deduplicated Media Gallery across saved LinkChat conversations, with Catbox and
-  Litterbox labels, privacy-aware full-size cards, source-chat navigation, and one-click selection as
+- Added a lazy, deduplicated Media Gallery across saved LinkChat conversations, with provider
+  labels, privacy-aware full-size cards, source-chat navigation, and one-click selection as
   a room background. Temporary local image uploads can also populate the room background field.
 - Added focused regressions for device audio duration/storage, custom-sound volume, DND replies,
   cross-chat media aggregation, and current BC room-admin packet shapes.
@@ -249,7 +265,7 @@
   metadata-free 512 px WebP keeps the restored emblem inexpensive inside the userscript.
 - Moved the room Blossom into selectable safe positions around common WCE and BCX icon areas, added
   bounded horizontal and vertical fine adjustment, and kept native icon hiding and compatibility checks.
-- Added account-free temporary local-image uploads through Catbox's Litterbox with 1, 12, 24, or
+- Added account-free temporary local-image uploads through the former public host with 1, 12, 24, or
   72 hour retention. Files are still validated, resized, metadata-stripped, and re-encoded locally
   before an explicit upload.
 - Added direct-link profile avatars shared through the bounded presence packet. Remote avatars obey
@@ -267,7 +283,7 @@
 - Keep the entire KikiLink host hidden whenever Bondage Club reports that the account logged out,
   while preserving the existing pre-login mount gate.
 - Migrated settings to schema version 14, reset the former Cloudinary provider switch instead of
-  treating it as Litterbox consent, and expanded validation for bounded profile packets.
+  treating it as consent for a replacement host, and expanded validation for bounded profile packets.
 
 ## 0.19.0 - 2026-08-24
 

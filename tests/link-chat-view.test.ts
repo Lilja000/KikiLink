@@ -8,7 +8,7 @@ import type { KikiLinkEvents } from "../src/core/types";
 import { LinkActivitiesService } from "../src/modules/link-activities/link-activities-service";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import type {
-  LitterboxUploadConfig,
+  WaifuVaultUploadConfig,
   LocalImageUploader,
 } from "../src/modules/link-chat/image-upload";
 import { LinkChatView } from "../src/modules/link-chat/view";
@@ -16,6 +16,7 @@ import { LinkRosterService } from "../src/modules/link-roster/link-roster-servic
 import { LinkPresenceService } from "../src/modules/link-presence/link-presence-service";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 import { PeopleRepository } from "../src/storage/people-repository";
+import type { DeviceGalleryImage, GalleryStore } from "../src/storage/device-gallery-store";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -202,7 +203,7 @@ describe("LinkChatView", () => {
         roomName: "Moon Garden",
         isAdmin: roomAdmin,
         customization: {
-          imageUrl: "https://files.catbox.moe/old.webp",
+          imageUrl: "https://waifuvault.moe/f/old.webp",
           musicUrl: "https://cdn.example/old.mp3",
           sizeMode: 2,
           musicSync: false,
@@ -222,7 +223,7 @@ describe("LinkChatView", () => {
           whitelist: [123],
           blacklist: [],
           custom: {
-            imageUrl: "https://files.catbox.moe/old.webp",
+            imageUrl: "https://waifuvault.moe/f/old.webp",
             imageFilter: "",
             musicUrl: "https://cdn.example/old.mp3",
             sizeMode: 2,
@@ -259,7 +260,7 @@ describe("LinkChatView", () => {
         direction: "incoming",
         peerNumber: 123,
         peerName: "Reina",
-        content: "https://files.catbox.moe/gallery.webp",
+        content: "https://waifuvault.moe/f/gallery.webp",
         sentAt: 1_000,
         includeRoom: false,
       },
@@ -280,10 +281,10 @@ describe("LinkChatView", () => {
     });
     const imageUrl = shadow?.querySelector<HTMLInputElement>(".kl-room-media input[type=url]");
     if (!imageUrl) throw new Error("Missing room background control");
-    imageUrl.value = "https://files.catbox.moe/new.webp";
+    imageUrl.value = "https://waifuvault.moe/f/new.webp";
     shadow?.querySelector<HTMLButtonElement>(".kl-room-media .kl-text-button--primary")?.click();
     expect(updateRoomCustomization).toHaveBeenCalledWith(
-      expect.objectContaining({ imageUrl: "https://files.catbox.moe/new.webp", sizeMode: 2 }),
+      expect.objectContaining({ imageUrl: "https://waifuvault.moe/f/new.webp", sizeMode: 2 }),
     );
     [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-room-player-actions button") ?? [])]
       .find((button) => button.textContent === "Make admin")
@@ -316,7 +317,7 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLButtonElement>(".kl-sidebar-heading-actions button")?.click();
     await vi.waitFor(() => {
       expect(shadow?.querySelector<HTMLElement>(".kl-gallery-page")?.hidden).toBe(false);
-      expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("catbox");
+      expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("WaifuVault");
       expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("Show original");
       expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain(
         "Use as room background",
@@ -338,32 +339,32 @@ describe("LinkChatView", () => {
       ?.click();
     const galleryUrl = shadow?.querySelector<HTMLInputElement>(".kl-image-url");
     if (!galleryUrl) throw new Error("Missing Gallery image URL field");
-    galleryUrl.value = "https://files.catbox.moe/direct-gallery.png";
+    galleryUrl.value = "https://waifuvault.moe/f/direct-gallery.png";
     galleryUrl.dispatchEvent(new Event("input", { bubbles: true }));
     shadow
       ?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")
       ?.click();
     await vi.waitFor(() => {
       expect(settings.get().linkChat.gallery.saved).toMatchObject([
-        { url: "https://files.catbox.moe/direct-gallery.png" },
+        { url: "https://waifuvault.moe/f/direct-gallery.png" },
       ]);
       expect(
         shadow?.querySelector<HTMLElement>(
-          '[data-gallery-url="https://files.catbox.moe/direct-gallery.png"]',
+          '[data-gallery-url="https://waifuvault.moe/f/direct-gallery.png"]',
         ),
       ).not.toBeNull();
     });
 
     shadow
       ?.querySelector<HTMLElement>(
-        '[data-gallery-url="https://files.catbox.moe/direct-gallery.png"]',
+        '[data-gallery-url="https://waifuvault.moe/f/direct-gallery.png"]',
       )
       ?.querySelector<HTMLButtonElement>(".kl-gallery-remove")
       ?.click();
     await vi.waitFor(() => {
       expect(settings.get().linkChat.gallery.saved).toEqual([]);
       expect(settings.get().linkChat.gallery.hiddenUrls).toContain(
-        "https://files.catbox.moe/direct-gallery.png",
+        "https://waifuvault.moe/f/direct-gallery.png",
       );
     });
 
@@ -483,15 +484,17 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-music-queue-search")).not.toBeNull();
     expect(shadow?.querySelector(".kl-music-rate")).not.toBeNull();
     expect(shadow?.querySelector(".kl-music-sleep")).not.toBeNull();
+    expect(shadow?.querySelector(".kl-music-playlist-menu > summary")?.textContent).toBe("Manage");
     expect(shadow?.querySelector(".kl-music-playlist-actions")?.textContent).toContain("Duplicate");
+    expect(shadow?.querySelector("style")?.textContent).toContain("@media (max-width: 900px)");
     musicTitle.value = "Moon Song";
-    musicUrl.value = "https://files.catbox.moe/moon.mp3";
+    musicUrl.value = "https://waifuvault.moe/f/moon.mp3";
     shadow?.querySelector<HTMLButtonElement>(".kl-music-add .kl-text-button--primary")?.click();
     await vi.waitFor(() => {
       expect(settings.get().linkMusic.playlists[0]?.tracks[0]).toMatchObject({
         title: "Moon Song",
         source: "url",
-        locator: "https://files.catbox.moe/moon.mp3",
+        locator: "https://waifuvault.moe/f/moon.mp3",
       });
     });
     const queueSearch = shadow?.querySelector<HTMLInputElement>(".kl-music-queue-search");
@@ -1043,12 +1046,12 @@ describe("LinkChatView", () => {
     settings.update((draft) => {
       draft.linkChat.imageUploads = {
         enabled: true,
-        retention: "24h",
+        retention: "7d",
       };
     });
     const service = new ChatService(new MemoryChatRepository(), settings);
     const preparedBlob = new Blob([Uint8Array.of(1, 2, 3)], { type: "image/webp" });
-    const imageUploader: LocalImageUploader<LitterboxUploadConfig> = {
+    const imageUploader: LocalImageUploader<WaifuVaultUploadConfig> = {
       prepare: vi.fn(async () => ({
         blob: preparedBlob,
         width: 640,
@@ -1056,7 +1059,30 @@ describe("LinkChatView", () => {
         sourceBytes: 10,
       })),
       upload: vi.fn(async () =>
-        "https://litter.catbox.moe/photo.webp"),
+        "https://waifuvault.moe/f/photo.webp"),
+    };
+    const localGallery: DeviceGalleryImage[] = [];
+    const galleryStore: GalleryStore = {
+      list: vi.fn(async () => [...localGallery]),
+      get: vi.fn(async (id) => localGallery.find((image) => image.id === id)),
+      add: vi.fn(async (image) => {
+        const saved: DeviceGalleryImage = {
+          id: "gallery-one",
+          name: "KikiLink image",
+          mimeType: "image/webp",
+          width: image.width,
+          height: image.height,
+          createdAt: Date.now(),
+          blob: image.blob,
+        };
+        localGallery.push(saved);
+        return saved;
+      }),
+      delete: vi.fn(async (id) => {
+        const index = localGallery.findIndex((image) => image.id === id);
+        if (index >= 0) localGallery.splice(index, 1);
+      }),
+      close: vi.fn(),
     };
     const view = new LinkChatView(
       adapter,
@@ -1067,6 +1093,9 @@ describe("LinkChatView", () => {
       undefined,
       undefined,
       imageUploader,
+      undefined,
+      undefined,
+      galleryStore,
     );
     view.mount();
     await view.openChat(123, "Reina");
@@ -1099,11 +1128,11 @@ describe("LinkChatView", () => {
     await vi.waitFor(() => {
       expect(imageUploader.upload).toHaveBeenCalledWith(
         expect.objectContaining({ blob: preparedBlob, width: 640, height: 480 }),
-        { retention: "24h" },
+        { retention: "7d" },
       );
       expect(sendBeep).toHaveBeenCalledWith(
         123,
-        "https://litter.catbox.moe/photo.webp",
+        "https://waifuvault.moe/f/photo.webp",
         false,
       );
     });
@@ -1138,10 +1167,15 @@ describe("LinkChatView", () => {
       ?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")
       ?.click();
     await vi.waitFor(() => {
-      expect(settings.get().linkChat.gallery.saved).toMatchObject([
-        { url: "https://litter.catbox.moe/photo.webp" },
-      ]);
+      expect(galleryStore.add).toHaveBeenCalledWith(
+        expect.objectContaining({ blob: preparedBlob, width: 640, height: 480 }),
+      );
+      expect(settings.get().linkChat.gallery.saved).toEqual([]);
+      expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain(
+        "Stored permanently on this device",
+      );
     });
+    expect(imageUploader.upload).not.toHaveBeenCalled();
     expect(sendBeep).not.toHaveBeenCalled();
     view.destroy();
   });

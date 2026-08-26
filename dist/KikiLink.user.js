@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.22.1
+// @version      0.22.2
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -17,7 +17,7 @@
 // @inject-into  page
 // @sandbox      raw
 // @grant        GM_xmlhttpRequest
-// @connect      catbox.moe
+// @connect      waifuvault.moe
 // ==/UserScript==
 "use strict";
 (() => {
@@ -1909,8 +1909,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function galleryMediaProvider(value) {
     try {
       const host = new URL(value).hostname.toLocaleLowerCase();
-      if (host === "files.catbox.moe") return "catbox";
-      if (host === "litter.catbox.moe") return "litterbox";
+      if (host === "waifuvault.moe") return "waifuvault";
     } catch {
     }
     return "other";
@@ -2123,7 +2122,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 19,
+    schemaVersion: 20,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -2153,7 +2152,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       imagePreviews: "ask",
       imageUploads: {
         enabled: true,
-        retention: "24h"
+        retention: "7d"
       },
       gallery: {
         saved: [],
@@ -2292,7 +2291,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkRoom = isRecord3(source.linkRoom) ? source.linkRoom : {};
     const linkMusic = isRecord3(source.linkMusic) ? source.linkMusic : {};
     return {
-      schemaVersion: 19,
+      schemaVersion: 20,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -2374,7 +2373,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       linkRoom: {
         presets: sanitizeRoomPresets(linkRoom.presets)
       },
-      linkMusic: sanitizeMusicSettings(linkMusic)
+      linkMusic: sanitizeMusicSettings(linkMusic, sourceSchema)
     };
   }
   function sanitizeRoomPresets(value) {
@@ -2420,7 +2419,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     return presets.sort((left, right) => right.savedAt - left.savedAt);
   }
-  function sanitizeMusicSettings(value) {
+  function sanitizeMusicSettings(value, sourceSchema) {
     const playlists = [];
     const playlistIds = /* @__PURE__ */ new Set();
     let trackBudget = 100;
@@ -2437,7 +2436,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
             if (trackBudget <= 0 || !isRecord3(track)) break;
             const trackId = safeLocalId(track.id);
             const title = cleanBoundedText(track.title, 80);
-            const source = track.source === "catbox" || track.source === "local" ? track.source : "url";
+            const source = track.source === "local" ? "local" : track.source === "hosted" || sourceSchema < 20 && typeof track.source === "string" && track.source !== "url" ? "hosted" : "url";
             const locator = source === "local" ? safeLocalId(track.locator) : sanitizeAudioUrl(track.locator);
             if (!trackId || !title || !locator || trackIds.has(trackId)) continue;
             tracks.push({
@@ -2471,8 +2470,16 @@ One of mods you are using is using an old version of SDK. It will work for now b
       // Schema 13 stored Cloudinary credentials. Do not silently reinterpret its enabled switch as
       // consent to upload to a different third-party provider after upgrading.
       enabled: sourceSchema < 14 ? false : booleanOr(value.enabled, DEFAULT_SETTINGS.linkChat.imageUploads.enabled),
-      retention: value.retention === "1h" || value.retention === "12h" || value.retention === "24h" || value.retention === "72h" ? value.retention : DEFAULT_SETTINGS.linkChat.imageUploads.retention
+      retention: sanitizeHostedRetention(value.retention, sourceSchema)
     };
+  }
+  function sanitizeHostedRetention(value, sourceSchema) {
+    if (value === "1d" || value === "3d" || value === "7d" || value === "30d") return value;
+    if (sourceSchema < 20) {
+      if (value === "72h") return "3d";
+      if (value === "1h" || value === "12h" || value === "24h") return "1d";
+    }
+    return DEFAULT_SETTINGS.linkChat.imageUploads.retention;
   }
   function sanitizeGallery(value) {
     const source = isRecord3(value) ? value : {};
@@ -5154,6 +5161,138 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function cleanName2(value) {
     const name = value.replace(/\.[^.]+$/u, "").replace(/[\u0000-\u001f\u007f]/gu, " ").trim();
     return (name || "Local track").slice(0, 80);
+  }
+
+  // src/storage/device-gallery-store.ts
+  var MAX_DEVICE_GALLERY_IMAGE_BYTES = 8 * 1024 * 1024;
+  var MAX_DEVICE_GALLERY_IMAGES = 80;
+  var DATABASE_VERSION3 = 1;
+  var STORE_NAME3 = "images";
+  var DeviceGalleryStore = class {
+    constructor(memberNumber) {
+      this.memberNumber = memberNumber;
+    }
+    memberNumber;
+    #databasePromise;
+    #persistenceRequest;
+    async list() {
+      const database = await this.#database();
+      const records = await requestResult3(
+        database.transaction(STORE_NAME3, "readonly").objectStore(STORE_NAME3).getAll()
+      );
+      return records.sort((left, right) => right.createdAt - left.createdAt);
+    }
+    async get(id) {
+      if (!validId2(id)) return void 0;
+      const database = await this.#database();
+      return await requestResult3(
+        database.transaction(STORE_NAME3, "readonly").objectStore(STORE_NAME3).get(id)
+      );
+    }
+    async add(image) {
+      validateImage(image);
+      this.#persistenceRequest ??= requestPersistentStorage();
+      await this.#persistenceRequest;
+      const database = await this.#database();
+      const existing = await requestResult3(
+        database.transaction(STORE_NAME3, "readonly").objectStore(STORE_NAME3).count()
+      );
+      if (existing >= MAX_DEVICE_GALLERY_IMAGES) {
+        throw new Error(`Your device Gallery can hold up to ${MAX_DEVICE_GALLERY_IMAGES} images`);
+      }
+      const record = {
+        id: createId3(),
+        name: "KikiLink image",
+        mimeType: "image/webp",
+        width: image.width,
+        height: image.height,
+        createdAt: Date.now(),
+        blob: image.blob.slice(0, image.blob.size, "image/webp")
+      };
+      const transaction = database.transaction(STORE_NAME3, "readwrite");
+      transaction.objectStore(STORE_NAME3).put(record);
+      await transactionDone3(transaction);
+      return record;
+    }
+    async delete(id) {
+      if (!validId2(id)) return;
+      const database = await this.#database();
+      const transaction = database.transaction(STORE_NAME3, "readwrite");
+      transaction.objectStore(STORE_NAME3).delete(id);
+      await transactionDone3(transaction);
+    }
+    close() {
+      void this.#databasePromise?.then((database) => database.close()).catch(() => void 0);
+      this.#databasePromise = void 0;
+    }
+    #database() {
+      if (typeof indexedDB === "undefined") {
+        return Promise.reject(new Error("Permanent Gallery storage is unavailable in this browser"));
+      }
+      this.#databasePromise ??= openDatabase3(deviceGalleryDatabaseName(this.memberNumber)).catch((error) => {
+        this.#databasePromise = void 0;
+        throw error;
+      });
+      return this.#databasePromise;
+    }
+  };
+  function validateImage(image) {
+    if (!(image.blob instanceof Blob) || image.blob.type !== "image/webp") {
+      throw new Error("Only privacy-prepared WebP images can be stored in Gallery");
+    }
+    if (image.blob.size <= 0 || image.blob.size > MAX_DEVICE_GALLERY_IMAGE_BYTES) {
+      throw new Error("The prepared Gallery image must be smaller than 8 MB");
+    }
+    if (!Number.isSafeInteger(image.width) || image.width <= 0 || !Number.isSafeInteger(image.height) || image.height <= 0) {
+      throw new Error("The prepared Gallery image has invalid dimensions");
+    }
+  }
+  async function requestPersistentStorage() {
+    try {
+      const storage = navigator.storage;
+      if (!storage) return false;
+      if (typeof storage.persisted === "function" && await storage.persisted()) return true;
+      return typeof storage.persist === "function" ? await storage.persist() : false;
+    } catch {
+      return false;
+    }
+  }
+  function deviceGalleryDatabaseName(memberNumber) {
+    const account = Number.isSafeInteger(memberNumber) && memberNumber > 0 ? memberNumber : "guest";
+    return `kikilink-device-gallery-${account}`;
+  }
+  function openDatabase3(name) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(name, DATABASE_VERSION3);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(STORE_NAME3)) {
+          request.result.createObjectStore(STORE_NAME3, { keyPath: "id" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Unable to open permanent Gallery storage"));
+      request.onblocked = () => reject(new Error("Gallery storage is blocked by another tab"));
+    });
+  }
+  function requestResult3(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Gallery storage request failed"));
+    });
+  }
+  function transactionDone3(transaction) {
+    return new Promise((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error ?? new Error("Gallery storage failed"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("Gallery storage was cancelled"));
+    });
+  }
+  function createId3() {
+    const random = typeof crypto === "object" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    return random.toLocaleLowerCase().replace(/[^a-z0-9_-]/gu, "").slice(0, 64);
+  }
+  function validId2(value) {
+    return /^[a-z0-9_-]{1,64}$/iu.test(value);
   }
 
   // src/modules/link-presence/link-presence-service.ts
@@ -8841,13 +8980,18 @@ select:focus-visible {
 .kl-music-side { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; overflow-y: auto; }
 .kl-music-add { overflow: visible; }
 .kl-music-add h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: var(--kl-type-lg); }
+.kl-music-add input[type="file"] { min-width: 0; width: 100%; max-width: 100%; overflow: hidden; color: var(--kl-muted); font-size: var(--kl-type-xs); }
+.kl-music-add input[type="file"]::file-selector-button { min-height: 34px; margin-right: 8px; padding: 5px 9px; border: 1px solid var(--kl-border); border-radius: 9px; background: var(--kl-surface-2); color: var(--kl-text); font: inherit; cursor: pointer; }
 .kl-music-add label,
 .kl-music-playlist-toolbar label,
 .kl-music-session-options label { display: grid; gap: 5px; color: var(--kl-muted); font-size: var(--kl-type-xs); font-weight: 800; }
-.kl-music-playlist-toolbar { display: grid; grid-template-columns: minmax(170px, 1fr) auto; align-items: end; gap: 9px; }
+.kl-music-playlist-toolbar { position: relative; z-index: 3; display: grid; grid-template-columns: minmax(170px, 1fr) auto; align-items: end; gap: 9px; }
 .kl-music-playlist-toolbar label { min-width: 0; flex: 1 1 auto; }
-.kl-music-playlist-actions { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
-.kl-music-playlist-actions .kl-text-button { min-height: 34px; padding: 4px 8px; font-size: var(--kl-type-xxs); }
+.kl-music-playlist-menu { position: relative; align-self: end; }
+.kl-music-playlist-menu > summary { min-height: 38px; display: flex; align-items: center; list-style: none; cursor: pointer; }
+.kl-music-playlist-menu > summary::-webkit-details-marker { display: none; }
+.kl-music-playlist-actions { position: absolute; z-index: 18; right: 0; top: calc(100% + 5px); width: 150px; display: grid; gap: 3px; padding: 6px; border: 1px solid var(--kl-border-strong); border-radius: 12px; background: var(--kl-panel-bg); box-shadow: 0 14px 34px rgba(0, 0, 0, .35); }
+.kl-music-playlist-actions .kl-text-button { width: 100%; min-height: 34px; justify-content: flex-start; padding: 5px 9px; font-size: var(--kl-type-xs); }
 .kl-music-queue-tools { min-width: 0; display: flex; align-items: center; gap: 10px; }
 .kl-music-queue-search-wrap { min-width: 0; flex: 1 1 auto; position: relative; }
 .kl-music-queue-search-wrap > .kl-icon { position: absolute; left: 10px; top: 50%; width: 16px; height: 16px; color: var(--kl-meta); transform: translateY(-50%); pointer-events: none; }
@@ -8946,6 +9090,15 @@ select:focus-visible {
 .kl-remove-chat-safe { max-width: 360px; color: var(--kl-muted); font-size: var(--kl-type-xs); }
 .kl-text-button--danger { border-color: color-mix(in srgb, var(--kl-danger), transparent 50%); background: color-mix(in srgb, var(--kl-danger), transparent 90%); }
 
+@media (max-width: 900px) {
+  .kl-music-body { grid-template-columns: minmax(0, 1fr); overflow-y: auto; overscroll-behavior: contain; }
+  .kl-music-library { min-height: 300px; }
+  .kl-music-queue { max-height: 250px; }
+  .kl-music-side { overflow: visible; }
+  .kl-music-player { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .kl-music-controls { justify-content: center; }
+}
+
 @media (max-width: 720px) {
   .kl-presence-trigger { min-width: 118px; max-width: 150px; min-height: 42px; padding-right: 21px; }
   .kl-presence-trigger-avatar { width: 32px; height: 32px; }
@@ -8960,13 +9113,11 @@ select:focus-visible {
   .kl-room-preset-create { align-items: stretch; flex-direction: column; }
   .kl-lobby-search-wrap,
   .kl-room-preset-create-actions { width: 100%; }
-  .kl-music-body { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+  .kl-music-body { padding: 11px; gap: 10px; }
   .kl-music-library { min-height: 310px; }
   .kl-music-queue { max-height: 260px; }
-  .kl-music-side { overflow: visible; }
-  .kl-music-playlist-toolbar { grid-template-columns: minmax(0, 1fr); }
-  .kl-music-playlist-actions { justify-content: flex-start; }
-  .kl-music-player { grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 9px 12px; }
+  .kl-music-playlist-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .kl-music-player { gap: 7px; padding: 9px 12px; }
   .kl-music-controls { justify-content: center; flex-wrap: wrap; }
 }
 
@@ -8986,6 +9137,9 @@ select:focus-visible {
   .kl-lobby-search-wrap { grid-template-columns: 104px minmax(0, 1fr) 40px; }
   .kl-music-queue-tools { align-items: stretch; flex-direction: column; gap: 5px; }
   .kl-music-queue-summary { align-self: flex-end; }
+  .kl-music-session-options { grid-template-columns: minmax(0, 1fr); }
+  .kl-music-volume { flex-basis: 100%; grid-template-columns: auto minmax(100px, 1fr); }
+  .kl-music-volume .kl-volume-input { width: 100%; }
   .kl-lobby-card-footer { flex-wrap: wrap; }
   .kl-lobby-flags { flex-basis: 100%; }
   .kl-room-preset-card { grid-template-columns: minmax(0, 1fr); }
@@ -9009,12 +9163,11 @@ select:focus-visible {
   var MAX_LOCAL_IMAGE_EDGE = 2560;
   var MAX_LOCAL_IMAGE_PIXELS = 32e6;
   var MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
-  var MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
+  var MAX_HOSTED_MUSIC_BYTES = 80 * 1024 * 1024;
   var MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
   var IMAGE_UPLOAD_TIMEOUT_MS = 6e4;
-  var LITTERBOX_UPLOAD_ENDPOINT = "https://litterbox.catbox.moe/resources/internals/api.php";
-  var CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
-  var LitterboxImageUploader = class {
+  var WAIFUVAULT_UPLOAD_ENDPOINT = "https://waifuvault.moe/rest";
+  var WaifuVaultImageUploader = class {
     constructor(request) {
       this.request = request;
     }
@@ -9023,91 +9176,104 @@ select:focus-visible {
       return prepareLocalImage(file);
     }
     async upload(image, config) {
-      const normalizedConfig = normalizeLitterboxUploadConfig(config);
+      const normalizedConfig = normalizeWaifuVaultUploadConfig(config);
       if (!normalizedConfig) throw new Error("Choose a valid temporary image lifetime");
       validatePreparedImage(image);
       const form = new FormData();
-      form.append("reqtype", "fileupload");
-      form.append("time", normalizedConfig.retention);
-      form.append("fileToUpload", preparedImageFile(image));
+      form.append("file", preparedImageFile(image));
       const response = await uploadMultipart(
-        LITTERBOX_UPLOAD_ENDPOINT,
+        waifuVaultUploadUrl(normalizedConfig.retention),
         form,
         IMAGE_UPLOAD_TIMEOUT_MS,
-        this.request
+        this.request,
+        void 0,
+        "PUT"
       );
       if (!response.ok) {
         throw new Error(cleanProviderError(response.body) || `Image host returned HTTP ${response.status}`);
       }
-      const directUrl = normalizeImageUrl(response.body.trim());
-      if (!directUrl || !isExpectedLitterboxUrl(directUrl)) {
+      const directUrl = waifuVaultResponseUrl(response.body, ["webp"]);
+      if (!directUrl || !normalizeImageUrl(directUrl)) {
         throw new Error("The temporary image host returned an unexpected link");
       }
       return directUrl;
     }
   };
-  async function uploadLocalRoomAudio(file, config, request) {
-    const normalizedConfig = normalizeLitterboxUploadConfig(config);
+  async function uploadRoomAudioToWaifuVault(file, config, request) {
+    const normalizedConfig = normalizeWaifuVaultUploadConfig(config);
     if (!normalizedConfig) throw new Error("Choose a valid temporary music lifetime");
     if (file.size <= 0) throw new Error("Choose a non-empty audio file");
     if (file.size > MAX_LOCAL_ROOM_AUDIO_BYTES) throw new Error("Choose room music up to 20 MB");
     const extension = roomAudioExtension(file);
     if (!extension) throw new Error("Bondage Club room music must be an MP3 or MP4 file");
     const form = new FormData();
-    form.append("reqtype", "fileupload");
-    form.append("time", normalizedConfig.retention);
     form.append(
-      "fileToUpload",
+      "file",
       new File([file], `kikilink-room-music.${extension}`, {
         type: file.type || `audio/${extension}`,
         lastModified: 0
       })
     );
     const response = await uploadMultipart(
-      LITTERBOX_UPLOAD_ENDPOINT,
+      waifuVaultUploadUrl(normalizedConfig.retention),
       form,
       IMAGE_UPLOAD_TIMEOUT_MS,
-      request
+      request,
+      void 0,
+      "PUT"
     );
     if (!response.ok) {
       throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
     }
-    const url = normalizeLitterboxAudioUrl(response.body.trim());
+    const url = waifuVaultResponseUrl(response.body, ["mp3", "mp4"]);
     if (!url) throw new Error("The temporary audio host returned an unexpected link");
     return url;
   }
-  async function uploadMusicToCatbox(file, request, onProgress) {
+  async function uploadMusicToWaifuVault(file, config, request, onProgress) {
+    const normalizedConfig = normalizeWaifuVaultUploadConfig(config);
+    if (!normalizedConfig) throw new Error("Choose a valid shared track lifetime");
     if (file.size <= 0) throw new Error("Choose a non-empty audio file");
-    if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
+    if (file.size > MAX_HOSTED_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
     const extension = playlistAudioExtension(file);
     if (!extension) throw new Error("Choose an MP3, MP4, M4A, OGG, WAV, FLAC, AAC, or WebM track");
     const form = new FormData();
-    form.append("reqtype", "fileupload");
     form.append(
-      "fileToUpload",
+      "file",
       new File([file], `kikilink-track.${extension}`, {
         type: file.type || "application/octet-stream",
         lastModified: 0
       })
     );
     const response = await uploadMultipart(
-      CATBOX_UPLOAD_ENDPOINT,
+      waifuVaultUploadUrl(normalizedConfig.retention),
       form,
       3e5,
       request,
-      onProgress
+      onProgress,
+      "PUT"
     );
     if (!response.ok) {
       throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
     }
-    const url = normalizeCatboxAudioUrl(response.body.trim());
-    if (!url) throw new Error("Catbox returned an unexpected track link");
+    const url = waifuVaultResponseUrl(response.body, [
+      "aac",
+      "flac",
+      "m4a",
+      "mp3",
+      "mp4",
+      "oga",
+      "ogg",
+      "opus",
+      "wav",
+      "webm"
+    ]);
+    if (!url) throw new Error("WaifuVault returned an unexpected track link");
     return url;
   }
-  function normalizeLitterboxUploadConfig(value) {
+  function normalizeWaifuVaultUploadConfig(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const retention = value.retention;
-    return retention === "1h" || retention === "12h" || retention === "24h" || retention === "72h" ? { retention } : null;
+    return retention === "1d" || retention === "3d" || retention === "7d" || retention === "30d" ? { retention } : null;
   }
   async function prepareLocalImage(file) {
     await validateLocalImageFile(file);
@@ -9203,14 +9369,21 @@ select:focus-visible {
       );
     });
   }
-  function isExpectedLitterboxUrl(value) {
-    const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "litter.catbox.moe" && !url.username && !url.password && !url.search && !url.hash && /^\/[a-z0-9_-]+\.webp$/iu.test(url.pathname);
+  function waifuVaultUploadUrl(retention) {
+    const url = new URL(WAIFUVAULT_UPLOAD_ENDPOINT);
+    url.searchParams.set("expires", retention);
+    url.searchParams.set("hide_filename", "true");
+    return url.href;
   }
-  function normalizeLitterboxAudioUrl(value) {
+  function waifuVaultResponseUrl(body, extensions) {
     try {
-      const url = new URL(value);
-      if (url.protocol !== "https:" || url.hostname !== "litter.catbox.moe" || url.username || url.password || url.search || url.hash || !/^\/[a-z0-9_-]+\.(?:mp3|mp4)$/iu.test(url.pathname)) {
+      const payload = JSON.parse(body);
+      if (typeof payload.url !== "string" || typeof payload.token !== "string" || !payload.token) {
+        return null;
+      }
+      const url = new URL(payload.url);
+      const extension = url.pathname.toLocaleLowerCase().match(/\.([a-z0-9]+)$/u)?.[1];
+      if (url.protocol !== "https:" || url.hostname !== "waifuvault.moe" || url.username || url.password || url.search || url.hash || !url.pathname.startsWith("/f/") || !extension || !extensions.includes(extension)) {
         return null;
       }
       return url.href;
@@ -9247,17 +9420,6 @@ select:focus-visible {
     };
     return mime ? byMime[mime] : void 0;
   }
-  function normalizeCatboxAudioUrl(value) {
-    try {
-      const url = new URL(value);
-      if (url.protocol !== "https:" || url.hostname !== "files.catbox.moe" || url.username || url.password || url.search || url.hash || !/^\/[a-z0-9_-]+\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(url.pathname)) {
-        return void 0;
-      }
-      return url.href;
-    } catch {
-      return void 0;
-    }
-  }
   function validatePreparedImage(image) {
     if (image.blob.type !== "image/webp" || image.blob.size <= 0 || image.blob.size > MAX_PREPARED_IMAGE_BYTES || !Number.isSafeInteger(image.width) || image.width <= 0 || !Number.isSafeInteger(image.height) || image.height <= 0) {
       throw new Error("The prepared image is invalid");
@@ -9269,12 +9431,12 @@ select:focus-visible {
       lastModified: 0
     });
   }
-  async function uploadMultipart(endpoint, form, timeoutMs, request, onProgress) {
-    if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request);
+  async function uploadMultipart(endpoint, form, timeoutMs, request, onProgress, method = "POST") {
+    if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request, method);
     if (typeof GM_xmlhttpRequest === "function") {
       return new Promise((resolve, reject) => {
         GM_xmlhttpRequest({
-          method: "POST",
+          method,
           url: endpoint,
           data: form,
           anonymous: true,
@@ -9300,14 +9462,14 @@ select:focus-visible {
         });
       });
     }
-    return uploadMultipartWithFetch(endpoint, form, timeoutMs, globalThis.fetch.bind(globalThis));
+    return uploadMultipartWithFetch(endpoint, form, timeoutMs, globalThis.fetch.bind(globalThis), method);
   }
-  async function uploadMultipartWithFetch(endpoint, form, timeoutMs, request) {
+  async function uploadMultipartWithFetch(endpoint, form, timeoutMs, request, method) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await request(endpoint, {
-        method: "POST",
+        method,
         body: form,
         credentials: "omit",
         referrerPolicy: "no-referrer",
@@ -9539,9 +9701,11 @@ select:focus-visible {
       adapter,
       new PeopleRepository(new MemoryKeyValueStorage()),
       settings
-    ), presence, imageUploader = new LitterboxImageUploader(), soundStore = new DeviceNotificationSoundStore(
+    ), presence, imageUploader = new WaifuVaultImageUploader(), soundStore = new DeviceNotificationSoundStore(
       adapter.getOwnMemberNumber()
     ), musicStore = new DeviceMusicStore(
+      adapter.getOwnMemberNumber()
+    ), galleryStore = new DeviceGalleryStore(
       adapter.getOwnMemberNumber()
     )) {
       this.adapter = adapter;
@@ -9553,6 +9717,7 @@ select:focus-visible {
       this.imageUploader = imageUploader;
       this.soundStore = soundStore;
       this.musicStore = musicStore;
+      this.galleryStore = galleryStore;
       this.presence = presence ?? new LinkPresenceService(adapter, settings, new EventBus(), version);
       this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence);
       this.#notificationSounds = new NotificationSoundService(
@@ -9568,6 +9733,7 @@ select:focus-visible {
     imageUploader;
     soundStore;
     musicStore;
+    galleryStore;
     #host = document.createElement("div");
     #shadow = this.#host.attachShadow({ mode: "open" });
     #launcher = element("button", {
@@ -9788,6 +9954,7 @@ select:focus-visible {
       text: "Add track"
     });
     #musicAddStatus = element("div", { className: "kl-music-add-status" });
+    #musicShareLifetime = element("span", { className: "kl-music-share-lifetime" });
     #musicQueue = element("div", { className: "kl-music-queue" });
     #musicQueueSearch = element("input", {
       className: "kl-search kl-music-queue-search",
@@ -10085,6 +10252,8 @@ select:focus-visible {
     #imageUploadToken = 0;
     #imagePrepareToken = 0;
     #localImageError;
+    #galleryObjectUrls = /* @__PURE__ */ new Set();
+    #deviceGalleryCount = 0;
     #activeTrackId;
     #musicObjectUrl;
     #localMusicTrackIds;
@@ -10178,11 +10347,13 @@ select:focus-visible {
       this.#clearMusicSleepTimer();
       this.#clearMediaSession();
       this.#releaseMusicObjectUrl();
+      this.#releaseGalleryObjectUrls();
       this.#roomBadge.destroy();
       this.#host.remove();
       void this.#notificationSounds.destroy();
       this.soundStore.close();
       this.musicStore.close();
+      this.galleryStore.close();
       this.#mounted = false;
     }
     isActiveConversation(peerNumber) {
@@ -10714,6 +10885,9 @@ select:focus-visible {
     }
     #showWorkspace(view, remember = true) {
       if (this.#workspaceView === "roster" && view !== "roster") this.#saveNotebook(false);
+      if (this.#workspaceView === "gallery" && view !== "gallery") {
+        this.#releaseGalleryObjectUrls();
+      }
       this.#workspaceView = view;
       if (remember && view !== "settings") this.#lastWorkspaceView = view;
       this.#panel.dataset.workspace = view;
@@ -11073,7 +11247,7 @@ select:focus-visible {
         this.#imagePreviewSelect
       );
       this.#imageUploadsToggle.type = "checkbox";
-      this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary local image uploads");
+      this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary WaifuVault sharing");
       this.#imageUploadsToggle.addEventListener(
         "change",
         () => this.#renderImageUploadSettingsOptions()
@@ -11085,23 +11259,23 @@ select:focus-visible {
         element("span", { className: "kl-switch-track" })
       );
       this.#imageUploadRetentionSelect.replaceChildren(
-        selectOption2("1h", "1 hour"),
-        selectOption2("12h", "12 hours"),
-        selectOption2("24h", "24 hours"),
-        selectOption2("72h", "3 days")
+        selectOption2("1d", "1 day"),
+        selectOption2("3d", "3 days"),
+        selectOption2("7d", "7 days"),
+        selectOption2("30d", "30 days")
       );
-      this.#imageUploadRetentionSelect.setAttribute("aria-label", "Temporary image lifetime");
-      const litterboxLink = element("a", {
+      this.#imageUploadRetentionSelect.setAttribute("aria-label", "Shared file lifetime");
+      const waifuVaultLink = element("a", {
         className: "kl-inline-link",
-        text: "Litterbox by Catbox"
+        text: "WaifuVault"
       });
-      litterboxLink.href = "https://litterbox.catbox.moe/";
-      litterboxLink.target = "_blank";
-      litterboxLink.rel = "noopener noreferrer";
+      waifuVaultLink.href = "https://waifuvault.moe/";
+      waifuVaultLink.target = "_blank";
+      waifuVaultLink.rel = "noopener noreferrer";
       this.#imageUploadSettingsOptions.append(
         this.#settingRow(
-          "Link lifetime",
-          "The host removes the temporary file after this period.",
+          "Shared file lifetime",
+          "The host removes shared images, room audio, and hosted playlist tracks after this period.",
           this.#imageUploadRetentionSelect
         ),
         element(
@@ -11111,9 +11285,9 @@ select:focus-visible {
           element(
             "span",
             {},
-            "Only Upload & send makes a network request. KikiLink removes the filename and metadata, resizes to 2560 px, then sends the public file to ",
-            litterboxLink,
-            ". Catbox can see your IP and image; expiration cannot remove copies someone already saved."
+            "Only an explicit Share or Upload action makes a network request. KikiLink hides the original filename; images are resized and stripped of metadata before the public file is sent to ",
+            waifuVaultLink,
+            ". The service hashes connection IPs. Expiration cannot remove copies another person already saved. Manual Gallery files stay on this device and are never uploaded automatically."
           )
         )
       );
@@ -11122,11 +11296,11 @@ select:focus-visible {
         { className: "kl-setting-section kl-image-upload-settings" },
         element("div", {
           className: "kl-setting-section-title",
-          text: "Temporary local images"
+          text: "Temporary file sharing"
         }),
         this.#settingRow(
-          "Upload local files",
-          "Upload through Litterbox without creating an account.",
+          "Share local files",
+          "Create expiring public links through WaifuVault without an account.",
           imageUploadsSwitch
         ),
         this.#imageUploadSettingsOptions
@@ -11994,7 +12168,7 @@ select:focus-visible {
             this.#presenceAvatarUrl,
             element("span", {
               className: "kl-custom-field-help",
-              text: "Use a direct HTTPS JPG, PNG, GIF, WebP, or AVIF link from Imgur, Catbox, or another host. Other players' avatars follow your image-preview privacy setting."
+              text: "Use a direct HTTPS JPG, PNG, GIF, WebP, or AVIF link from a trusted host. Other players' avatars follow your image-preview privacy setting."
             })
           )
         ),
@@ -12192,7 +12366,7 @@ select:focus-visible {
           { className: "kl-image-upload-note kl-image-file-privacy" },
           kikiIcon("lock"),
           element("span", {
-            text: "Nothing uploads on selection. KikiLink first removes the filename and metadata; Upload & send creates a public temporary Litterbox link."
+            text: "Nothing uploads on selection. KikiLink removes the filename and metadata first. Chat sharing creates an expiring WaifuVault link; adding to Gallery keeps the prepared file only on this device."
           })
         )
       );
@@ -12406,7 +12580,7 @@ select:focus-visible {
       }
       this.#imageDestination = destination;
       this.#imageDialogTitle.textContent = destination === "gallery" ? "Add to Gallery" : "Send an image";
-      this.#imageDialogSubtitle.textContent = destination === "gallery" ? "Save a direct link or upload a privacy-prepared local image without sending a chat." : "A normal Beep link for everyone; an inline preview for KikiLink.";
+      this.#imageDialogSubtitle.textContent = destination === "gallery" ? "Save a direct link, or keep a privacy-prepared local image on this device until you delete it." : "A normal Beep link for everyone; an inline preview for KikiLink.";
       this.#resetLocalImage();
       this.#imageUrlInput.value = "";
       this.#renderImageComposePreview();
@@ -12471,37 +12645,40 @@ select:focus-visible {
     }
     #renderLocalImageComposeState() {
       const settings = this.settings.get().linkChat.imageUploads;
-      const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+      const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
+      const deviceGallery = this.#imageDestination === "gallery";
       const setupButton = this.#imageFilePanel.querySelector(
         ".kl-image-upload-setup"
       );
-      setupButton?.toggleAttribute("hidden", config !== null);
-      this.#chooseImageFileButton.hidden = config === null;
+      setupButton?.toggleAttribute("hidden", deviceGallery || config !== null);
+      this.#chooseImageFileButton.hidden = !deviceGallery && config === null;
       this.#chooseImageFileButton.disabled = this.#imageUploadBusy;
       this.#chooseImageFileButton.textContent = this.#preparedLocalImage ? "Choose another" : "Choose image";
-      this.#sendImageButton.textContent = this.#imageDestination === "gallery" ? "Upload & save" : "Upload & send";
-      this.#sendImageButton.disabled = this.#imageUploadBusy || config === null || this.#preparedLocalImage === void 0;
+      this.#sendImageButton.textContent = deviceGallery ? "Save on this device" : "Upload & send";
+      this.#sendImageButton.disabled = this.#imageUploadBusy || !deviceGallery && config === null || this.#preparedLocalImage === void 0;
       if (this.#imageUploadBusy) {
         this.#localImageStatus.replaceChildren(
           element("span", { className: "kl-image-compose-icon" }, kikiIcon("image")),
           element(
             "span",
             {},
-            element("strong", { text: "Uploading prepared image\u2026" }),
-            element("small", { text: "The original local file is not being sent." })
+            element("strong", { text: deviceGallery ? "Saving to this device\u2026" : "Uploading prepared image\u2026" }),
+            element("small", {
+              text: deviceGallery ? "The prepared copy stays inside this browser." : "The original local file is not being sent."
+            })
           )
         );
         this.#localImageStatus.dataset.state = "loading";
         return;
       }
-      if (!config) {
+      if (!config && !deviceGallery) {
         this.#localImageStatus.replaceChildren(
           element("span", { className: "kl-image-compose-icon" }, kikiIcon("lock")),
           element(
             "span",
             {},
             element("strong", { text: "Temporary upload is off" }),
-            element("small", { text: "Enable Litterbox uploads once in Chat settings." })
+            element("small", { text: "Enable WaifuVault sharing once in Chat settings." })
           )
         );
         this.#localImageStatus.dataset.state = "empty";
@@ -12544,7 +12721,7 @@ select:focus-visible {
         element(
           "span",
           {},
-          element("strong", { text: "Prepared locally" }),
+          element("strong", { text: deviceGallery ? "Ready for permanent device storage" : "Prepared locally" }),
           element("small", {
             text: `${prepared.width} \xD7 ${prepared.height} \xB7 ${formatBytes(prepared.blob.size)} \xB7 metadata removed`
           })
@@ -12624,8 +12801,34 @@ select:focus-visible {
     }
     async #uploadAndSendLocalImage() {
       const image = this.#preparedLocalImage;
+      if (this.#imageDestination === "gallery") {
+        if (!image || this.#imageUploadBusy) {
+          this.#renderLocalImageComposeState();
+          return;
+        }
+        this.#imageUploadBusy = true;
+        const token2 = ++this.#imageUploadToken;
+        this.#localImageError = void 0;
+        this.#renderLocalImageComposeState();
+        try {
+          await this.galleryStore.add({ blob: image.blob, width: image.width, height: image.height });
+          if (token2 !== this.#imageUploadToken) return;
+          this.#imageUploadBusy = false;
+          this.#imageDialog.close();
+          this.#resetLocalImage();
+          await this.#renderGallery();
+          this.#toast("Image saved permanently on this device. Nothing was uploaded.");
+        } catch (error) {
+          if (token2 !== this.#imageUploadToken) return;
+          this.#imageUploadBusy = false;
+          this.#localImageError = imageUploadErrorMessage(error);
+          this.#renderLocalImageComposeState();
+          this.#toast(this.#localImageError, "error");
+        }
+        return;
+      }
       const uploadSettings = this.settings.get().linkChat.imageUploads;
-      const config = uploadSettings.enabled ? normalizeLitterboxUploadConfig(uploadSettings) : null;
+      const config = uploadSettings.enabled ? normalizeWaifuVaultUploadConfig(uploadSettings) : null;
       if (!image || !config || this.#imageUploadBusy) {
         this.#renderLocalImageComposeState();
         return;
@@ -12638,16 +12841,6 @@ select:focus-visible {
         const url = await this.imageUploader.upload(image, config);
         if (token !== this.#imageUploadToken) return;
         this.#imageUrlInput.value = url;
-        if (this.#imageDestination === "gallery") {
-          this.#imageUploadBusy = false;
-          if (!this.#saveGalleryImage(url)) {
-            this.#setImageSourceMode("link");
-            return;
-          }
-          this.#toast(`Private details removed; temporary ${config.retention} image saved to Gallery.`);
-          this.#imageDialog.close();
-          return;
-        }
         const sent = await this.#sendContent(url, false);
         if (token !== this.#imageUploadToken) return;
         this.#imageUploadBusy = false;
@@ -12656,7 +12849,7 @@ select:focus-visible {
           this.#toast("Upload finished. The direct link is kept here so it is not lost.", "error");
           return;
         }
-        this.#toast(`Private details removed; temporary ${config.retention} link sent.`);
+        this.#toast(`Private details removed; ${formatRetention(config.retention)} link sent.`);
         this.#imageDialog.close();
       } catch (error) {
         if (token !== this.#imageUploadToken) return;
@@ -12761,8 +12954,8 @@ select:focus-visible {
           icon: "music",
           category: "Destination",
           title: "Music & Playlists",
-          detail: `${settings.linkMusic.playlists.length} playlists \xB7 local files and Catbox`,
-          keywords: "music player playlist songs tracks audio catbox local seek shuffle repeat spotify room sync",
+          detail: `${settings.linkMusic.playlists.length} playlists \xB7 local and shared files`,
+          keywords: "music player playlist songs tracks audio hosted local seek shuffle repeat room sync",
           priority: 71,
           action: { kind: "workspace", target: "music" }
         },
@@ -12773,7 +12966,7 @@ select:focus-visible {
           category: "Destination",
           title: "Media Gallery",
           detail: "Images you add directly and media from saved LinkChat conversations",
-          keywords: "gallery library add upload images pictures catbox litterbox media all chats",
+          keywords: "gallery library add upload images pictures device waifuvault media all chats",
           priority: 70,
           action: { kind: "workspace", target: "gallery" }
         },
@@ -13040,14 +13233,19 @@ select:focus-visible {
     }
     async #renderGallery() {
       const token = ++this.#galleryRenderToken;
+      this.#releaseGalleryObjectUrls();
       this.#galleryGrid.setAttribute("aria-busy", "true");
       this.#galleryGrid.replaceChildren(
         element("div", { className: "kl-gallery-empty", text: "Collecting images from LinkChat\u2026" })
       );
       try {
         const settings = this.settings.get();
-        const chatItems = await this.service.listMedia(400);
+        const [chatItems, localImages] = await Promise.all([
+          this.service.listMedia(400),
+          this.galleryStore.list().catch(() => [])
+        ]);
         if (token !== this.#galleryRenderToken) return;
+        this.#deviceGalleryCount = localImages.length;
         const hidden = new Set(settings.linkChat.gallery.hiddenUrls);
         const itemsByUrl = /* @__PURE__ */ new Map();
         for (const saved of settings.linkChat.gallery.saved) {
@@ -13070,9 +13268,21 @@ select:focus-visible {
             chat
           });
         }
-        const items = [...itemsByUrl.values()].sort((left, right) => right.sortAt - left.sortAt).slice(0, 400);
+        const localItems = localImages.map((image) => {
+          const url = URL.createObjectURL(image.blob);
+          this.#galleryObjectUrls.add(url);
+          return {
+            url,
+            provider: "device",
+            sortAt: image.createdAt,
+            saved: true,
+            localId: image.id
+          };
+        });
+        const items = [...localItems, ...itemsByUrl.values()].sort((left, right) => right.sortAt - left.sortAt).slice(0, 400);
         const savedCount = items.filter((item) => item.saved).length;
-        this.#gallerySubtitle.textContent = items.length ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` \xB7 ${savedCount} added directly` : ""}.` : "Images from saved chats and anything you add directly will appear here.";
+        this.#gallerySubtitle.textContent = items.length ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` \xB7 ${savedCount} added directly` : ""}. Device files stay until you delete them.` : "Images from saved chats and anything you add directly will appear here. Device files are kept until you delete them.";
+        this.#renderHomeStatus();
         if (items.length === 0) {
           this.#galleryGrid.replaceChildren(
             element(
@@ -13126,12 +13336,8 @@ select:focus-visible {
           element("button", {
             className: "kl-text-button kl-text-button--primary",
             type: "button",
-            text: "Use as room background",
-            onClick: () => {
-              this.#roomImageUrl.value = item.url;
-              void this.#openRoomTools(false);
-              this.#toast("Image selected. Review it, then apply the room media.");
-            }
+            text: item.localId ? "Share & use as background" : "Use as room background",
+            onClick: () => item.localId ? void this.#shareLocalGalleryImage(item) : this.#selectGalleryRoomBackground(item.url)
           })
         );
       }
@@ -13141,24 +13347,27 @@ select:focus-visible {
           type: "button",
           text: "Remove",
           ariaLabel: "Remove image from this Gallery",
-          onClick: () => this.#removeGalleryImage(item)
+          onClick: () => void this.#removeGalleryImage(item)
         })
       );
       const card = element(
         "article",
         { className: "kl-gallery-item" },
-        this.#imageCard(item.url),
+        this.#imageCard(item.url, item.localId !== void 0),
         element(
           "div",
           { className: "kl-gallery-meta" },
-          element("strong", { text: item.provider === "other" ? "Image" : item.provider }),
+          element("strong", {
+            text: item.provider === "device" ? "On this device" : item.provider === "waifuvault" ? "WaifuVault" : "Image"
+          }),
           element("span", {
-            text: item.chat ? `${item.chat.direction === "outgoing" ? "Sent to" : "From"} ${item.chat.peerName} \xB7 ${formatMessageTime(item.chat.sentAt)}` : `Added to Gallery \xB7 ${formatMessageTime(item.sortAt)}`
+            text: item.chat ? `${item.chat.direction === "outgoing" ? "Sent to" : "From"} ${item.chat.peerName} \xB7 ${formatMessageTime(item.chat.sentAt)}` : item.localId ? `Stored permanently on this device \xB7 ${formatMessageTime(item.sortAt)}` : `Added to Gallery \xB7 ${formatMessageTime(item.sortAt)}`
           })
         ),
         actions
       );
-      card.dataset.galleryUrl = item.url;
+      if (!item.localId) card.dataset.galleryUrl = item.url;
+      else card.dataset.galleryId = item.localId;
       card.dataset.gallerySource = item.saved ? "library" : "chat";
       return card;
     }
@@ -13181,7 +13390,18 @@ select:focus-visible {
       if (this.#workspaceView === "gallery") void this.#renderGallery();
       return true;
     }
-    #removeGalleryImage(item) {
+    async #removeGalleryImage(item) {
+      if (item.localId) {
+        if (!window.confirm("Delete this image permanently from this device Gallery?")) return;
+        try {
+          await this.galleryStore.delete(item.localId);
+          await this.#renderGallery();
+          this.#toast("Image permanently deleted from this device Gallery.");
+        } catch (error) {
+          this.#toast(error instanceof Error ? error.message : "The local image could not be deleted.", "error");
+        }
+        return;
+      }
       if (!window.confirm(
         "Remove this image from your KikiLink Gallery? The original chat message and hosted file will not be deleted."
       )) {
@@ -13199,6 +13419,41 @@ select:focus-visible {
       this.#renderHomeStatus();
       void this.#renderGallery();
       this.#toast("Image removed from this Gallery. Its chat message was left untouched.");
+    }
+    #selectGalleryRoomBackground(url) {
+      this.#roomImageUrl.value = url;
+      void this.#openRoomTools(false);
+      this.#toast("Image selected. Review it, then apply the room media.");
+    }
+    async #shareLocalGalleryImage(item) {
+      if (!item.localId) return;
+      const uploadSettings = this.settings.get().linkChat.imageUploads;
+      const config = uploadSettings.enabled ? normalizeWaifuVaultUploadConfig(uploadSettings) : null;
+      if (!config) {
+        this.#toast("Enable shared uploads in Chat settings first.", "error");
+        this.#openSettings("chat");
+        return;
+      }
+      try {
+        const stored = await this.galleryStore.get(item.localId);
+        if (!stored) throw new Error("This device image is no longer available");
+        this.#toast(`Sharing the image for ${formatRetention(config.retention)}\u2026`);
+        const url = await this.imageUploader.upload({
+          blob: stored.blob,
+          width: stored.width,
+          height: stored.height,
+          sourceBytes: stored.blob.size
+        }, config);
+        this.#selectGalleryRoomBackground(url);
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "The image could not be shared.", "error");
+      }
+    }
+    #releaseGalleryObjectUrls() {
+      if (typeof URL.revokeObjectURL === "function") {
+        for (const url of this.#galleryObjectUrls) URL.revokeObjectURL(url);
+      }
+      this.#galleryObjectUrls.clear();
     }
     #buildRoomPage() {
       const refresh = element("button", {
@@ -13329,7 +13584,7 @@ select:focus-visible {
         this.#roomPlaylistSyncStatus,
         element("p", {
           className: "kl-room-media-note",
-          text: "Uploaded backgrounds and music use your temporary Litterbox lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use permanent HTTPS links."
+          text: "Shared backgrounds and music use your WaifuVault lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use a durable HTTPS link you control."
         }),
         this.#roomSaveButton
       );
@@ -13786,7 +14041,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#roomImageFileInput.value = "";
       if (!file) return;
       const settings = this.settings.get().linkChat.imageUploads;
-      const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+      const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
       if (!config) {
         this.#toast("Enable temporary local image uploads in Chat settings first.", "error");
         this.#openSettings("chat");
@@ -13812,7 +14067,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#roomMusicFileInput.value = "";
       if (!file) return;
       const settings = this.settings.get().linkChat.imageUploads;
-      const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+      const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
       if (!config) {
         this.#toast("Enable temporary local uploads in Chat settings first.", "error");
         this.#openSettings("chat");
@@ -13820,7 +14075,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       }
       try {
         this.#roomAdminStatus.textContent = "Uploading temporary room music\u2026";
-        this.#roomMusicUrl.value = await uploadLocalRoomAudio(file, config);
+        this.#roomMusicUrl.value = await uploadRoomAudioToWaifuVault(file, config);
         await this.#renderRoomTools(false);
         this.#toast("Music uploaded. Apply room media when ready.");
       } catch (error) {
@@ -13842,7 +14097,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
           element("h1", { className: "kl-feature-page-title", text: "Music & Playlists" }),
           element("p", {
             className: "kl-feature-page-subtitle",
-            text: "A small private player for local files and direct or Catbox tracks."
+            text: "A small private player for local files, direct links, and expiring shared tracks."
           })
         ),
         this.#newPlaylistButton
@@ -13878,6 +14133,23 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         text: "Delete",
         onClick: () => void this.#deleteActivePlaylist()
       });
+      const playlistMenu = element("details", { className: "kl-music-playlist-menu" });
+      playlistMenu.append(
+        element("summary", {
+          className: "kl-text-button",
+          text: "Manage",
+          title: "Playlist actions",
+          ariaLabel: "Playlist actions"
+        }),
+        element(
+          "div",
+          { className: "kl-music-playlist-actions" },
+          renamePlaylist,
+          duplicatePlaylist,
+          clearPlaylist,
+          deletePlaylist
+        )
+      );
       this.#musicTitleInput.type = "text";
       this.#musicTitleInput.placeholder = "Track title (optional)";
       this.#musicTitleInput.maxLength = 80;
@@ -13889,7 +14161,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#musicFileInput.multiple = true;
       this.#musicFileMode.replaceChildren(
         selectOption2("local", "Keep only on this device"),
-        selectOption2("catbox", "Upload permanently to Catbox")
+        selectOption2("hosted", "Share temporarily via WaifuVault")
       );
       this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
       this.#musicQueueSearch.type = "search";
@@ -13903,14 +14175,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
           "div",
           { className: "kl-music-playlist-toolbar" },
           element("label", {}, element("span", { text: "Playlist" }), this.#playlistSelect),
-          element(
-            "div",
-            { className: "kl-music-playlist-actions" },
-            renamePlaylist,
-            duplicatePlaylist,
-            clearPlaylist,
-            deletePlaylist
-          )
+          playlistMenu
         ),
         element(
           "div",
@@ -13927,12 +14192,14 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         element("label", {}, element("span", { text: "Title" }), this.#musicTitleInput),
         element("label", {}, element("span", { text: "Direct HTTPS audio URL" }), this.#musicUrlInput),
         element("div", { className: "kl-music-add-divider", text: "or choose a file" }),
-        this.#musicFileInput,
-        this.#musicFileMode,
-        element("p", {
-          className: "kl-setting-help",
-          text: "Local files stay in this browser. Catbox files become public bearer links and are not automatically deleted."
-        }),
+        element("label", {}, element("span", { text: "Audio files" }), this.#musicFileInput),
+        element("label", {}, element("span", { text: "File handling" }), this.#musicFileMode),
+        element(
+          "p",
+          { className: "kl-setting-help" },
+          "Local files stay in this browser. WaifuVault creates public bearer links. ",
+          this.#musicShareLifetime
+        ),
         this.#musicAddStatus,
         this.#musicAddButton
       );
@@ -14057,6 +14324,8 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
     async #renderMusicPage(forceLocalRefresh = false) {
       const token = ++this.#musicRenderToken;
       const settings = this.settings.get().linkMusic;
+      const sharing = this.settings.get().linkChat.imageUploads;
+      this.#musicShareLifetime.textContent = sharing.enabled ? `Current lifetime: ${formatRetention(sharing.retention)}.` : "Sharing is currently disabled in Chat settings.";
       this.#playlistSelect.replaceChildren(
         ...settings.playlists.map((playlist2) => selectOption2(playlist2.id, `${playlist2.name} \xB7 ${playlist2.tracks.length}`))
       );
@@ -14145,7 +14414,7 @@ ${track.source}`.toLocaleLowerCase().includes(query));
           { className: "kl-music-track-copy" },
           element("strong", { text: track.title }),
           element("span", {
-            text: unavailable ? "Local file missing on this device" : track.source === "local" ? "On this device" : track.source === "catbox" ? "Catbox" : "Direct link"
+            text: unavailable ? "Local file missing on this device" : track.source === "local" ? "On this device" : track.source === "hosted" ? "WaifuVault" : "Direct link"
           })
         ),
         menu
@@ -14175,13 +14444,16 @@ ${track.source}`.toLocaleLowerCase().includes(query));
             let source;
             let locator;
             let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
-            if (this.#musicFileMode.value === "catbox") {
-              this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to Catbox\u2026`;
-              locator = await uploadMusicToCatbox(file, void 0, (progress) => {
+            if (this.#musicFileMode.value === "hosted") {
+              const uploadSettings = this.settings.get().linkChat.imageUploads;
+              const uploadConfig = uploadSettings.enabled ? normalizeWaifuVaultUploadConfig(uploadSettings) : null;
+              if (!uploadConfig) throw new Error("Enable WaifuVault sharing in Chat settings first");
+              this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to WaifuVault\u2026`;
+              locator = await uploadMusicToWaifuVault(file, uploadConfig, void 0, (progress) => {
                 const amount = progress.percent === void 0 ? "" : ` \xB7 ${progress.percent}%`;
                 this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length}${amount}`;
               });
-              source = "catbox";
+              source = "hosted";
             } else {
               this.#musicAddStatus.textContent = `Saving ${index + 1}/${files.length} on this device\u2026`;
               const localTrackIds = await this.#getLocalMusicTrackIds();
@@ -14444,7 +14716,7 @@ ${track.source}`.toLocaleLowerCase().includes(query));
       const settings = this.settings.get().linkMusic;
       const track = settings.playlists.flatMap((playlist) => playlist.tracks).find((candidate) => candidate.id === this.#activeTrackId);
       this.#musicNowTitle.textContent = track?.title ?? "Nothing playing";
-      this.#musicNowSource.textContent = track ? track.source === "local" ? "On this device" : track.source === "catbox" ? "Catbox" : "Direct link" : "Choose a track";
+      this.#musicNowSource.textContent = track ? track.source === "local" ? "On this device" : track.source === "hosted" ? "WaifuVault" : "Direct link" : "Choose a track";
       this.#musicPlayButton.replaceChildren(kikiIcon(track && !this.#audio.paused ? "pause" : "play"));
       this.#musicPlayButton.title = track && !this.#audio.paused ? "Pause" : "Play";
       this.#musicPlayButton.setAttribute("aria-label", this.#musicPlayButton.title);
@@ -15195,7 +15467,7 @@ ${track.source}`.toLocaleLowerCase().includes(query));
       this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
       this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled ? settings.linkActivities.customActivities.length > 0 ? `${settings.linkActivities.customActivities.length} custom ${settings.linkActivities.customActivities.length === 1 ? "activity" : "activities"}` : "No custom activities yet" : "Hidden \xB7 tap to enable";
       this.#homeActivitiesAction.textContent = settings.linkActivities.enabled ? "Manage activities" : "Show Custom tab";
-      const savedGalleryCount = settings.linkChat.gallery.saved.length;
+      const savedGalleryCount = settings.linkChat.gallery.saved.length + this.#deviceGalleryCount;
       this.#homeGalleryMetric.textContent = savedGalleryCount > 0 ? `${savedGalleryCount} saved ${savedGalleryCount === 1 ? "image" : "images"} \xB7 chat media included` : "Chat media plus images you add directly";
       const themeLabel = settings.ui.theme === "light" ? "Light paper" : settings.ui.theme === "system" ? "System theme" : "Dark lacquer";
       const comfortLabel = settings.ui.density === "super-compact" ? "Super compact" : settings.ui.density === "compact" ? "Compact" : "Comfortable";
@@ -15720,7 +15992,7 @@ ${track.source}`.toLocaleLowerCase().includes(query));
       body.append(media);
       return body;
     }
-    #imageCard(url) {
+    #imageCard(url, deviceLocal = false) {
       const parsed = new URL(url);
       const preview = element("div", { className: "kl-image-preview" });
       const open = element("a", { className: "kl-image-open", text: "Show original \u2197" });
@@ -15735,11 +16007,14 @@ ${track.source}`.toLocaleLowerCase().includes(query));
         element(
           "figcaption",
           { className: "kl-image-caption" },
-          element("span", { className: "kl-image-host", text: parsed.hostname }),
+          element("span", {
+            className: "kl-image-host",
+            text: deviceLocal ? "Stored on this device" : parsed.hostname
+          }),
           open
         )
       );
-      if (this.settings.get().linkChat.imagePreviews === "always") {
+      if (deviceLocal || this.settings.get().linkChat.imagePreviews === "always") {
         this.#loadRemoteImage(preview, url);
       } else {
         preview.append(
@@ -16624,7 +16899,7 @@ ${expanded}` : expanded;
         draft.linkChat.imagePreviews = this.#imagePreviewSelect.value === "always" || this.#imagePreviewSelect.value === "never" ? this.#imagePreviewSelect.value : "ask";
         draft.linkChat.imageUploads = {
           enabled: this.#imageUploadsToggle.checked,
-          retention: this.#imageUploadRetentionSelect.value === "1h" || this.#imageUploadRetentionSelect.value === "12h" || this.#imageUploadRetentionSelect.value === "72h" ? this.#imageUploadRetentionSelect.value : "24h"
+          retention: this.#imageUploadRetentionSelect.value === "1d" || this.#imageUploadRetentionSelect.value === "3d" || this.#imageUploadRetentionSelect.value === "30d" ? this.#imageUploadRetentionSelect.value : "7d"
         };
         draft.linkChat.quickActions = this.#readQuickActionEditor();
         draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
@@ -17146,8 +17421,8 @@ ${expanded}` : expanded;
       {
         section: "chat",
         title: "Chat & history",
-        detail: "Typing, temporary Catbox images, history, retention, and Quick Actions",
-        keywords: "beep messages typing indicator realtime image picture preview upload local catbox litterbox temporary privacy enter send newline save storage days clear wave hug boop template afk idle avatar profile"
+        detail: "Typing, temporary WaifuVault sharing, history, retention, and Quick Actions",
+        keywords: "beep messages typing indicator realtime image picture preview upload local waifuvault temporary privacy enter send newline save storage days clear wave hug boop template afk idle avatar profile"
       },
       {
         section: "players",
@@ -17376,6 +17651,10 @@ ${expanded}` : expanded;
     if (value < 1024) return `${value} B`;
     if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  function formatRetention(value) {
+    const days = Number.parseInt(value, 10);
+    return `${days} day${days === 1 ? "" : "s"}`;
   }
   function imageUploadErrorMessage(error) {
     const message = error instanceof Error ? error.message.trim() : "Unable to prepare this image";
@@ -18319,7 +18598,7 @@ ${expanded}` : expanded;
 
   // src/storage/indexeddb-chat-repository.ts
   var DATABASE_NAME = "kikilink";
-  var DATABASE_VERSION3 = 1;
+  var DATABASE_VERSION4 = 1;
   var MESSAGE_STORE = "messages";
   var CONVERSATION_STORE = "conversations";
   var PEER_TIME_INDEX = "peer-time";
@@ -18333,14 +18612,14 @@ ${expanded}` : expanded;
     async addMessage(message) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
-      const done = transactionDone3(transaction);
+      const done = transactionDone4(transaction);
       transaction.objectStore(MESSAGE_STORE).put(message);
       await done;
     }
     async getMessages(peerNumber, limit = 200) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readonly");
-      const done = transactionDone3(transaction);
+      const done = transactionDone4(transaction);
       const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
       const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
       const messages = [];
@@ -18354,8 +18633,8 @@ ${expanded}` : expanded;
     async getConversation(peerNumber) {
       const database = await this.#database();
       const transaction = database.transaction(CONVERSATION_STORE, "readonly");
-      const done = transactionDone3(transaction);
-      const value = await requestResult3(
+      const done = transactionDone4(transaction);
+      const value = await requestResult4(
         transaction.objectStore(CONVERSATION_STORE).get(peerNumber)
       );
       await done;
@@ -18364,8 +18643,8 @@ ${expanded}` : expanded;
     async listConversations() {
       const database = await this.#database();
       const transaction = database.transaction(CONVERSATION_STORE, "readonly");
-      const done = transactionDone3(transaction);
-      const values = await requestResult3(
+      const done = transactionDone4(transaction);
+      const values = await requestResult4(
         transaction.objectStore(CONVERSATION_STORE).getAll()
       );
       await done;
@@ -18374,14 +18653,14 @@ ${expanded}` : expanded;
     async putConversation(conversation) {
       const database = await this.#database();
       const transaction = database.transaction(CONVERSATION_STORE, "readwrite");
-      const done = transactionDone3(transaction);
+      const done = transactionDone4(transaction);
       transaction.objectStore(CONVERSATION_STORE).put(conversation);
       await done;
     }
     async deleteConversation(peerNumber) {
       const database = await this.#database();
       const transaction = database.transaction([MESSAGE_STORE, CONVERSATION_STORE], "readwrite");
-      const done = transactionDone3(transaction);
+      const done = transactionDone4(transaction);
       transaction.objectStore(CONVERSATION_STORE).delete(peerNumber);
       const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
       const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
@@ -18394,7 +18673,7 @@ ${expanded}` : expanded;
     async deleteMessagesOlderThan(timestamp) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
-      const done = transactionDone3(transaction);
+      const done = transactionDone4(transaction);
       const index = transaction.objectStore(MESSAGE_STORE).index(TIME_INDEX);
       const range = IDBKeyRange.upperBound(timestamp, true);
       let removed = 0;
@@ -18409,7 +18688,7 @@ ${expanded}` : expanded;
     async trimConversation(peerNumber, keepNewest) {
       const database = await this.#database();
       const transaction = database.transaction(MESSAGE_STORE, "readwrite");
-      const done = transactionDone3(transaction);
+      const done = transactionDone4(transaction);
       const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
       const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
       let visited = 0;
@@ -18428,7 +18707,7 @@ ${expanded}` : expanded;
     async clearAll() {
       const database = await this.#database();
       const transaction = database.transaction([MESSAGE_STORE, CONVERSATION_STORE], "readwrite");
-      const done = transactionDone3(transaction);
+      const done = transactionDone4(transaction);
       transaction.objectStore(MESSAGE_STORE).clear();
       transaction.objectStore(CONVERSATION_STORE).clear();
       await done;
@@ -18439,13 +18718,13 @@ ${expanded}` : expanded;
       this.#databasePromise = void 0;
     }
     #database() {
-      this.#databasePromise ??= openDatabase3(this.databaseName);
+      this.#databasePromise ??= openDatabase4(this.databaseName);
       return this.#databasePromise;
     }
   };
-  function openDatabase3(databaseName3) {
+  function openDatabase4(databaseName3) {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(databaseName3, DATABASE_VERSION3);
+      const request = indexedDB.open(databaseName3, DATABASE_VERSION4);
       request.onerror = () => reject(request.error ?? new Error("Unable to open KikiLink storage"));
       request.onblocked = () => reject(new Error("KikiLink storage upgrade is blocked"));
       request.onupgradeneeded = () => {
@@ -18462,13 +18741,13 @@ ${expanded}` : expanded;
       request.onsuccess = () => resolve(request.result);
     });
   }
-  function requestResult3(request) {
+  function requestResult4(request) {
     return new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("KikiLink storage request failed"));
     });
   }
-  function transactionDone3(transaction) {
+  function transactionDone4(transaction) {
     return new Promise((resolve, reject) => {
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(transaction.error ?? new Error("KikiLink transaction aborted"));
@@ -18772,7 +19051,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.22.1");
+    const app = new KikiLinkApp("0.22.2");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

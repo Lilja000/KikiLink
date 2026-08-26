@@ -26,7 +26,7 @@ const userscriptHeader = `// ==UserScript==
 // @inject-into  page
 // @sandbox      raw
 // @grant        GM_xmlhttpRequest
-// @connect      catbox.moe
+// @connect      waifuvault.moe
 // ==/UserScript==`;
 
 await rm(outDir, { recursive: true, force: true });

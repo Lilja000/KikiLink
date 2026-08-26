@@ -79,7 +79,7 @@ bounded BC account snapshot described in `ACCOUNT_DATA.md` for same-account devi
 
 Schema 14 adds only profile, AFK, temporary-upload, and the former room-badge preferences. Existing custom
 activities remain intact. The former Cloudinary upload switch is reset to off once during migration
-so it is not silently treated as consent to send files to Litterbox.
+so it is not silently treated as consent to send files to a replacement public host.
 
 Schema 15 replaces the old badge presets with one normalized draggable position and changes only the
 untouched accidental Russian AFK default to English. User-edited AFK messages remain unchanged.

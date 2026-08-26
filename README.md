@@ -11,10 +11,11 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.22.1` fixes Firefox Catbox/Litterbox uploads through Tampermonkey's permissioned network
-bridge, restores live Lobbies while already inside a room, and upgrades Music with a searchable queue,
-batch imports, upload progress, playlist and track tools, speed, mute, sleep timers, and system media
-controls. The running version remains visible as tiny translucent digits in the lower-left corner.
+Version `0.22.2` moves every hosted upload to WaifuVault, with anonymous expiring links and one
+narrow Tampermonkey connection permission. Manually added Gallery files now stay in an
+account-isolated device database without being uploaded. Music also switches to a collision-free
+responsive layout with compact playlist management. The running version remains visible as tiny
+translucent digits in the lower-left corner.
 
 ## Link Deck
 
@@ -95,8 +96,8 @@ so they can follow that same account to another device.
 - Pasted Markdown, BBCode, and color wrappers are reduced to the direct image URL before sending
 - Privacy-aware uncropped full-width image previews: ask before loading, always show, or links only
 - Image previews hide the repeated raw URL; `Show original` is the only outbound link on the card
-- Account-free temporary JPG, PNG, and WebP uploads through Catbox's Litterbox, with selectable
-  1, 12, 24, or 72 hour retention
+- Account-free temporary JPG, PNG, and WebP sharing through WaifuVault, with selectable
+  1, 3, 7, or 30 day retention and hidden source filenames
 - Local privacy preparation before upload: validate the real file signature, remove the original
   filename and embedded metadata, convert to WebP, and resize the longest edge to at most 2560 px
 - Choosing a file never starts a network request; only the explicit `Upload & send` action uploads it
@@ -136,12 +137,15 @@ so they can follow that same account to another device.
 - Applying a preset requires current room-admin rights and always preserves the current user as an admin;
   passwords and large map layouts are deliberately excluded
 - Explicit native Kick, Promote/Demote, and room Whitelist/Unwhitelist actions; Kick asks for confirmation
-- Local image preparation and temporary Litterbox upload can fill the room background field;
+- Local image preparation and temporary WaifuVault sharing can fill the room background field;
   renamed MP3/MP4 room audio up to 20 MB can fill the music field
-- A lazy all-chat gallery deduplicates direct images across saved conversations and labels Catbox/Litterbox
+- A lazy all-chat gallery deduplicates direct images across saved conversations and labels WaifuVault media
 - A visible Gallery Home card and labeled Chat button open the library without adding another main tab
-- Direct image links and privacy-prepared local uploads can be saved without sending a chat message
-- Gallery Remove hides only the local/account-scoped card; it does not delete chats or hosted files
+- Direct image links can be saved without sending a chat message; privacy-prepared local additions are
+  kept indefinitely in account-isolated IndexedDB on that device until explicitly deleted or browser
+  site data is cleared, and never require a hosting upload
+- Gallery Remove permanently deletes device-local images; removing a linked/chat card leaves its chat
+  and remote file untouched
 - Gallery cards keep full image proportions, expose only `Show original`, reopen the source chat, and
   can fill the room background field for administrators
 
@@ -150,10 +154,12 @@ so they can follow that same account to another device.
 - A lacquer-and-gold now-playing card with a searchable queue, seek bar, previous/next, shuffle,
   repeat-one/repeat-all, independent volume, mute, playback speed, and a sleep timer
 - Rename, duplicate, clear, and delete playlists; rename, reorder, open, or remove individual tracks
-- Select several local files in one pass and see live progress during sequential Catbox uploads
+- Select several local files in one pass and see live progress during sequential WaifuVault uploads
 - Browser/OS Media Session controls for play, pause, seeking, and previous/next where supported
-- Direct HTTPS tracks, local browser-only files up to 80 MB, or explicitly uploaded permanent
-  Catbox tracks with generic filenames
+- Direct HTTPS tracks, local browser-only files up to 80 MB, or explicitly shared expiring
+  WaifuVault tracks with generic filenames
+- Playlist actions live in one compact Manage menu, and the library/player switch to a single
+  scrollable column before controls can overlap on medium or narrow screens
 - Local blobs stay in an account-isolated IndexedDB on the current device; playlist metadata and
   remote URLs follow the signed-in BC account within KikiLink's bounded settings mirror
 - Missing local files are clearly marked after moving to another device instead of silently failing
@@ -246,9 +252,9 @@ KikiLink's own Beeps use Bondage Club's `ServerSendBeepMessage` path, while its 
 captures normal `AccountBeep` sends from native BC and messenger addons such as LianChat. LinkRoster
 uses the game's native Whisper and profile controls, and Custom Activities extend
 the game's native activity registry and action path. Image messages are ordinary HTTPS links, so other players
-do not need KikiLink to open them. Optional local-file upload sends a privacy-prepared WebP
-directly to Catbox's temporary Litterbox service only after `Upload & send`; it never passes through
-a KikiLink server. Profile avatars are user-supplied direct HTTPS links. No remote KikiLink server is
+do not need KikiLink to open them. Optional local-file sharing sends a privacy-prepared WebP
+directly to WaifuVault only after `Upload & send`; it never passes through a KikiLink server.
+Manually added Gallery files remain device-local. Profile avatars are user-supplied direct HTTPS links. No remote KikiLink server is
 used. Full data is stored locally under the authenticated MemberNumber; a bounded portable snapshot
 is stored in that same player's Bondage Club `ExtensionSettings` so settings, activities, profile
 preferences, notebook data, and recent chats can follow the account to another device. Presence uses

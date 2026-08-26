@@ -242,7 +242,7 @@ describe("BCAdapter", () => {
       Admin: [999],
       Whitelist: [123],
       Custom: {
-        ImageURL: "https://files.catbox.moe/old.webp",
+        ImageURL: "https://waifuvault.moe/f/old.webp",
         MusicURL: "https://cdn.example/old.mp3",
         SizeMode: 1,
       },
@@ -264,7 +264,7 @@ describe("BCAdapter", () => {
     });
 
     adapter.updateRoomCustomization({
-      imageUrl: "https://files.catbox.moe/new.webp",
+      imageUrl: "https://waifuvault.moe/f/new.webp",
       musicUrl: "https://cdn.example/new.mp3",
       sizeMode: 2,
       musicSync: true,
@@ -276,7 +276,7 @@ describe("BCAdapter", () => {
         Action: "Update",
         Room: expect.objectContaining({
           Custom: expect.objectContaining({
-            ImageURL: "https://files.catbox.moe/new.webp",
+            ImageURL: "https://waifuvault.moe/f/new.webp",
             MusicURL: "https://cdn.example/new.mp3",
             SizeMode: 2,
             MusicStart: 123_456,
@@ -341,9 +341,9 @@ describe("BCAdapter", () => {
       whitelist: [456],
       blacklist: [789],
       custom: {
-        imageUrl: "https://files.catbox.moe/moon.webp",
+        imageUrl: "https://waifuvault.moe/f/moon.webp",
         imageFilter: "",
-        musicUrl: "https://files.catbox.moe/song.mp3",
+        musicUrl: "https://waifuvault.moe/f/song.mp3",
         sizeMode: 2,
         musicSync: true,
       },

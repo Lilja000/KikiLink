@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 19,
+  schemaVersion: 20,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -43,7 +43,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     imagePreviews: "ask",
     imageUploads: {
       enabled: true,
-      retention: "24h",
+      retention: "7d",
     },
     gallery: {
       saved: [],
@@ -203,7 +203,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 19,
+    schemaVersion: 20,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -317,7 +317,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
     linkRoom: {
       presets: sanitizeRoomPresets(linkRoom.presets),
     },
-    linkMusic: sanitizeMusicSettings(linkMusic),
+    linkMusic: sanitizeMusicSettings(linkMusic, sourceSchema),
   };
 }
 
@@ -365,7 +365,10 @@ function sanitizeRoomPresets(value: unknown): KikiLinkSettings["linkRoom"]["pres
   return presets.sort((left, right) => right.savedAt - left.savedAt);
 }
 
-function sanitizeMusicSettings(value: Record<string, unknown>): KikiLinkSettings["linkMusic"] {
+function sanitizeMusicSettings(
+  value: Record<string, unknown>,
+  sourceSchema: number,
+): KikiLinkSettings["linkMusic"] {
   const playlists: KikiLinkSettings["linkMusic"]["playlists"] = [];
   const playlistIds = new Set<string>();
   let trackBudget = 100;
@@ -382,7 +385,12 @@ function sanitizeMusicSettings(value: Record<string, unknown>): KikiLinkSettings
           if (trackBudget <= 0 || !isRecord(track)) break;
           const trackId = safeLocalId(track.id);
           const title = cleanBoundedText(track.title, 80);
-          const source = track.source === "catbox" || track.source === "local" ? track.source : "url";
+          const source = track.source === "local"
+            ? "local"
+            : track.source === "hosted" ||
+                (sourceSchema < 20 && typeof track.source === "string" && track.source !== "url")
+              ? "hosted"
+              : "url";
           const locator = source === "local" ? safeLocalId(track.locator) : sanitizeAudioUrl(track.locator);
           if (!trackId || !title || !locator || trackIds.has(trackId)) continue;
           tracks.push({
@@ -425,14 +433,21 @@ function sanitizeImageUploads(
       sourceSchema < 14
         ? false
         : booleanOr(value.enabled, DEFAULT_SETTINGS.linkChat.imageUploads.enabled),
-    retention:
-      value.retention === "1h" ||
-      value.retention === "12h" ||
-      value.retention === "24h" ||
-      value.retention === "72h"
-        ? value.retention
-        : DEFAULT_SETTINGS.linkChat.imageUploads.retention,
+    retention: sanitizeHostedRetention(value.retention, sourceSchema),
   };
+}
+
+function sanitizeHostedRetention(
+  value: unknown,
+  sourceSchema: number,
+): KikiLinkSettings["linkChat"]["imageUploads"]["retention"] {
+  if (value === "1d" || value === "3d" || value === "7d" || value === "30d") return value;
+  if (sourceSchema < 20) {
+    // Preserve the closest privacy expectation when upgrading old temporary-host settings.
+    if (value === "72h") return "3d";
+    if (value === "1h" || value === "12h" || value === "24h") return "1d";
+  }
+  return DEFAULT_SETTINGS.linkChat.imageUploads.retention;
 }
 
 function sanitizeGallery(value: unknown): KikiLinkSettings["linkChat"]["gallery"] {

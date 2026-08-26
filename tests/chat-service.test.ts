@@ -148,8 +148,8 @@ describe("ChatService", () => {
       {
         direction: "incoming",
         peerNumber: 11,
-        peerName: "Catbox friend",
-        content: "https://files.catbox.moe/flower.webp",
+        peerName: "Vault friend",
+        content: "https://waifuvault.moe/f/flower.webp",
         sentAt: 100,
         includeRoom: false,
       },
@@ -159,8 +159,8 @@ describe("ChatService", () => {
       {
         direction: "outgoing",
         peerNumber: 22,
-        peerName: "Litterbox friend",
-        content: "Again https://files.catbox.moe/flower.webp and https://litter.catbox.moe/new.png",
+        peerName: "Other host friend",
+        content: "Again https://waifuvault.moe/f/flower.webp and https://images.example/new.png",
         sentAt: 200,
         includeRoom: false,
       },
@@ -169,14 +169,14 @@ describe("ChatService", () => {
 
     expect(await service.listMedia()).toMatchObject([
       {
-        url: "https://files.catbox.moe/flower.webp",
-        provider: "catbox",
+        url: "https://waifuvault.moe/f/flower.webp",
+        provider: "waifuvault",
         peerNumber: 22,
         direction: "outgoing",
       },
       {
-        url: "https://litter.catbox.moe/new.png",
-        provider: "litterbox",
+        url: "https://images.example/new.png",
+        provider: "other",
         peerNumber: 22,
       },
     ]);

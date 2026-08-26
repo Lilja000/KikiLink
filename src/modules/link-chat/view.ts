@@ -46,6 +46,10 @@ import {
   type MusicStore,
 } from "../../storage/device-music-store";
 import {
+  DeviceGalleryStore,
+  type GalleryStore,
+} from "../../storage/device-gallery-store";
+import {
   conversationDisplayName,
   galleryMediaProvider,
   type ChatMediaItem,
@@ -65,11 +69,11 @@ import {
 import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
 import {
-  LitterboxImageUploader,
-  normalizeLitterboxUploadConfig,
-  uploadLocalRoomAudio,
-  uploadMusicToCatbox,
-  type LitterboxUploadConfig,
+  WaifuVaultImageUploader,
+  normalizeWaifuVaultUploadConfig,
+  uploadRoomAudioToWaifuVault,
+  uploadMusicToWaifuVault,
+  type WaifuVaultUploadConfig,
   type LocalImageUploader,
   type PreparedLocalImage,
 } from "./image-upload";
@@ -117,9 +121,10 @@ interface ProfileTarget {
 
 interface GalleryItem {
   url: string;
-  provider: ChatMediaItem["provider"];
+  provider: ChatMediaItem["provider"] | "device";
   sortAt: number;
   saved: boolean;
+  localId?: string;
   chat?: ChatMediaItem;
 }
 
@@ -346,6 +351,7 @@ export class LinkChatView {
     text: "Add track",
   });
   readonly #musicAddStatus = element("div", { className: "kl-music-add-status" });
+  readonly #musicShareLifetime = element("span", { className: "kl-music-share-lifetime" });
   readonly #musicQueue = element("div", { className: "kl-music-queue" });
   readonly #musicQueueSearch = element("input", {
     className: "kl-search kl-music-queue-search",
@@ -661,6 +667,8 @@ export class LinkChatView {
   #imageUploadToken = 0;
   #imagePrepareToken = 0;
   #localImageError: string | undefined;
+  readonly #galleryObjectUrls = new Set<string>();
+  #deviceGalleryCount = 0;
   #activeTrackId: string | undefined;
   #musicObjectUrl: string | undefined;
   #localMusicTrackIds: Set<string> | undefined;
@@ -699,11 +707,14 @@ export class LinkChatView {
       settings,
     ),
     presence?: LinkPresenceService,
-    private readonly imageUploader: LocalImageUploader<LitterboxUploadConfig> = new LitterboxImageUploader(),
+    private readonly imageUploader: LocalImageUploader<WaifuVaultUploadConfig> = new WaifuVaultImageUploader(),
     private readonly soundStore: NotificationSoundStore = new DeviceNotificationSoundStore(
       adapter.getOwnMemberNumber(),
     ),
     private readonly musicStore: MusicStore = new DeviceMusicStore(
+      adapter.getOwnMemberNumber(),
+    ),
+    private readonly galleryStore: GalleryStore = new DeviceGalleryStore(
       adapter.getOwnMemberNumber(),
     ),
   ) {
@@ -791,11 +802,13 @@ export class LinkChatView {
     this.#clearMusicSleepTimer();
     this.#clearMediaSession();
     this.#releaseMusicObjectUrl();
+    this.#releaseGalleryObjectUrls();
     this.#roomBadge.destroy();
     this.#host.remove();
     void this.#notificationSounds.destroy();
     this.soundStore.close();
     this.musicStore.close();
+    this.galleryStore.close();
     this.#mounted = false;
   }
 
@@ -1417,6 +1430,9 @@ export class LinkChatView {
 
   #showWorkspace(view: WorkspaceView, remember = true): void {
     if (this.#workspaceView === "roster" && view !== "roster") this.#saveNotebook(false);
+    if (this.#workspaceView === "gallery" && view !== "gallery") {
+      this.#releaseGalleryObjectUrls();
+    }
     this.#workspaceView = view;
     if (remember && view !== "settings") this.#lastWorkspaceView = view;
     this.#panel.dataset.workspace = view;
@@ -1817,7 +1833,7 @@ export class LinkChatView {
     );
 
     this.#imageUploadsToggle.type = "checkbox";
-    this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary local image uploads");
+    this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary WaifuVault sharing");
     this.#imageUploadsToggle.addEventListener("change", () =>
       this.#renderImageUploadSettingsOptions(),
     );
@@ -1828,23 +1844,23 @@ export class LinkChatView {
       element("span", { className: "kl-switch-track" }),
     );
     this.#imageUploadRetentionSelect.replaceChildren(
-      selectOption("1h", "1 hour"),
-      selectOption("12h", "12 hours"),
-      selectOption("24h", "24 hours"),
-      selectOption("72h", "3 days"),
+      selectOption("1d", "1 day"),
+      selectOption("3d", "3 days"),
+      selectOption("7d", "7 days"),
+      selectOption("30d", "30 days"),
     );
-    this.#imageUploadRetentionSelect.setAttribute("aria-label", "Temporary image lifetime");
-    const litterboxLink = element("a", {
+    this.#imageUploadRetentionSelect.setAttribute("aria-label", "Shared file lifetime");
+    const waifuVaultLink = element("a", {
       className: "kl-inline-link",
-      text: "Litterbox by Catbox",
+      text: "WaifuVault",
     });
-    litterboxLink.href = "https://litterbox.catbox.moe/";
-    litterboxLink.target = "_blank";
-    litterboxLink.rel = "noopener noreferrer";
+    waifuVaultLink.href = "https://waifuvault.moe/";
+    waifuVaultLink.target = "_blank";
+    waifuVaultLink.rel = "noopener noreferrer";
     this.#imageUploadSettingsOptions.append(
       this.#settingRow(
-        "Link lifetime",
-        "The host removes the temporary file after this period.",
+        "Shared file lifetime",
+        "The host removes shared images, room audio, and hosted playlist tracks after this period.",
         this.#imageUploadRetentionSelect,
       ),
       element(
@@ -1854,9 +1870,9 @@ export class LinkChatView {
         element(
           "span",
           {},
-          "Only Upload & send makes a network request. KikiLink removes the filename and metadata, resizes to 2560 px, then sends the public file to ",
-          litterboxLink,
-          ". Catbox can see your IP and image; expiration cannot remove copies someone already saved.",
+          "Only an explicit Share or Upload action makes a network request. KikiLink hides the original filename; images are resized and stripped of metadata before the public file is sent to ",
+          waifuVaultLink,
+          ". The service hashes connection IPs. Expiration cannot remove copies another person already saved. Manual Gallery files stay on this device and are never uploaded automatically.",
         ),
       ),
     );
@@ -1865,11 +1881,11 @@ export class LinkChatView {
       { className: "kl-setting-section kl-image-upload-settings" },
       element("div", {
         className: "kl-setting-section-title",
-        text: "Temporary local images",
+        text: "Temporary file sharing",
       }),
       this.#settingRow(
-        "Upload local files",
-        "Upload through Litterbox without creating an account.",
+        "Share local files",
+        "Create expiring public links through WaifuVault without an account.",
         imageUploadsSwitch,
       ),
       this.#imageUploadSettingsOptions,
@@ -2785,7 +2801,7 @@ export class LinkChatView {
           this.#presenceAvatarUrl,
           element("span", {
             className: "kl-custom-field-help",
-            text: "Use a direct HTTPS JPG, PNG, GIF, WebP, or AVIF link from Imgur, Catbox, or another host. Other players' avatars follow your image-preview privacy setting.",
+            text: "Use a direct HTTPS JPG, PNG, GIF, WebP, or AVIF link from a trusted host. Other players' avatars follow your image-preview privacy setting.",
           }),
         ),
       ),
@@ -2994,7 +3010,7 @@ export class LinkChatView {
         { className: "kl-image-upload-note kl-image-file-privacy" },
         kikiIcon("lock"),
         element("span", {
-          text: "Nothing uploads on selection. KikiLink first removes the filename and metadata; Upload & send creates a public temporary Litterbox link.",
+          text: "Nothing uploads on selection. KikiLink removes the filename and metadata first. Chat sharing creates an expiring WaifuVault link; adding to Gallery keeps the prepared file only on this device.",
         }),
       ),
     );
@@ -3214,7 +3230,7 @@ export class LinkChatView {
     this.#imageDestination = destination;
     this.#imageDialogTitle.textContent = destination === "gallery" ? "Add to Gallery" : "Send an image";
     this.#imageDialogSubtitle.textContent = destination === "gallery"
-      ? "Save a direct link or upload a privacy-prepared local image without sending a chat."
+      ? "Save a direct link, or keep a privacy-prepared local image on this device until you delete it."
       : "A normal Beep link for everyone; an inline preview for KikiLink.";
     this.#resetLocalImage();
     this.#imageUrlInput.value = "";
@@ -3284,19 +3300,20 @@ export class LinkChatView {
 
   #renderLocalImageComposeState(): void {
     const settings = this.settings.get().linkChat.imageUploads;
-    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+    const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
+    const deviceGallery = this.#imageDestination === "gallery";
     const setupButton = this.#imageFilePanel.querySelector<HTMLButtonElement>(
       ".kl-image-upload-setup",
     );
-    setupButton?.toggleAttribute("hidden", config !== null);
-    this.#chooseImageFileButton.hidden = config === null;
+    setupButton?.toggleAttribute("hidden", deviceGallery || config !== null);
+    this.#chooseImageFileButton.hidden = !deviceGallery && config === null;
     this.#chooseImageFileButton.disabled = this.#imageUploadBusy;
     this.#chooseImageFileButton.textContent = this.#preparedLocalImage
       ? "Choose another"
       : "Choose image";
-    this.#sendImageButton.textContent = this.#imageDestination === "gallery" ? "Upload & save" : "Upload & send";
+    this.#sendImageButton.textContent = deviceGallery ? "Save on this device" : "Upload & send";
     this.#sendImageButton.disabled =
-      this.#imageUploadBusy || config === null || this.#preparedLocalImage === undefined;
+      this.#imageUploadBusy || (!deviceGallery && config === null) || this.#preparedLocalImage === undefined;
 
     if (this.#imageUploadBusy) {
       this.#localImageStatus.replaceChildren(
@@ -3304,22 +3321,26 @@ export class LinkChatView {
         element(
           "span",
           {},
-          element("strong", { text: "Uploading prepared image…" }),
-          element("small", { text: "The original local file is not being sent." }),
+          element("strong", { text: deviceGallery ? "Saving to this device…" : "Uploading prepared image…" }),
+          element("small", {
+            text: deviceGallery
+              ? "The prepared copy stays inside this browser."
+              : "The original local file is not being sent.",
+          }),
         ),
       );
       this.#localImageStatus.dataset.state = "loading";
       return;
     }
 
-    if (!config) {
+    if (!config && !deviceGallery) {
       this.#localImageStatus.replaceChildren(
         element("span", { className: "kl-image-compose-icon" }, kikiIcon("lock")),
         element(
           "span",
           {},
           element("strong", { text: "Temporary upload is off" }),
-          element("small", { text: "Enable Litterbox uploads once in Chat settings." }),
+          element("small", { text: "Enable WaifuVault sharing once in Chat settings." }),
         ),
       );
       this.#localImageStatus.dataset.state = "empty";
@@ -3367,7 +3388,7 @@ export class LinkChatView {
       element(
         "span",
         {},
-        element("strong", { text: "Prepared locally" }),
+        element("strong", { text: deviceGallery ? "Ready for permanent device storage" : "Prepared locally" }),
         element("small", {
           text: `${prepared.width} × ${prepared.height} · ${formatBytes(prepared.blob.size)} · metadata removed`,
         }),
@@ -3452,9 +3473,35 @@ export class LinkChatView {
 
   async #uploadAndSendLocalImage(): Promise<void> {
     const image = this.#preparedLocalImage;
+    if (this.#imageDestination === "gallery") {
+      if (!image || this.#imageUploadBusy) {
+        this.#renderLocalImageComposeState();
+        return;
+      }
+      this.#imageUploadBusy = true;
+      const token = ++this.#imageUploadToken;
+      this.#localImageError = undefined;
+      this.#renderLocalImageComposeState();
+      try {
+        await this.galleryStore.add({ blob: image.blob, width: image.width, height: image.height });
+        if (token !== this.#imageUploadToken) return;
+        this.#imageUploadBusy = false;
+        this.#imageDialog.close();
+        this.#resetLocalImage();
+        await this.#renderGallery();
+        this.#toast("Image saved permanently on this device. Nothing was uploaded.");
+      } catch (error) {
+        if (token !== this.#imageUploadToken) return;
+        this.#imageUploadBusy = false;
+        this.#localImageError = imageUploadErrorMessage(error);
+        this.#renderLocalImageComposeState();
+        this.#toast(this.#localImageError, "error");
+      }
+      return;
+    }
     const uploadSettings = this.settings.get().linkChat.imageUploads;
     const config = uploadSettings.enabled
-      ? normalizeLitterboxUploadConfig(uploadSettings)
+      ? normalizeWaifuVaultUploadConfig(uploadSettings)
       : null;
     if (!image || !config || this.#imageUploadBusy) {
       this.#renderLocalImageComposeState();
@@ -3469,16 +3516,6 @@ export class LinkChatView {
       const url = await this.imageUploader.upload(image, config);
       if (token !== this.#imageUploadToken) return;
       this.#imageUrlInput.value = url;
-      if (this.#imageDestination === "gallery") {
-        this.#imageUploadBusy = false;
-        if (!this.#saveGalleryImage(url)) {
-          this.#setImageSourceMode("link");
-          return;
-        }
-        this.#toast(`Private details removed; temporary ${config.retention} image saved to Gallery.`);
-        this.#imageDialog.close();
-        return;
-      }
       const sent = await this.#sendContent(url, false);
       if (token !== this.#imageUploadToken) return;
       this.#imageUploadBusy = false;
@@ -3487,7 +3524,7 @@ export class LinkChatView {
         this.#toast("Upload finished. The direct link is kept here so it is not lost.", "error");
         return;
       }
-      this.#toast(`Private details removed; temporary ${config.retention} link sent.`);
+      this.#toast(`Private details removed; ${formatRetention(config.retention)} link sent.`);
       this.#imageDialog.close();
     } catch (error) {
       if (token !== this.#imageUploadToken) return;
@@ -3599,8 +3636,8 @@ export class LinkChatView {
         icon: "music",
         category: "Destination",
         title: "Music & Playlists",
-        detail: `${settings.linkMusic.playlists.length} playlists · local files and Catbox`,
-        keywords: "music player playlist songs tracks audio catbox local seek shuffle repeat spotify room sync",
+        detail: `${settings.linkMusic.playlists.length} playlists · local and shared files`,
+        keywords: "music player playlist songs tracks audio hosted local seek shuffle repeat room sync",
         priority: 71,
         action: { kind: "workspace", target: "music" },
       },
@@ -3611,7 +3648,7 @@ export class LinkChatView {
         category: "Destination",
         title: "Media Gallery",
         detail: "Images you add directly and media from saved LinkChat conversations",
-        keywords: "gallery library add upload images pictures catbox litterbox media all chats",
+        keywords: "gallery library add upload images pictures device waifuvault media all chats",
         priority: 70,
         action: { kind: "workspace", target: "gallery" },
       },
@@ -3907,14 +3944,19 @@ export class LinkChatView {
 
   async #renderGallery(): Promise<void> {
     const token = ++this.#galleryRenderToken;
+    this.#releaseGalleryObjectUrls();
     this.#galleryGrid.setAttribute("aria-busy", "true");
     this.#galleryGrid.replaceChildren(
       element("div", { className: "kl-gallery-empty", text: "Collecting images from LinkChat…" }),
     );
     try {
       const settings = this.settings.get();
-      const chatItems = await this.service.listMedia(400);
+      const [chatItems, localImages] = await Promise.all([
+        this.service.listMedia(400),
+        this.galleryStore.list().catch(() => []),
+      ]);
       if (token !== this.#galleryRenderToken) return;
+      this.#deviceGalleryCount = localImages.length;
       const hidden = new Set(settings.linkChat.gallery.hiddenUrls);
       const itemsByUrl = new Map<string, GalleryItem>();
       for (const saved of settings.linkChat.gallery.saved) {
@@ -3937,13 +3979,25 @@ export class LinkChatView {
           chat,
         });
       }
-      const items = [...itemsByUrl.values()]
+      const localItems = localImages.map((image): GalleryItem => {
+        const url = URL.createObjectURL(image.blob);
+        this.#galleryObjectUrls.add(url);
+        return {
+          url,
+          provider: "device",
+          sortAt: image.createdAt,
+          saved: true,
+          localId: image.id,
+        };
+      });
+      const items = [...localItems, ...itemsByUrl.values()]
         .sort((left, right) => right.sortAt - left.sortAt)
         .slice(0, 400);
       const savedCount = items.filter((item) => item.saved).length;
       this.#gallerySubtitle.textContent = items.length
-        ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` · ${savedCount} added directly` : ""}.`
-        : "Images from saved chats and anything you add directly will appear here.";
+        ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` · ${savedCount} added directly` : ""}. Device files stay until you delete them.`
+        : "Images from saved chats and anything you add directly will appear here. Device files are kept until you delete them.";
+      this.#renderHomeStatus();
       if (items.length === 0) {
         this.#galleryGrid.replaceChildren(
           element(
@@ -3999,12 +4053,10 @@ export class LinkChatView {
         element("button", {
           className: "kl-text-button kl-text-button--primary",
           type: "button",
-          text: "Use as room background",
-          onClick: () => {
-            this.#roomImageUrl.value = item.url;
-            void this.#openRoomTools(false);
-            this.#toast("Image selected. Review it, then apply the room media.");
-          },
+          text: item.localId ? "Share & use as background" : "Use as room background",
+          onClick: () => item.localId
+            ? void this.#shareLocalGalleryImage(item)
+            : this.#selectGalleryRoomBackground(item.url),
         }),
       );
     }
@@ -4014,26 +4066,35 @@ export class LinkChatView {
         type: "button",
         text: "Remove",
         ariaLabel: "Remove image from this Gallery",
-        onClick: () => this.#removeGalleryImage(item),
+        onClick: () => void this.#removeGalleryImage(item),
       }),
     );
     const card = element(
       "article",
       { className: "kl-gallery-item" },
-      this.#imageCard(item.url),
+      this.#imageCard(item.url, item.localId !== undefined),
       element(
         "div",
         { className: "kl-gallery-meta" },
-        element("strong", { text: item.provider === "other" ? "Image" : item.provider }),
+        element("strong", {
+          text: item.provider === "device"
+            ? "On this device"
+            : item.provider === "waifuvault"
+              ? "WaifuVault"
+              : "Image",
+        }),
         element("span", {
           text: item.chat
             ? `${item.chat.direction === "outgoing" ? "Sent to" : "From"} ${item.chat.peerName} · ${formatMessageTime(item.chat.sentAt)}`
-            : `Added to Gallery · ${formatMessageTime(item.sortAt)}`,
+            : item.localId
+              ? `Stored permanently on this device · ${formatMessageTime(item.sortAt)}`
+              : `Added to Gallery · ${formatMessageTime(item.sortAt)}`,
         }),
       ),
       actions,
     );
-    card.dataset.galleryUrl = item.url;
+    if (!item.localId) card.dataset.galleryUrl = item.url;
+    else card.dataset.galleryId = item.localId;
     card.dataset.gallerySource = item.saved ? "library" : "chat";
     return card;
   }
@@ -4058,7 +4119,18 @@ export class LinkChatView {
     return true;
   }
 
-  #removeGalleryImage(item: GalleryItem): void {
+  async #removeGalleryImage(item: GalleryItem): Promise<void> {
+    if (item.localId) {
+      if (!window.confirm("Delete this image permanently from this device Gallery?")) return;
+      try {
+        await this.galleryStore.delete(item.localId);
+        await this.#renderGallery();
+        this.#toast("Image permanently deleted from this device Gallery.");
+      } catch (error) {
+        this.#toast(error instanceof Error ? error.message : "The local image could not be deleted.", "error");
+      }
+      return;
+    }
     if (
       !window.confirm(
         "Remove this image from your KikiLink Gallery? The original chat message and hosted file will not be deleted.",
@@ -4078,6 +4150,46 @@ export class LinkChatView {
     this.#renderHomeStatus();
     void this.#renderGallery();
     this.#toast("Image removed from this Gallery. Its chat message was left untouched.");
+  }
+
+  #selectGalleryRoomBackground(url: string): void {
+    this.#roomImageUrl.value = url;
+    void this.#openRoomTools(false);
+    this.#toast("Image selected. Review it, then apply the room media.");
+  }
+
+  async #shareLocalGalleryImage(item: GalleryItem): Promise<void> {
+    if (!item.localId) return;
+    const uploadSettings = this.settings.get().linkChat.imageUploads;
+    const config = uploadSettings.enabled
+      ? normalizeWaifuVaultUploadConfig(uploadSettings)
+      : null;
+    if (!config) {
+      this.#toast("Enable shared uploads in Chat settings first.", "error");
+      this.#openSettings("chat");
+      return;
+    }
+    try {
+      const stored = await this.galleryStore.get(item.localId);
+      if (!stored) throw new Error("This device image is no longer available");
+      this.#toast(`Sharing the image for ${formatRetention(config.retention)}…`);
+      const url = await this.imageUploader.upload({
+        blob: stored.blob,
+        width: stored.width,
+        height: stored.height,
+        sourceBytes: stored.blob.size,
+      }, config);
+      this.#selectGalleryRoomBackground(url);
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "The image could not be shared.", "error");
+    }
+  }
+
+  #releaseGalleryObjectUrls(): void {
+    if (typeof URL.revokeObjectURL === "function") {
+      for (const url of this.#galleryObjectUrls) URL.revokeObjectURL(url);
+    }
+    this.#galleryObjectUrls.clear();
   }
 
   #buildRoomPage(): void {
@@ -4211,7 +4323,7 @@ export class LinkChatView {
       this.#roomPlaylistSyncStatus,
       element("p", {
         className: "kl-room-media-note",
-        text: "Uploaded backgrounds and music use your temporary Litterbox lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use permanent HTTPS links.",
+        text: "Shared backgrounds and music use your WaifuVault lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use a durable HTTPS link you control.",
       }),
       this.#roomSaveButton,
     );
@@ -4718,7 +4830,7 @@ export class LinkChatView {
     this.#roomImageFileInput.value = "";
     if (!file) return;
     const settings = this.settings.get().linkChat.imageUploads;
-    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+    const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
     if (!config) {
       this.#toast("Enable temporary local image uploads in Chat settings first.", "error");
       this.#openSettings("chat");
@@ -4745,7 +4857,7 @@ export class LinkChatView {
     this.#roomMusicFileInput.value = "";
     if (!file) return;
     const settings = this.settings.get().linkChat.imageUploads;
-    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+    const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
     if (!config) {
       this.#toast("Enable temporary local uploads in Chat settings first.", "error");
       this.#openSettings("chat");
@@ -4753,7 +4865,7 @@ export class LinkChatView {
     }
     try {
       this.#roomAdminStatus.textContent = "Uploading temporary room music…";
-      this.#roomMusicUrl.value = await uploadLocalRoomAudio(file, config);
+      this.#roomMusicUrl.value = await uploadRoomAudioToWaifuVault(file, config);
       await this.#renderRoomTools(false);
       this.#toast("Music uploaded. Apply room media when ready.");
     } catch (error) {
@@ -4776,7 +4888,7 @@ export class LinkChatView {
         element("h1", { className: "kl-feature-page-title", text: "Music & Playlists" }),
         element("p", {
           className: "kl-feature-page-subtitle",
-          text: "A small private player for local files and direct or Catbox tracks.",
+          text: "A small private player for local files, direct links, and expiring shared tracks.",
         }),
       ),
       this.#newPlaylistButton,
@@ -4813,6 +4925,23 @@ export class LinkChatView {
       text: "Delete",
       onClick: () => void this.#deleteActivePlaylist(),
     });
+    const playlistMenu = element("details", { className: "kl-music-playlist-menu" });
+    playlistMenu.append(
+      element("summary", {
+        className: "kl-text-button",
+        text: "Manage",
+        title: "Playlist actions",
+        ariaLabel: "Playlist actions",
+      }),
+      element(
+        "div",
+        { className: "kl-music-playlist-actions" },
+        renamePlaylist,
+        duplicatePlaylist,
+        clearPlaylist,
+        deletePlaylist,
+      ),
+    );
 
     this.#musicTitleInput.type = "text";
     this.#musicTitleInput.placeholder = "Track title (optional)";
@@ -4825,7 +4954,7 @@ export class LinkChatView {
     this.#musicFileInput.multiple = true;
     this.#musicFileMode.replaceChildren(
       selectOption("local", "Keep only on this device"),
-      selectOption("catbox", "Upload permanently to Catbox"),
+      selectOption("hosted", "Share temporarily via WaifuVault"),
     );
     this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
     this.#musicQueueSearch.type = "search";
@@ -4840,14 +4969,7 @@ export class LinkChatView {
         "div",
         { className: "kl-music-playlist-toolbar" },
         element("label", {}, element("span", { text: "Playlist" }), this.#playlistSelect),
-        element(
-          "div",
-          { className: "kl-music-playlist-actions" },
-          renamePlaylist,
-          duplicatePlaylist,
-          clearPlaylist,
-          deletePlaylist,
-        ),
+        playlistMenu,
       ),
       element(
         "div",
@@ -4864,12 +4986,14 @@ export class LinkChatView {
       element("label", {}, element("span", { text: "Title" }), this.#musicTitleInput),
       element("label", {}, element("span", { text: "Direct HTTPS audio URL" }), this.#musicUrlInput),
       element("div", { className: "kl-music-add-divider", text: "or choose a file" }),
-      this.#musicFileInput,
-      this.#musicFileMode,
-      element("p", {
-        className: "kl-setting-help",
-        text: "Local files stay in this browser. Catbox files become public bearer links and are not automatically deleted.",
-      }),
+      element("label", {}, element("span", { text: "Audio files" }), this.#musicFileInput),
+      element("label", {}, element("span", { text: "File handling" }), this.#musicFileMode),
+      element(
+        "p",
+        { className: "kl-setting-help" },
+        "Local files stay in this browser. WaifuVault creates public bearer links. ",
+        this.#musicShareLifetime,
+      ),
       this.#musicAddStatus,
       this.#musicAddButton,
     );
@@ -4999,6 +5123,10 @@ export class LinkChatView {
   async #renderMusicPage(forceLocalRefresh = false): Promise<void> {
     const token = ++this.#musicRenderToken;
     const settings = this.settings.get().linkMusic;
+    const sharing = this.settings.get().linkChat.imageUploads;
+    this.#musicShareLifetime.textContent = sharing.enabled
+      ? `Current lifetime: ${formatRetention(sharing.retention)}.`
+      : "Sharing is currently disabled in Chat settings.";
     this.#playlistSelect.replaceChildren(
       ...settings.playlists.map((playlist) => selectOption(playlist.id, `${playlist.name} · ${playlist.tracks.length}`)),
     );
@@ -5099,8 +5227,8 @@ export class LinkChatView {
             ? "Local file missing on this device"
             : track.source === "local"
               ? "On this device"
-              : track.source === "catbox"
-                ? "Catbox"
+              : track.source === "hosted"
+                ? "WaifuVault"
                 : "Direct link",
         }),
       ),
@@ -5132,13 +5260,18 @@ export class LinkChatView {
           let source: MusicTrack["source"];
           let locator: string;
           let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
-          if (this.#musicFileMode.value === "catbox") {
-            this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to Catbox…`;
-            locator = await uploadMusicToCatbox(file, undefined, (progress) => {
+          if (this.#musicFileMode.value === "hosted") {
+            const uploadSettings = this.settings.get().linkChat.imageUploads;
+            const uploadConfig = uploadSettings.enabled
+              ? normalizeWaifuVaultUploadConfig(uploadSettings)
+              : null;
+            if (!uploadConfig) throw new Error("Enable WaifuVault sharing in Chat settings first");
+            this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to WaifuVault…`;
+            locator = await uploadMusicToWaifuVault(file, uploadConfig, undefined, (progress) => {
               const amount = progress.percent === undefined ? "" : ` · ${progress.percent}%`;
               this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length}${amount}`;
             });
-            source = "catbox";
+            source = "hosted";
           } else {
             this.#musicAddStatus.textContent = `Saving ${index + 1}/${files.length} on this device…`;
             const localTrackIds = await this.#getLocalMusicTrackIds();
@@ -5425,8 +5558,8 @@ export class LinkChatView {
     this.#musicNowSource.textContent = track
       ? track.source === "local"
         ? "On this device"
-        : track.source === "catbox"
-          ? "Catbox"
+        : track.source === "hosted"
+          ? "WaifuVault"
           : "Direct link"
       : "Choose a track";
     this.#musicPlayButton.replaceChildren(kikiIcon(track && !this.#audio.paused ? "pause" : "play"));
@@ -6316,7 +6449,7 @@ export class LinkChatView {
       ? "Manage activities"
       : "Show Custom tab";
 
-    const savedGalleryCount = settings.linkChat.gallery.saved.length;
+    const savedGalleryCount = settings.linkChat.gallery.saved.length + this.#deviceGalleryCount;
     this.#homeGalleryMetric.textContent = savedGalleryCount > 0
       ? `${savedGalleryCount} saved ${savedGalleryCount === 1 ? "image" : "images"} · chat media included`
       : "Chat media plus images you add directly";
@@ -6920,7 +7053,7 @@ export class LinkChatView {
     return body;
   }
 
-  #imageCard(url: string): HTMLElement {
+  #imageCard(url: string, deviceLocal = false): HTMLElement {
     const parsed = new URL(url);
     const preview = element("div", { className: "kl-image-preview" });
     const open = element("a", { className: "kl-image-open", text: "Show original ↗" });
@@ -6935,11 +7068,14 @@ export class LinkChatView {
       element(
         "figcaption",
         { className: "kl-image-caption" },
-        element("span", { className: "kl-image-host", text: parsed.hostname }),
+        element("span", {
+          className: "kl-image-host",
+          text: deviceLocal ? "Stored on this device" : parsed.hostname,
+        }),
         open,
       ),
     );
-    if (this.settings.get().linkChat.imagePreviews === "always") {
+    if (deviceLocal || this.settings.get().linkChat.imagePreviews === "always") {
       this.#loadRemoteImage(preview, url);
     } else {
       preview.append(
@@ -7964,11 +8100,11 @@ export class LinkChatView {
       draft.linkChat.imageUploads = {
         enabled: this.#imageUploadsToggle.checked,
         retention:
-          this.#imageUploadRetentionSelect.value === "1h" ||
-          this.#imageUploadRetentionSelect.value === "12h" ||
-          this.#imageUploadRetentionSelect.value === "72h"
+          this.#imageUploadRetentionSelect.value === "1d" ||
+          this.#imageUploadRetentionSelect.value === "3d" ||
+          this.#imageUploadRetentionSelect.value === "30d"
             ? this.#imageUploadRetentionSelect.value
-            : "24h",
+            : "7d",
       };
       draft.linkChat.quickActions = this.#readQuickActionEditor();
       draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
@@ -8580,8 +8716,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "chat",
       title: "Chat & history",
-      detail: "Typing, temporary Catbox images, history, retention, and Quick Actions",
-      keywords: "beep messages typing indicator realtime image picture preview upload local catbox litterbox temporary privacy enter send newline save storage days clear wave hug boop template afk idle avatar profile",
+      detail: "Typing, temporary WaifuVault sharing, history, retention, and Quick Actions",
+      keywords: "beep messages typing indicator realtime image picture preview upload local waifuvault temporary privacy enter send newline save storage days clear wave hug boop template afk idle avatar profile",
     },
     {
       section: "players",
@@ -8870,6 +9006,11 @@ function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatRetention(value: WaifuVaultUploadConfig["retention"]): string {
+  const days = Number.parseInt(value, 10);
+  return `${days} day${days === 1 ? "" : "s"}`;
 }
 
 function imageUploadErrorMessage(error: unknown): string {

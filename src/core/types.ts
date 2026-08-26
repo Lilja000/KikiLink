@@ -23,7 +23,7 @@ export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
 export type PresenceState = PresenceStatus | "unknown";
 export type PresenceSource = "kikilink" | "room" | "friend-list" | "unknown";
 export type ImagePreviewPreference = "ask" | "always" | "never";
-export type ImageUploadRetention = "1h" | "12h" | "24h" | "72h";
+export type ImageUploadRetention = "1d" | "3d" | "7d" | "30d";
 export type ReactionTrigger =
   | "beep-received"
   | "room-join"
@@ -34,7 +34,7 @@ export type ReactionAction = "notice" | "room-emote";
 export type NotificationSoundPreset = "chime" | "sparkle" | "pop";
 export type NotificationSoundChoice = NotificationSoundPreset | `custom:${string}`;
 export type LinkNotificationKind = "chat" | "friend-online" | "room-join";
-export type MusicTrackSource = "url" | "catbox" | "local";
+export type MusicTrackSource = "url" | "hosted" | "local";
 export type MusicRepeatMode = "off" | "all" | "one";
 
 export interface RoomPresetData {
@@ -253,7 +253,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 19;
+  schemaVersion: 20;
   ui: {
     accent: string;
     theme: ThemePreference;

@@ -4,11 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CloudinaryImageUploader,
   detectLocalImageType,
-  LitterboxImageUploader,
+  WaifuVaultImageUploader,
   normalizeCloudinaryUploadConfig,
-  normalizeLitterboxUploadConfig,
-  uploadLocalRoomAudio,
-  uploadMusicToCatbox,
+  normalizeWaifuVaultUploadConfig,
+  uploadRoomAudioToWaifuVault,
+  uploadMusicToWaifuVault,
   validateLocalImageFile,
   type PreparedLocalImage,
 } from "../src/modules/link-chat/image-upload";
@@ -57,18 +57,18 @@ describe("local image uploads", () => {
     ).toBeNull();
   });
 
-  it("accepts only supported temporary Litterbox lifetimes", () => {
-    expect(normalizeLitterboxUploadConfig({ retention: "1h" })).toEqual({ retention: "1h" });
-    expect(normalizeLitterboxUploadConfig({ retention: "24h" })).toEqual({ retention: "24h" });
-    expect(normalizeLitterboxUploadConfig({ retention: "7d" })).toBeNull();
-    expect(normalizeLitterboxUploadConfig({ retention: 24 })).toBeNull();
+  it("accepts only supported WaifuVault lifetimes", () => {
+    expect(normalizeWaifuVaultUploadConfig({ retention: "1d" })).toEqual({ retention: "1d" });
+    expect(normalizeWaifuVaultUploadConfig({ retention: "30d" })).toEqual({ retention: "30d" });
+    expect(normalizeWaifuVaultUploadConfig({ retention: "12h" })).toBeNull();
+    expect(normalizeWaifuVaultUploadConfig({ retention: 7 })).toBeNull();
   });
 
-  it("uploads a prepared generic WebP to Litterbox with an explicit retention", async () => {
+  it("uploads a prepared generic WebP to WaifuVault with an explicit retention", async () => {
     const request = vi.fn<typeof fetch>(async () =>
-      new Response("  https://litter.catbox.moe/abc_123.webp\n", { status: 200 }),
+      new Response(waifuResponse("https://waifuvault.moe/f/abc_123.webp"), { status: 200 }),
     );
-    const uploader = new LitterboxImageUploader(request as typeof fetch);
+    const uploader = new WaifuVaultImageUploader(request as typeof fetch);
     const image: PreparedLocalImage = {
       blob: new Blob([bytes(1, 2, 3)], { type: "image/webp" }),
       width: 640,
@@ -76,28 +76,26 @@ describe("local image uploads", () => {
       sourceBytes: 1234,
     };
 
-    await expect(uploader.upload(image, { retention: "24h" })).resolves.toBe(
-      "https://litter.catbox.moe/abc_123.webp",
+    await expect(uploader.upload(image, { retention: "7d" })).resolves.toBe(
+      "https://waifuvault.moe/f/abc_123.webp",
     );
 
     expect(request).toHaveBeenCalledOnce();
     const [endpoint, options] = request.mock.calls[0] ?? [];
-    expect(endpoint).toBe("https://litterbox.catbox.moe/resources/internals/api.php");
+    expect(endpoint).toBe("https://waifuvault.moe/rest?expires=7d&hide_filename=true");
     expect(options).toMatchObject({
-      method: "POST",
+      method: "PUT",
       credentials: "omit",
       referrerPolicy: "no-referrer",
     });
     const form = options?.body as FormData;
-    expect(form.get("reqtype")).toBe("fileupload");
-    expect(form.get("time")).toBe("24h");
-    const uploaded = form.get("fileToUpload");
+    const uploaded = form.get("file");
     expect(uploaded).toBeInstanceOf(File);
     expect((uploaded as File).name).toBe("kikilink-image.webp");
     expect((uploaded as File).type).toBe("image/webp");
   });
 
-  it("rejects Litterbox responses outside the exact temporary WebP host and shape", async () => {
+  it("rejects WaifuVault responses outside the exact direct-file host and shape", async () => {
     const image: PreparedLocalImage = {
       blob: new Blob([bytes(1)], { type: "image/webp" }),
       width: 1,
@@ -105,16 +103,17 @@ describe("local image uploads", () => {
       sourceBytes: 1,
     };
 
-    for (const responseUrl of [
-      "https://files.catbox.moe/photo.webp",
-      "https://litter.catbox.moe/photo.png",
-      "https://litter.catbox.moe/folder/photo.webp",
-      "https://litter.catbox.moe/photo.webp?tracking=1",
+    for (const responseBody of [
+      waifuResponse("https://evil.example/f/photo.webp"),
+      waifuResponse("https://waifuvault.moe/f/photo.png"),
+      waifuResponse("https://waifuvault.moe/f/photo.webp?tracking=1"),
+      JSON.stringify({ url: "https://waifuvault.moe/f/photo.webp" }),
+      "not json",
     ]) {
-      const uploader = new LitterboxImageUploader(
-        vi.fn<typeof fetch>(async () => new Response(responseUrl, { status: 200 })) as typeof fetch,
+      const uploader = new WaifuVaultImageUploader(
+        vi.fn<typeof fetch>(async () => new Response(responseBody, { status: 200 })) as typeof fetch,
       );
-      await expect(uploader.upload(image, { retention: "12h" })).rejects.toThrow(
+      await expect(uploader.upload(image, { retention: "3d" })).rejects.toThrow(
         "unexpected link",
       );
     }
@@ -122,48 +121,52 @@ describe("local image uploads", () => {
 
   it("uploads renamed room music to an exact temporary audio URL", async () => {
     const request = vi.fn<typeof fetch>(async () =>
-      new Response("https://litter.catbox.moe/room_song.mp3\n", { status: 200 }),
+      new Response(waifuResponse("https://waifuvault.moe/f/room_song.mp3"), { status: 200 }),
     );
     const file = new File([bytes(1, 2, 3)], "private-scene-name.mp3", {
       type: "audio/mpeg",
     });
 
-    await expect(uploadLocalRoomAudio(file, { retention: "72h" }, request)).resolves.toBe(
-      "https://litter.catbox.moe/room_song.mp3",
+    await expect(uploadRoomAudioToWaifuVault(file, { retention: "30d" }, request)).resolves.toBe(
+      "https://waifuvault.moe/f/room_song.mp3",
     );
     const form = request.mock.calls[0]?.[1]?.body as FormData;
-    const uploaded = form.get("fileToUpload") as File;
+    const uploaded = form.get("file") as File;
     expect(uploaded.name).toBe("kikilink-room-music.mp3");
-    expect(form.get("time")).toBe("72h");
+    expect(request.mock.calls[0]?.[0]).toBe(
+      "https://waifuvault.moe/rest?expires=30d&hide_filename=true",
+    );
   });
 
   it("matches Bondage Club's MP3/MP4 room-music allowlist", async () => {
     const request = vi.fn<typeof fetch>();
     await expect(
-      uploadLocalRoomAudio(
+      uploadRoomAudioToWaifuVault(
         new File([bytes(1, 2, 3)], "unsupported.ogg", { type: "audio/ogg" }),
-        { retention: "1h" },
+        { retention: "1d" },
         request as typeof fetch,
       ),
     ).rejects.toThrow("MP3 or MP4");
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("uploads a generically named permanent playlist track to Catbox", async () => {
+  it("uploads a generically named expiring playlist track to WaifuVault", async () => {
     const request = vi.fn<typeof fetch>(async () =>
-      new Response("https://files.catbox.moe/track_123.ogg\n", { status: 200 }),
+      new Response(waifuResponse("https://waifuvault.moe/f/track_123.ogg"), { status: 200 }),
     );
     const file = new File([bytes(1, 2, 3)], "private title.ogg", { type: "audio/ogg" });
 
-    await expect(uploadMusicToCatbox(file, request)).resolves.toBe(
-      "https://files.catbox.moe/track_123.ogg",
+    await expect(uploadMusicToWaifuVault(file, { retention: "7d" }, request)).resolves.toBe(
+      "https://waifuvault.moe/f/track_123.ogg",
     );
-    expect(request.mock.calls[0]?.[0]).toBe("https://catbox.moe/user/api.php");
+    expect(request.mock.calls[0]?.[0]).toBe(
+      "https://waifuvault.moe/rest?expires=7d&hide_filename=true",
+    );
     const form = request.mock.calls[0]?.[1]?.body as FormData;
-    expect((form.get("fileToUpload") as File).name).toBe("kikilink-track.ogg");
+    expect((form.get("file") as File).name).toBe("kikilink-track.ogg");
   });
 
-  it("uses Tampermonkey's background request for Catbox and reports upload progress", async () => {
+  it("uses Tampermonkey's background request for WaifuVault and reports upload progress", async () => {
     const progress = vi.fn();
     let details: KikiLinkGmXhrDetails | undefined;
     globalThis.GM_xmlhttpRequest = vi.fn((requestDetails: KikiLinkGmXhrDetails) => {
@@ -172,23 +175,23 @@ describe("local image uploads", () => {
         requestDetails.onprogress?.({ loaded: 50, total: 100, lengthComputable: true });
         requestDetails.onload({
           status: 200,
-          responseText: "https://files.catbox.moe/firefox_track.mp3\n",
+          responseText: waifuResponse("https://waifuvault.moe/f/firefox_track.mp3"),
         });
       });
       return { abort: vi.fn() };
     });
     const file = new File([bytes(1, 2, 3)], "private title.mp3", { type: "audio/mpeg" });
 
-    await expect(uploadMusicToCatbox(file, undefined, progress)).resolves.toBe(
-      "https://files.catbox.moe/firefox_track.mp3",
+    await expect(uploadMusicToWaifuVault(file, { retention: "3d" }, undefined, progress)).resolves.toBe(
+      "https://waifuvault.moe/f/firefox_track.mp3",
     );
     expect(details).toMatchObject({
-      method: "POST",
-      url: "https://catbox.moe/user/api.php",
+      method: "PUT",
+      url: "https://waifuvault.moe/rest?expires=3d&hide_filename=true",
       anonymous: true,
       timeout: 300_000,
     });
-    expect((details?.data as FormData).get("reqtype")).toBe("fileupload");
+    expect((details?.data as FormData).get("file")).toBeInstanceOf(File);
     expect(progress).toHaveBeenCalledWith({ loaded: 50, total: 100, percent: 50 });
   });
 
@@ -258,4 +261,13 @@ describe("local image uploads", () => {
 
 function bytes(...values: number[]): ArrayBuffer {
   return Uint8Array.from(values).buffer;
+}
+
+function waifuResponse(url: string): string {
+  return JSON.stringify({
+    url,
+    token: "delete-token",
+    retentionPeriod: Date.now() + 86_400_000,
+    options: { protected: false, oneTimeDownload: false, hideFilename: true },
+  });
 }
