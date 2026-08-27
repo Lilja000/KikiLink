@@ -1,6 +1,4 @@
 declare global {
-  var unsafeWindow: Window & typeof globalThis;
-
   interface BCPlayer {
     ID?: number;
     MemberNumber: number;

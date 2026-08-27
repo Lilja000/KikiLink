@@ -11,7 +11,6 @@ import type {
 } from "../core/types";
 import type { EventBus } from "../core/event-bus";
 import { cleanBeepMessageContent } from "./message-content";
-import { getBCPageWindow } from "./page-context";
 
 const READY_POLL_MS = 400;
 const COMPATIBILITY_HOOK_RETRY_MS = 500;
@@ -24,11 +23,6 @@ const KIKILINK_BEEP_TYPE = "KikiLink";
 const KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
 const MAX_PROTOCOL_PAYLOAD = 700;
 const CUSTOM_ACTIVITY_HOOK_COUNT = 6;
-const CRITICAL_CUSTOM_ACTIVITY_HOOKS = [
-  "ActivityDictionaryText",
-  "ActivityRun",
-  "ElementButton.CreateForActivity",
-] as const;
 const CHARACTER_OVERLAY_HOOK_NAME = "ChatRoomDrawCharacterStatusIcons";
 
 interface RecentIncoming {
@@ -45,16 +39,7 @@ interface RecentOutgoing {
 
 type ResilientHook = (args: any[], next: (args: any[]) => any) => any;
 
-interface DirectHookRegistration {
-  isCurrent(): boolean;
-  unhook(): void;
-}
-
-/**
- * The same critical hook is deliberately present in ModSDK and in a small live outer guard. When
- * the guard delegates into ModSDK, skip the duplicate KikiLink invocation while preserving every
- * other addon and the native function in that chain.
- */
+/** Avoid processing an accidental recursive call to the same integration boundary twice. */
 function nonReentrantHook(hook: ResilientHook): ResilientHook {
   let active = false;
   return (args, next) => {
@@ -148,8 +133,6 @@ export class BCAdapter {
   readonly #customActivityIntegrations = new Set<BCCustomActivityIntegration>();
   readonly #installedActivityHooks = new Set<string>();
   readonly #installedOutgoingHooks = new Set<string>();
-  readonly #resilientHooks = new Map<string, ResilientHook>();
-  readonly #directHookRegistrations = new Map<string, DirectHookRegistration>();
   #modApi: ModSDKModAPI | undefined;
   #socket: BCServerSocket | undefined;
   #socketRebindTimer: ReturnType<typeof setInterval> | undefined;
@@ -237,8 +220,6 @@ export class BCAdapter {
     this.#roomMessageHookInstalled = false;
     this.#installedActivityHooks.clear();
     this.#installedOutgoingHooks.clear();
-    this.#resilientHooks.clear();
-    this.#directHookRegistrations.clear();
     this.#characterOverlayHookNames.clear();
     this.#overlayRenderSignatures.clear();
     this.#overlayRenderResetQueued = false;
@@ -854,7 +835,7 @@ export class BCAdapter {
       this.#modApi = modApi;
     } catch (error) {
       this.#modApi = undefined;
-      this.#logger.warn("ModSDK hooks unavailable; direct Bondage Club hooks remain active", error);
+      this.#logger.warn("ModSDK registration unavailable; shared game hooks stay untouched", error);
     }
     this.#compatibilityHooksInitialized = true;
 
@@ -901,11 +882,7 @@ export class BCAdapter {
   #ensureOutgoingBeepHooks(): void {
     if (!this.#compatibilityHooksInitialized) return;
     const name = "ServerSend";
-    const existing = this.#resilientHooks.get(name);
-    if (this.#installedOutgoingHooks.has(name)) {
-      if (!this.#modApi && existing) this.#ensureDirectHook(name, existing);
-      return;
-    }
+    if (this.#installedOutgoingHooks.has(name)) return;
     if (typeof ServerSend !== "function") return;
 
     const hook: ResilientHook = (args, next) => {
@@ -921,13 +898,7 @@ export class BCAdapter {
   #ensureCharacterOverlayHook(): void {
     if (!this.#compatibilityHooksInitialized) return;
     const name = CHARACTER_OVERLAY_HOOK_NAME;
-    const existing = this.#resilientHooks.get(name);
-    if (this.#characterOverlayHookNames.has(name)) {
-      // Echo and WCE stay exclusively in the shared ModSDK chain. Keep only the direct fallback
-      // healthy when ModSDK is unavailable; wrapping its router again can break another addon.
-      if (!this.#modApi && existing) this.#ensureDirectHook(name, existing);
-      return;
-    }
+    if (this.#characterOverlayHookNames.has(name)) return;
     if (typeof ChatRoomDrawCharacterStatusIcons !== "function") return;
 
     // Echo and WCE use this exact native status-icon boundary. Current BC also calls it from both
@@ -946,7 +917,6 @@ export class BCAdapter {
   #ensureActivityHooks(): void {
     if (!this.#compatibilityHooksInitialized) return;
     this.#ensureRoomMessageHook();
-    this.#ensureActivityHookHealth();
     if (this.#installedActivityHooks.size === CUSTOM_ACTIVITY_HOOK_COUNT) return;
 
     const allowedHook: ResilientHook = (args, next) => {
@@ -1079,20 +1049,8 @@ export class BCAdapter {
       preferenceHook,
     );
 
-    // BC initializes some menu functions lazily. The timer retries missing entrypoints and keeps
-    // the three user-visible custom-activity boundaries healthy if another addon replaces a live
-    // ModSDK router after registration.
-    this.#ensureActivityHookHealth();
-  }
-
-  #ensureActivityHookHealth(): void {
-    const names: Iterable<string> = this.#modApi
-      ? CRITICAL_CUSTOM_ACTIVITY_HOOKS
-      : this.#installedActivityHooks;
-    for (const name of names) {
-      const hook = this.#resilientHooks.get(name);
-      if (hook) this.#ensureDirectHook(name, hook);
-    }
+    // BC initializes some menu functions lazily. The timer retries only entrypoints that were not
+    // present yet; it never wraps or replaces a shared ModSDK router owned by another addon.
   }
 
   #tryInstallActivityHook(
@@ -1109,13 +1067,7 @@ export class BCAdapter {
 
   #ensureRoomMessageHook(): void {
     const name = "ChatRoomMessage";
-    if (this.#roomMessageHookInstalled) {
-      if (!this.#modApi) {
-        const existing = this.#resilientHooks.get(name);
-        if (existing) this.#ensureDirectHook(name, existing);
-      }
-      return;
-    }
+    if (this.#roomMessageHookInstalled) return;
     if (typeof ChatRoomMessage !== "function") return;
     const hook: ResilientHook = (args, next) => {
       this.#captureRoomProtocolPayload(args[0]);
@@ -1191,14 +1143,9 @@ export class BCAdapter {
   }
 
   #installIntegrationHook(name: string, priority: number, hook: ResilientHook): boolean {
-    this.#resilientHooks.set(name, hook);
-    const installed = this.#modApi
-      ? this.#tryInstallHook(name, () =>
-          this.#modApi!.hookFunction(name, priority, hook as never),
-        )
-      : this.#ensureDirectHook(name, hook);
-    if (!installed) this.#resilientHooks.delete(name);
-    return installed;
+    const modApi = this.#modApi;
+    if (!modApi) return false;
+    return this.#tryInstallHook(name, () => modApi.hookFunction(name, priority, hook as never));
   }
 
   #tryInstallHook(
@@ -1213,44 +1160,6 @@ export class BCAdapter {
       this.#logger.warn(`${name} hook unavailable; retrying after native load`, error);
       return false;
     }
-  }
-
-  #ensureDirectHook(name: string, hook: ResilientHook): boolean {
-    const existing = this.#directHookRegistrations.get(name);
-    if (existing?.isCurrent()) return true;
-    const registration = this.#installDirectHook(name, hook);
-    if (!registration) return false;
-    this.#directHookRegistrations.set(name, registration);
-    this.#unhooks.push(registration.unhook);
-    this.#logger.info(`${name} live hook installed`);
-    return true;
-  }
-
-  #installDirectHook(name: string, hook: ResilientHook): DirectHookRegistration | undefined {
-    const path = name.split(".");
-    let context: Record<string, any> = getBCPageWindow();
-    for (const key of path.slice(0, -1)) {
-      const next = context[key];
-      if (!next || (typeof next !== "object" && typeof next !== "function")) return undefined;
-      context = next as Record<string, any>;
-    }
-    const property = path.at(-1);
-    if (!property) return undefined;
-    const original = context[property];
-    if (typeof original !== "function") return undefined;
-
-    const adapter = this;
-    const wrapper = function (this: unknown, ...args: any[]): any {
-      if (adapter.#stopped) return original.apply(this, args);
-      return hook(args, (nextArgs) => original.apply(this, nextArgs));
-    };
-    context[property] = wrapper;
-    return {
-      isCurrent: () => context[property] === wrapper,
-      unhook: () => {
-        if (context[property] === wrapper) context[property] = original;
-      },
-    };
   }
 
   #attachSocketListeners(): void {
@@ -1720,7 +1629,7 @@ function isBondageClubReady(): boolean {
 }
 
 function currentModSdk(): ModSDKGlobalAPI {
-  const sdk = getBCPageWindow().bcModSdk as ModSDKGlobalAPI | undefined;
+  const sdk = (window as typeof window & { bcModSdk?: ModSDKGlobalAPI }).bcModSdk;
   if (!sdk || typeof sdk.registerMod !== "function") {
     throw new Error("Bondage Club ModSDK is unavailable");
   }

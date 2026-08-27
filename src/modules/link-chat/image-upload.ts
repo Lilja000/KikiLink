@@ -1,4 +1,5 @@
 import { normalizeImageUrl } from "./media";
+import { uploadMultipartViaUserscriptBridge } from "../../userscript-upload-client";
 
 export const MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_LOCAL_IMAGE_EDGE = 2_560;
@@ -507,6 +508,13 @@ async function uploadMultipartOnce(
   onProgress?: UploadProgressListener,
 ): Promise<MultipartUploadResponse> {
   if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request);
+  const bridged = await uploadMultipartViaUserscriptBridge(
+    endpoint,
+    form,
+    timeoutMs,
+    onProgress,
+  );
+  if (bridged) return bridged;
   if (typeof GM_xmlhttpRequest === "function") {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({

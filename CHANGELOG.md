@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.22.10 - 2026-08-27
+
+- Fixed the Firefox `Permission denied to access object` crash introduced by 0.22.8/0.22.9.
+  KikiLink no longer reads `unsafeWindow` or passes Bondage Club characters, functions, callbacks,
+  canvas state, or ModSDK objects across a userscript boundary. The full game integration is
+  injected into the page realm; the DOM-only userscript sandbox retains just the upload permission
+  and a strictly validated structured-data bridge for Catbox/Litterbox.
+- Matched the established addon chain directly: KikiLink joins
+  `ChatRoomDrawCharacterStatusIcons` once through the shared ModSDK, after the native/Echo/WCE
+  drawing, and keeps its dedicated `CharX + 460×Zoom` slot. It never wraps
+  `ChatRoomCharacterViewDrawOverlay` or `ChatRoomCharacterViewLoopCharacters`, including when
+  registration is unavailable or another addon loads late.
+- Removed the normal-play DOM fallback and its character-loop polling. The DOM copy and one native
+  character-frame lookup now exist only while the user explicitly arms icon placement in Settings.
+- Minified the embedded page runtime to reduce userscript download size and startup parsing while
+  keeping the small privileged loader readable and independently auditable.
+- Added regressions for a poisoned `unsafeWindow`, the nested Echo/WCE/BCX chain, failed and late
+  ModSDK registration, decoded Blossom pixels and neighboring icon slots, and end-to-end sandboxed
+  multipart upload progress.
+
 ## 0.22.9 - 2026-08-27
 
 - Fixed the last visual conflict found in the addon compatibility audit: Echo owns the

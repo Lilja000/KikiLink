@@ -746,60 +746,7 @@ describe("BCAdapter", () => {
     adapter.stop();
   });
 
-  it("draws one overlay through BC's current nested character-view boundaries", async () => {
-    const calls: string[] = [];
-    const liveSdk = (window as unknown as { bcModSdk?: unknown }).bcModSdk;
-    Object.defineProperty(window, "bcModSdk", {
-      configurable: true,
-      value: Object.freeze({
-        registerMod: () => {
-          throw new Error("Use the direct page hook in this boundary test");
-        },
-      }),
-    });
-    setBCGlobal("Player", {
-      MemberNumber: 999,
-      Name: "AccountKiki",
-      FriendNames: new Map(),
-    });
-    setBCGlobal("ServerSendBeepMessage", vi.fn());
-    setBCGlobal("ChatRoomDrawCharacterStatusIcons", vi.fn(() => calls.push("native status")));
-    setBCGlobal("ChatRoomCharacterViewDrawOverlay", vi.fn((character, x, y, zoom) => {
-      calls.push("native outer");
-      (window as unknown as { ChatRoomDrawCharacterStatusIcons: Function })
-        .ChatRoomDrawCharacterStatusIcons(
-        character,
-        x,
-        y,
-        zoom,
-      );
-    }));
-
-    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.22.9");
-    const renderer = vi.fn(() => calls.push("kikilink"));
-    try {
-      adapter.registerCharacterOverlay(renderer);
-      await adapter.start();
-
-      const character = { MemberNumber: 999, Name: "AccountKiki" };
-      (window as unknown as { ChatRoomCharacterViewDrawOverlay: Function })
-        .ChatRoomCharacterViewDrawOverlay(
-        character,
-        120,
-        30,
-        0.75,
-      );
-
-      expect(calls).toEqual(["native outer", "native status", "kikilink"]);
-      expect(renderer).toHaveBeenCalledOnce();
-      expect(renderer).toHaveBeenCalledWith(character, 120, 30, 0.75);
-    } finally {
-      adapter.stop();
-      Object.defineProperty(window, "bcModSdk", { configurable: true, value: liveSdk });
-    }
-  });
-
-  it("shares one ModSDK status-icon chain with Echo, BCX, and AFC-style addons", async () => {
+  it("shares Echo/WCE status icons inside BCX's outer overlay chain", async () => {
     vi.useFakeTimers();
     const calls: string[] = [];
     const hookRequests: Array<{ mod: string; name: string; priority: number }> = [];
@@ -880,10 +827,18 @@ describe("BCAdapter", () => {
     };
     globalThis.ServerSendBeepMessage = vi.fn();
     globalThis.ChatRoomDrawCharacterStatusIcons = vi.fn(() => {
-      calls.push("native");
+      calls.push("native status");
+    });
+    globalThis.ChatRoomCharacterViewDrawOverlay = vi.fn((...args: any[]) => {
+      calls.push("native outer");
+      return globalThis.ChatRoomDrawCharacterStatusIcons(...args as Parameters<
+        typeof globalThis.ChatRoomDrawCharacterStatusIcons
+      >);
     });
 
     const echoLike = registerMod({ name: "动作拓展" });
+    const wceLike = registerMod({ name: "WCE" });
+    const bcxLike = registerMod({ name: "BCX" });
     const afcLike = registerMod({ name: "AbundantiaFlorumChromatica" });
     echoLike.hookFunction("ChatRoomDrawCharacterStatusIcons", 10, (args, next) => {
       calls.push("echo");
@@ -893,7 +848,16 @@ describe("BCAdapter", () => {
       calls.push("afc");
       return next(args);
     });
+    wceLike.hookFunction("ChatRoomDrawCharacterStatusIcons", 0, (args, next) => {
+      calls.push("wce");
+      return next(args);
+    });
+    bcxLike.hookFunction("ChatRoomCharacterViewDrawOverlay", 0, (args, next) => {
+      calls.push("bcx");
+      return next(args);
+    });
     const sharedRouter = globalThis.ChatRoomDrawCharacterStatusIcons;
+    const sharedOuterRouter = globalThis.ChatRoomCharacterViewDrawOverlay;
 
     const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.20.7");
     const renderer = vi.fn(() => calls.push("kikilink"));
@@ -902,30 +866,49 @@ describe("BCAdapter", () => {
       await adapter.start();
       const character = { MemberNumber: 999, Name: "AccountKiki" };
       expect(() =>
-        globalThis.ChatRoomDrawCharacterStatusIcons(character, 120, 30, 0.75),
+        globalThis.ChatRoomCharacterViewDrawOverlay(character, 120, 30, 0.75),
       ).not.toThrow();
       expect(calls).toContain("echo");
+      expect(calls).toContain("wce");
+      expect(calls).toContain("bcx");
       expect(calls).toContain("afc");
-      expect(calls).toContain("native");
+      expect(calls).toContain("native outer");
+      expect(calls).toContain("native status");
       expect(calls).toContain("kikilink");
-      expect(calls.filter((entry) => entry === "native")).toHaveLength(1);
+      expect(calls.filter((entry) => entry === "native outer")).toHaveLength(1);
+      expect(calls.filter((entry) => entry === "native status")).toHaveLength(1);
       expect(globalThis.ChatRoomDrawCharacterStatusIcons).toBe(sharedRouter);
+      expect(globalThis.ChatRoomCharacterViewDrawOverlay).toBe(sharedOuterRouter);
       expect(hookRequests).toContainEqual({
         mod: "KikiLink",
         name: "ChatRoomDrawCharacterStatusIcons",
         priority: 10,
       });
+      expect(hookRequests).not.toContainEqual(
+        expect.objectContaining({
+          mod: "KikiLink",
+          name: "ChatRoomCharacterViewDrawOverlay",
+        }),
+      );
+      expect(hookRequests).not.toContainEqual(
+        expect.objectContaining({
+          mod: "KikiLink",
+          name: "ChatRoomCharacterViewLoopCharacters",
+        }),
+      );
 
     } finally {
       adapter.stop();
       echoLike.unload();
+      wceLike.unload();
+      bcxLike.unload();
       afcLike.unload();
       Object.defineProperty(window, "bcModSdk", { configurable: true, value: liveSdk });
       vi.useRealTimers();
     }
   });
 
-  it("keeps Blossom and native activities functional when ModSDK registration is unavailable", async () => {
+  it("leaves shared functions untouched when ModSDK registration is unavailable", async () => {
     const nativeOverlay = vi.fn();
     const nativeAllowed = vi.fn((_character: BCCharacter, groupName: string) => [
       {
@@ -983,17 +966,19 @@ describe("BCAdapter", () => {
       globalThis.ChatRoomDrawCharacterStatusIcons(character, 100, 20, 0.5);
       const allowed = globalThis.ActivityAllowedForGroup(character, "ItemArms");
 
+      expect(globalThis.ChatRoomDrawCharacterStatusIcons).toBe(nativeOverlay);
+      expect(globalThis.ActivityAllowedForGroup).toBe(nativeAllowed);
       expect(nativeOverlay).toHaveBeenCalledWith(character, 100, 20, 0.5);
-      expect(renderer).toHaveBeenCalledWith(character, 100, 20, 0.5);
+      expect(renderer).not.toHaveBeenCalled();
       expect(nativeAllowed).toHaveBeenCalledWith(character, "ItemArms");
-      expect(allowed.map((item) => item.Activity.Name)).toEqual(["Caress", customName]);
+      expect(allowed.map((item) => item.Activity.Name)).toEqual(["Caress"]);
       adapter.stop();
     } finally {
       Object.defineProperty(window, "bcModSdk", { configurable: true, value: liveSdk });
     }
   });
 
-  it("recovers late BC functions even when another KikiLink registration blocks ModSDK", async () => {
+  it("does not wrap late BC functions when another KikiLink registration blocks ModSDK", async () => {
     vi.useFakeTimers();
     globalThis.alert = vi.fn();
     const blocker = bcModSDK.registerMod({
@@ -1043,9 +1028,11 @@ describe("BCAdapter", () => {
       const character = { MemberNumber: 999, Name: "AccountKiki" };
       globalThis.ChatRoomDrawCharacterStatusIcons(character, 80, 10, 0.6);
       const allowed = globalThis.ActivityAllowedForGroup(character, "ItemArms");
+      expect(globalThis.ChatRoomDrawCharacterStatusIcons).toBe(nativeOverlay);
+      expect(globalThis.ActivityAllowedForGroup).toBe(nativeAllowed);
       expect(nativeOverlay).toHaveBeenCalledOnce();
-      expect(renderer).toHaveBeenCalledWith(character, 80, 10, 0.6);
-      expect(allowed.map((item) => item.Activity.Name)).toEqual([customName]);
+      expect(renderer).not.toHaveBeenCalled();
+      expect(allowed).toEqual([]);
       adapter.stop();
     } finally {
       blocker.unload();
@@ -1189,8 +1176,8 @@ describe("BCAdapter", () => {
     expect(integration.onRoomMessage).toHaveBeenCalledWith(message);
     expect(nativeMessage).toHaveBeenCalledWith(message);
 
-    // A late addon or a BC hot reload can replace the live ModSDK router. KikiLink's critical
-    // activity boundaries must wrap the replacement without swallowing its vanilla behavior.
+    // A late addon or BC hot reload can replace a live ModSDK router. KikiLink must leave that
+    // replacement untouched instead of layering a direct wrapper around another addon's chain.
     const replacementDictionary = vi.fn((keyword: string) => `replacement:${keyword}`);
     const replacementRun = vi.fn();
     const replacementCreateButton = vi.fn(
@@ -1211,30 +1198,23 @@ describe("BCAdapter", () => {
     globalThis.ElementButton.CreateForActivity = replacementCreateButton;
     await vi.advanceTimersByTimeAsync(500);
 
-    expect(globalThis.ActivityDictionaryText(customLabel)).toBe("Elbow touch");
+    expect(globalThis.ActivityDictionaryText).toBe(replacementDictionary);
+    expect(globalThis.ActivityRun).toBe(replacementRun);
+    expect(globalThis.ElementButton.CreateForActivity).toBe(replacementCreateButton);
+    expect(globalThis.ActivityDictionaryText(customLabel)).toBe(`replacement:${customLabel}`);
     expect(globalThis.ActivityDictionaryText("ActivityKiss")).toBe("replacement:ActivityKiss");
-    expect(replacementDictionary).toHaveBeenCalledOnce();
+    expect(replacementDictionary).toHaveBeenCalledTimes(2);
     globalThis.ActivityRun(actor, acted, group, custom);
     globalThis.ActivityRun(actor, acted, group, vanilla);
-    expect(replacementRun).toHaveBeenCalledOnce();
-    const repairedButton = globalThis.ElementButton.CreateForActivity(
+    expect(replacementRun).toHaveBeenCalledTimes(2);
+    const replacementButton = globalThis.ElementButton.CreateForActivity(
       null,
       custom,
       acted,
       () => undefined,
     );
-    expect(repairedButton.dataset.image).toBe("./Assets/Female3DCG/Activity/Caress.png");
-    expect(repairedButton.dataset.blossom).toBe("true");
+    expect(replacementButton.dataset.image).toBe("replacement");
+    expect(replacementButton.dataset.blossom).toBeUndefined();
     adapter.stop();
   });
 });
-
-function setBCGlobal(name: string, value: unknown): void {
-  for (const context of new Set<object>([globalThis, window])) {
-    Object.defineProperty(context, name, {
-      configurable: true,
-      writable: true,
-      value,
-    });
-  }
-}

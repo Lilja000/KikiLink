@@ -195,7 +195,7 @@ describe("room Blossom character positioning", () => {
     expect(typeof globalThis.DrawImageResize).toBe("undefined");
   });
 
-  it("keeps the failsafe hidden after a successful native draw and follows enabled settings", () => {
+  it("keeps the normal-play DOM copy hidden and follows enabled settings", () => {
     const { badge, render, settings } = fixture();
     const own = document.querySelector<HTMLImageElement>(".kl-room-blossom");
     expect(own).not.toBeNull();
@@ -209,30 +209,25 @@ describe("room Blossom character positioning", () => {
     badge.destroy();
   });
 
-  it("shows a room-only DOM failsafe when the native canvas path never succeeds", async () => {
+  it("never polls BC's character loop or exposes a DOM fallback when canvas drawing fails", async () => {
     vi.useFakeTimers();
     const { badge, render } = fixture();
     vi.mocked(globalThis.DrawImageResize).mockReturnValue(false);
     globalThis.ChatRoomCharacterDrawlist = [{ MemberNumber: 999, Name: "Kiki" }];
-    globalThis.ChatRoomCharacterViewLoopCharacters = (callback) => {
+    globalThis.ChatRoomCharacterViewLoopCharacters = vi.fn((callback) => {
       callback(0, 100, 20, 500, 1);
-    };
+    });
     const own = document.querySelector<HTMLImageElement>(".kl-room-blossom");
 
     await vi.advanceTimersByTimeAsync(1_250);
-    expect(own?.hidden).toBe(false);
-    expect(own?.style.display).toBe("block");
-    expect(own?.style.left).toBe("560px");
-    expect(own?.style.top).toBe("25px");
-
-    vi.mocked(globalThis.DrawImageResize).mockReturnValue(true);
-    render({ MemberNumber: 999, Name: "Kiki" }, 100, 20, 1);
     expect(own?.hidden).toBe(true);
     expect(own?.style.display).toBe("none");
+    expect(globalThis.ChatRoomCharacterViewLoopCharacters).not.toHaveBeenCalled();
 
-    globalThis.CurrentScreen = "OnlineProfile";
-    await vi.advanceTimersByTimeAsync(250);
+    render({ MemberNumber: 999, Name: "Kiki" }, 100, 20, 1);
+    expect(globalThis.DrawImageResize).toHaveBeenCalledOnce();
     expect(own?.hidden).toBe(true);
+    expect(own?.style.display).toBe("none");
     badge.destroy();
   });
 });

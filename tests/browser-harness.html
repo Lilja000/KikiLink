@@ -23,14 +23,6 @@
     <div id="activity-grid"></div>
     <script>
       window.alert = () => {};
-      window.bcModSdk = Object.freeze({
-        version: "1.2.0",
-        apiVersion: 1,
-        registerMod() { throw new Error("Harness intentionally blocks ModSDK registration"); },
-        getModsInfo() { return []; },
-        getPatchingInfo() { return new Map(); },
-        errorReporterHooks: Object.seal({ apiEndpointEnter: null, hookEnter: null, hookChainExit: null }),
-      });
       window.Player = {
         MemberNumber: 999001,
         Name: "KikiAccount",
@@ -50,15 +42,11 @@
         if (callback(0, 100, 0, 500, 1)) return;
         callback(1, 600, 0, 500, 1);
       };
-      window.ChatRoomCharacterViewDrawOverlay = () => {};
+      window.ChatRoomCharacterViewDrawOverlay = (character, x, y, zoom) =>
+        window.ChatRoomDrawCharacterStatusIcons(character, x, y, zoom);
       window.ChatRoomHideIconState = 0;
       window.MainCanvas = document.getElementById("MainCanvas").getContext("2d");
-      // Echo's real addon icon occupies 420..455. Keep a visible sentinel there so this release
-      // fails if KikiLink merely paints into the same slot and hides or replaces the neighbor.
-      window.ChatRoomDrawCharacterStatusIcons = (_character, x, y, zoom) => {
-        window.MainCanvas.fillStyle = "#24a8ff";
-        window.MainCanvas.fillRect(x + 420 * zoom, y + 5, 35 * zoom, 35 * zoom);
-      };
+      window.ChatRoomDrawCharacterStatusIcons = () => {};
       window.__KIKILINK_NATIVE_DRAWS__ = [];
       const harnessImageCache = new Map();
       window.DrawImageResize = (source, x, y, width, height) => {
@@ -197,63 +185,60 @@
         }),
       );
 
-      // Model a granted Firefox userscript: the DOM remains visible, but BC's game globals live
-      // only on unsafeWindow. A page-realm-only harness would miss the regression from 0.20.7.
-      const pageGlobalNames = [
-        "ActivityAllowedForGroup",
-        "ActivityDictionaryText",
-        "ActivityFemale3DCG",
-        "ActivityFemale3DCGOrdering",
-        "ActivityRun",
-        "AssetGroup",
-        "bcModSdk",
-        "CharacterGetCurrent",
-        "CharacterNickname",
-        "ChatRoomCharacter",
-        "ChatRoomCharacterDrawlist",
-        "ChatRoomCharacterViewDrawOverlay",
-        "ChatRoomCharacterViewLoopCharacters",
-        "ChatRoomData",
-        "ChatRoomDrawCharacterStatusIcons",
-        "ChatRoomHideIconState",
-        "ChatRoomMessage",
-        "ChatRoomPublishCustomAction",
-        "ChatRoomSendEmote",
-        "ChatRoomSetTarget",
-        "CurrentCharacter",
-        "CurrentScreen",
-        "DialogActivity",
-        "DialogBuildActivities",
-        "DialogMenuMapping",
-        "DialogMenuMode",
-        "DrawImageResize",
-        "ElementButton",
-        "FriendListBeepLog",
-        "GameVersion",
-        "InformationSheetLoadCharacter",
-        "MainCanvas",
-        "Player",
-        "PreferenceGetActivityFactor",
-        "ServerAccountBeep",
-        "ServerAccountQueryResult",
-        "ServerIsLoggedIn",
-        "ServerPlayerExtensionSettingsSync",
-        "ServerPlayerIsInChatRoom",
-        "ServerSend",
-        "ServerSendBeepMessage",
-      ];
-      const pageRealm = {};
-      for (const name of pageGlobalNames) {
-        pageRealm[name] = window[name];
-        delete window[name];
-      }
-      window.unsafeWindow = pageRealm;
+      // Firefox must never need this cross-compartment escape hatch again.
+      let unsafeWindowReads = 0;
+      Object.defineProperty(window, "unsafeWindow", {
+        configurable: true,
+        get() {
+          unsafeWindowReads += 1;
+          throw new Error("KikiLink attempted forbidden cross-realm access");
+        },
+      });
+    </script>
+    <script src="../node_modules/bondage-club-mod-sdk/dist/bcmodsdk.js"></script>
+    <script>
+      const echoHarness = window.bcModSdk.registerMod({
+        name: "动作拓展",
+        fullName: "ECHO Activity harness",
+        version: "1.0.0",
+      });
+      echoHarness.hookFunction("ChatRoomDrawCharacterStatusIcons", 10, (args, next) => {
+        const result = next(args);
+        const [, x, y, zoom] = args;
+        window.MainCanvas.fillStyle = "#24a8ff";
+        window.MainCanvas.fillRect(x + 420 * zoom, y + 5, 35 * zoom, 35 * zoom);
+        return result;
+      });
+      const wceHarness = window.bcModSdk.registerMod({
+        name: "WCE",
+        fullName: "WCE harness",
+        version: "1.0.0",
+      });
+      wceHarness.hookFunction("ChatRoomDrawCharacterStatusIcons", 0, (args, next) => {
+        const result = next(args);
+        const [, x, y, zoom] = args;
+        window.MainCanvas.fillStyle = "#45d483";
+        window.MainCanvas.fillRect(x + 290 * zoom, y + 5, 60 * zoom, 35 * zoom);
+        return result;
+      });
+      const bcxHarness = window.bcModSdk.registerMod({
+        name: "BCX",
+        fullName: "BCX harness",
+        version: "1.0.0",
+      });
+      bcxHarness.hookFunction("ChatRoomCharacterViewDrawOverlay", 0, (args, next) => {
+        const result = next(args);
+        const [, x, y, zoom] = args;
+        window.MainCanvas.fillStyle = "#8b6cff";
+        window.MainCanvas.fillRect(x + 375 * zoom, y + 5, 30 * zoom, 30 * zoom);
+        return result;
+      });
     </script>
     <script src="../dist/KikiLink.user.js"></script>
     <script>
-      const runtimePageRealm = window.unsafeWindow;
+      const runtimePageRealm = window;
       const roomRenderTimer = setInterval(() => {
-        runtimePageRealm.ChatRoomDrawCharacterStatusIcons(runtimePageRealm.Player, 100, 0, 1);
+        runtimePageRealm.ChatRoomCharacterViewDrawOverlay(runtimePageRealm.Player, 100, 0, 1);
       }, 50);
       setTimeout(() => runtimePageRealm.DialogBuildActivities(runtimePageRealm.CurrentCharacter, true), 700);
       setTimeout(() => {
@@ -264,6 +249,8 @@
         const activityMark = document.querySelector("[data-kikilink-activity-mark]");
         const flowerPixels = runtimePageRealm.MainCanvas.getImageData(560, 5, 35, 35).data;
         const echoPixels = runtimePageRealm.MainCanvas.getImageData(520, 5, 35, 35).data;
+        const wcePixels = runtimePageRealm.MainCanvas.getImageData(390, 5, 60, 35).data;
+        const bcxPixels = runtimePageRealm.MainCanvas.getImageData(475, 5, 30, 30).data;
         let opaqueFlowerPixels = 0;
         for (let index = 3; index < flowerPixels.length; index += 4) {
           if (flowerPixels[index] > 0) opaqueFlowerPixels += 1;
@@ -274,13 +261,33 @@
             intactEchoPixels += 1;
           }
         }
+        let intactWcePixels = 0;
+        for (let index = 0; index < wcePixels.length; index += 4) {
+          if (wcePixels[index] === 69 && wcePixels[index + 1] === 212 && wcePixels[index + 2] === 131) {
+            intactWcePixels += 1;
+          }
+        }
+        let intactBcxPixels = 0;
+        for (let index = 0; index < bcxPixels.length; index += 4) {
+          if (bcxPixels[index] === 139 && bcxPixels[index + 1] === 108 && bcxPixels[index + 2] === 255) {
+            intactBcxPixels += 1;
+          }
+        }
+        const patching = runtimePageRealm.bcModSdk.getPatchingInfo();
+        const statusHooks = patching.get("ChatRoomDrawCharacterStatusIcons")?.hookedByMods ?? [];
+        const outerHooks = patching.get("ChatRoomCharacterViewDrawOverlay")?.hookedByMods ?? [];
         const result = {
           publicApi: runtimePageRealm.KikiLink?.getVersion?.() || null,
           versionBadge: version?.textContent || null,
-          isolatedPageBridge: runtimePageRealm !== window && runtimePageRealm.KikiLink === window.KikiLink,
+          pageRuntimeInjected: document.documentElement.dataset.kikilinkPageRealm === runtimePageRealm.KikiLink?.getVersion?.(),
+          unsafeWindowUntouched: unsafeWindowReads === 0,
           blossomNativeDraw: window.__KIKILINK_NATIVE_DRAWS__.length > 0,
           blossomVisiblePixels: opaqueFlowerPixels > 25,
           echoSlotPreserved: intactEchoPixels > 1_000,
+          wceSlotPreserved: intactWcePixels > 1_500,
+          bcxSlotPreserved: intactBcxPixels > 700,
+          oneKikiStatusHook: statusHooks.filter((name) => name === "KikiLink").length === 1,
+          noKikiOuterHook: !outerHooks.includes("KikiLink"),
           blossomDomHidden: !!blossom && blossom.hidden && blossom.style.display === "none",
           customActivityInRegistry: runtimePageRealm.ActivityFemale3DCG.some((activity) => activity.Name.startsWith("KikiLinkCustom_")),
           customActivityInDialog: !!custom,

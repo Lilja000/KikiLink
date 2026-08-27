@@ -9,8 +9,6 @@ const CHARACTER_HEIGHT = 1_000;
 const BADGE_SIZE = 35;
 const BADGE_OPACITY = 0.78;
 const BADGE_DRAG_THRESHOLD = 5;
-const DOM_SYNC_INTERVAL_MS = 250;
-const CANVAS_FALLBACK_GRACE_MS = 1_000;
 const BLOSSOM_VIEWBOX_SIZE = 64;
 const BLOSSOM_PETAL_PATHS = [
   "M32 33C24 28 22 18 26 10c2-4 10-4 12 0 4 8 2 18-6 23Z",
@@ -114,8 +112,6 @@ export class RoomBlossomBadge {
   #previousTouchAction = "";
   #settingsUnsubscribe: (() => void) | undefined;
   #unregisterOverlay: (() => void) | undefined;
-  #domSyncTimer: ReturnType<typeof setInterval> | undefined;
-  #ownCanvasRenderedAt = 0;
   #placementActive = false;
   #mounted = false;
   #destroyed = false;
@@ -126,9 +122,7 @@ export class RoomBlossomBadge {
     if (own) {
       this.#ownFrame = { x, y, zoom };
       if (this.#config.enabled && this.#iconsAreVisible()) {
-        if (this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame))) {
-          this.#ownCanvasRenderedAt = Date.now();
-        }
+        this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame));
       }
       this.#syncOwnElement();
       return;
@@ -265,9 +259,6 @@ export class RoomBlossomBadge {
     if (typeof this.#adapter.registerCharacterOverlay === "function") {
       this.#unregisterOverlay = this.#adapter.registerCharacterOverlay(this.#renderer);
     }
-    // This is a room-only failsafe, not the primary renderer. If a userscript manager or a late
-    // addon blocks the canvas hook, the local player's flower still follows BC's character frame.
-    this.#domSyncTimer = setInterval(() => this.#syncOwnElement(), DOM_SYNC_INTERVAL_MS);
     this.#syncOwnElement();
     window.addEventListener("keydown", this.#handleKeyDown);
   }
@@ -321,8 +312,6 @@ export class RoomBlossomBadge {
     this.#settingsUnsubscribe = undefined;
     this.#unregisterOverlay?.();
     this.#unregisterOverlay = undefined;
-    if (this.#domSyncTimer !== undefined) clearInterval(this.#domSyncTimer);
-    this.#domSyncTimer = undefined;
     this.#element.remove();
     this.#ownFrame = undefined;
     this.#mounted = false;
@@ -381,11 +370,14 @@ export class RoomBlossomBadge {
 
   #syncOwnElement(): void {
     if (this.#destroyed || !this.#mounted) return;
-    const inRoom =
-      typeof this.#adapter.isInChatRoom === "function" &&
-      this.#adapter.isInChatRoom() &&
-      typeof CurrentScreen === "string" &&
-      CurrentScreen === "ChatRoom";
+    // Normal play is canvas-only. Never poll BC's character loop or leave a fixed DOM object over
+    // another screen; the DOM copy exists solely for the explicit settings-armed drag action.
+    if (!this.#placementActive) {
+      this.#element.hidden = true;
+      this.#element.style.display = "none";
+      return;
+    }
+    const inRoom = typeof this.#adapter.isInChatRoom === "function" && this.#adapter.isInChatRoom();
     if (!this.#config.enabled || !this.#iconsAreVisible() || !inRoom) {
       this.#element.hidden = true;
       this.#element.style.display = "none";
@@ -412,16 +404,6 @@ export class RoomBlossomBadge {
       this.#previewPosition ?? this.#config.position,
       frame,
     );
-    // Keep canvas authoritative. The DOM copy appears only when no successful native draw was
-    // observed for a full second, or while the user explicitly moves the flower in settings.
-    if (
-      !this.#placementActive &&
-      Date.now() - this.#ownCanvasRenderedAt <= CANVAS_FALLBACK_GRACE_MS
-    ) {
-      this.#element.hidden = true;
-      this.#element.style.display = "none";
-      return;
-    }
     const scaleX = rect.width / canvas.width;
     const scaleY = rect.height / canvas.height;
     this.#element.hidden = false;

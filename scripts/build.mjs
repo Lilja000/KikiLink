@@ -23,9 +23,7 @@ const userscriptHeader = `// ==UserScript==
 // @match        https://*.bondage-europe.com/*
 // @match        https://*.bondage-asia.com/*
 // @run-at       document-end
-// @inject-into  page
-// @sandbox      JavaScript
-// @grant        unsafeWindow
+// @sandbox      DOM
 // @grant        GM_xmlhttpRequest
 // @connect      catbox.moe
 // @connect      litterbox.catbox.moe
@@ -34,8 +32,7 @@ const userscriptHeader = `// ==UserScript==
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 
-await build({
-  entryPoints: [resolve(root, "src/index.ts")],
+const buildOptions = {
   outfile,
   bundle: true,
   preserveSymlinks: true,
@@ -46,9 +43,30 @@ await build({
   legalComments: "eof",
   sourcemap: false,
   minify: false,
-  banner: { js: userscriptHeader },
   define: {
     __KIKILINK_VERSION__: JSON.stringify(packageJson.version),
+  },
+};
+
+const pageBuild = await build({
+  ...buildOptions,
+  entryPoints: [resolve(root, "src/index.ts")],
+  outfile: undefined,
+  write: false,
+  minify: true,
+  legalComments: "none",
+  footer: { js: "//# sourceURL=KikiLink.page.js" },
+});
+const pageBundle = pageBuild.outputFiles?.[0]?.text;
+if (!pageBundle) throw new Error("KikiLink page runtime did not build");
+
+await build({
+  ...buildOptions,
+  entryPoints: [resolve(root, "src/userscript-loader.ts")],
+  banner: { js: userscriptHeader },
+  define: {
+    ...buildOptions.define,
+    __KIKILINK_PAGE_BUNDLE__: JSON.stringify(pageBundle),
   },
 });
 

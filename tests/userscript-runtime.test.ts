@@ -64,10 +64,6 @@ const GLOBAL_KEYS = [
   "unsafeWindow",
 ] as const;
 
-const PAGE_GLOBAL_KEYS = GLOBAL_KEYS.filter(
-  (key) => key !== "alert" && key !== "KikiLink" && key !== "unsafeWindow",
-);
-
 afterEach(async () => {
   const api = (window as unknown as { KikiLink?: { destroy(): Promise<void> } }).KikiLink;
   if (api) await api.destroy();
@@ -78,29 +74,42 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   document.body.replaceChildren();
+  document.getElementById("kikilink-upload-bridge-v1")?.remove();
+  delete document.documentElement.dataset.kikilinkPageRealm;
   localStorage.clear();
 });
 
 describe("published userscript runtime", () => {
-  it("keeps the upload grant in a bridgeable Firefox sandbox", () => {
-    expect(USER_SCRIPT).toContain("// @sandbox      JavaScript");
-    expect(USER_SCRIPT).toContain("// @grant        unsafeWindow");
+  it("keeps upload privilege isolated from the page-owned Bondage Club runtime", () => {
+    expect(USER_SCRIPT).toContain("// @sandbox      DOM");
     expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
     expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
     expect(USER_SCRIPT).toContain("// @connect      litterbox.catbox.moe");
     expect(USER_SCRIPT).not.toContain("// @connect      waifuvault.moe");
+    expect(USER_SCRIPT).not.toContain("// @grant        unsafeWindow");
     expect(USER_SCRIPT).not.toContain("// @grant        none");
-    expect(USER_SCRIPT).toContain("installBCPageContextBridge");
+    expect(USER_SCRIPT).toContain("installUserscriptUploadHost");
+    expect(USER_SCRIPT).toContain("kikilinkPageRuntime");
+    expect(USER_SCRIPT).not.toContain("installBCPageContextBridge");
   });
 
-  it("starts the repaired bundle even when an older partial release cannot clean up", async () => {
+  it("never reads unsafeWindow and starts even when an older release cannot clean up", async () => {
     const previous = { destroy: vi.fn(async () => Promise.reject(new Error("broken cleanup"))) };
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let unsafeWindowReads = 0;
+    Object.defineProperty(window, "unsafeWindow", {
+      configurable: true,
+      get() {
+        unsafeWindowReads += 1;
+        throw new Error("Cross-realm access is forbidden in this regression");
+      },
+    });
     setGlobal("KikiLink", previous);
 
-    window.eval(USER_SCRIPT);
+    evaluatePublishedUserscript();
 
     await vi.waitFor(() => expect(getGlobal("KikiLink")).not.toBe(previous));
+    expect(unsafeWindowReads).toBe(0);
     expect(previous.destroy).toHaveBeenCalledOnce();
     expect(warning).toHaveBeenCalledWith(
       "[KikiLink] Previous release cleanup failed; continuing startup",
@@ -181,9 +190,8 @@ describe("published userscript runtime", () => {
     });
     setGlobal("DrawImageResize", vi.fn(() => true));
 
-    const pageWindow = isolateBCGlobals();
-    expect(window.eval("typeof ChatRoomDrawCharacterStatusIcons")).toBe("undefined");
-    window.eval(USER_SCRIPT);
+    const pageWindow = window as unknown as Record<string, any>;
+    evaluatePublishedUserscript();
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
     const statusIcons = pageWindow.ChatRoomDrawCharacterStatusIcons as (
       (character: typeof player, x: number, y: number, zoom: number) => void
@@ -217,28 +225,12 @@ describe("published userscript runtime", () => {
     afc.unload();
   });
 
-  it("bridges a granted userscript sandbox to page-owned Blossom and activity functions", async () => {
-    const registerMod = vi.fn(() => {
-      throw new Error("Duplicate addon intentionally blocks ModSDK registration");
-    });
+  it("runs Blossom and activities in the page while sharing one ModSDK router", async () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     setGlobal("alert", vi.fn());
-    setGlobal(
-      "bcModSdk",
-      Object.freeze({
-        version: "1.2.0",
-        apiVersion: 1,
-        registerMod,
-        getModsInfo: () => [],
-        getPatchingInfo: () => new Map(),
-        errorReporterHooks: Object.seal({
-          apiEndpointEnter: null,
-          hookEnter: null,
-          hookChainExit: null,
-        }),
-      }),
-    );
+    const sharedSdk = createSharedModSdk();
+    setGlobal("bcModSdk", sharedSdk.global);
 
     const player = {
       MemberNumber: TEST_MEMBER_NUMBER,
@@ -456,15 +448,14 @@ describe("published userscript runtime", () => {
       }),
     );
 
-    const pageWindow = isolateBCGlobals();
-    expect(USER_SCRIPT).toContain("// @sandbox      JavaScript");
-    expect(USER_SCRIPT).toContain("// @grant        unsafeWindow");
+    const pageWindow = window as unknown as Record<string, any>;
+    expect(USER_SCRIPT).toContain("// @sandbox      DOM");
+    expect(USER_SCRIPT).not.toContain("// @grant        unsafeWindow");
     expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
     expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
     expect(USER_SCRIPT).toContain("// @connect      litterbox.catbox.moe");
-    expect(USER_SCRIPT).toContain("installBCPageContextBridge");
-    expect(window.eval("typeof ServerSendBeepMessage")).toBe("undefined");
-    window.eval(USER_SCRIPT);
+    expect(USER_SCRIPT).not.toContain("installBCPageContextBridge");
+    evaluatePublishedUserscript();
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
     getGlobal<(character: typeof player, x: number, y: number, zoom: number) => void>(
       "ChatRoomDrawCharacterStatusIcons",
@@ -508,8 +499,7 @@ describe("published userscript runtime", () => {
           ?.shadowRoot?.querySelector(".kl-messages")?.textContent,
       ).toContain("Runtime message sent through LianChat");
     });
-    // Real BC calls this boundary every room frame. Refresh once here so a deliberately slow test
-    // run does not activate the one-second DOM failsafe intended for a genuinely blocked hook.
+    // Exercise another native room frame after message and activity rendering.
     getGlobal<(character: typeof player, x: number, y: number, zoom: number) => void>(
       "ChatRoomDrawCharacterStatusIcons",
     )(player, 100, 0, 1);
@@ -524,11 +514,15 @@ describe("published userscript runtime", () => {
         .querySelector<HTMLElement>("#kikilink-root")
         ?.shadowRoot?.querySelector<HTMLElement>(".kl-connection-text")?.textContent,
     ).toBe("Connected");
-    expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
-    expect(registerMod).toHaveBeenCalledTimes(1);
+    expect(getGlobal("bcModSdk")).toBe(sharedSdk.global);
+    expect(sharedSdk.requests).toContainEqual({
+      mod: "KikiLink",
+      name: "ChatRoomDrawCharacterStatusIcons",
+      priority: 10,
+    });
     expect(pageWindow.KikiLink).toBe(api);
-    expect(api.getVersion()).toBe("0.22.9");
-    expect(version?.textContent).toBe("0.22.9");
+    expect(api.getVersion()).toBe("0.22.10");
+    expect(version?.textContent).toBe("0.22.10");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
@@ -657,20 +651,31 @@ function getGlobal<T>(name: string): T {
   return (window as unknown as Record<string, unknown>)[name] as T;
 }
 
-/**
- * Models Firefox/Tampermonkey after a GM grant: DOM access remains local, while BC globals live on
- * unsafeWindow. This is the exact split that allowed KikiLink's panel to appear while its flower
- * and custom activities silently disappeared.
- */
-function isolateBCGlobals(): Record<string, any> {
-  const page: Record<string, any> = {};
-  for (const key of PAGE_GLOBAL_KEYS) {
-    if (Reflect.has(window, key)) page[key] = getGlobal(key);
-    Reflect.deleteProperty(globalThis, key);
-    Reflect.deleteProperty(window, key);
+/** Happy DOM does not execute dynamically appended scripts, so capture and run the page bundle. */
+function evaluatePublishedUserscript(): void {
+  let pageBundle = "";
+  const originalAppend = Element.prototype.append;
+  Element.prototype.append = function (...nodes: Array<Node | string>): void {
+    const passthrough: Array<Node | string> = [];
+    for (const node of nodes) {
+      if (
+        node instanceof HTMLScriptElement &&
+        typeof node.dataset.kikilinkPageRuntime === "string"
+      ) {
+        pageBundle = node.textContent ?? "";
+      } else {
+        passthrough.push(node);
+      }
+    }
+    if (passthrough.length > 0) originalAppend.apply(this, passthrough);
+  };
+  try {
+    window.eval(USER_SCRIPT);
+  } finally {
+    Element.prototype.append = originalAppend;
   }
-  setGlobal("unsafeWindow", page);
-  return page;
+  if (!pageBundle) throw new Error("Published userscript did not inject its page runtime");
+  window.eval(pageBundle);
 }
 
 function createSharedModSdk(): {

@@ -12,9 +12,11 @@ import {
   validateLocalImageFile,
   type PreparedLocalImage,
 } from "../src/modules/link-chat/image-upload";
+import { installUserscriptUploadHost } from "../src/userscript-upload-host";
 
 afterEach(() => {
   Reflect.deleteProperty(globalThis, "GM_xmlhttpRequest");
+  document.getElementById("kikilink-upload-bridge-v1")?.remove();
 });
 
 describe("local image uploads", () => {
@@ -239,6 +241,44 @@ describe("local image uploads", () => {
     });
     expect((details?.data as FormData).get("fileToUpload")).toBeInstanceOf(File);
     expect(progress).toHaveBeenCalledWith({ loaded: 50, total: 100, percent: 50 });
+  });
+
+  it("uploads across the page/sandbox bridge using only cloned multipart data", async () => {
+    const progress = vi.fn();
+    let details: KikiLinkGmXhrDetails | undefined;
+    globalThis.GM_xmlhttpRequest = vi.fn((requestDetails: KikiLinkGmXhrDetails) => {
+      details = requestDetails;
+      queueMicrotask(() => {
+        requestDetails.onprogress?.({ loaded: 3, total: 4, lengthComputable: true });
+        requestDetails.onload({
+          status: 200,
+          responseText: "https://files.catbox.moe/bridged_track.ogg\n",
+        });
+      });
+      return { abort: vi.fn() };
+    });
+    const uninstallHost = installUserscriptUploadHost();
+    const file = new File([bytes(1, 2, 3, 4)], "private title.ogg", {
+      type: "audio/ogg",
+    });
+
+    try {
+      await expect(uploadMusicToCatbox(file, undefined, progress)).resolves.toBe(
+        "https://files.catbox.moe/bridged_track.ogg",
+      );
+      expect(details).toMatchObject({
+        method: "POST",
+        url: "https://catbox.moe/user/api.php",
+        anonymous: true,
+        timeout: 300_000,
+      });
+      const form = details?.data as FormData;
+      expect(form.get("reqtype")).toBe("fileupload");
+      expect((form.get("fileToUpload") as File).name).toBe("kikilink-track.ogg");
+      expect(progress).toHaveBeenCalledWith({ loaded: 3, total: 4, percent: 75 });
+    } finally {
+      uninstallHost();
+    }
   });
 
   it("uploads only the prepared generic WebP and validates the returned direct URL", async () => {

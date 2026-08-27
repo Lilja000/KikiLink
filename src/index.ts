@@ -1,22 +1,20 @@
 import { KikiLinkApp } from "./core/kikilink";
-import { installBCPageContextBridge } from "./bc/page-context";
 
 async function bootstrap(): Promise<void> {
-  const page = installBCPageContextBridge();
-  const previous = page.KikiLink ?? window.KikiLink;
-  if (previous) {
-    try {
+  document.documentElement.dataset.kikilinkPageRealm = __KIKILINK_VERSION__;
+  try {
+    const previous = window.KikiLink;
+    if (previous) {
       await previous.destroy();
-    } catch (error) {
-      // A partially loaded older release must not block a repaired release from taking over.
-      console.warn("[KikiLink] Previous release cleanup failed; continuing startup", error);
     }
+  } catch (error) {
+    // A cross-realm 0.22.8/0.22.9 API or partially loaded release must not block the safe runtime.
+    console.warn("[KikiLink] Previous release cleanup failed; continuing startup", error);
   }
 
   const app = new KikiLinkApp(__KIKILINK_VERSION__);
   const api = app.publicApi();
   window.KikiLink = api;
-  page.KikiLink = api;
 
   try {
     await app.start();
