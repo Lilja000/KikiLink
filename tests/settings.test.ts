@@ -140,7 +140,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(22);
+    expect(settings.schemaVersion).toBe(23);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -264,7 +264,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(22);
+    expect(settings.schemaVersion).toBe(23);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -288,7 +288,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(22);
+    expect(settings.schemaVersion).toBe(23);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -354,7 +354,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(22);
+    expect(settings.schemaVersion).toBe(23);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -530,7 +530,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(22);
+    expect(settings.schemaVersion).toBe(23);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -583,6 +583,7 @@ describe("SettingsStore", () => {
     const settings = sanitizeSettings({
       schemaVersion: 19,
       linkRoom: {
+        favoriteRoomNames: [" Moon Garden ", "moon garden", "Golden Hall", "", 123],
         presets: [{
           id: "Moon_Room",
           label: " Moon Garden ",
@@ -624,7 +625,8 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(22);
+    expect(settings.schemaVersion).toBe(23);
+    expect(settings.linkRoom.favoriteRoomNames).toEqual(["Moon Garden", "Golden Hall"]);
     expect(settings.linkRoom.presets[0]).toMatchObject({
       id: "moon_room",
       label: "Moon Garden",

@@ -88,6 +88,8 @@ export interface OnlineFriend {
   roomName?: string;
   roomSpace?: string;
   privateRoom: boolean;
+  /** Native BC relationship category when this is more specific than a normal friend. */
+  relationship?: "sub" | "lover";
 }
 
 export interface KikiLinkProtocolEvent {
@@ -188,6 +190,7 @@ export interface RoomCharacter {
 
 export type PlayerRelationship =
   | "owner"
+  | "sub"
   | "lover"
   | "whitelist"
   | "blacklist"
@@ -253,7 +256,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 22;
+  schemaVersion: 23;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -329,6 +332,8 @@ export interface KikiLinkSettings {
   };
   linkRoom: {
     presets: RoomPreset[];
+    /** Room names are matched case-insensitively when the live lobby list is refreshed. */
+    favoriteRoomNames: string[];
   };
   linkMusic: {
     playlists: MusicPlaylist[];

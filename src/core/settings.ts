@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 22,
+  schemaVersion: 23,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -92,6 +92,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
   },
   linkRoom: {
     presets: [],
+    favoriteRoomNames: [],
   },
   linkMusic: {
     playlists: [{ id: "main", name: "My playlist", tracks: [] }],
@@ -203,7 +204,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 22,
+    schemaVersion: 23,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -316,9 +317,25 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
     },
     linkRoom: {
       presets: sanitizeRoomPresets(linkRoom.presets),
+      favoriteRoomNames: sanitizeFavoriteRoomNames(linkRoom.favoriteRoomNames),
     },
     linkMusic: sanitizeMusicSettings(linkMusic, sourceSchema),
   };
+}
+
+function sanitizeFavoriteRoomNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  const keys = new Set<string>();
+  for (const candidate of value) {
+    const name = cleanBoundedText(candidate, 80);
+    const key = name.replace(/\s+/gu, " ").toLocaleLowerCase();
+    if (!name || keys.has(key)) continue;
+    keys.add(key);
+    names.push(name);
+    if (names.length >= 50) break;
+  }
+  return names;
 }
 
 function sanitizeRoomPresets(value: unknown): KikiLinkSettings["linkRoom"]["presets"] {

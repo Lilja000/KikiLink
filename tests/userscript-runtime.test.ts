@@ -521,8 +521,8 @@ describe("published userscript runtime", () => {
       priority: 10,
     });
     expect(pageWindow.KikiLink).toBe(api);
-    expect(api.getVersion()).toBe("0.22.12");
-    expect(version?.textContent).toBe("0.22.12");
+    expect(api.getVersion()).toBe("0.23.0");
+    expect(version?.textContent).toBe("0.23.0");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);

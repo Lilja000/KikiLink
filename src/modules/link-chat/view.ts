@@ -72,6 +72,7 @@ import { normalizeImageUrl, parseMessageLinks } from "./media";
 import {
   LitterboxImageUploader,
   normalizeLitterboxUploadConfig,
+  uploadPreparedImageToCatbox,
   uploadLocalRoomAudio,
   uploadMusicToCatbox,
   type LitterboxUploadConfig,
@@ -80,11 +81,13 @@ import {
 } from "./image-upload";
 import { kikiIcon, type KikiLinkIconName } from "./icons";
 import { RoomBlossomBadge } from "./blossom";
+import { KIKILINK_NEWS } from "./news";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/branding/kikilink-emblem.webp";
 
-type WorkspaceView = "home" | "chat" | "gallery" | "roster" | "room" | "music" | "activities" | "settings";
+type WorkspaceView = "home" | "news" | "chat" | "gallery" | "roster" | "room" | "music" | "activities" | "settings";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
 type RoomSubView = "current" | "lobbies" | "presets";
+type GalleryFileStorage = "device" | "catbox" | "litterbox";
 type FeatureTarget = WorkspaceView;
 type HomeAction =
   | { kind: "new-chat" }
@@ -135,6 +138,17 @@ interface SharedRoomMusic {
 }
 
 const KIKILINK_CREATOR_MEMBER_NUMBER = 0;
+const WORKSPACE_TITLES: Record<WorkspaceView, string> = {
+  home: "Home",
+  news: "News",
+  chat: "Chat",
+  gallery: "Media Gallery",
+  roster: "Players",
+  room: "Room Tools",
+  music: "Music",
+  activities: "Custom Activities",
+  settings: "Settings",
+};
 
 export class LinkChatView {
   readonly #host = document.createElement("div");
@@ -159,8 +173,18 @@ export class LinkChatView {
   });
   readonly #workspace = element("div", { className: "kl-workspace" });
   readonly #home = element("section", { className: "kl-home" });
+  readonly #newsPage = element("section", {
+    className: "kl-feature-page kl-news-page",
+    ariaLabel: "KikiLink news and changelog",
+  });
   readonly #chatLayout = element("div", { className: "kl-layout" });
   readonly #contextTitle = element("div", { className: "kl-topbar-context", text: "Home" });
+  readonly #newsTrigger = element("button", {
+    className: "kl-text-button kl-news-trigger",
+    type: "button",
+    title: "KikiLink news and changelog",
+    ariaLabel: "Open KikiLink news and changelog",
+  });
   readonly #finderTrigger = element("button", {
     className: "kl-text-button kl-finder-trigger",
     type: "button",
@@ -516,6 +540,14 @@ export class LinkChatView {
   });
   readonly #newChatDialog = element("dialog", { className: "kl-dialog kl-new-chat-dialog" });
   readonly #newChatQuery = element("input", { className: "kl-search kl-new-chat-query" }) as HTMLInputElement;
+  readonly #newChatFilterSelect = element("select", {
+    className: "kl-select kl-new-chat-filter",
+    ariaLabel: "Filter known contacts",
+  }) as HTMLSelectElement;
+  readonly #newChatSortSelect = element("select", {
+    className: "kl-select kl-new-chat-sort",
+    ariaLabel: "Sort known contacts",
+  }) as HTMLSelectElement;
   readonly #newChatResults = element("div", { className: "kl-contact-results" });
   readonly #finderDialog = element("dialog", { className: "kl-dialog kl-finder-dialog" });
   readonly #finderQuery = element("input", { className: "kl-finder-query" }) as HTMLInputElement;
@@ -573,6 +605,20 @@ export class LinkChatView {
   readonly #localImageStatus = element("div", {
     className: "kl-image-compose-preview kl-local-image-status",
   });
+  readonly #galleryStorageOptions = element("fieldset", {
+    className: "kl-gallery-storage-options",
+  });
+  readonly #galleryRetentionSelect = element("select", {
+    className: "kl-select kl-gallery-retention",
+    ariaLabel: "Litterbox image lifetime",
+  }) as HTMLSelectElement;
+  readonly #galleryRetentionField = element("label", {
+    className: "kl-gallery-retention-field",
+  });
+  readonly #imageFilePrivacyIcon = element("span", {
+    className: "kl-image-file-privacy-icon",
+  });
+  readonly #imageFilePrivacyText = element("span");
   readonly #sendImageButton = element("button", {
     className: "kl-text-button kl-text-button--primary",
     type: "button",
@@ -669,6 +715,7 @@ export class LinkChatView {
   #removeChatTarget: { memberNumber: number; displayName: string } | undefined;
   #imageSourceMode: "link" | "file" = "link";
   #imageDestination: "chat" | "gallery" = "chat";
+  #galleryFileStorage: GalleryFileStorage = "device";
   #preparedLocalImage: PreparedLocalImage | undefined;
   #localImageObjectUrl: string | undefined;
   #imageUploadBusy = false;
@@ -727,6 +774,9 @@ export class LinkChatView {
     private readonly galleryStore: GalleryStore = new DeviceGalleryStore(
       adapter.getOwnMemberNumber(),
     ),
+    private readonly catboxImageUpload: (
+      image: PreparedLocalImage,
+    ) => Promise<string> = uploadPreparedImageToCatbox,
   ) {
     this.presence =
       presence ??
@@ -1026,10 +1076,6 @@ export class LinkChatView {
       ),
     );
     brand.setAttribute("title", "Drag to move KikiLink");
-    brand.addEventListener("pointerdown", (event) => this.#startPanelDrag(event));
-    brand.addEventListener("pointermove", (event) => this.#movePanel(event));
-    brand.addEventListener("pointerup", (event) => this.#finishPanelDrag(event));
-    brand.addEventListener("pointercancel", (event) => this.#cancelPanelDrag(event));
     const close = element("button", {
       className: "kl-icon-button",
       type: "button",
@@ -1047,6 +1093,11 @@ export class LinkChatView {
     );
     this.#finderTrigger.setAttribute("aria-keyshortcuts", "Control+K Meta+K");
     this.#finderTrigger.addEventListener("click", () => this.#openFinder());
+    this.#newsTrigger.replaceChildren(
+      kikiIcon("note", "kl-news-trigger-icon"),
+      element("span", { className: "kl-news-trigger-label", text: "News" }),
+    );
+    this.#newsTrigger.addEventListener("click", () => this.#activateFeature("news"));
     this.#presenceTriggerLabel.replaceChildren(
       this.#presenceTriggerName,
       this.#presenceTriggerStatus,
@@ -1059,10 +1110,18 @@ export class LinkChatView {
     this.#presenceTrigger.addEventListener("click", () => this.#openPresenceDialog());
     this.#renderOwnPresence();
     this.#scheduleClockUpdate();
+    this.#contextTitle.dataset.noPanelDrag = "true";
+    this.#localClock.dataset.noPanelDrag = "true";
+    const dragSpace = element("div", {
+      className: "kl-topbar-drag-space",
+      ariaLabel: "Drag to move KikiLink",
+    });
     const topbar = element(
       "header",
       { className: "kl-topbar" },
       brand,
+      this.#newsTrigger,
+      dragSpace,
       this.#contextTitle,
       this.#localClock,
       this.#presenceTrigger,
@@ -1070,9 +1129,14 @@ export class LinkChatView {
       this.#topbarSettingsButton,
       close,
     );
+    topbar.addEventListener("pointerdown", (event) => this.#startPanelDrag(event));
+    topbar.addEventListener("pointermove", (event) => this.#movePanel(event));
+    topbar.addEventListener("pointerup", (event) => this.#finishPanelDrag(event));
+    topbar.addEventListener("pointercancel", (event) => this.#cancelPanelDrag(event));
 
     this.#buildFeatureNavigation();
     this.#buildHome();
+    this.#buildNewsPage();
 
     this.#search.type = "search";
     this.#search.placeholder = "Search chats";
@@ -1129,6 +1193,7 @@ export class LinkChatView {
     this.#buildSettingsPage();
     this.#workspace.append(
       this.#home,
+      this.#newsPage,
       this.#chatLayout,
       this.#galleryPage,
       this.#rosterPage,
@@ -1214,9 +1279,9 @@ export class LinkChatView {
   }
 
   #activateFeature(target: FeatureTarget): void {
-    if (target === "home" || target === "chat") {
+    if (target === "home" || target === "chat" || target === "news") {
       this.#showWorkspace(target);
-      void this.refresh();
+      if (target !== "news") void this.refresh();
       return;
     }
     if (target === "roster") {
@@ -1241,6 +1306,66 @@ export class LinkChatView {
       return;
     }
     this.#openSettings();
+  }
+
+  #buildNewsPage(): void {
+    const fullChangelog = element("a", {
+      className: "kl-text-button kl-news-changelog-link",
+      text: "Full changelog",
+    });
+    fullChangelog.href = "https://github.com/Lilja000/KikiLink/blob/main/CHANGELOG.md";
+    fullChangelog.target = "_blank";
+    fullChangelog.rel = "noopener noreferrer";
+    const header = element(
+      "header",
+      { className: "kl-feature-page-header" },
+      element(
+        "div",
+        { className: "kl-feature-page-heading" },
+        element("div", { className: "kl-feature-page-eyebrow", text: "KIKILINK JOURNAL" }),
+        element("h1", { className: "kl-feature-page-title", text: "News" }),
+        element("p", {
+          className: "kl-feature-page-subtitle",
+          text: "New features, important fixes, and the details behind each release.",
+        }),
+      ),
+      fullChangelog,
+    );
+    const releases = KIKILINK_NEWS.map((release) => {
+      const current = release.version === this.version;
+      const article = element(
+        "article",
+        { className: "kl-news-release" },
+        element(
+          "div",
+          { className: "kl-news-release-rail" },
+          element("span", { className: "kl-news-release-dot" }),
+        ),
+        element(
+          "div",
+          { className: "kl-news-release-card" },
+          element(
+            "div",
+            { className: "kl-news-release-meta" },
+            element("span", { className: "kl-news-version", text: `v${release.version}` }),
+            current ? element("span", { className: "kl-news-current", text: "Current" }) : null,
+            element("time", { className: "kl-news-date", text: release.date }),
+          ),
+          element("h2", { text: release.title }),
+          element("p", { className: "kl-news-summary", text: release.summary }),
+          element(
+            "ul",
+            { className: "kl-news-highlights" },
+            ...release.highlights.map((highlight) =>
+              element("li", {}, element("span", { text: highlight }))),
+          ),
+        ),
+      );
+      article.dataset.version = release.version;
+      article.dataset.current = String(current);
+      return article;
+    });
+    this.#newsPage.append(header, element("div", { className: "kl-news-feed" }, ...releases));
   }
 
   #buildHome(): void {
@@ -1451,6 +1576,7 @@ export class LinkChatView {
     if (remember && view !== "settings") this.#lastWorkspaceView = view;
     this.#panel.dataset.workspace = view;
     this.#home.hidden = view !== "home";
+    this.#newsPage.hidden = view !== "news";
     this.#chatLayout.hidden = view !== "chat";
     this.#galleryPage.hidden = view !== "gallery";
     this.#rosterPage.hidden = view !== "roster";
@@ -1461,22 +1587,7 @@ export class LinkChatView {
     if (view === "chat" && this.#activePeer === undefined) {
       this.#panel.dataset.mobileView = "list";
     }
-    this.#contextTitle.textContent =
-      view === "home"
-        ? "Home"
-        : view === "chat"
-          ? "Chat"
-          : view === "gallery"
-            ? "Media Gallery"
-            : view === "roster"
-              ? "Players"
-              : view === "room"
-                ? "Room Tools"
-                : view === "music"
-                  ? "Music"
-                : view === "activities"
-                  ? "Custom Activities"
-                  : "Settings";
+    this.#contextTitle.textContent = WORKSPACE_TITLES[view];
     this.#updateNavigation();
   }
 
@@ -1494,6 +1605,8 @@ export class LinkChatView {
     } else {
       this.#topbarSettingsButton.removeAttribute("aria-current");
     }
+    if (this.#workspaceView === "news") this.#newsTrigger.setAttribute("aria-current", "page");
+    else this.#newsTrigger.removeAttribute("aria-current");
   }
 
   #buildChat(): void {
@@ -2578,12 +2691,35 @@ export class LinkChatView {
       event.preventDefault();
       void this.#submitNewChat();
     });
+    this.#newChatFilterSelect.replaceChildren(
+      selectOption("all", "All contacts"),
+      selectOption("online", "Online only"),
+      selectOption("room", "In this room"),
+    );
+    this.#newChatFilterSelect.value = "all";
+    this.#newChatFilterSelect.addEventListener("change", () => this.#renderKnownContacts());
+    this.#newChatSortSelect.replaceChildren(
+      selectOption("online", "Online first"),
+      selectOption("alphabetical", "A–Z"),
+    );
+    this.#newChatSortSelect.value = "online";
+    this.#newChatSortSelect.addEventListener("change", () => this.#renderKnownContacts());
 
     const body = element(
       "div",
       { className: "kl-dialog-body kl-new-chat-body" },
       this.#newChatQuery,
-      element("div", { className: "kl-contact-heading", text: "Known contacts" }),
+      element(
+        "div",
+        { className: "kl-contact-toolbar" },
+        element("div", { className: "kl-contact-heading", text: "Known contacts" }),
+        element(
+          "div",
+          { className: "kl-contact-controls" },
+          this.#newChatFilterSelect,
+          this.#newChatSortSelect,
+        ),
+      ),
       this.#newChatResults,
     );
     const open = element("button", {
@@ -3000,6 +3136,54 @@ export class LinkChatView {
       if (file) void this.#prepareLocalImage(file);
     });
     this.#chooseImageFileButton.addEventListener("click", () => this.#imageFileInput.click());
+    this.#galleryRetentionSelect.replaceChildren(
+      selectOption("1h", "1 hour"),
+      selectOption("12h", "12 hours"),
+      selectOption("24h", "24 hours"),
+      selectOption("72h", "72 hours"),
+    );
+    this.#galleryRetentionSelect.value = this.settings.get().linkChat.imageUploads.retention;
+    this.#galleryRetentionSelect.addEventListener("change", () =>
+      this.#renderLocalImageComposeState());
+    this.#galleryRetentionField.append(
+      element("span", { text: "Litterbox lifetime" }),
+      this.#galleryRetentionSelect,
+    );
+    const galleryStorageChoices = ([
+      ["device", "lock", "This device", "Private · stays until you delete it"],
+      ["catbox", "star", "Catbox", "Public link · no expiry"],
+      ["litterbox", "status", "Litterbox", "Public link · expires automatically"],
+    ] as const).map(([storage, icon, title, description]) => {
+      const input = element("input") as HTMLInputElement;
+      input.type = "radio";
+      input.name = "kikilink-gallery-storage";
+      input.value = storage;
+      input.checked = storage === "device";
+      input.addEventListener("change", () => {
+        if (input.checked) this.#setGalleryFileStorage(storage);
+      });
+      const choice = element(
+        "label",
+        { className: "kl-gallery-storage-choice" },
+        input,
+        element("span", { className: "kl-gallery-storage-icon" }, kikiIcon(icon)),
+        element(
+          "span",
+          { className: "kl-gallery-storage-copy" },
+          element("strong", { text: title }),
+          element("small", { text: description }),
+        ),
+      );
+      choice.dataset.storage = storage;
+      return choice;
+    });
+    this.#galleryStorageOptions.append(
+      element("legend", { text: "Store this Gallery image" }),
+      ...galleryStorageChoices,
+      this.#galleryRetentionField,
+    );
+    this.#galleryStorageOptions.hidden = true;
+    this.#imageFilePrivacyIcon.append(kikiIcon("lock"));
     const setupUploads = element("button", {
       className: "kl-text-button kl-image-upload-setup",
       type: "button",
@@ -3019,13 +3203,12 @@ export class LinkChatView {
         setupUploads,
         this.#imageFileInput,
       ),
+      this.#galleryStorageOptions,
       element(
         "p",
         { className: "kl-image-upload-note kl-image-file-privacy" },
-        kikiIcon("lock"),
-        element("span", {
-          text: "Nothing uploads on selection. KikiLink removes the filename and metadata first. Chat sharing creates an expiring Litterbox link; adding to Gallery keeps the prepared file only on this device.",
-        }),
+        this.#imageFilePrivacyIcon,
+        this.#imageFilePrivacyText,
       ),
     );
     const sourceTabs = element(
@@ -3244,8 +3427,10 @@ export class LinkChatView {
     this.#imageDestination = destination;
     this.#imageDialogTitle.textContent = destination === "gallery" ? "Add to Gallery" : "Send an image";
     this.#imageDialogSubtitle.textContent = destination === "gallery"
-      ? "Save a direct link, or keep a privacy-prepared local image on this device until you delete it."
+      ? "Save a direct link, keep a prepared file private, or upload it to Catbox/Litterbox."
       : "A normal Beep link for everyone; an inline preview for KikiLink.";
+    this.#galleryStorageOptions.hidden = destination !== "gallery";
+    this.#setGalleryFileStorage("device");
     this.#resetLocalImage();
     this.#imageUrlInput.value = "";
     this.#renderImageComposePreview();
@@ -3267,6 +3452,29 @@ export class LinkChatView {
     this.#imageFileTab.tabIndex = linkActive ? -1 : 0;
     if (linkActive) this.#renderImageComposePreview();
     else this.#renderLocalImageComposeState();
+  }
+
+  #setGalleryFileStorage(storage: GalleryFileStorage): void {
+    this.#galleryFileStorage = storage;
+    for (const input of this.#galleryStorageOptions.querySelectorAll<HTMLInputElement>(
+      "input[type='radio']",
+    )) {
+      input.checked = input.value === storage;
+      input.closest<HTMLElement>(".kl-gallery-storage-choice")!.dataset.active = String(input.checked);
+    }
+    this.#galleryRetentionField.hidden = storage !== "litterbox";
+    this.#imageFilePrivacyIcon.replaceChildren(
+      kikiIcon(this.#imageDestination !== "gallery" || storage === "device" ? "lock" : "external"),
+    );
+    this.#imageFilePrivacyText.textContent =
+      this.#imageDestination !== "gallery"
+        ? "Nothing uploads on selection. KikiLink removes the filename and metadata first; only Upload & send creates an expiring Litterbox link."
+        : storage === "device"
+          ? "Nothing uploads. The prepared image stays privately in this browser until you delete it."
+          : storage === "catbox"
+            ? "Nothing uploads on selection. Saving creates a public Catbox link without an automatic expiry."
+            : "Nothing uploads on selection. Saving creates a public Litterbox link for the lifetime you choose.";
+    if (this.#imageSourceMode === "file") this.#renderLocalImageComposeState();
   }
 
   #handleImageSourceTabKey(event: KeyboardEvent): void {
@@ -3315,19 +3523,26 @@ export class LinkChatView {
   #renderLocalImageComposeState(): void {
     const settings = this.settings.get().linkChat.imageUploads;
     const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
-    const deviceGallery = this.#imageDestination === "gallery";
+    const gallery = this.#imageDestination === "gallery";
+    const storage = this.#galleryFileStorage;
     const setupButton = this.#imageFilePanel.querySelector<HTMLButtonElement>(
       ".kl-image-upload-setup",
     );
-    setupButton?.toggleAttribute("hidden", deviceGallery || config !== null);
-    this.#chooseImageFileButton.hidden = !deviceGallery && config === null;
+    setupButton?.toggleAttribute("hidden", gallery || config !== null);
+    this.#chooseImageFileButton.hidden = !gallery && config === null;
     this.#chooseImageFileButton.disabled = this.#imageUploadBusy;
     this.#chooseImageFileButton.textContent = this.#preparedLocalImage
       ? "Choose another"
       : "Choose image";
-    this.#sendImageButton.textContent = deviceGallery ? "Save on this device" : "Upload & send";
+    this.#sendImageButton.textContent = gallery
+      ? storage === "device"
+        ? "Save on this device"
+        : storage === "catbox"
+          ? "Upload to Catbox"
+          : "Upload to Litterbox"
+      : "Upload & send";
     this.#sendImageButton.disabled =
-      this.#imageUploadBusy || (!deviceGallery && config === null) || this.#preparedLocalImage === undefined;
+      this.#imageUploadBusy || (!gallery && config === null) || this.#preparedLocalImage === undefined;
 
     if (this.#imageUploadBusy) {
       this.#localImageStatus.replaceChildren(
@@ -3335,11 +3550,17 @@ export class LinkChatView {
         element(
           "span",
           {},
-          element("strong", { text: deviceGallery ? "Saving to this device…" : "Uploading prepared image…" }),
+          element("strong", {
+            text: gallery
+              ? storage === "device"
+                ? "Saving to this device…"
+                : `Uploading to ${storage === "catbox" ? "Catbox" : "Litterbox"}…`
+              : "Uploading prepared image…",
+          }),
           element("small", {
-            text: deviceGallery
+            text: gallery && storage === "device"
               ? "The prepared copy stays inside this browser."
-              : "The original local file is not being sent.",
+              : "Only the privacy-prepared WebP is being sent; the original file stays local.",
           }),
         ),
       );
@@ -3347,7 +3568,7 @@ export class LinkChatView {
       return;
     }
 
-    if (!config && !deviceGallery) {
+    if (!config && !gallery) {
       this.#localImageStatus.replaceChildren(
         element("span", { className: "kl-image-compose-icon" }, kikiIcon("lock")),
         element(
@@ -3402,7 +3623,15 @@ export class LinkChatView {
       element(
         "span",
         {},
-        element("strong", { text: deviceGallery ? "Ready for permanent device storage" : "Prepared locally" }),
+        element("strong", {
+          text: gallery
+            ? storage === "device"
+              ? "Ready for private device storage"
+              : storage === "catbox"
+                ? "Ready for Catbox without expiry"
+                : `Ready for ${formatRetention(this.#galleryRetentionSelect.value as LitterboxUploadConfig["retention"])} Litterbox storage`
+            : "Prepared locally",
+        }),
         element("small", {
           text: `${prepared.width} × ${prepared.height} · ${formatBytes(prepared.blob.size)} · metadata removed`,
         }),
@@ -3497,13 +3726,34 @@ export class LinkChatView {
       this.#localImageError = undefined;
       this.#renderLocalImageComposeState();
       try {
-        await this.galleryStore.add({ blob: image.blob, width: image.width, height: image.height });
+        const storage = this.#galleryFileStorage;
+        let remoteUrl: string | undefined;
+        if (storage === "device") {
+          await this.galleryStore.add({ blob: image.blob, width: image.width, height: image.height });
+        } else if (storage === "catbox") {
+          remoteUrl = await this.catboxImageUpload(image);
+        } else {
+          const config = normalizeLitterboxUploadConfig({
+            retention: this.#galleryRetentionSelect.value,
+          });
+          if (!config) throw new Error("Choose a valid temporary image lifetime");
+          remoteUrl = await this.imageUploader.upload(image, config);
+        }
         if (token !== this.#imageUploadToken) return;
+        if (remoteUrl && !this.#saveGalleryImage(remoteUrl, Date.now(), false)) {
+          throw new Error("The image host returned a link KikiLink could not save");
+        }
         this.#imageUploadBusy = false;
         this.#imageDialog.close();
         this.#resetLocalImage();
         await this.#renderGallery();
-        this.#toast("Image saved permanently on this device. Nothing was uploaded.");
+        this.#toast(
+          storage === "device"
+            ? "Image saved permanently on this device. Nothing was uploaded."
+            : storage === "catbox"
+              ? "Image uploaded to Catbox and saved to Gallery without an automatic expiry."
+              : `Image uploaded to Litterbox and saved for ${formatRetention(this.#galleryRetentionSelect.value as LitterboxUploadConfig["retention"])}.`,
+        );
       } catch (error) {
         if (token !== this.#imageUploadToken) return;
         this.#imageUploadBusy = false;
@@ -3584,6 +3834,17 @@ export class LinkChatView {
         keywords: "start link deck overview dashboard",
         priority: 52,
         action: { kind: "workspace", target: "home" },
+      },
+      {
+        id: "destination-news",
+        kind: "destination",
+        icon: "note",
+        category: "Destination",
+        title: "News & changelog",
+        detail: `What is new in KikiLink v${this.version}`,
+        keywords: "news changelog release update version features fixes latest",
+        priority: 66,
+        action: { kind: "workspace", target: "news" },
       },
       {
         id: "destination-chat",
@@ -4009,8 +4270,8 @@ export class LinkChatView {
         .slice(0, 400);
       const savedCount = items.filter((item) => item.saved).length;
       this.#gallerySubtitle.textContent = items.length
-        ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` · ${savedCount} added directly` : ""}. Device files stay until you delete them.`
-        : "Images from saved chats and anything you add directly will appear here. Device files are kept until you delete them.";
+        ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` · ${savedCount} added directly` : ""}. Device files are private; Catbox and Litterbox entries use public links.`
+        : "Images from saved chats and anything you add directly will appear here. Choose private device storage, Catbox, or expiring Litterbox for local files.";
       this.#renderHomeStatus();
       if (items.length === 0) {
         this.#galleryGrid.replaceChildren(
@@ -4115,7 +4376,7 @@ export class LinkChatView {
     return card;
   }
 
-  #saveGalleryImage(value: string, addedAt = Date.now()): boolean {
+  #saveGalleryImage(value: string, addedAt = Date.now(), render = true): boolean {
     const url = normalizeImageUrl(value);
     if (!url || url.length > 500) {
       this.#toast("Use a direct HTTPS image link ending in a supported image extension.", "error");
@@ -4131,7 +4392,7 @@ export class LinkChatView {
       ];
     });
     this.#renderHomeStatus();
-    if (this.#workspaceView === "gallery") void this.#renderGallery();
+    if (render && this.#workspaceView === "gallery") void this.#renderGallery();
     return true;
   }
 
@@ -4440,7 +4701,7 @@ export class LinkChatView {
           element("h2", { text: "Live lobbies" }),
           element("p", {
             className: "kl-setting-help",
-            text: "Rooms containing your friends stay at the top. KikiLink refreshes only when you ask.",
+            text: "Favorite room names come first in gold; rooms with friends follow in your accent color. KikiLink refreshes only when you ask.",
           }),
         ),
         element(
@@ -4485,18 +4746,35 @@ export class LinkChatView {
 
   #renderLobbies(): void {
     const filter = this.#lobbyQuery.value.trim().toLocaleLowerCase();
-    const rooms = this.#lobbyRooms.filter((room) =>
-      !filter || `${room.name}\n${room.description}\n${room.language}`.toLocaleLowerCase().includes(filter),
+    const favoriteKeys = new Set(
+      this.settings.get().linkRoom.favoriteRoomNames.map(lobbyRoomNameKey),
     );
-    const friendRoomCount = rooms.filter((room) => room.friends.length > 0).length;
+    const rooms = this.#lobbyRooms
+      .map((room, index) => ({
+        room,
+        index,
+        favorite: favoriteKeys.has(lobbyRoomNameKey(room.name)),
+      }))
+      .filter(({ room }) =>
+        !filter || `${room.name}\n${room.description}\n${room.language}`.toLocaleLowerCase().includes(filter),
+      )
+      .sort((left, right) => {
+        const leftRank = left.favorite ? 2 : left.room.friends.length > 0 ? 1 : 0;
+        const rightRank = right.favorite ? 2 : right.room.friends.length > 0 ? 1 : 0;
+        return rightRank - leftRank || left.index - right.index;
+      });
+    const friendRoomCount = rooms.filter(({ room }) => room.friends.length > 0).length;
+    const favoriteRoomCount = rooms.filter(({ favorite }) => favorite).length;
     this.#lobbyStatus.textContent = rooms.length === 0
       ? `No rooms returned for ${lobbySpaceLabel(this.#lobbySpaceSelect.value)}.`
-      : `${rooms.length} rooms · ${friendRoomCount} with friends`;
+      : `${rooms.length} rooms · ${favoriteRoomCount} favorite${favoriteRoomCount === 1 ? "" : "s"} · ${friendRoomCount} with friends`;
     this.#lobbyStatus.dataset.state = rooms.length > 0 ? "ready" : "empty";
-    this.#lobbyList.replaceChildren(...rooms.map((room) => this.#lobbyCard(room)));
+    this.#lobbyList.replaceChildren(
+      ...rooms.map(({ room, favorite }) => this.#lobbyCard(room, favorite)),
+    );
   }
 
-  #lobbyCard(room: BCLobbyRoom): HTMLElement {
+  #lobbyCard(room: BCLobbyRoom, isFavorite: boolean): HTMLElement {
     const friends = element("div", { className: "kl-lobby-friends" });
     if (room.friends.length > 0) {
       for (const friend of room.friends.slice(0, 5)) {
@@ -4511,7 +4789,7 @@ export class LinkChatView {
     const flags = [
       room.language,
       room.creator ? `by ${room.creator}` : "",
-      room.mapType,
+      lobbyMapTypeLabel(room.mapType),
       room.locked ? "Locked" : "",
       room.privateRoom ? "Private" : "",
     ].filter(Boolean);
@@ -4522,6 +4800,15 @@ export class LinkChatView {
       onClick: () => this.#joinLobby(room),
     });
     join.disabled = !room.canJoin;
+    const favorite = element("button", {
+      className: "kl-icon-button kl-lobby-favorite",
+      type: "button",
+      title: isFavorite ? `Remove ${room.name} from favorites` : `Add ${room.name} to favorites`,
+      ariaLabel: isFavorite ? `Remove ${room.name} from favorite rooms` : `Add ${room.name} to favorite rooms`,
+      onClick: () => this.#toggleFavoriteLobby(room.name),
+    });
+    favorite.setAttribute("aria-pressed", String(isFavorite));
+    favorite.append(kikiIcon("star", "kl-lobby-favorite-icon", isFavorite));
     const card = element(
       "article",
       { className: "kl-lobby-card" },
@@ -4536,6 +4823,7 @@ export class LinkChatView {
         room.friends.length > 0
           ? element("span", { className: "kl-lobby-friend-label", text: `${room.friends.length} friend${room.friends.length === 1 ? "" : "s"}` })
           : null,
+        favorite,
       ),
       room.description
         ? element("p", { className: "kl-lobby-description", text: room.description })
@@ -4549,7 +4837,27 @@ export class LinkChatView {
       ),
     );
     card.dataset.hasFriends = String(room.friends.length > 0);
+    card.dataset.favorite = String(isFavorite);
     return card;
+  }
+
+  #toggleFavoriteLobby(roomName: string): void {
+    const key = lobbyRoomNameKey(roomName);
+    if (!key) return;
+    let added = false;
+    this.settings.update((draft) => {
+      const existing = draft.linkRoom.favoriteRoomNames.findIndex(
+        (name) => lobbyRoomNameKey(name) === key,
+      );
+      if (existing >= 0) {
+        draft.linkRoom.favoriteRoomNames.splice(existing, 1);
+      } else {
+        draft.linkRoom.favoriteRoomNames.unshift(roomName.trim());
+        added = true;
+      }
+    });
+    this.#renderLobbies();
+    this.#toast(added ? `${roomName} added to favorite rooms.` : `${roomName} removed from favorite rooms.`);
   }
 
   #joinLobby(room: BCLobbyRoom): void {
@@ -7617,14 +7925,46 @@ export class LinkChatView {
 
   #renderKnownContacts(): void {
     const query = this.#newChatQuery.value.trim().toLocaleLowerCase();
+    const onlineNumbers = new Set<number>();
+    const roomNumbers = new Set<number>();
+    let onlineSnapshotReady = false;
+    try {
+      for (const friend of this.adapter.getOnlineFriends()) onlineNumbers.add(friend.memberNumber);
+      onlineSnapshotReady = this.adapter.hasOnlineFriendSnapshot();
+    } catch {
+      // The native friend snapshot can be unavailable while BC changes screens.
+    }
+    try {
+      for (const character of this.adapter.getRoomCharacters()) roomNumbers.add(character.memberNumber);
+    } catch {
+      // Keep the dialog useful with the account contact list alone.
+    }
+    const filter = this.#newChatFilterSelect.value;
     const contacts = this.adapter
       .getKnownContacts()
-      .filter(
-        (contact) =>
-          !query ||
+      .map((contact) => ({
+        ...contact,
+        inRoom: roomNumbers.has(contact.memberNumber),
+        online: onlineNumbers.has(contact.memberNumber) || roomNumbers.has(contact.memberNumber),
+      }))
+      .filter((contact) =>
+        (!query ||
           contact.memberName.toLocaleLowerCase().includes(query) ||
-          contact.memberNumber.toString().includes(query),
+          contact.memberNumber.toString().includes(query)) &&
+        (filter !== "online" || contact.online) &&
+        (filter !== "room" || contact.inRoom),
       )
+      .sort((left, right) => {
+        if (this.#newChatSortSelect.value === "online") {
+          const leftRank = left.inRoom ? 2 : left.online ? 1 : 0;
+          const rightRank = right.inRoom ? 2 : right.online ? 1 : 0;
+          if (leftRank !== rightRank) return rightRank - leftRank;
+        }
+        return left.memberName.localeCompare(right.memberName, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      })
       .slice(0, 40);
 
     this.#newChatResults.replaceChildren();
@@ -7634,7 +7974,13 @@ export class LinkChatView {
           className: "kl-contact-empty",
           text:
             this.#connectionState === "ready"
-              ? "No matching known contacts. You can still enter a member number."
+              ? filter === "online"
+                ? onlineSnapshotReady
+                  ? "No matching contacts are online. You can still enter a member number."
+                  : "Online status is still loading. You can still enter a member number."
+                : filter === "room"
+                  ? "No matching contacts are in this room."
+                  : "No matching known contacts. You can still enter a member number."
               : "Contacts will appear after KikiLink connects to the game.",
         }),
       );
@@ -7643,6 +7989,13 @@ export class LinkChatView {
 
     for (const contact of contacts) {
       const presence = this.presence.get(contact.memberNumber);
+      const nativeState = contact.inRoom
+        ? "room"
+        : contact.online
+          ? "online"
+          : onlineSnapshotReady
+            ? "offline"
+            : "unknown";
       const button = element(
         "button",
         { className: "kl-contact", type: "button" },
@@ -7650,15 +8003,30 @@ export class LinkChatView {
           "div",
           { className: "kl-avatar-wrap" },
           this.#avatar(contact.memberName, contact.memberNumber),
-          presenceDot(presence.status),
+          presenceDot(presence.status === "unknown" && contact.online ? "online" : presence.status),
         ),
         element(
           "div",
           { className: "kl-contact-copy" },
           element("div", { className: "kl-contact-name", text: contact.memberName }),
-          element("div", { className: "kl-contact-number", text: `Member ${contact.memberNumber}` }),
+          element(
+            "div",
+            { className: "kl-contact-meta" },
+            element("span", { className: "kl-contact-number", text: `Member ${contact.memberNumber}` }),
+            element("span", {
+              className: "kl-contact-native-state",
+              text: contact.inRoom
+                ? "In this room"
+                : contact.online
+                  ? "Online"
+                  : onlineSnapshotReady
+                    ? "Offline"
+                    : "Status unknown",
+            }),
+          ),
         ),
       );
+      button.dataset.nativeState = nativeState;
       button.addEventListener("click", () => {
         this.#newChatDialog.close();
         void this.openChat(contact.memberNumber, contact.memberName);
@@ -8572,7 +8940,19 @@ export class LinkChatView {
   }
 
   #startPanelDrag(event: PointerEvent): void {
-    if (event.button !== 0 || this.#isMobileLayout()) return;
+    if (event.button !== 0 || this.#isMobileLayout() || this.#panelDrag) return;
+    const topbar = event.currentTarget;
+    for (const target of event.composedPath()) {
+      if (target === topbar) break;
+      if (
+        target instanceof Element &&
+        target.matches(
+          "button, a, input, select, textarea, label, [role='button'], [contenteditable='true'], [data-no-panel-drag]",
+        )
+      ) {
+        return;
+      }
+    }
     const rect = this.#panel.getBoundingClientRect();
     this.#panelDrag = {
       pointerId: event.pointerId,
@@ -9026,8 +9406,21 @@ function lobbySpaceLabel(value: string): string {
   return value === "X" ? "Mixed" : value === "M" ? "Male" : "Female";
 }
 
+function lobbyRoomNameKey(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLocaleLowerCase();
+}
+
+function lobbyMapTypeLabel(value: string): string {
+  const normalized = value.trim().toLocaleLowerCase();
+  if (!normalized) return "";
+  if (normalized === "never") return "Character view";
+  if (normalized === "always") return "Map view";
+  return `Map mode: ${value.trim()}`;
+}
+
 function rosterRelationshipLabel(relationship: PlayerRelationship): string {
   if (relationship === "owner") return "Owner";
+  if (relationship === "sub") return "Sub";
   if (relationship === "lover") return "Lover";
   if (relationship === "whitelist") return "Whitelist";
   if (relationship === "blacklist") return "Blacklist";
@@ -9036,6 +9429,7 @@ function rosterRelationshipLabel(relationship: PlayerRelationship): string {
 
 function rosterRelationshipDescription(relationship: PlayerRelationship): string {
   if (relationship === "owner") return "This player is your current owner";
+  if (relationship === "sub") return "This player is your BC submissive";
   if (relationship === "lover") return "This player is in your BC lover list";
   if (relationship === "whitelist") return "This player is on your BC whitelist";
   if (relationship === "blacklist") return "This player is on your BC blacklist";

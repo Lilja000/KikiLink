@@ -266,31 +266,37 @@ export class BCAdapter {
   }
 
   getPlayerRelationships(memberNumber: number): PlayerRelationship[] {
-    if (
-      !Number.isSafeInteger(memberNumber) ||
-      memberNumber < 0 ||
-      typeof Player !== "object" ||
-      Player === null
-    ) {
-      return [];
-    }
+    if (!Number.isSafeInteger(memberNumber) || memberNumber < 0) return [];
 
     const relationships: PlayerRelationship[] = [];
-    if (Player.Ownership?.MemberNumber === memberNumber) relationships.push("owner");
-    if (
-      Array.isArray(Player.Lovership) &&
-      Player.Lovership.some((relationship) => relationship?.MemberNumber === memberNumber)
-    ) {
-      relationships.push("lover");
-    }
-    if (Array.isArray(Player.WhiteList) && Player.WhiteList.includes(memberNumber)) {
-      relationships.push("whitelist");
-    }
-    if (Array.isArray(Player.BlackList) && Player.BlackList.includes(memberNumber)) {
-      relationships.push("blacklist");
-    }
-    if (Array.isArray(Player.GhostList) && Player.GhostList.includes(memberNumber)) {
-      relationships.push("ghosted");
+    if (typeof Player === "object" && Player !== null) {
+      if (Player.Ownership?.MemberNumber === memberNumber) relationships.push("owner");
+      const roomCharacter = this.#findRoomCharacter(memberNumber);
+      if (
+        roomCharacter?.Ownership?.MemberNumber === Player.MemberNumber ||
+        this.#onlineFriends.get(memberNumber)?.relationship === "sub"
+      ) {
+        relationships.push("sub");
+      }
+      if (
+        (Array.isArray(Player.Lovership) &&
+          Player.Lovership.some((relationship) => relationship?.MemberNumber === memberNumber)) ||
+        this.#onlineFriends.get(memberNumber)?.relationship === "lover"
+      ) {
+        relationships.push("lover");
+      }
+      if (Array.isArray(Player.WhiteList) && Player.WhiteList.includes(memberNumber)) {
+        relationships.push("whitelist");
+      }
+      if (Array.isArray(Player.BlackList) && Player.BlackList.includes(memberNumber)) {
+        relationships.push("blacklist");
+      }
+      if (Array.isArray(Player.GhostList) && Player.GhostList.includes(memberNumber)) {
+        relationships.push("ghosted");
+      }
+    } else {
+      const onlineRelationship = this.#onlineFriends.get(memberNumber)?.relationship;
+      if (onlineRelationship) relationships.push(onlineRelationship);
     }
     return relationships;
   }
@@ -1413,12 +1419,18 @@ export class BCAdapter {
         if (nickname) this.#nicknameCache.set(entry.MemberNumber, nickname);
         const roomName = "ChatRoomName" in entry ? cleanName(entry.ChatRoomName) : undefined;
         const roomSpace = "ChatRoomSpace" in entry ? cleanName(entry.ChatRoomSpace) : undefined;
+        const relationship = entry.Type === "Submissive"
+          ? "sub"
+          : entry.Type === "Lover"
+            ? "lover"
+            : undefined;
         return {
           memberNumber: entry.MemberNumber,
           memberName: nickname ?? (entry.MemberName.trim() || `Member ${entry.MemberNumber}`),
           privateRoom: "Private" in entry && entry.Private === true,
           ...(roomName ? { roomName } : {}),
           ...(roomSpace ? { roomSpace } : {}),
+          ...(relationship ? { relationship } : {}),
         };
       })
       .filter((entry): entry is OnlineFriend => entry !== null);
@@ -1431,6 +1443,7 @@ export class BCAdapter {
           friend.roomName ?? "",
           friend.roomSpace ?? "",
           friend.privateRoom ? 1 : 0,
+          friend.relationship ?? "",
         ].join("\u001f"),
       )
       .sort()

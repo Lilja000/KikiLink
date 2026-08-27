@@ -98,6 +98,29 @@ export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploa
   }
 }
 
+/** Uploads a privacy-prepared image to Catbox's long-lived public storage. */
+export async function uploadPreparedImageToCatbox(
+  image: PreparedLocalImage,
+  request?: typeof fetch,
+): Promise<string> {
+  validatePreparedImage(image);
+  const form = new FormData();
+  form.append("reqtype", "fileupload");
+  form.append("fileToUpload", preparedImageFile(image));
+  const response = await uploadMultipart(
+    CATBOX_UPLOAD_ENDPOINT,
+    form,
+    IMAGE_UPLOAD_TIMEOUT_MS,
+    request,
+  );
+  if (!response.ok) throw new Error(providerUploadError("Catbox", response));
+  const directUrl = normalizeImageUrl(response.body.trim());
+  if (!directUrl || !isExpectedCatboxImageUrl(directUrl)) {
+    throw new Error("Catbox returned an unexpected image link");
+  }
+  return directUrl;
+}
+
 export async function uploadLocalRoomAudio(
   file: File,
   config: LitterboxUploadConfig,
@@ -386,6 +409,19 @@ function isExpectedLitterboxUrl(value: string): boolean {
   return (
     url.protocol === "https:" &&
     url.hostname === "litter.catbox.moe" &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    /^\/[a-z0-9_-]+\.webp$/iu.test(url.pathname)
+  );
+}
+
+function isExpectedCatboxImageUrl(value: string): boolean {
+  const url = new URL(value);
+  return (
+    url.protocol === "https:" &&
+    url.hostname === "files.catbox.moe" &&
     !url.username &&
     !url.password &&
     !url.search &&

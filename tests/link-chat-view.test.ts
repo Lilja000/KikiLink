@@ -179,18 +179,32 @@ describe("LinkChatView", () => {
     const updateRoomCustomization = vi.fn();
     const runRoomMemberAction = vi.fn();
     const applyRoomPreset = vi.fn();
-    const searchRooms = vi.fn(async () => [{
-      name: "Friends Lounge",
-      description: "Meet friends",
-      language: "EN",
-      memberCount: 4,
-      memberLimit: 10,
-      canJoin: true,
-      locked: false,
-      privateRoom: false,
-      mapType: "",
-      friends: [{ memberNumber: 123, memberName: "Reina" }],
-    }]);
+    const searchRooms = vi.fn(async () => [
+      {
+        name: "Friends Lounge",
+        description: "Meet friends",
+        language: "EN",
+        memberCount: 4,
+        memberLimit: 10,
+        canJoin: true,
+        locked: false,
+        privateRoom: false,
+        mapType: "Never",
+        friends: [{ memberNumber: 123, memberName: "Reina" }],
+      },
+      {
+        name: "Golden Den",
+        description: "A recurring room",
+        language: "EN",
+        memberCount: 2,
+        memberLimit: 8,
+        canJoin: true,
+        locked: false,
+        privateRoom: false,
+        mapType: "Always",
+        friends: [],
+      },
+    ]);
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
@@ -300,7 +314,20 @@ describe("LinkChatView", () => {
       expect(searchRooms).toHaveBeenCalledWith("", "X");
       expect(shadow?.querySelector(".kl-lobby-card")?.textContent).toContain("Friends Lounge");
       expect(shadow?.querySelector(".kl-lobby-friend-avatar")?.getAttribute("title")).toContain("Reina");
+      expect(shadow?.querySelector(".kl-lobby-list")?.textContent).toContain("Character view");
+      expect(shadow?.querySelector(".kl-lobby-list")?.textContent).toContain("Map view");
+      expect(shadow?.querySelector(".kl-lobby-list")?.textContent).not.toContain("Never");
     });
+    const goldenCard = [...(shadow?.querySelectorAll<HTMLElement>(".kl-lobby-card") ?? [])]
+      .find((card) => card.textContent?.includes("Golden Den"));
+    goldenCard?.querySelector<HTMLButtonElement>(".kl-lobby-favorite")?.click();
+    expect(settings.get().linkRoom.favoriteRoomNames).toEqual(["Golden Den"]);
+    expect(shadow?.querySelector(".kl-lobby-name")?.textContent).toBe("Golden Den");
+    expect(shadow?.querySelector<HTMLElement>(".kl-lobby-card")?.dataset.favorite).toBe("true");
+    const friendCard = [...(shadow?.querySelectorAll<HTMLElement>(".kl-lobby-card") ?? [])]
+      .find((card) => card.textContent?.includes("Friends Lounge"));
+    expect(friendCard?.dataset.hasFriends).toBe("true");
+    expect(friendCard?.dataset.favorite).toBe("false");
     [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-room-subnav-button") ?? [])]
       .find((button) => button.textContent === "Presets")
       ?.click();
@@ -1093,6 +1120,8 @@ describe("LinkChatView", () => {
       }),
       close: vi.fn(),
     };
+    const catboxImageUpload = vi.fn(async () =>
+      "https://files.catbox.moe/permanent-gallery.webp");
     const view = new LinkChatView(
       adapter,
       service,
@@ -1105,6 +1134,7 @@ describe("LinkChatView", () => {
       undefined,
       undefined,
       galleryStore,
+      catboxImageUpload,
     );
     view.mount();
     await view.openChat(123, "Reina");
@@ -1185,6 +1215,78 @@ describe("LinkChatView", () => {
       );
     });
     expect(imageUploader.upload).not.toHaveBeenCalled();
+    expect(sendBeep).not.toHaveBeenCalled();
+
+    vi.mocked(imageUploader.prepare).mockClear();
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-header-actions button") ?? [])]
+      .find((button) => button.textContent === "Add image")
+      ?.click();
+    shadow?.querySelector<HTMLButtonElement>("#kikilink-image-source-file")?.click();
+    const catboxFileInput = shadow?.querySelector<HTMLInputElement>(
+      "#kikilink-image-file-panel input[type=file]",
+    );
+    if (!catboxFileInput) throw new Error("Missing Catbox Gallery file input");
+    const catboxFile = new File([Uint8Array.of(0xff, 0xd8, 0xff)], "catbox.jpg", {
+      type: "image/jpeg",
+    });
+    Object.defineProperty(catboxFileInput, "files", { configurable: true, value: [catboxFile] });
+    catboxFileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(imageUploader.prepare).toHaveBeenCalledWith(catboxFile));
+    const catboxStorage = shadow?.querySelector<HTMLInputElement>(
+      'input[name="kikilink-gallery-storage"][value="catbox"]',
+    );
+    if (!catboxStorage) throw new Error("Missing Catbox Gallery choice");
+    catboxStorage.checked = true;
+    catboxStorage.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(shadow?.querySelector(".kl-image-dialog .kl-text-button--primary")?.textContent).toBe(
+      "Upload to Catbox",
+    );
+    expect(shadow?.querySelector<HTMLElement>(".kl-gallery-retention-field")?.hidden).toBe(true);
+    shadow?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")?.click();
+    await vi.waitFor(() => {
+      expect(catboxImageUpload).toHaveBeenCalledWith(expect.objectContaining({ blob: preparedBlob }));
+      expect(settings.get().linkChat.gallery.saved[0]?.url).toBe(
+        "https://files.catbox.moe/permanent-gallery.webp",
+      );
+      expect(shadow?.querySelector(".kl-gallery-grid")?.textContent).toContain("Catbox");
+    });
+
+    vi.mocked(imageUploader.prepare).mockClear();
+    vi.mocked(imageUploader.upload).mockClear();
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-header-actions button") ?? [])]
+      .find((button) => button.textContent === "Add image")
+      ?.click();
+    shadow?.querySelector<HTMLButtonElement>("#kikilink-image-source-file")?.click();
+    const litterboxFileInput = shadow?.querySelector<HTMLInputElement>(
+      "#kikilink-image-file-panel input[type=file]",
+    );
+    if (!litterboxFileInput) throw new Error("Missing Litterbox Gallery file input");
+    const litterboxFile = new File([Uint8Array.of(0xff, 0xd8, 0xff)], "temporary.jpg", {
+      type: "image/jpeg",
+    });
+    Object.defineProperty(litterboxFileInput, "files", {
+      configurable: true,
+      value: [litterboxFile],
+    });
+    litterboxFileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(imageUploader.prepare).toHaveBeenCalledWith(litterboxFile));
+    const litterboxStorage = shadow?.querySelector<HTMLInputElement>(
+      'input[name="kikilink-gallery-storage"][value="litterbox"]',
+    );
+    const galleryRetention = shadow?.querySelector<HTMLSelectElement>(".kl-gallery-retention");
+    if (!litterboxStorage || !galleryRetention) throw new Error("Missing Litterbox Gallery controls");
+    litterboxStorage.checked = true;
+    litterboxStorage.dispatchEvent(new Event("change", { bubbles: true }));
+    galleryRetention.value = "72h";
+    galleryRetention.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(shadow?.querySelector<HTMLElement>(".kl-gallery-retention-field")?.hidden).toBe(false);
+    shadow?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")?.click();
+    await vi.waitFor(() => {
+      expect(imageUploader.upload).toHaveBeenCalledWith(
+        expect.objectContaining({ blob: preparedBlob }),
+        { retention: "72h" },
+      );
+    });
     expect(sendBeep).not.toHaveBeenCalled();
     view.destroy();
   });
@@ -1552,7 +1654,7 @@ describe("LinkChatView", () => {
         { memberNumber: 123, memberName: "Reina", accountName: "AccountReina", isFriend: true },
       ],
       isKnownFriend: () => true,
-      getPlayerRelationships: () => ["owner", "lover", "whitelist", "blacklist", "ghosted"],
+      getPlayerRelationships: () => ["owner", "sub", "lover", "whitelist", "blacklist", "ghosted"],
       getCurrentRoomName: () => "Moon Garden",
       isInChatRoom: () => true,
       canSendBeep: () => true,
@@ -1594,6 +1696,7 @@ describe("LinkChatView", () => {
     expect(rosterBadges).toContain("HERE");
     expect(rosterBadges).toContain("FRIEND");
     expect(rosterBadges).toContain("OWNER");
+    expect(rosterBadges).toContain("SUB");
     expect(rosterBadges).toContain("LOVER");
     expect(rosterBadges).toContain("WHITELIST");
     expect(rosterBadges).toContain("BLACKLIST");
@@ -1731,6 +1834,131 @@ describe("LinkChatView", () => {
     contact?.click();
     await vi.waitFor(() => {
       expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Mina");
+    });
+    view.destroy();
+  });
+
+  it("filters new chats by native availability and can sort contacts A–Z", () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [
+        { memberNumber: 1, memberName: "Amy" },
+        { memberNumber: 2, memberName: "Zed" },
+        { memberNumber: 3, memberName: "Bea" },
+      ],
+      getOnlineFriends: () => [{
+        memberNumber: 2,
+        memberName: "Zed",
+        privateRoom: false,
+      }],
+      getRoomCharacters: () => [{ memberNumber: 3, memberName: "Bea" }],
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.23.0",
+    );
+    view.mount();
+    const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('button[title="New Beep chat"]')?.click();
+
+    expect([...shadow!.querySelectorAll(".kl-contact-name")].map((node) => node.textContent)).toEqual([
+      "Bea",
+      "Zed",
+      "Amy",
+    ]);
+    const filter = shadow?.querySelector<HTMLSelectElement>(".kl-new-chat-filter");
+    const sort = shadow?.querySelector<HTMLSelectElement>(".kl-new-chat-sort");
+    if (!filter || !sort) throw new Error("Missing new-chat contact controls");
+    filter.value = "online";
+    filter.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(shadow?.querySelectorAll(".kl-contact")).toHaveLength(2);
+    expect(shadow?.querySelector(".kl-contact-native-state")?.textContent).toBe("In this room");
+
+    filter.value = "room";
+    filter.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(shadow?.querySelectorAll(".kl-contact")).toHaveLength(1);
+    expect(shadow?.querySelector(".kl-contact-name")?.textContent).toBe("Bea");
+
+    filter.value = "all";
+    sort.value = "alphabetical";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(shadow?.querySelector(".kl-contact-name")?.textContent).toBe("Amy");
+    view.destroy();
+  });
+
+  it("opens News beside the brand and drags only from non-interactive top-bar space", async () => {
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.23.0",
+    );
+    view.mount();
+    await view.open();
+    const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
+    const brand = shadow?.querySelector(".kl-brand");
+    const news = shadow?.querySelector<HTMLButtonElement>(".kl-news-trigger");
+    expect(brand?.nextElementSibling).toBe(news);
+    news?.click();
+    expect(shadow?.querySelector<HTMLElement>(".kl-panel")?.dataset.workspace).toBe("news");
+    expect(shadow?.querySelector<HTMLElement>(".kl-news-page")?.hidden).toBe(false);
+    expect(shadow?.querySelector('[data-version="0.23.0"]')?.textContent).toContain("Current");
+    expect(shadow?.querySelector(".kl-news-page")?.textContent).toContain("Favorite live room names");
+
+    const topbar = shadow?.querySelector<HTMLElement>(".kl-topbar");
+    if (!topbar || !news) throw new Error("Missing top-bar controls");
+    topbar.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, pointerId: 8, clientX: 10, clientY: 10 }),
+    );
+    topbar.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, pointerId: 8, clientX: 120, clientY: 100 }),
+    );
+    topbar.dispatchEvent(
+      new PointerEvent("pointerup", { bubbles: true, pointerId: 8, clientX: 120, clientY: 100 }),
+    );
+    expect(settings.get().ui.panelPosition).not.toBeNull();
+
+    settings.update((draft) => {
+      draft.ui.panelPosition = null;
+    });
+    const blockedTargets = [
+      news,
+      shadow?.querySelector<HTMLElement>(".kl-presence-trigger"),
+      shadow?.querySelector<HTMLElement>(".kl-topbar-settings"),
+    ];
+    blockedTargets.forEach((target, index) => {
+      if (!target) throw new Error("Missing an interactive top-bar drag blocker");
+      const pointerId = 9 + index;
+      target.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, pointerId, clientX: 10, clientY: 10 }),
+      );
+      target.dispatchEvent(
+        new PointerEvent("pointermove", { bubbles: true, pointerId, clientX: 140, clientY: 120 }),
+      );
+      target.dispatchEvent(
+        new PointerEvent("pointerup", { bubbles: true, pointerId, clientX: 140, clientY: 120 }),
+      );
+      expect(settings.get().ui.panelPosition).toBeNull();
     });
     view.destroy();
   });

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.23.0 - 2026-08-27
+
+- Added a dedicated `News` tab immediately beside the KikiLink brand. It presents a curated,
+  in-addon changelog with the current release highlighted and a link to the complete project log.
+- Expanded desktop window dragging from the brand to every genuinely empty part of the top bar.
+  Profile/Status, News, Find, Settings, Close, links, fields, labels, the clock, and the workspace
+  label remain normal controls and never begin a drag.
+- Added account-scoped favorite lobby names. Matching live rooms are sorted ahead of friend rooms,
+  use a gold outline and filled star, and can be added or removed directly from each room card.
+  Rooms containing friends now use the selected accent instead of gold.
+- Replaced Bondage Club's raw lobby map values: `Never` is shown as `Character view` and `Always`
+  as `Map view`, while unknown future modes receive an explicit `Map mode` label.
+- Added compact New Beep controls for `All contacts`, `Online only`, or `In this room`, plus
+  `Online first` and `A–Z` sorting. The default keeps in-room and online contacts above offline
+  names while preserving direct member-number entry.
+- Added the missing `Sub` player relationship. KikiLink combines the current room character's
+  native owner record with Bondage Club's `Submissive` online-friend category, and deduplicates it
+  with the existing Owner, Lover, Whitelist, Blacklist, and Ghosted tags.
+- Expanded local-file Gallery storage into three explicit, opt-in choices: private permanent
+  storage on this device, public Catbox without automatic expiry, or public Litterbox for 1, 12,
+  24, or 72 hours. Selection still performs no network request; only the final save action uploads
+  the privacy-prepared, metadata-free WebP.
+- Bumped the settings schema to 23 with bounded, case-insensitive favorite-room sanitization and
+  added end-to-end regressions for News, safe drag targets, lobby ordering/colors, map labels,
+  contact filtering, native Sub detection, and both Gallery hosts.
+
 ## 0.22.12 - 2026-08-27
 
 - Moved the default Blossom from the clipped right edge into a stacked slot directly below Echo's

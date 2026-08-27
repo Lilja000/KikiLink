@@ -58,6 +58,11 @@ declare global {
     MemberNumber: number;
     Name: string;
     Nickname?: string;
+    Ownership?: {
+      MemberNumber?: number;
+      Name?: string;
+      Stage?: number;
+    } | null;
     FocusGroup?: BCAssetGroup | null;
     GetPronouns?(): "SheHer" | "HeHim" | "TheyThem" | "ItIt";
   }

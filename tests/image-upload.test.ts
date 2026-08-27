@@ -9,6 +9,7 @@ import {
   normalizeLitterboxUploadConfig,
   uploadLocalRoomAudio,
   uploadMusicToCatbox,
+  uploadPreparedImageToCatbox,
   validateLocalImageFile,
   type PreparedLocalImage,
 } from "../src/modules/link-chat/image-upload";
@@ -97,6 +98,27 @@ describe("local image uploads", () => {
     expect(uploaded).toBeInstanceOf(File);
     expect((uploaded as File).name).toBe("kikilink-image.webp");
     expect((uploaded as File).type).toBe("image/webp");
+  });
+
+  it("uploads a prepared generic WebP to long-lived Catbox storage", async () => {
+    const request = vi.fn<typeof fetch>(async () =>
+      new Response("https://files.catbox.moe/gallery_123.webp\n", { status: 200 }));
+    const image: PreparedLocalImage = {
+      blob: new Blob([bytes(1, 2, 3)], { type: "image/webp" }),
+      width: 640,
+      height: 480,
+      sourceBytes: 1234,
+    };
+
+    await expect(uploadPreparedImageToCatbox(image, request)).resolves.toBe(
+      "https://files.catbox.moe/gallery_123.webp",
+    );
+    expect(request.mock.calls[0]?.[0]).toBe("https://catbox.moe/user/api.php");
+    const form = request.mock.calls[0]?.[1]?.body as FormData;
+    expect(form.get("reqtype")).toBe("fileupload");
+    const uploaded = form.get("fileToUpload") as File;
+    expect(uploaded.name).toBe("kikilink-image.webp");
+    expect(uploaded.type).toBe("image/webp");
   });
 
   it("retries one temporary Litterbox 500 response and succeeds without exposing HTML", async () => {

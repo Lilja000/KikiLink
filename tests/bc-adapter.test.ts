@@ -162,12 +162,20 @@ describe("BCAdapter", () => {
         { MemberNumber: 321, Name: "Mina", Stage: 1 },
       ],
     };
+    globalThis.ChatRoomCharacter = [
+      {
+        MemberNumber: 654,
+        Name: "AccountSub",
+        Ownership: { MemberNumber: 999, Name: "AccountKiki", Stage: 1 },
+      },
+    ];
 
     const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.20.9");
     expect(adapter.getPlayerRelationships(123)).toEqual(["owner", "lover", "whitelist"]);
     expect(adapter.getPlayerRelationships(321)).toEqual(["lover"]);
     expect(adapter.getPlayerRelationships(456)).toEqual(["blacklist"]);
     expect(adapter.getPlayerRelationships(789)).toEqual(["ghosted"]);
+    expect(adapter.getPlayerRelationships(654)).toEqual(["sub"]);
   });
 
   it("uses room nicknames and exposes the native session Beep history", () => {
@@ -546,6 +554,11 @@ describe("BCAdapter", () => {
           ChatRoomName: "Moon Garden",
           ChatRoomSpace: "MainHall",
         },
+        {
+          Type: "Submissive",
+          MemberNumber: 321,
+          MemberName: "AccountMina",
+        },
       ],
     });
     expect(adapter.getOnlineFriends()).toEqual([
@@ -556,7 +569,14 @@ describe("BCAdapter", () => {
         roomSpace: "MainHall",
         privateRoom: false,
       },
+      {
+        memberNumber: 321,
+        memberName: "AccountMina",
+        privateRoom: false,
+        relationship: "sub",
+      },
     ]);
+    expect(adapter.getPlayerRelationships(321)).toContain("sub");
     expect(adapter.isKnownFriend(123)).toBe(true);
     adapter.stop();
   });

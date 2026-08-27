@@ -11,7 +11,7 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.22.12` runs all Bondage Club and ModSDK integration in the page realm without reading
+Version `0.23.0` runs all Bondage Club and ModSDK integration in the page realm without reading
 `unsafeWindow`. Only structured upload fields cross into the DOM-only userscript sandbox for the narrowly
 granted Catbox/Litterbox request. The Blossom joins the same BC-native status-icon boundary as Echo
 and WCE exactly once and sits directly below Echo's clothing icon, clear of the chat edge. It is
@@ -31,6 +31,7 @@ lower-left corner.
   Gallery, and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
 - Your avatar, name, presence, custom status, and local time remain visible in the top bar
+- A News tab beside the KikiLink brand keeps the current release and recent changelog inside the addon
 - Six clear primary destinations: Home, Chat, Players, Room, Music, and Custom Activities
 - Persistent feature rail on desktop and a focused six-item bottom bar on phones
 - Players and Custom Activities stay inside the workspace instead of opening blocking dialogs
@@ -41,7 +42,7 @@ lower-left corner.
 - Contrast-aware text on every custom accent color
 - Larger mobile tap targets, visible focus states, current-page semantics, and keyboard-friendly settings
 - A button to reset the launcher position without dragging it
-- Drag the desktop window by its title bar and reset its position from Navigation settings
+- Drag the desktop window from the brand or any empty top-bar space; controls never steal a drag
 - Disabled optional features remain discoverable and lead directly to the correct setting
 
 ## LinkFinder
@@ -64,7 +65,7 @@ lower-left corner.
 - Visible player lists discover compatible KikiLink Presence through a quiet rate-limited queue
 - Small profile avatars load automatically in player identity controls; chat-image privacy remains
   governed independently by `Ask first`, `Always show`, or `Links only`
-- Account-derived Friend, Owner, Lover, Whitelist, Blacklist, and Ghosted badges
+- Account-derived Friend, Owner, Sub, Lover, Whitelist, Blacklist, and Ghosted badges
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - Private notes and searchable tags for individual players
 - Favorites that remain easy to find after leaving the room
@@ -115,7 +116,8 @@ so they can follow that same account to another device.
   the active chat, known contacts, and Players
 - Context actions for Message, Whisper, native Profile, favorites, notes, local nicknames,
   pinning, marking unread, per-chat removal, and copying the member ID
-- New-chat dialog with known-contact search and direct member-number entry
+- New-chat dialog with known-contact search, direct member-number entry, All/Online/In-room filters,
+  and Online-first or A–Z sorting
 - Editable Quick Actions with `{name}`, `{member}`, and `{me}` variables
 - Optional room information on outgoing Beeps
 - Immediate outgoing-message display independent of the compatibility hook
@@ -135,8 +137,9 @@ so they can follow that same account to another device.
 - A Room destination that reads the current room and enables editing only for native room admins
 - Background URL, native resize mode, music URL, and synchronized playback controls
 - Compact `Room`, `Lobbies`, and `Presets` subtools without another primary navigation tab
-- Manual native room-directory refresh, local filtering, friend-first ordering, and up to five
-  automatically loaded friend avatars per lobby
+- Manual native room-directory refresh, local filtering, favorite-first then friend-first ordering,
+  clear Character/Map view labels, and up to five automatically loaded friend avatars per lobby
+- Account-scoped favorite room names with gold cards; friend rooms use the selected accent color
 - Account-scoped room presets for name, description, native/custom backgrounds, music, size,
   language, access, limits, admins, whitelist, blacklist, and blocked categories
 - Applying a preset requires current room-admin rights and always preserves the current user as an admin;
@@ -149,8 +152,8 @@ so they can follow that same account to another device.
 - A lazy all-chat gallery deduplicates direct images across saved conversations and labels Catbox/Litterbox media
 - A visible Gallery Home card and labeled Chat button open the library without adding another main tab
 - Direct image links can be saved without sending a chat message; privacy-prepared local additions are
-  kept indefinitely in account-isolated IndexedDB on that device until explicitly deleted or browser
-  site data is cleared, and never require a hosting upload
+  either kept indefinitely in account-isolated IndexedDB on that device, uploaded to public Catbox
+  without automatic expiry, or uploaded to public Litterbox for a chosen 1–72 hour lifetime
 - Gallery Remove permanently deletes device-local images; removing a linked/chat card leaves its chat
   and remote file untouched
 - Gallery cards keep full image proportions, expose only `Show original`, reopen the source chat, and
@@ -245,7 +248,7 @@ Club emote path and are visible to everyone in the room.
 - Dark lacquer, light paper, and follow-system appearance modes
 - Red and gold design tokens shared by every LinkChat surface
 - Link Deck home with a context-aware next step, live feature status, and clear action labels
-- Desktop side navigation that becomes a four-destination mobile bottom bar
+- Desktop side navigation that becomes a six-destination mobile bottom bar
 - Custom accent color and configurable launcher destination
 - Comfortable/Compact/Super compact density, three text sizes, and Guided/Focused Home layouts
 - A calmer Super compact presentation that removes secondary chrome without hiding primary actions
@@ -266,7 +269,8 @@ uses the game's native Whisper and profile controls, and Custom Activities exten
 the game's native activity registry and action path. Image messages are ordinary HTTPS links, so other players
 do not need KikiLink to open them. Optional local-file sharing sends a privacy-prepared WebP
 directly to Litterbox only after `Upload & send`; it never passes through a KikiLink server.
-Manually added Gallery files remain device-local. Profile avatars are user-supplied direct HTTPS links. No remote KikiLink server is
+Manually added Gallery files stay device-local by default; Catbox and Litterbox require an explicit
+public-storage choice and final upload action. Profile avatars are user-supplied direct HTTPS links. No remote KikiLink server is
 used. Full data is stored locally under the authenticated MemberNumber; a bounded portable snapshot
 is stored in that same player's Bondage Club `ExtensionSettings` so settings, activities, profile
 preferences, notebook data, and recent chats can follow the account to another device. Presence uses
