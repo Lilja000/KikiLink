@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.22.8 - 2026-08-27
+
+- Restored the explicit `unsafeWindow` page-context bridge from the empirically working 0.20.6
+  release. Firefox can isolate a userscript as soon as `GM_xmlhttpRequest` is granted, so moving
+  `@sandbox raw` was not sufficient even though KikiLink's DOM interface still appeared.
+- Aligned the Blossom with the current addon icon paths used by Echo, WCE, and BCX: KikiLink now
+  joins only `ChatRoomDrawCharacterStatusIcons`, draws through BC's page-owned `DrawImageResize`,
+  and returns to Echo's established `CharX + 420×Zoom`, `CharY + 5`, `35×Zoom` slot.
+- Added a strictly room-gated DOM failsafe for the authenticated character when no successful
+  canvas draw is observed, while keeping it hidden whenever the native renderer is healthy.
+- Replaced the page-realm-only release check with an isolated Firefox-style runtime test. The
+  browser harness now requires an actual decoded Blossom image and non-transparent canvas pixels.
+
 ## 0.22.7 - 2026-08-27
 
 - Fixed the shared Firefox regression behind both the missing room Blossom and broken Custom

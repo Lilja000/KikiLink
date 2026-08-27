@@ -9,6 +9,8 @@ const CHARACTER_HEIGHT = 1_000;
 const BADGE_SIZE = 35;
 const BADGE_OPACITY = 0.78;
 const BADGE_DRAG_THRESHOLD = 5;
+const DOM_SYNC_INTERVAL_MS = 250;
+const CANVAS_FALLBACK_GRACE_MS = 1_000;
 const BLOSSOM_VIEWBOX_SIZE = 64;
 const BLOSSOM_PETAL_PATHS = [
   "M32 33C24 28 22 18 26 10c2-4 10-4 12 0 4 8 2 18-6 23Z",
@@ -58,10 +60,10 @@ interface BlossomVectorPaths {
 
 let blossomVectorPaths: BlossomVectorPaths | undefined;
 
-/** Slightly below the crowded native addon-icon row, clear of Echo/WCE/BCX status marks. */
+/** Echo's established addon-icon slot: CharX + 420×Zoom, CharY + 5, 35×Zoom. */
 export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
-  x: 0.78,
-  y: 0.045,
+  x: 0.84,
+  y: 0.005,
 });
 
 export { BLOSSOM_ICON_DATA_URL };
@@ -112,6 +114,8 @@ export class RoomBlossomBadge {
   #previousTouchAction = "";
   #settingsUnsubscribe: (() => void) | undefined;
   #unregisterOverlay: (() => void) | undefined;
+  #domSyncTimer: ReturnType<typeof setInterval> | undefined;
+  #ownCanvasRenderedAt = 0;
   #placementActive = false;
   #mounted = false;
   #destroyed = false;
@@ -122,7 +126,9 @@ export class RoomBlossomBadge {
     if (own) {
       this.#ownFrame = { x, y, zoom };
       if (this.#config.enabled && this.#iconsAreVisible()) {
-        this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame));
+        if (this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame))) {
+          this.#ownCanvasRenderedAt = Date.now();
+        }
       }
       this.#syncOwnElement();
       return;
@@ -259,6 +265,9 @@ export class RoomBlossomBadge {
     if (typeof this.#adapter.registerCharacterOverlay === "function") {
       this.#unregisterOverlay = this.#adapter.registerCharacterOverlay(this.#renderer);
     }
+    // This is a room-only failsafe, not the primary renderer. If a userscript manager or a late
+    // addon blocks the canvas hook, the local player's flower still follows BC's character frame.
+    this.#domSyncTimer = setInterval(() => this.#syncOwnElement(), DOM_SYNC_INTERVAL_MS);
     this.#syncOwnElement();
     window.addEventListener("keydown", this.#handleKeyDown);
   }
@@ -312,39 +321,42 @@ export class RoomBlossomBadge {
     this.#settingsUnsubscribe = undefined;
     this.#unregisterOverlay?.();
     this.#unregisterOverlay = undefined;
+    if (this.#domSyncTimer !== undefined) clearInterval(this.#domSyncTimer);
+    this.#domSyncTimer = undefined;
     this.#element.remove();
     this.#ownFrame = undefined;
     this.#mounted = false;
   }
 
   #draw(position: RoomBadgeCanvasPosition): boolean {
-    const context = mainCanvasContext();
-    if (!context) return false;
-    try {
-      // Draw from cached native canvas paths first. This has no image load, CORS, CSP, or BC image
-      // cache dependency, so the room icon is present on the first successful overlay frame.
-      if (drawVectorBlossom(context, position)) return true;
-
-      const source =
-        this.#fallbackImage?.complete && this.#fallbackImage.naturalWidth > 0
-          ? this.#fallbackImage
-          : BLOSSOM_ICON_DATA_URL;
-      // Older browsers without Path2D retain the same BC-native image path and a direct fallback.
-      if (typeof DrawImageResize === "function") {
+    // Echo uses this page-owned helper for the same status-icon row. Prefer it over passing a
+    // sandbox-owned Path2D or Image object into Firefox's page canvas.
+    if (typeof DrawImageResize === "function") {
+      try {
         return DrawImageResize(
-          source,
+          BLOSSOM_ICON_DATA_URL,
           position.left,
           position.top,
           position.size,
           position.size,
         );
-      } else if (typeof DrawImageCanvas === "function") {
-        return DrawImageCanvas(source, context, position.left, position.top, {
+      } catch {
+        // Continue to progressively older drawing fallbacks below.
+      }
+    }
+
+    const context = mainCanvasContext();
+    if (!context) return false;
+    try {
+      if (typeof DrawImageCanvas === "function") {
+        return DrawImageCanvas(BLOSSOM_ICON_DATA_URL, context, position.left, position.top, {
           Width: position.size,
           Height: position.size,
           Alpha: BADGE_OPACITY,
         });
-      } else if (this.#fallbackImage?.complete && this.#fallbackImage.naturalWidth > 0) {
+      }
+      if (drawVectorBlossom(context, position)) return true;
+      if (this.#fallbackImage?.complete && this.#fallbackImage.naturalWidth > 0) {
         context.save();
         context.globalAlpha = BADGE_OPACITY;
         context.drawImage(
@@ -369,16 +381,11 @@ export class RoomBlossomBadge {
 
   #syncOwnElement(): void {
     if (this.#destroyed || !this.#mounted) return;
-    // Normal play is canvas-only, exactly like native and Echo status icons. The DOM image exists
-    // solely as the explicit settings-armed drag handle, so it cannot float over profiles, vanilla
-    // menus, or other screens after the room renderer has stopped.
-    if (!this.#placementActive) {
-      this.#element.hidden = true;
-      this.#element.style.display = "none";
-      return;
-    }
     const inRoom =
-      typeof this.#adapter.isInChatRoom === "function" && this.#adapter.isInChatRoom();
+      typeof this.#adapter.isInChatRoom === "function" &&
+      this.#adapter.isInChatRoom() &&
+      typeof CurrentScreen === "string" &&
+      CurrentScreen === "ChatRoom";
     if (!this.#config.enabled || !this.#iconsAreVisible() || !inRoom) {
       this.#element.hidden = true;
       this.#element.style.display = "none";
@@ -405,6 +412,16 @@ export class RoomBlossomBadge {
       this.#previewPosition ?? this.#config.position,
       frame,
     );
+    // Keep canvas authoritative. The DOM copy appears only when no successful native draw was
+    // observed for a full second, or while the user explicitly moves the flower in settings.
+    if (
+      !this.#placementActive &&
+      Date.now() - this.#ownCanvasRenderedAt <= CANVAS_FALLBACK_GRACE_MS
+    ) {
+      this.#element.hidden = true;
+      this.#element.style.display = "none";
+      return;
+    }
     const scaleX = rect.width / canvas.width;
     const scaleY = rect.height / canvas.height;
     this.#element.hidden = false;

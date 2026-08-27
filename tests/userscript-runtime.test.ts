@@ -28,12 +28,15 @@ const GLOBAL_KEYS = [
   "ChatRoomCharacterViewLoopCharacters",
   "ChatRoomData",
   "ChatRoomDrawCharacterStatusIcons",
+  "ChatRoomGetSettings",
   "ChatRoomHideIconState",
   "ChatRoomMessage",
+  "ChatRoomPlayerIsAdmin",
   "ChatRoomPublishCustomAction",
   "ChatRoomSendEmote",
   "CurrentCharacter",
   "CurrentScreen",
+  "CurrentTime",
   "DialogActivity",
   "DialogBuildActivities",
   "DialogLeave",
@@ -46,6 +49,7 @@ const GLOBAL_KEYS = [
   "GameVersion",
   "KikiLink",
   "MainCanvas",
+  "LZString",
   "Player",
   "PreferenceGetActivityFactor",
   "ServerAccountBeep",
@@ -53,10 +57,16 @@ const GLOBAL_KEYS = [
   "ServerIsLoggedIn",
   "ServerPlayerExtensionSettingsSync",
   "ServerPlayerIsInChatRoom",
+  "ServerRoomSearch",
   "ServerSend",
   "ServerSendBeepMessage",
   "ServerSocket",
+  "unsafeWindow",
 ] as const;
+
+const PAGE_GLOBAL_KEYS = GLOBAL_KEYS.filter(
+  (key) => key !== "alert" && key !== "KikiLink" && key !== "unsafeWindow",
+);
 
 afterEach(async () => {
   const api = (window as unknown as { KikiLink?: { destroy(): Promise<void> } }).KikiLink;
@@ -72,18 +82,15 @@ afterEach(async () => {
 });
 
 describe("published userscript runtime", () => {
-  it("keeps Firefox in the page realm while granting only the Catbox upload bridges", () => {
-    const metadata = USER_SCRIPT.slice(0, USER_SCRIPT.indexOf("// ==/UserScript=="));
-    const metadataLines = metadata.split("\n");
-    // Tampermonkey Firefox has historically required raw to be the first metadata directive.
-    // Keeping it here prevents GM_xmlhttpRequest from silently isolating every BC hook.
-    expect(metadataLines[1]).toBe("// @sandbox      raw");
-    expect(USER_SCRIPT).toContain("// @sandbox      raw");
+  it("keeps the upload grant in a bridgeable Firefox sandbox", () => {
+    expect(USER_SCRIPT).toContain("// @sandbox      JavaScript");
+    expect(USER_SCRIPT).toContain("// @grant        unsafeWindow");
     expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
     expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
     expect(USER_SCRIPT).toContain("// @connect      litterbox.catbox.moe");
     expect(USER_SCRIPT).not.toContain("// @connect      waifuvault.moe");
     expect(USER_SCRIPT).not.toContain("// @grant        none");
+    expect(USER_SCRIPT).toContain("installBCPageContextBridge");
   });
 
   it("starts the repaired bundle even when an older partial release cannot clean up", async () => {
@@ -166,18 +173,20 @@ describe("published userscript runtime", () => {
     });
     setGlobal("DrawImageResize", vi.fn(() => true));
 
+    const pageWindow = isolateBCGlobals();
+    expect(window.eval("typeof ChatRoomDrawCharacterStatusIcons")).toBe("undefined");
     window.eval(USER_SCRIPT);
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
-    const statusIcons = getGlobal<
+    const statusIcons = pageWindow.ChatRoomDrawCharacterStatusIcons as (
       (character: typeof player, x: number, y: number, zoom: number) => void
-    >("ChatRoomDrawCharacterStatusIcons");
-    expect(statusIcons).not.toBe(sharedRouter);
+    );
+    expect(statusIcons).toBe(sharedRouter);
     expect(() => statusIcons(player, 100, 0, 1)).not.toThrow();
     expect(calls).toEqual(["echo", "afc", "native"]);
-    expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
+    expect(pageWindow.DrawImageResize).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
-      490,
-      45,
+      520,
+      5,
       35,
       35,
     );
@@ -186,33 +195,14 @@ describe("published userscript runtime", () => {
       name: "ChatRoomDrawCharacterStatusIcons",
       priority: 10,
     });
+    expect(pageWindow.KikiLink).toBe(getGlobal("KikiLink"));
 
-    const draw = getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize");
-    const drawsBeforeReplacement = draw.mock.calls.length;
-    const lateReplacement = vi.fn(() => calls.push("late replacement"));
-    setGlobal("ChatRoomDrawCharacterStatusIcons", lateReplacement);
-    await new Promise<void>((resolve) => setTimeout(resolve, 550));
-    calls.length = 0;
-    getGlobal<(character: typeof player, x: number, y: number, zoom: number) => void>(
-      "ChatRoomDrawCharacterStatusIcons",
-    )(player, 130, 20, 0.5);
-    expect(lateReplacement).toHaveBeenCalledOnce();
-    expect(calls).toEqual(["late replacement"]);
-    expect(draw).toHaveBeenCalledTimes(drawsBeforeReplacement + 1);
-    expect(draw).toHaveBeenLastCalledWith(
-      expect.stringContaining("data:image/svg+xml"),
-      325,
-      42.5,
-      17.5,
-      17.5,
-    );
-
-    await getGlobal<{ destroy(): Promise<void> }>("KikiLink").destroy();
+    await pageWindow.KikiLink.destroy();
     echo.unload();
     afc.unload();
   });
 
-  it("keeps native integrations working without cross-realm objects when ModSDK is blocked", async () => {
+  it("bridges a granted userscript sandbox to page-owned Blossom and activity functions", async () => {
     const registerMod = vi.fn(() => {
       throw new Error("Duplicate addon intentionally blocks ModSDK registration");
     });
@@ -451,13 +441,14 @@ describe("published userscript runtime", () => {
       }),
     );
 
-    expect(USER_SCRIPT).toContain("// @sandbox      raw");
+    const pageWindow = isolateBCGlobals();
+    expect(USER_SCRIPT).toContain("// @sandbox      JavaScript");
+    expect(USER_SCRIPT).toContain("// @grant        unsafeWindow");
     expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
     expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
     expect(USER_SCRIPT).toContain("// @connect      litterbox.catbox.moe");
-    expect(USER_SCRIPT).not.toContain("unsafeWindow");
-    expect(USER_SCRIPT).not.toContain("installBCPageContextBridge");
-    expect(window.eval("typeof ServerSendBeepMessage")).toBe("function");
+    expect(USER_SCRIPT).toContain("installBCPageContextBridge");
+    expect(window.eval("typeof ServerSendBeepMessage")).toBe("undefined");
     window.eval(USER_SCRIPT);
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
     getGlobal<(character: typeof player, x: number, y: number, zoom: number) => void>(
@@ -502,6 +493,11 @@ describe("published userscript runtime", () => {
           ?.shadowRoot?.querySelector(".kl-messages")?.textContent,
       ).toContain("Runtime message sent through LianChat");
     });
+    // Real BC calls this boundary every room frame. Refresh once here so a deliberately slow test
+    // run does not activate the one-second DOM failsafe intended for a genuinely blocked hook.
+    getGlobal<(character: typeof player, x: number, y: number, zoom: number) => void>(
+      "ChatRoomDrawCharacterStatusIcons",
+    )(player, 100, 0, 1);
     const version = document.querySelector<HTMLElement>("#kikilink-version");
     const blossom = document.querySelector<HTMLElement>(".kl-room-blossom");
     const activityMark = grid.querySelector<HTMLElement>("[data-kikilink-activity-mark]");
@@ -515,23 +511,24 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.22.7");
-    expect(version?.textContent).toBe("0.22.7");
+    expect(pageWindow.KikiLink).toBe(api);
+    expect(api.getVersion()).toBe("0.22.8");
+    expect(version?.textContent).toBe("0.22.8");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
     expect(blossom?.style.display).toBe("none");
     expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
-      490,
-      45,
+      520,
+      5,
       35,
       35,
     );
     expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
-      990,
-      45,
+      1020,
+      5,
       35,
       35,
     );
@@ -643,6 +640,22 @@ function setGlobal(name: string, value: unknown): void {
 
 function getGlobal<T>(name: string): T {
   return (window as unknown as Record<string, unknown>)[name] as T;
+}
+
+/**
+ * Models Firefox/Tampermonkey after a GM grant: DOM access remains local, while BC globals live on
+ * unsafeWindow. This is the exact split that allowed KikiLink's panel to appear while its flower
+ * and custom activities silently disappeared.
+ */
+function isolateBCGlobals(): Record<string, any> {
+  const page: Record<string, any> = {};
+  for (const key of PAGE_GLOBAL_KEYS) {
+    if (Reflect.has(window, key)) page[key] = getGlobal(key);
+    Reflect.deleteProperty(globalThis, key);
+    Reflect.deleteProperty(window, key);
+  }
+  setGlobal("unsafeWindow", page);
+  return page;
 }
 
 function createSharedModSdk(): {

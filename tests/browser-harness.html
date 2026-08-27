@@ -55,14 +55,17 @@
       window.ChatRoomHideIconState = 0;
       window.MainCanvas = document.getElementById("MainCanvas").getContext("2d");
       window.__KIKILINK_NATIVE_DRAWS__ = [];
-      window.__KIKILINK_VECTOR_DRAWS__ = 0;
-      const nativeCanvasFill = window.MainCanvas.fill.bind(window.MainCanvas);
-      window.MainCanvas.fill = (...args) => {
-        window.__KIKILINK_VECTOR_DRAWS__ += 1;
-        return nativeCanvasFill(...args);
-      };
-      window.DrawImageResize = (...args) => {
-        window.__KIKILINK_NATIVE_DRAWS__.push(args);
+      const harnessImageCache = new Map();
+      window.DrawImageResize = (source, x, y, width, height) => {
+        let image = harnessImageCache.get(source);
+        if (!image) {
+          image = new Image();
+          image.src = source;
+          harnessImageCache.set(source, image);
+        }
+        if (!image.complete || image.naturalWidth <= 0) return false;
+        window.MainCanvas.drawImage(image, x, y, width, height);
+        window.__KIKILINK_NATIVE_DRAWS__.push([source, x, y, width, height]);
         return true;
       };
       window.FriendListBeepLog = [
@@ -188,25 +191,85 @@
           },
         }),
       );
+
+      // Model a granted Firefox userscript: the DOM remains visible, but BC's game globals live
+      // only on unsafeWindow. A page-realm-only harness would miss the regression from 0.20.7.
+      const pageGlobalNames = [
+        "ActivityAllowedForGroup",
+        "ActivityDictionaryText",
+        "ActivityFemale3DCG",
+        "ActivityFemale3DCGOrdering",
+        "ActivityRun",
+        "AssetGroup",
+        "bcModSdk",
+        "CharacterGetCurrent",
+        "CharacterNickname",
+        "ChatRoomCharacter",
+        "ChatRoomCharacterDrawlist",
+        "ChatRoomCharacterViewDrawOverlay",
+        "ChatRoomCharacterViewLoopCharacters",
+        "ChatRoomData",
+        "ChatRoomDrawCharacterStatusIcons",
+        "ChatRoomHideIconState",
+        "ChatRoomMessage",
+        "ChatRoomPublishCustomAction",
+        "ChatRoomSendEmote",
+        "ChatRoomSetTarget",
+        "CurrentCharacter",
+        "CurrentScreen",
+        "DialogActivity",
+        "DialogBuildActivities",
+        "DialogMenuMapping",
+        "DialogMenuMode",
+        "DrawImageResize",
+        "ElementButton",
+        "FriendListBeepLog",
+        "GameVersion",
+        "InformationSheetLoadCharacter",
+        "MainCanvas",
+        "Player",
+        "PreferenceGetActivityFactor",
+        "ServerAccountBeep",
+        "ServerAccountQueryResult",
+        "ServerIsLoggedIn",
+        "ServerPlayerExtensionSettingsSync",
+        "ServerPlayerIsInChatRoom",
+        "ServerSend",
+        "ServerSendBeepMessage",
+      ];
+      const pageRealm = {};
+      for (const name of pageGlobalNames) {
+        pageRealm[name] = window[name];
+        delete window[name];
+      }
+      window.unsafeWindow = pageRealm;
     </script>
     <script src="../dist/KikiLink.user.js"></script>
     <script>
+      const runtimePageRealm = window.unsafeWindow;
+      const roomRenderTimer = setInterval(() => {
+        runtimePageRealm.ChatRoomDrawCharacterStatusIcons(runtimePageRealm.Player, 100, 0, 1);
+      }, 50);
+      setTimeout(() => runtimePageRealm.DialogBuildActivities(runtimePageRealm.CurrentCharacter, true), 700);
       setTimeout(() => {
-        window.ChatRoomDrawCharacterStatusIcons(window.Player, 100, 0, 1);
-        window.DialogBuildActivities(window.CurrentCharacter, true);
-      }, 700);
-      setTimeout(() => {
+        clearInterval(roomRenderTimer);
         const blossom = document.querySelector(".kl-room-blossom");
         const version = document.getElementById("kikilink-version");
-        const custom = window.DialogActivity.find((item) => item.Activity.Name.startsWith("KikiLinkCustom_"));
+        const custom = runtimePageRealm.DialogActivity.find((item) => item.Activity.Name.startsWith("KikiLinkCustom_"));
         const activityMark = document.querySelector("[data-kikilink-activity-mark]");
+        const flowerPixels = runtimePageRealm.MainCanvas.getImageData(515, 0, 50, 50).data;
+        let opaqueFlowerPixels = 0;
+        for (let index = 3; index < flowerPixels.length; index += 4) {
+          if (flowerPixels[index] > 0) opaqueFlowerPixels += 1;
+        }
         const result = {
-          publicApi: window.KikiLink?.getVersion?.() || null,
+          publicApi: runtimePageRealm.KikiLink?.getVersion?.() || null,
           versionBadge: version?.textContent || null,
-          blossomNativeDraw:
-            window.__KIKILINK_VECTOR_DRAWS__ > 0 || window.__KIKILINK_NATIVE_DRAWS__.length > 0,
+          isolatedPageBridge: runtimePageRealm !== window && runtimePageRealm.KikiLink === window.KikiLink,
+          blossomNativeDraw: window.__KIKILINK_NATIVE_DRAWS__.length > 0,
+          blossomVisiblePixels: opaqueFlowerPixels > 25,
           blossomDomHidden: !!blossom && blossom.hidden && blossom.style.display === "none",
-          customActivityInRegistry: window.ActivityFemale3DCG.some((activity) => activity.Name.startsWith("KikiLinkCustom_")),
+          customActivityInRegistry: runtimePageRealm.ActivityFemale3DCG.some((activity) => activity.Name.startsWith("KikiLinkCustom_")),
           customActivityInDialog: !!custom,
           customActivityButton: !!document.querySelector("#activity-grid [data-activity^='KikiLinkCustom_']"),
           customActivityMark: activityMark?.style.width === "12px" && activityMark?.style.left === "0px",

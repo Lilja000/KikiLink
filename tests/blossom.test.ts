@@ -65,6 +65,7 @@ function fixture(options: { inRoom?: boolean } = {}): BadgeFixture {
   } as unknown as CanvasRenderingContext2D;
   globalThis.MainCanvas = context;
   globalThis.ChatRoomHideIconState = 0;
+  globalThis.CurrentScreen = "ChatRoom";
   globalThis.DrawImageResize = vi.fn(() => true);
   const compatible = new Set<number>();
   let render: BCCharacterOverlayRenderer | undefined;
@@ -94,6 +95,7 @@ afterEach(() => {
   for (const key of [
     "MainCanvas",
     "ChatRoomHideIconState",
+    "CurrentScreen",
     "DrawImageResize",
     "ChatRoomCharacterDrawlist",
     "ChatRoomCharacterViewLoopCharacters",
@@ -117,8 +119,8 @@ describe("room Blossom character positioning", () => {
   it("resolves and normalizes offsets inside the native 500x1000 character frame", () => {
     const frame = { x: 120, y: 30, zoom: 0.75 };
     expect(resolveRoomBadgePosition(null, frame)).toEqual({
-      left: 412.5,
-      top: 63.75,
+      left: 435,
+      top: 33.75,
       size: 26.25,
     });
     expect(resolveRoomBadgePosition({ x: 0.25, y: 0.5 }, frame)).toEqual({
@@ -128,7 +130,7 @@ describe("room Blossom character positioning", () => {
     });
     expect(normalizeRoomBadgePosition(213.75, 405, frame)).toEqual({ x: 0.25, y: 0.5 });
     expect(normalizeRoomBadgePosition(-10_000, 10_000, frame)).toEqual({ x: 0, y: 1 });
-    expect(DEFAULT_ROOM_BADGE_POSITION).toEqual({ x: 0.78, y: 0.045 });
+    expect(DEFAULT_ROOM_BADGE_POSITION).toEqual({ x: 0.84, y: 0.005 });
   });
 
   it("draws through the native icon path and never leaves a normal-play DOM overlay", () => {
@@ -142,7 +144,7 @@ describe("room Blossom character positioning", () => {
     expect(own?.src).toBe(BLOSSOM_ICON_DATA_URL);
     expect(own?.hidden).toBe(true);
     expect(own?.style.display).toBe("none");
-    expect(draw).toHaveBeenCalledWith(BLOSSOM_ICON_DATA_URL, 295, 42.5, 17.5, 17.5);
+    expect(draw).toHaveBeenCalledWith(BLOSSOM_ICON_DATA_URL, 310, 22.5, 17.5, 17.5);
     expect(globalThis.ChatRoomCharacterViewLoopCharacters).not.toHaveBeenCalled();
 
     render({ MemberNumber: 123, Name: "Unknown addon" }, 600, 20, 0.5);
@@ -160,12 +162,14 @@ describe("room Blossom character positioning", () => {
     expect(unregister).toHaveBeenCalledOnce();
   });
 
-  it("draws the Blossom immediately from cached canvas paths without loading an image", () => {
+  it("retains a cached vector fallback when BC's page-owned image helpers are unavailable", () => {
     class FakePath2D {
       constructor(readonly path: string) {}
     }
     vi.stubGlobal("Path2D", FakePath2D);
     const { render, context } = fixture();
+    Reflect.deleteProperty(globalThis, "DrawImageResize");
+    Reflect.deleteProperty(window, "DrawImageResize");
     Object.assign(context, {
       translate: vi.fn(),
       scale: vi.fn(),
@@ -188,10 +192,10 @@ describe("room Blossom character positioning", () => {
     expect(context.fill).toHaveBeenCalledTimes(7);
     expect(context.stroke).toHaveBeenCalledTimes(9);
     expect(context.arc).toHaveBeenCalledTimes(2);
-    expect(globalThis.DrawImageResize).not.toHaveBeenCalled();
+    expect(typeof globalThis.DrawImageResize).toBe("undefined");
   });
 
-  it("follows enabled settings without exposing a passive fixed DOM badge", () => {
+  it("keeps the failsafe hidden after a successful native draw and follows enabled settings", () => {
     const { badge, render, settings } = fixture();
     const own = document.querySelector<HTMLImageElement>(".kl-room-blossom");
     expect(own).not.toBeNull();
@@ -202,6 +206,33 @@ describe("room Blossom character positioning", () => {
     });
     expect(own?.hidden).toBe(true);
     expect(globalThis.DrawImageResize).toHaveBeenCalledOnce();
+    badge.destroy();
+  });
+
+  it("shows a room-only DOM failsafe when the native canvas path never succeeds", async () => {
+    vi.useFakeTimers();
+    const { badge, render } = fixture();
+    vi.mocked(globalThis.DrawImageResize).mockReturnValue(false);
+    globalThis.ChatRoomCharacterDrawlist = [{ MemberNumber: 999, Name: "Kiki" }];
+    globalThis.ChatRoomCharacterViewLoopCharacters = (callback) => {
+      callback(0, 100, 20, 500, 1);
+    };
+    const own = document.querySelector<HTMLImageElement>(".kl-room-blossom");
+
+    await vi.advanceTimersByTimeAsync(1_250);
+    expect(own?.hidden).toBe(false);
+    expect(own?.style.display).toBe("block");
+    expect(own?.style.left).toBe("520px");
+    expect(own?.style.top).toBe("25px");
+
+    vi.mocked(globalThis.DrawImageResize).mockReturnValue(true);
+    render({ MemberNumber: 999, Name: "Kiki" }, 100, 20, 1);
+    expect(own?.hidden).toBe(true);
+    expect(own?.style.display).toBe("none");
+
+    globalThis.CurrentScreen = "OnlineProfile";
+    await vi.advanceTimersByTimeAsync(250);
+    expect(own?.hidden).toBe(true);
     badge.destroy();
   });
 });
@@ -261,7 +292,7 @@ describe("room Blossom settings-armed dragging", () => {
       new PointerEvent("pointerup", { bubbles: true, pointerId: 7, clientX: 600, clientY: 100 }),
     );
 
-    expect(settings.get().ui.roomBadge.position).toEqual({ x: 0.9, y: 0.135 });
+    expect(settings.get().ui.roomBadge.position).toEqual({ x: 0.96, y: 0.095 });
     expect(own.style.cursor).toBe("");
     expect(own.style.pointerEvents).toBe("none");
     badge.destroy();

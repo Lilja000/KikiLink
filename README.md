@@ -11,10 +11,10 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.22.7` restores the room Blossom and Custom Activities on Firefox without removing the
-Catbox/Litterbox upload bridge. The flower now draws directly on the BC canvas through both current
-room-overlay boundaries, while startup, account switching, delayed room refreshes, and release checks
-are more resilient and lighter. The running version remains visible as tiny translucent digits in the
+Version `0.22.8` restores the explicit Firefox page-context bridge while retaining the
+Catbox/Litterbox upload bridge. The Blossom now uses the same BC-native status-icon boundary,
+`DrawImageResize` path, and established icon row as Echo/WCE, with a room-only visual failsafe if a
+canvas hook is blocked. The running version remains visible as tiny translucent digits in the
 lower-left corner.
 
 ## Link Deck

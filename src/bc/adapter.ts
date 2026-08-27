@@ -11,6 +11,7 @@ import type {
 } from "../core/types";
 import type { EventBus } from "../core/event-bus";
 import { cleanBeepMessageContent } from "./message-content";
+import { getBCPageWindow } from "./page-context";
 
 const READY_POLL_MS = 400;
 const COMPATIBILITY_HOOK_RETRY_MS = 500;
@@ -28,10 +29,7 @@ const CRITICAL_CUSTOM_ACTIVITY_HOOKS = [
   "ActivityRun",
   "ElementButton.CreateForActivity",
 ] as const;
-const CHARACTER_OVERLAY_HOOK_NAMES = [
-  "ChatRoomDrawCharacterStatusIcons",
-  "ChatRoomCharacterViewDrawOverlay",
-] as const;
+const CHARACTER_OVERLAY_HOOK_NAME = "ChatRoomDrawCharacterStatusIcons";
 
 interface RecentIncoming {
   fingerprint: string;
@@ -260,7 +258,7 @@ export class BCAdapter {
 
   registerCharacterOverlay(renderer: BCCharacterOverlayRenderer): () => void {
     this.#characterOverlayRenderers.add(renderer);
-    if (this.#compatibilityHooksInitialized) this.#ensureCharacterOverlayHooks();
+    if (this.#compatibilityHooksInitialized) this.#ensureCharacterOverlayHook();
     return () => this.#characterOverlayRenderers.delete(renderer);
   }
 
@@ -891,11 +889,11 @@ export class BCAdapter {
     this.#ensureOutgoingBeepHooks();
 
     this.#ensureActivityHooks();
-    this.#ensureCharacterOverlayHooks();
+    this.#ensureCharacterOverlayHook();
     if (this.#compatibilityHookRetryTimer === undefined) {
       this.#compatibilityHookRetryTimer = setInterval(() => {
         this.#ensureActivityHooks();
-        this.#ensureCharacterOverlayHooks();
+        this.#ensureCharacterOverlayHook();
       }, COMPATIBILITY_HOOK_RETRY_MS);
     }
   }
@@ -920,42 +918,29 @@ export class BCAdapter {
     }
   }
 
-  #ensureCharacterOverlayHooks(): void {
+  #ensureCharacterOverlayHook(): void {
     if (!this.#compatibilityHooksInitialized) return;
-    for (const name of CHARACTER_OVERLAY_HOOK_NAMES) {
-      const existing = this.#resilientHooks.get(name);
-      if (this.#characterOverlayHookNames.has(name)) {
-        // Keep a narrow live guard outside the shared ModSDK router as well. BC hot reloads and
-        // late addons can replace either room overlay boundary without removing our ModSDK
-        // registration, which otherwise makes every Blossom disappear while KikiLink still
-        // thinks the hook is healthy.
-        if (existing) this.#ensureDirectHook(name, existing);
-        continue;
-      }
-      if (!this.#characterOverlayFunctionAvailable(name)) continue;
-
-      // Echo Activities uses the native status-icon entrypoint while BC's character view calls it
-      // from ChatRoomCharacterViewDrawOverlay. Hooking both boundaries makes the Blossom survive a
-      // late replacement of either one. The per-frame signature guard below keeps the nested live
-      // BC call to one draw while preserving Echo, BCX, WCE, AFC, and the native implementation.
-      const hook = nonReentrantHook((args, next) => {
-        const result = next(args);
-        this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
-        return result;
-      });
-      if (this.#installIntegrationHook(name, 10, hook)) {
-        this.#characterOverlayHookNames.add(name);
-        this.#ensureDirectHook(name, hook);
-      }
+    const name = CHARACTER_OVERLAY_HOOK_NAME;
+    const existing = this.#resilientHooks.get(name);
+    if (this.#characterOverlayHookNames.has(name)) {
+      // Echo and WCE stay exclusively in the shared ModSDK chain. Keep only the direct fallback
+      // healthy when ModSDK is unavailable; wrapping its router again can break another addon.
+      if (!this.#modApi && existing) this.#ensureDirectHook(name, existing);
+      return;
     }
-  }
+    if (typeof ChatRoomDrawCharacterStatusIcons !== "function") return;
 
-  #characterOverlayFunctionAvailable(
-    name: (typeof CHARACTER_OVERLAY_HOOK_NAMES)[number],
-  ): boolean {
-    return name === "ChatRoomDrawCharacterStatusIcons"
-      ? typeof ChatRoomDrawCharacterStatusIcons === "function"
-      : typeof ChatRoomCharacterViewDrawOverlay === "function";
+    // Echo and WCE use this exact native status-icon boundary. Current BC also calls it from both
+    // the normal character view and map view, while BCX uses the enclosing overlay. Joining the
+    // shared chain once gives KikiLink the same coverage without a nested duplicate hook.
+    const hook: ResilientHook = (args, next) => {
+      const result = next(args);
+      this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
+      return result;
+    };
+    if (this.#installIntegrationHook(name, 10, hook)) {
+      this.#characterOverlayHookNames.add(name);
+    }
   }
 
   #ensureActivityHooks(): void {
@@ -1243,7 +1228,7 @@ export class BCAdapter {
 
   #installDirectHook(name: string, hook: ResilientHook): DirectHookRegistration | undefined {
     const path = name.split(".");
-    let context: Record<string, any> = window as unknown as Record<string, any>;
+    let context: Record<string, any> = getBCPageWindow();
     for (const key of path.slice(0, -1)) {
       const next = context[key];
       if (!next || (typeof next !== "object" && typeof next !== "function")) return undefined;
@@ -1735,7 +1720,7 @@ function isBondageClubReady(): boolean {
 }
 
 function currentModSdk(): ModSDKGlobalAPI {
-  const sdk = (window as typeof window & { bcModSdk?: ModSDKGlobalAPI }).bcModSdk;
+  const sdk = getBCPageWindow().bcModSdk as ModSDKGlobalAPI | undefined;
   if (!sdk || typeof sdk.registerMod !== "function") {
     throw new Error("Bondage Club ModSDK is unavailable");
   }

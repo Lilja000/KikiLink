@@ -1,7 +1,9 @@
 import { KikiLinkApp } from "./core/kikilink";
+import { installBCPageContextBridge } from "./bc/page-context";
 
 async function bootstrap(): Promise<void> {
-  const previous = window.KikiLink;
+  const page = installBCPageContextBridge();
+  const previous = page.KikiLink ?? window.KikiLink;
   if (previous) {
     try {
       await previous.destroy();
@@ -12,7 +14,9 @@ async function bootstrap(): Promise<void> {
   }
 
   const app = new KikiLinkApp(__KIKILINK_VERSION__);
-  window.KikiLink = app.publicApi();
+  const api = app.publicApi();
+  window.KikiLink = api;
+  page.KikiLink = api;
 
   try {
     await app.start();
