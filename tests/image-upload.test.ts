@@ -97,6 +97,54 @@ describe("local image uploads", () => {
     expect((uploaded as File).type).toBe("image/webp");
   });
 
+  it("retries one temporary Litterbox 500 response and succeeds without exposing HTML", async () => {
+    let attempts = 0;
+    const request = vi.fn<typeof fetch>(async () => {
+      attempts += 1;
+      return attempts === 1
+        ? new Response(
+            '<!doctype html><html><title>500 | Internal Server Error</title></html>',
+            { status: 500 },
+          )
+        : new Response("https://litter.catbox.moe/recovered.webp\n", { status: 200 });
+    });
+    const uploader = new LitterboxImageUploader(request as typeof fetch);
+    const image: PreparedLocalImage = {
+      blob: new Blob([bytes(1, 2, 3)], { type: "image/webp" }),
+      width: 2,
+      height: 2,
+      sourceBytes: 3,
+    };
+
+    await expect(uploader.upload(image, { retention: "24h" })).resolves.toBe(
+      "https://litter.catbox.moe/recovered.webp",
+    );
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("turns a repeated host-side HTML 500 into a short actionable error", async () => {
+    const request = vi.fn<typeof fetch>(async () =>
+      new Response(
+        '<!doctype html><html lang="en"><meta charset="UTF-8"><title>500 | Internal Server Error</title>',
+        { status: 500 },
+      ));
+    const uploader = new LitterboxImageUploader(request as typeof fetch);
+    const image: PreparedLocalImage = {
+      blob: new Blob([bytes(1)], { type: "image/webp" }),
+      width: 1,
+      height: 1,
+      sourceBytes: 1,
+    };
+
+    const error = await uploader.upload(image, { retention: "12h" }).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Litterbox is temporarily unavailable (HTTP 500). Try again in a moment.",
+    );
+    expect((error as Error).message).not.toMatch(/doctype|<html|<meta/iu);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects Litterbox responses outside the exact temporary WebP host and shape", async () => {
     const image: PreparedLocalImage = {
       blob: new Blob([bytes(1)], { type: "image/webp" }),

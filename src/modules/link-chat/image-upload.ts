@@ -8,6 +8,7 @@ export const MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
 
 const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
 const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
+const RETRYABLE_UPLOAD_STATUSES = new Set([500, 502, 503, 504]);
 const LITTERBOX_UPLOAD_ENDPOINT =
   "https://litterbox.catbox.moe/resources/internals/api.php";
 const CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
@@ -85,7 +86,7 @@ export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploa
       this.request,
     );
     if (!response.ok) {
-      throw new Error(cleanProviderError(response.body) || `Image host returned HTTP ${response.status}`);
+      throw new Error(providerUploadError("Litterbox", response));
     }
 
     const directUrl = normalizeImageUrl(response.body.trim());
@@ -125,7 +126,7 @@ export async function uploadLocalRoomAudio(
     request,
   );
   if (!response.ok) {
-    throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
+    throw new Error(providerUploadError("Litterbox", response));
   }
   const url = normalizeLitterboxAudioUrl(response.body.trim());
   if (!url) throw new Error("The temporary audio host returned an unexpected link");
@@ -160,7 +161,7 @@ export async function uploadMusicToCatbox(
     onProgress,
   );
   if (!response.ok) {
-    throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
+    throw new Error(providerUploadError("Catbox", response));
   }
   const url = normalizeCatboxAudioUrl(response.body.trim());
   if (!url) throw new Error("Catbox returned an unexpected track link");
@@ -491,6 +492,20 @@ async function uploadMultipart(
   request?: typeof fetch,
   onProgress?: UploadProgressListener,
 ): Promise<MultipartUploadResponse> {
+  const response = await uploadMultipartOnce(endpoint, form, timeoutMs, request, onProgress);
+  if (!response.ok && RETRYABLE_UPLOAD_STATUSES.has(response.status)) {
+    return uploadMultipartOnce(endpoint, form, timeoutMs, request, onProgress);
+  }
+  return response;
+}
+
+async function uploadMultipartOnce(
+  endpoint: string,
+  form: FormData,
+  timeoutMs: number,
+  request?: typeof fetch,
+  onProgress?: UploadProgressListener,
+): Promise<MultipartUploadResponse> {
   if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request);
   if (typeof GM_xmlhttpRequest === "function") {
     return new Promise((resolve, reject) => {
@@ -565,5 +580,16 @@ async function uploadMultipartWithFetch(
 }
 
 function cleanProviderError(value: string): string {
+  if (/<(?:!doctype|html|head|body|meta|title)\b/iu.test(value)) return "";
   return value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 180);
+}
+
+function providerUploadError(
+  provider: "Catbox" | "Litterbox",
+  response: MultipartUploadResponse,
+): string {
+  if (RETRYABLE_UPLOAD_STATUSES.has(response.status)) {
+    return `${provider} is temporarily unavailable (HTTP ${response.status}). Try again in a moment.`;
+  }
+  return cleanProviderError(response.body) || `${provider} returned HTTP ${response.status}`;
 }

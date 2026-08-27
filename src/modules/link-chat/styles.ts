@@ -3097,11 +3097,12 @@ select:focus-visible {
 .kl-music-track-menu { position: relative; color: var(--kl-muted); }
 .kl-music-track-menu > summary { display: grid; place-items: center; list-style: none; cursor: pointer; }
 .kl-music-track-menu > summary::-webkit-details-marker { display: none; }
-.kl-music-track-menu-popover { position: absolute; z-index: 12; right: 0; top: calc(100% + 4px); width: 142px; display: grid; gap: 2px; padding: 5px; border: 1px solid var(--kl-border-strong); border-radius: 11px; background: var(--kl-panel-bg); box-shadow: 0 12px 30px rgba(0, 0, 0, .28); }
+.kl-music-track-menu-popover { position: absolute; z-index: 12; right: 0; top: calc(100% + 4px); width: 190px; display: grid; gap: 2px; padding: 5px; border: 1px solid var(--kl-border-strong); border-radius: 11px; background: var(--kl-panel-bg); box-shadow: 0 12px 30px rgba(0, 0, 0, .28); }
 .kl-music-track-menu-popover button,
 .kl-music-track-menu-popover a { min-height: 31px; display: flex; align-items: center; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--kl-text); font: inherit; font-size: var(--kl-type-xs); text-align: left; text-decoration: none; cursor: pointer; }
 .kl-music-track-menu-popover button:hover,
 .kl-music-track-menu-popover a:hover { background: var(--kl-surface-2); color: var(--kl-gold); }
+.kl-music-track-menu-popover .kl-music-track-room { color: var(--kl-gold); }
 .kl-music-track-menu-popover .kl-music-track-delete { color: var(--kl-danger); }
 .kl-music-now-card { position: relative; justify-items: center; overflow: hidden; padding: 17px; background: radial-gradient(circle at 50% 36%, color-mix(in srgb, var(--kl-accent), transparent 76%), transparent 43%), linear-gradient(145deg, color-mix(in srgb, var(--kl-surface), #090708 16%), var(--kl-surface)); }
 .kl-music-now-card::before { content: "絆"; position: absolute; right: 7px; top: -17px; color: color-mix(in srgb, var(--kl-gold), transparent 93%); font: 700 86px/1 Georgia, serif; pointer-events: none; }

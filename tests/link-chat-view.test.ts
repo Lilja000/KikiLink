@@ -17,6 +17,7 @@ import { LinkPresenceService } from "../src/modules/link-presence/link-presence-
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 import { PeopleRepository } from "../src/storage/people-repository";
 import type { DeviceGalleryImage, GalleryStore } from "../src/storage/device-gallery-store";
+import type { DeviceMusicTrack, MusicStore } from "../src/storage/device-music-store";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -1185,6 +1186,155 @@ describe("LinkChatView", () => {
     });
     expect(imageUploader.upload).not.toHaveBeenCalled();
     expect(sendBeep).not.toHaveBeenCalled();
+    view.destroy();
+  });
+
+  it("shares a device MP3 once and selects it as room music", async () => {
+    const updateRoomCustomization = vi.fn();
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getRoomCharacters: () => [],
+      getCurrentRoomName: () => "Moon Garden",
+      isInChatRoom: () => true,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+      getRoomAdminSnapshot: () => ({
+        roomName: "Moon Garden",
+        isAdmin: true,
+        customization: {
+          imageUrl: "https://litter.catbox.moe/background.webp",
+          musicUrl: "",
+          sizeMode: 2,
+          musicSync: false,
+        },
+        players: [],
+      }),
+      updateRoomCustomization,
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.linkChat.imageUploads = { enabled: true, retention: "24h" };
+      draft.linkMusic.playlists[0]!.tracks = [{
+        id: "track-local-room",
+        title: "Device Moon Song",
+        source: "local",
+        locator: "device-track-one",
+        addedAt: 1,
+      }];
+    });
+    const stored: DeviceMusicTrack = {
+      id: "device-track-one",
+      name: "Device Moon Song",
+      mimeType: "audio/mpeg",
+      roomExtension: "mp3",
+      createdAt: 1,
+      blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "audio/mpeg" }),
+    };
+    const musicStore: MusicStore = {
+      list: vi.fn(async () => [stored]),
+      get: vi.fn(async (id) => id === stored.id ? stored : undefined),
+      add: vi.fn(async () => stored),
+      delete: vi.fn(async () => undefined),
+      close: vi.fn(),
+    };
+    let uploadDetails: KikiLinkGmXhrDetails | undefined;
+    const uploadRequest = vi.fn((details: KikiLinkGmXhrDetails) => {
+      uploadDetails = details;
+      queueMicrotask(() => details.onload({
+        status: 200,
+        responseText: "https://litter.catbox.moe/device_room_song.mp3\n",
+      }));
+      return { abort: vi.fn() };
+    });
+    vi.stubGlobal("GM_xmlhttpRequest", uploadRequest);
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.22.6",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      musicStore,
+    );
+    view.mount();
+    await view.open();
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+
+    shadow?.querySelector<HTMLButtonElement>('[data-target="music"]')?.click();
+    const roomAction = await vi.waitFor(() => {
+      const action = [...(shadow?.querySelectorAll<HTMLButtonElement>(
+        ".kl-music-track-menu-popover button",
+      ) ?? [])].find((button) => button.textContent === "Share & use as room music");
+      expect(action).toBeDefined();
+      return action!;
+    });
+    roomAction.click();
+
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLElement>(".kl-room-page")?.hidden).toBe(false);
+      const roomUrls = shadow?.querySelectorAll<HTMLInputElement>(
+        ".kl-room-media input[type=url]",
+      );
+      expect(roomUrls?.[1]?.value).toBe("https://litter.catbox.moe/device_room_song.mp3");
+    });
+    expect(uploadRequest).toHaveBeenCalledOnce();
+    expect(uploadDetails?.url).toBe(
+      "https://litterbox.catbox.moe/resources/internals/api.php",
+    );
+    const uploadForm = uploadDetails?.data as FormData;
+    expect(uploadForm.get("time")).toBe("24h");
+    expect((uploadForm.get("fileToUpload") as File).name).toBe("kikilink-room-music.mp3");
+    expect(updateRoomCustomization).not.toHaveBeenCalled();
+
+    shadow?.querySelector<HTMLButtonElement>(".kl-room-media .kl-text-button--primary")?.click();
+    expect(updateRoomCustomization).toHaveBeenCalledWith(expect.objectContaining({
+      musicUrl: "https://litter.catbox.moe/device_room_song.mp3",
+    }));
+
+    shadow?.querySelector<HTMLButtonElement>('[data-target="music"]')?.click();
+    const cachedRoomAction = await vi.waitFor(() => {
+      const action = [...(shadow?.querySelectorAll<HTMLButtonElement>(
+        ".kl-music-track-menu-popover button",
+      ) ?? [])].find((button) => button.textContent === "Share & use as room music");
+      expect(action).toBeDefined();
+      return action!;
+    });
+    cachedRoomAction.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLElement>(".kl-room-page")?.hidden).toBe(false);
+    });
+    expect(uploadRequest).toHaveBeenCalledOnce();
+
+    const roomSwitches = shadow?.querySelectorAll<HTMLInputElement>(
+      ".kl-room-media input[type=checkbox]",
+    );
+    const followPlaylist = roomSwitches?.[1];
+    if (!followPlaylist) throw new Error("Missing room playlist-follow switch");
+    followPlaylist.checked = true;
+    followPlaylist.dispatchEvent(new Event("change", { bubbles: true }));
+    shadow?.querySelector<HTMLButtonElement>('[data-target="music"]')?.click();
+    const play = await vi.waitFor(() => {
+      const button = shadow?.querySelector<HTMLButtonElement>(".kl-music-track-play");
+      expect(button?.disabled).toBe(false);
+      return button!;
+    });
+    play.click();
+    await vi.waitFor(() => {
+      expect(updateRoomCustomization).toHaveBeenCalledTimes(2);
+      expect(updateRoomCustomization).toHaveBeenLastCalledWith(expect.objectContaining({
+        musicUrl: "https://litter.catbox.moe/device_room_song.mp3",
+        musicSync: true,
+      }));
+    });
+    expect(uploadRequest).toHaveBeenCalledOnce();
     view.destroy();
   });
 

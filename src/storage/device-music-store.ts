@@ -7,6 +7,8 @@ export interface DeviceMusicTrack {
   id: string;
   name: string;
   mimeType: string;
+  /** Retained locally so extension-only MP3/MP4 files can later be shared as BC room music. */
+  roomExtension?: "mp3" | "mp4";
   createdAt: number;
   blob: Blob;
 }
@@ -48,10 +50,12 @@ export class DeviceMusicStore implements MusicStore {
 
   async add(file: File): Promise<DeviceMusicTrack> {
     validateMusicFile(file);
+    const roomExtension = roomMusicExtension(file);
     const record: DeviceMusicTrack = {
       id: createId(),
       name: cleanName(file.name),
       mimeType: file.type || "application/octet-stream",
+      ...(roomExtension ? { roomExtension } : {}),
       createdAt: Date.now(),
       blob: file.slice(0, file.size, file.type),
     };
@@ -151,4 +155,13 @@ function validId(value: string): boolean {
 function cleanName(value: string): string {
   const name = value.replace(/\.[^.]+$/u, "").replace(/[\u0000-\u001f\u007f]/gu, " ").trim();
   return (name || "Local track").slice(0, 80);
+}
+
+function roomMusicExtension(file: File): "mp3" | "mp4" | undefined {
+  const named = file.name.toLocaleLowerCase().match(/\.(mp3|mp4)$/u)?.[1];
+  if (named === "mp3" || named === "mp4") return named;
+  const mime = file.type.toLocaleLowerCase().split(";", 1)[0];
+  if (mime === "audio/mpeg") return "mp3";
+  if (mime === "audio/mp4" || mime === "video/mp4") return "mp4";
+  return undefined;
 }

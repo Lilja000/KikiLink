@@ -43,6 +43,18 @@ keeps the record until the user deletes it, and does not put the blob in synchro
 Clearing the site's browser data still removes it. Selecting a device image as a room background is
 a separate explicit action that creates a temporary Litterbox link.
 
+## Device Music and room sharing
+
+Music tracks saved `On this device` remain private IndexedDB blobs during ordinary playback. A room
+administrator can explicitly choose `Share & use as room music`, or enable the session-only playlist
+follow switch. For a compatible MP3/MP4 up to 20 MB, that action creates a generically named temporary
+Litterbox upload using the same 1/12/24/72-hour setting as other room media. KikiLink keeps the returned
+URL only in memory and reuses it until shortly before expiry, avoiding repeated uploads of the same track.
+Other browser-playable formats remain device-only because Bondage Club room music accepts MP3/MP4 links.
+
+Catbox/Litterbox HTTP 500, 502, 503, and 504 responses are retried once. If the provider still returns
+an HTML error page, KikiLink shows a short provider/status notice rather than exposing the page source.
+
 ## Remaining risks and limits
 
 - Catbox/Litterbox receives the prepared pixels and network request. KikiLink cannot independently

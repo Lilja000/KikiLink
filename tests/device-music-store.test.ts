@@ -21,6 +21,20 @@ describe("DeviceMusicStore", () => {
     store.close();
   });
 
+  it("remembers whether a local file can later be shared as BC room music", async () => {
+    const store = new DeviceMusicStore(987655);
+    const mp3 = await store.add(
+      new File([new Uint8Array([1, 2, 3])], "private-song.mp3", { type: "" }),
+    );
+    const ogg = await store.add(
+      new File([new Uint8Array([4, 5, 6])], "other-song.ogg", { type: "audio/ogg" }),
+    );
+
+    expect(mp3.roomExtension).toBe("mp3");
+    expect(ogg.roomExtension).toBeUndefined();
+    store.close();
+  });
+
   it("rejects non-audio files", () => {
     expect(() => validateMusicFile(new File(["text"], "notes.txt", { type: "text/plain" })))
       .toThrow("audio file");

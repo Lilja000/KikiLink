@@ -11,10 +11,10 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.22.5` restores the Blossom icon above the local character and compatible KikiLink peers
-even after Bondage Club or a late addon replaces the live status-icon renderer. It also includes
-the Catbox/Litterbox and Custom Activity fixes from `0.22.4`. The running version remains visible
-as tiny translucent digits in the lower-left corner.
+Version `0.22.6` retries temporary Catbox/Litterbox server errors once, replaces raw HTML error pages
+with readable notices, and lets room administrators share a device-local MP3/MP4 directly from Music
+for room playback. It also includes the Blossom and Custom Activity repairs from the previous releases.
+The running version remains visible as tiny translucent digits in the lower-left corner.
 
 ## Link Deck
 
@@ -138,6 +138,8 @@ so they can follow that same account to another device.
 - Explicit native Kick, Promote/Demote, and room Whitelist/Unwhitelist actions; Kick asks for confirmation
 - Local image preparation and temporary Litterbox sharing can fill the room background field;
   renamed MP3/MP4 room audio up to 20 MB can fill the music field
+- A device-local Music track has a `Share & use as room music` action that creates and reuses a
+  temporary Litterbox link, then opens the same review-and-apply Room Tools flow as Gallery
 - A lazy all-chat gallery deduplicates direct images across saved conversations and labels Catbox/Litterbox media
 - A visible Gallery Home card and labeled Chat button open the library without adding another main tab
 - Direct image links can be saved without sending a chat message; privacy-prepared local additions are
@@ -164,8 +166,9 @@ so they can follow that same account to another device.
 - Local blobs stay in an account-isolated IndexedDB on the current device; playlist metadata and
   remote URLs follow the signed-in BC account within KikiLink's bounded settings mirror
 - Missing local files are clearly marked after moving to another device instead of silently failing
-- A session-only Room switch lets an administrator make compatible remote MP3/MP4 tracks follow the
-  current playlist, updating room music only when the playing track changes
+- A session-only Room switch lets an administrator make compatible remote or device-local MP3/MP4
+  tracks follow the current playlist. Local tracks are shared temporarily only when first needed,
+  and the same live link is reused while it remains valid
 
 ## About
 

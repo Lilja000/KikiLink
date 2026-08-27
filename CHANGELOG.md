@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.22.6 - 2026-08-27
+
+- Made Catbox/Litterbox upload failures readable and resilient: temporary HTTP 500, 502, 503, or
+  504 responses are retried once, and an HTML error page is replaced with a short provider/status
+  message instead of being pasted into a KikiLink notification.
+- Added `Share & use as room music` to device-local Music tracks. Room administrators can temporarily
+  share a compatible MP3/MP4, review it in Room Tools, and apply it exactly like a device Gallery
+  background; the live link is reused until it is near expiry instead of uploading another copy.
+- Taught the session-only playlist-follow switch to share local MP3/MP4 tracks automatically before
+  updating Bondage Club room music. Local-only formats remain available in the private player and
+  receive a clear compatibility message if selected for a room.
+
 ## 0.22.5 - 2026-08-27
 
 - Restored the Blossom icon above the local character and compatible KikiLink peers after a BC

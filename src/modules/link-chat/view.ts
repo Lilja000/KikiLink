@@ -43,6 +43,7 @@ import {
 } from "../../storage/device-notification-sound-store";
 import {
   DeviceMusicStore,
+  type DeviceMusicTrack,
   type MusicStore,
 } from "../../storage/device-music-store";
 import {
@@ -126,6 +127,11 @@ interface GalleryItem {
   saved: boolean;
   localId?: string;
   chat?: ChatMediaItem;
+}
+
+interface SharedRoomMusic {
+  url: string;
+  expiresAt: number;
 }
 
 const KIKILINK_CREATOR_MEMBER_NUMBER = 0;
@@ -678,6 +684,8 @@ export class LinkChatView {
   #musicStopAfterTrack = false;
   #roomPlaylistSyncEnabled = false;
   #lastRoomSyncedTrackUrl = "";
+  readonly #sharedRoomMusic = new Map<string, SharedRoomMusic>();
+  readonly #pendingRoomMusicUploads = new Map<string, Promise<string>>();
 
   readonly #handleOutsidePointerDown = (event: PointerEvent): void => {
     if (this.#profileMenu.hidden) return;
@@ -803,6 +811,8 @@ export class LinkChatView {
     this.#clearMusicSleepTimer();
     this.#clearMediaSession();
     this.#releaseMusicObjectUrl();
+    this.#sharedRoomMusic.clear();
+    this.#pendingRoomMusicUploads.clear();
     this.#releaseGalleryObjectUrls();
     this.#roomBadge.destroy();
     this.#host.remove();
@@ -4243,8 +4253,11 @@ export class LinkChatView {
     this.#roomPlaylistSync.type = "checkbox";
     this.#roomPlaylistSync.addEventListener("change", () => {
       this.#roomPlaylistSyncEnabled = this.#roomPlaylistSync.checked;
-      if (this.#roomPlaylistSyncEnabled) void this.#syncPlayingTrackToRoom(true);
-      else {
+      if (this.#roomPlaylistSyncEnabled) {
+        this.#roomPlaylistSyncStatus.textContent =
+          "Playlist follow is on. Play a compatible Music track to update the room.";
+        void this.#syncPlayingTrackToRoom(true);
+      } else {
         this.#lastRoomSyncedTrackUrl = "";
         this.#roomPlaylistSyncStatus.textContent = "Playlist follow is off.";
       }
@@ -4320,7 +4333,7 @@ export class LinkChatView {
       ),
       this.#settingRow(
         "Follow KikiLink playlist",
-        "While enabled, each compatible remote track you play becomes the room music. This switch is session-only.",
+        "While enabled, each compatible MP3/MP4 track you play becomes the room music. Device tracks are shared temporarily when first needed. This switch is session-only.",
         playlistSyncSwitch,
       ),
       this.#roomPlaylistSyncStatus,
@@ -4698,7 +4711,7 @@ export class LinkChatView {
     this.#roomPlaylistSync.checked = snapshot.isAdmin && this.#roomPlaylistSyncEnabled;
     this.#roomPlaylistSyncStatus.textContent = snapshot.isAdmin
       ? this.#roomPlaylistSyncEnabled
-        ? "Following the Music tab. A new compatible track will update this room automatically."
+        ? "Following the Music tab. Compatible device tracks are shared temporarily when needed."
         : "Playlist follow is off."
       : "Only a room administrator can make room music follow the playlist.";
     if (!snapshot.isAdmin) this.#roomPlaylistSyncEnabled = false;
@@ -5140,6 +5153,12 @@ export class LinkChatView {
     const playlist = activePlaylist(settings.playlists, settings.activePlaylistId);
     const localTracks = await this.#getLocalMusicTrackIds(forceLocalRefresh);
     if (token !== this.#musicRenderToken) return;
+    let roomAdmin = false;
+    try {
+      roomAdmin = this.adapter.getRoomAdminSnapshot()?.isAdmin === true;
+    } catch {
+      // Bondage Club can briefly replace room globals while changing screens.
+    }
     const query = this.#musicQueueSearch.value.trim().toLocaleLowerCase();
     const visibleTracks = playlist.tracks
       .map((track, index) => ({ track, index }))
@@ -5148,7 +5167,8 @@ export class LinkChatView {
       ? `${visibleTracks.length} of ${playlist.tracks.length} tracks`
       : `${playlist.tracks.length} track${playlist.tracks.length === 1 ? "" : "s"}`;
     this.#musicQueue.replaceChildren(
-      ...visibleTracks.map(({ track, index }) => this.#musicTrackRow(track, index, localTracks)),
+      ...visibleTracks.map(({ track, index }) =>
+        this.#musicTrackRow(track, index, localTracks, roomAdmin)),
     );
     if (visibleTracks.length === 0) {
       this.#musicQueue.append(
@@ -5161,7 +5181,12 @@ export class LinkChatView {
     this.#renderMusicTransport();
   }
 
-  #musicTrackRow(track: MusicTrack, index: number, localTracks: Set<string>): HTMLElement {
+  #musicTrackRow(
+    track: MusicTrack,
+    index: number,
+    localTracks: Set<string>,
+    roomAdmin: boolean,
+  ): HTMLElement {
     const unavailable = track.source === "local" && !localTracks.has(track.locator);
     const play = element("button", {
       className: "kl-icon-button kl-music-track-play",
@@ -5177,9 +5202,19 @@ export class LinkChatView {
       title: `Actions for ${track.title}`,
       ariaLabel: `Actions for ${track.title}`,
     }, kikiIcon("more"));
-    const actions = element(
-      "div",
-      { className: "kl-music-track-menu-popover" },
+    const actions = element("div", { className: "kl-music-track-menu-popover" });
+    const directRoomUrl = track.source === "local"
+      ? undefined
+      : normalizeRoomTrackUrl(track.locator);
+    if (roomAdmin && !unavailable && (track.source === "local" || directRoomUrl)) {
+      actions.append(element("button", {
+        className: "kl-music-track-room",
+        type: "button",
+        text: track.source === "local" ? "Share & use as room music" : "Use as room music",
+        onClick: () => void this.#useMusicTrackAsRoomMusic(track),
+      }));
+    }
+    actions.append(
       element("button", {
         type: "button",
         text: "Rename",
@@ -5234,6 +5269,50 @@ export class LinkChatView {
     row.dataset.active = String(this.#activeTrackId === track.id);
     row.dataset.trackId = track.id;
     return row;
+  }
+
+  async #useMusicTrackAsRoomMusic(track: MusicTrack): Promise<void> {
+    let roomAdmin = false;
+    try {
+      roomAdmin = this.adapter.getRoomAdminSnapshot()?.isAdmin === true;
+    } catch {
+      // Treat a temporarily unavailable room snapshot as read-only.
+    }
+    if (!roomAdmin) {
+      this.#toast("Only a room administrator can change room music.", "error");
+      return;
+    }
+
+    const uploadSettings = this.settings.get().linkChat.imageUploads;
+    const config = track.source === "local" && uploadSettings.enabled
+      ? normalizeLitterboxUploadConfig(uploadSettings)
+      : null;
+    if (track.source === "local" && !config) {
+      this.#toast("Enable temporary shared uploads in Chat settings first.", "error");
+      this.#openSettings("chat");
+      return;
+    }
+
+    try {
+      if (track.source === "local" && config) {
+        this.#toast(`Sharing “${track.title}” for ${formatRetention(config.retention)}…`);
+      }
+      const roomUrl = await this.#roomUrlForMusicTrack(track, config ?? undefined);
+      const liveSnapshot = this.adapter.getRoomAdminSnapshot();
+      if (!liveSnapshot?.isAdmin) {
+        throw new Error("Room administrator rights were lost before the music was ready");
+      }
+      await this.#openRoomTools(true);
+      this.#roomMusicUrl.value = roomUrl;
+      this.#toast(track.source === "local" && config
+        ? `Music shared for ${formatRetention(config.retention)}. Review it, then apply room media.`
+        : "Music selected. Review it, then apply room media.");
+    } catch (error) {
+      this.#toast(
+        error instanceof Error ? error.message : "The room music could not be prepared.",
+        "error",
+      );
+    }
   }
 
   async #addMusicTrack(): Promise<void> {
@@ -5633,6 +5712,7 @@ export class LinkChatView {
       .map(async (locator) => {
         await this.musicStore.delete(locator).catch(() => undefined);
         localTrackIds.delete(locator);
+        this.#sharedRoomMusic.delete(locator);
       }));
   }
 
@@ -5752,18 +5832,51 @@ export class LinkChatView {
     this.#musicObjectUrl = undefined;
   }
 
+  async #roomUrlForMusicTrack(
+    track: MusicTrack,
+    config?: LitterboxUploadConfig,
+  ): Promise<string> {
+    if (track.source !== "local") {
+      const roomUrl = normalizeRoomTrackUrl(track.locator);
+      if (!roomUrl) {
+        throw new Error("Bondage Club room music must use a direct HTTPS MP3 or MP4 link");
+      }
+      return roomUrl;
+    }
+    if (!config) throw new Error("Enable temporary shared uploads in Chat settings first");
+
+    const cached = this.#sharedRoomMusic.get(track.locator);
+    if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
+    this.#sharedRoomMusic.delete(track.locator);
+
+    const pending = this.#pendingRoomMusicUploads.get(track.locator);
+    if (pending) return pending;
+    const upload = (async () => {
+      const stored = await this.musicStore.get(track.locator);
+      if (!stored) throw new Error("This local track is not stored on this device");
+      const url = await uploadLocalRoomAudio(deviceRoomMusicFile(stored), config);
+      this.#sharedRoomMusic.set(track.locator, {
+        url,
+        expiresAt: Date.now() + litterboxRetentionMs(config.retention),
+      });
+      return url;
+    })();
+    this.#pendingRoomMusicUploads.set(track.locator, upload);
+    try {
+      return await upload;
+    } finally {
+      if (this.#pendingRoomMusicUploads.get(track.locator) === upload) {
+        this.#pendingRoomMusicUploads.delete(track.locator);
+      }
+    }
+  }
+
   async #syncPlayingTrackToRoom(force = false): Promise<void> {
     if (!this.#roomPlaylistSyncEnabled || !this.#activeTrackId || this.#audio.paused) return;
     const settings = this.settings.get().linkMusic;
     const track = settings.playlists.flatMap((playlist) => playlist.tracks)
       .find((candidate) => candidate.id === this.#activeTrackId);
-    const roomUrl = track && track.source !== "local" ? normalizeRoomTrackUrl(track.locator) : undefined;
-    if (!roomUrl) {
-      this.#roomPlaylistSyncStatus.textContent = "This track is device-only or not an MP3/MP4 URL, so BC cannot use it as room music.";
-      if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
-      return;
-    }
-    if (!force && roomUrl === this.#lastRoomSyncedTrackUrl) return;
+    if (!track) return;
     const snapshot = this.adapter.getRoomAdminSnapshot();
     if (!snapshot?.isAdmin) {
       this.#roomPlaylistSyncEnabled = false;
@@ -5772,16 +5885,51 @@ export class LinkChatView {
       if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
       return;
     }
+
+    const uploadSettings = this.settings.get().linkChat.imageUploads;
+    const config = track.source === "local" && uploadSettings.enabled
+      ? normalizeLitterboxUploadConfig(uploadSettings)
+      : null;
+    if (track.source === "local" && !config) {
+      this.#roomPlaylistSyncStatus.textContent =
+        "Enable temporary shared uploads in Chat settings to use device tracks as room music.";
+      if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
+      return;
+    }
+
     try {
+      if (track.source === "local" && config) {
+        this.#roomPlaylistSyncStatus.textContent =
+          `Sharing “${track.title}” for room playback…`;
+      }
+      const activeTrackId = track.id;
+      const roomUrl = await this.#roomUrlForMusicTrack(track, config ?? undefined);
+      if (
+        !this.#roomPlaylistSyncEnabled ||
+        this.#activeTrackId !== activeTrackId ||
+        this.#audio.paused
+      ) {
+        return;
+      }
+      if (!force && roomUrl === this.#lastRoomSyncedTrackUrl) return;
+      const liveSnapshot = this.adapter.getRoomAdminSnapshot();
+      if (!liveSnapshot?.isAdmin) {
+        this.#roomPlaylistSyncEnabled = false;
+        this.#roomPlaylistSync.checked = false;
+        this.#roomPlaylistSyncStatus.textContent =
+          "Playlist follow stopped because you are not a room administrator.";
+        if (force) this.#toast(this.#roomPlaylistSyncStatus.textContent, "error");
+        return;
+      }
       this.adapter.updateRoomCustomization({
-        ...snapshot.customization,
+        ...liveSnapshot.customization,
         musicUrl: roomUrl,
         musicSync: true,
       });
       this.#lastRoomSyncedTrackUrl = roomUrl;
       this.#roomMusicUrl.value = roomUrl;
       this.#roomMusicSync.checked = true;
-      this.#roomPlaylistSyncStatus.textContent = `Room now follows “${track?.title ?? "current track"}”.`;
+      this.#roomPlaylistSyncStatus.textContent = `Room now follows “${track.title}”.`;
     } catch (error) {
       this.#roomPlaylistSyncStatus.textContent = error instanceof Error
         ? error.message
@@ -9005,6 +9153,32 @@ function formatRetention(value: LitterboxUploadConfig["retention"]): string {
   if (hours === 24) return "1 day";
   if (hours === 72) return "3 days";
   return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+function litterboxRetentionMs(value: LitterboxUploadConfig["retention"]): number {
+  return Number.parseInt(value, 10) * 60 * 60 * 1_000;
+}
+
+function deviceRoomMusicFile(track: DeviceMusicTrack): File {
+  const mime = track.mimeType.toLocaleLowerCase().split(";", 1)[0];
+  const mimeExtension = mime === "audio/mpeg"
+    ? "mp3"
+    : mime === "audio/mp4" || mime === "video/mp4"
+      ? "mp4"
+      : undefined;
+  const extension = track.roomExtension ?? mimeExtension;
+  if (!extension) {
+    throw new Error("Bondage Club room music must be a device MP3 or MP4 track");
+  }
+  const type = extension === "mp3"
+    ? "audio/mpeg"
+    : mime === "video/mp4"
+      ? "video/mp4"
+      : "audio/mp4";
+  return new File([track.blob], `kikilink-device-room-music.${extension}`, {
+    type,
+    lastModified: 0,
+  });
 }
 
 function imageUploadErrorMessage(error: unknown): string {
