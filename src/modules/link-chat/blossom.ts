@@ -60,9 +60,9 @@ interface BlossomVectorPaths {
 
 let blossomVectorPaths: BlossomVectorPaths | undefined;
 
-/** Echo's established addon-icon slot: CharX + 420×Zoom, CharY + 5, 35×Zoom. */
+/** Dedicated slot after Echo: CharX + 460×Zoom, CharY + 5, 35×Zoom. */
 export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
-  x: 0.84,
+  x: 0.92,
   y: 0.005,
 });
 

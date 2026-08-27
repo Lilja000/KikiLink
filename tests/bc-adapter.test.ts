@@ -775,7 +775,7 @@ describe("BCAdapter", () => {
       );
     }));
 
-    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.22.8");
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.22.9");
     const renderer = vi.fn(() => calls.push("kikilink"));
     try {
       adapter.registerCharacterOverlay(renderer);

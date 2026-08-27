@@ -119,7 +119,7 @@ describe("room Blossom character positioning", () => {
   it("resolves and normalizes offsets inside the native 500x1000 character frame", () => {
     const frame = { x: 120, y: 30, zoom: 0.75 };
     expect(resolveRoomBadgePosition(null, frame)).toEqual({
-      left: 435,
+      left: 465,
       top: 33.75,
       size: 26.25,
     });
@@ -130,7 +130,7 @@ describe("room Blossom character positioning", () => {
     });
     expect(normalizeRoomBadgePosition(213.75, 405, frame)).toEqual({ x: 0.25, y: 0.5 });
     expect(normalizeRoomBadgePosition(-10_000, 10_000, frame)).toEqual({ x: 0, y: 1 });
-    expect(DEFAULT_ROOM_BADGE_POSITION).toEqual({ x: 0.84, y: 0.005 });
+    expect(DEFAULT_ROOM_BADGE_POSITION).toEqual({ x: 0.92, y: 0.005 });
   });
 
   it("draws through the native icon path and never leaves a normal-play DOM overlay", () => {
@@ -144,7 +144,7 @@ describe("room Blossom character positioning", () => {
     expect(own?.src).toBe(BLOSSOM_ICON_DATA_URL);
     expect(own?.hidden).toBe(true);
     expect(own?.style.display).toBe("none");
-    expect(draw).toHaveBeenCalledWith(BLOSSOM_ICON_DATA_URL, 310, 22.5, 17.5, 17.5);
+    expect(draw).toHaveBeenCalledWith(BLOSSOM_ICON_DATA_URL, 330, 22.5, 17.5, 17.5);
     expect(globalThis.ChatRoomCharacterViewLoopCharacters).not.toHaveBeenCalled();
 
     render({ MemberNumber: 123, Name: "Unknown addon" }, 600, 20, 0.5);
@@ -222,7 +222,7 @@ describe("room Blossom character positioning", () => {
     await vi.advanceTimersByTimeAsync(1_250);
     expect(own?.hidden).toBe(false);
     expect(own?.style.display).toBe("block");
-    expect(own?.style.left).toBe("520px");
+    expect(own?.style.left).toBe("560px");
     expect(own?.style.top).toBe("25px");
 
     vi.mocked(globalThis.DrawImageResize).mockReturnValue(true);
@@ -292,7 +292,7 @@ describe("room Blossom settings-armed dragging", () => {
       new PointerEvent("pointerup", { bubbles: true, pointerId: 7, clientX: 600, clientY: 100 }),
     );
 
-    expect(settings.get().ui.roomBadge.position).toEqual({ x: 0.96, y: 0.095 });
+    expect(settings.get().ui.roomBadge.position).toEqual({ x: 1, y: 0.095 });
     expect(own.style.cursor).toBe("");
     expect(own.style.pointerEvents).toBe("none");
     badge.destroy();

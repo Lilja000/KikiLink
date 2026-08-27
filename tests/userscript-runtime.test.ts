@@ -125,7 +125,15 @@ describe("published userscript runtime", () => {
     });
     echo.hookFunction("ChatRoomDrawCharacterStatusIcons", 10, (args, next) => {
       calls.push("echo");
-      return next(args);
+      const result = next(args);
+      getGlobal<(...drawArgs: unknown[]) => boolean>("DrawImageResize")(
+        "data:image/png;base64,echo",
+        args[1] + 420 * args[3],
+        args[2] + 5,
+        35 * args[3],
+        35 * args[3],
+      );
+      return result;
     });
     afc.hookFunction("ChatRoomDrawCharacterStatusIcons", 0, (args, next) => {
       calls.push("afc");
@@ -185,6 +193,13 @@ describe("published userscript runtime", () => {
     expect(calls).toEqual(["echo", "afc", "native"]);
     expect(pageWindow.DrawImageResize).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
+      560,
+      5,
+      35,
+      35,
+    );
+    expect(pageWindow.DrawImageResize).toHaveBeenCalledWith(
+      "data:image/png;base64,echo",
       520,
       5,
       35,
@@ -512,22 +527,22 @@ describe("published userscript runtime", () => {
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
     expect(pageWindow.KikiLink).toBe(api);
-    expect(api.getVersion()).toBe("0.22.8");
-    expect(version?.textContent).toBe("0.22.8");
+    expect(api.getVersion()).toBe("0.22.9");
+    expect(version?.textContent).toBe("0.22.9");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
     expect(blossom?.style.display).toBe("none");
     expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
-      520,
+      560,
       5,
       35,
       35,
     );
     expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
-      1020,
+      1060,
       5,
       35,
       35,

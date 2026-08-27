@@ -51,9 +51,14 @@
         callback(1, 600, 0, 500, 1);
       };
       window.ChatRoomCharacterViewDrawOverlay = () => {};
-      window.ChatRoomDrawCharacterStatusIcons = () => {};
       window.ChatRoomHideIconState = 0;
       window.MainCanvas = document.getElementById("MainCanvas").getContext("2d");
+      // Echo's real addon icon occupies 420..455. Keep a visible sentinel there so this release
+      // fails if KikiLink merely paints into the same slot and hides or replaces the neighbor.
+      window.ChatRoomDrawCharacterStatusIcons = (_character, x, y, zoom) => {
+        window.MainCanvas.fillStyle = "#24a8ff";
+        window.MainCanvas.fillRect(x + 420 * zoom, y + 5, 35 * zoom, 35 * zoom);
+      };
       window.__KIKILINK_NATIVE_DRAWS__ = [];
       const harnessImageCache = new Map();
       window.DrawImageResize = (source, x, y, width, height) => {
@@ -257,10 +262,17 @@
         const version = document.getElementById("kikilink-version");
         const custom = runtimePageRealm.DialogActivity.find((item) => item.Activity.Name.startsWith("KikiLinkCustom_"));
         const activityMark = document.querySelector("[data-kikilink-activity-mark]");
-        const flowerPixels = runtimePageRealm.MainCanvas.getImageData(515, 0, 50, 50).data;
+        const flowerPixels = runtimePageRealm.MainCanvas.getImageData(560, 5, 35, 35).data;
+        const echoPixels = runtimePageRealm.MainCanvas.getImageData(520, 5, 35, 35).data;
         let opaqueFlowerPixels = 0;
         for (let index = 3; index < flowerPixels.length; index += 4) {
           if (flowerPixels[index] > 0) opaqueFlowerPixels += 1;
+        }
+        let intactEchoPixels = 0;
+        for (let index = 0; index < echoPixels.length; index += 4) {
+          if (echoPixels[index] === 36 && echoPixels[index + 1] === 168 && echoPixels[index + 2] === 255) {
+            intactEchoPixels += 1;
+          }
         }
         const result = {
           publicApi: runtimePageRealm.KikiLink?.getVersion?.() || null,
@@ -268,6 +280,7 @@
           isolatedPageBridge: runtimePageRealm !== window && runtimePageRealm.KikiLink === window.KikiLink,
           blossomNativeDraw: window.__KIKILINK_NATIVE_DRAWS__.length > 0,
           blossomVisiblePixels: opaqueFlowerPixels > 25,
+          echoSlotPreserved: intactEchoPixels > 1_000,
           blossomDomHidden: !!blossom && blossom.hidden && blossom.style.display === "none",
           customActivityInRegistry: runtimePageRealm.ActivityFemale3DCG.some((activity) => activity.Name.startsWith("KikiLinkCustom_")),
           customActivityInDialog: !!custom,

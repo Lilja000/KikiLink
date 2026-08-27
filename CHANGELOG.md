@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.22.9 - 2026-08-27
+
+- Fixed the last visual conflict found in the addon compatibility audit: Echo owns the
+  `CharX + 420×Zoom` through `+455×Zoom` rectangle, so sharing it could let Echo's later draw cover
+  the Blossom even though KikiLink's canvas call succeeded.
+- Moved the default Blossom to a dedicated `CharX + 460×Zoom` through `+495×Zoom` slot, after Echo
+  and clear of WCE and BCX. Existing explicit user placement remains unchanged.
+- Extended the published browser harness to render an Echo-slot sentinel and require both that
+  sentinel and real decoded Blossom pixels to survive simultaneously.
+
 ## 0.22.8 - 2026-08-27
 
 - Restored the explicit `unsafeWindow` page-context bridge from the empirically working 0.20.6

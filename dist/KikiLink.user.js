@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.22.8
+// @version      0.22.9
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -2884,7 +2884,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
   ];
   var blossomVectorPaths;
   var DEFAULT_ROOM_BADGE_POSITION = Object.freeze({
-    x: 0.84,
+    x: 0.92,
     y: 5e-3
   });
   function resolveRoomBadgePosition(position, frame) {
@@ -19497,7 +19497,7 @@ ${expanded}` : expanded;
         console.warn("[KikiLink] Previous release cleanup failed; continuing startup", error);
       }
     }
-    const app = new KikiLinkApp("0.22.8");
+    const app = new KikiLinkApp("0.22.9");
     const api = app.publicApi();
     window.KikiLink = api;
     page.KikiLink = api;
