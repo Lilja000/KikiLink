@@ -118,16 +118,16 @@ describe("LinkPresenceService", () => {
   it("shares a bounded direct avatar URL and ignores unsafe remote avatars", () => {
     const { bus, service, settings, broadcastKikiLinkProtocol } = setup();
     service.start();
-    service.setOwnAvatarUrl("https://waifuvault.moe/f/kiki.webp");
+    service.setOwnAvatarUrl("https://litter.catbox.moe/kiki.webp");
 
     expect(settings.get().linkPresence.avatarUrl).toBe(
-      "https://waifuvault.moe/f/kiki.webp",
+      "https://litter.catbox.moe/kiki.webp",
     );
     expect(
       broadcastKikiLinkProtocol.mock.calls.some(
         ([payload]) =>
           typeof payload === "string" &&
-          payload.includes('"a":"https://waifuvault.moe/f/kiki.webp"'),
+          payload.includes('"a":"https://litter.catbox.moe/kiki.webp"'),
       ),
     ).toBe(true);
 
@@ -152,18 +152,18 @@ describe("LinkPresenceService", () => {
     service.setOwnProfile({
       enabled: true,
       statusMessage: "Open to chat",
-      avatarUrl: "https://waifuvault.moe/f/kiki.webp",
+      avatarUrl: "https://litter.catbox.moe/kiki.webp",
       autoIdleMinutes: 7,
       afkAutoReply: { enabled: true, message: "Back later!" },
     });
 
     expect(broadcastKikiLinkProtocol).toHaveBeenCalledOnce();
     expect(broadcastKikiLinkProtocol).toHaveBeenLastCalledWith(
-      expect.stringContaining('"a":"https://waifuvault.moe/f/kiki.webp"'),
+      expect.stringContaining('"a":"https://litter.catbox.moe/kiki.webp"'),
     );
     expect(settings.get().linkPresence).toMatchObject({
       statusMessage: "Open to chat",
-      avatarUrl: "https://waifuvault.moe/f/kiki.webp",
+      avatarUrl: "https://litter.catbox.moe/kiki.webp",
       autoIdleMinutes: 7,
       afkAutoReply: { enabled: true, message: "Back later!" },
     });

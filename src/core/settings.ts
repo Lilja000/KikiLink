@@ -13,7 +13,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 21,
+  schemaVersion: 22,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -43,7 +43,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     imagePreviews: "ask",
     imageUploads: {
       enabled: true,
-      retention: "7d",
+      retention: "24h",
     },
     gallery: {
       saved: [],
@@ -96,7 +96,6 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
   linkMusic: {
     playlists: [{ id: "main", name: "My playlist", tracks: [] }],
     activePlaylistId: "main",
-    uploadRetention: "auto",
     repeatMode: "off",
     shuffle: false,
     volume: 70,
@@ -204,7 +203,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 21,
+    schemaVersion: 22,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -388,9 +387,10 @@ function sanitizeMusicSettings(
           const title = cleanBoundedText(track.title, 80);
           const source = track.source === "local"
             ? "local"
-            : track.source === "hosted" ||
+            : track.source === "catbox" ||
+                track.source === "hosted" ||
                 (sourceSchema < 20 && typeof track.source === "string" && track.source !== "url")
-              ? "hosted"
+              ? "catbox"
               : "url";
           const locator = source === "local" ? safeLocalId(track.locator) : sanitizeAudioUrl(track.locator);
           if (!trackId || !title || !locator || trackIds.has(trackId)) continue;
@@ -417,19 +417,10 @@ function sanitizeMusicSettings(
   return {
     playlists,
     activePlaylistId,
-    uploadRetention: sanitizeMusicUploadRetention(value.uploadRetention),
     repeatMode: value.repeatMode === "all" || value.repeatMode === "one" ? value.repeatMode : "off",
     shuffle: booleanOr(value.shuffle, DEFAULT_SETTINGS.linkMusic.shuffle),
     volume: integerInRange(value.volume, 0, 100, DEFAULT_SETTINGS.linkMusic.volume),
   };
-}
-
-function sanitizeMusicUploadRetention(
-  value: unknown,
-): KikiLinkSettings["linkMusic"]["uploadRetention"] {
-  return value === "auto" || value === "1d" || value === "3d" || value === "7d" || value === "30d"
-    ? value
-    : DEFAULT_SETTINGS.linkMusic.uploadRetention;
 }
 
 function sanitizeImageUploads(
@@ -443,20 +434,17 @@ function sanitizeImageUploads(
       sourceSchema < 14
         ? false
         : booleanOr(value.enabled, DEFAULT_SETTINGS.linkChat.imageUploads.enabled),
-    retention: sanitizeHostedRetention(value.retention, sourceSchema),
+    retention: sanitizeLitterboxRetention(value.retention),
   };
 }
 
-function sanitizeHostedRetention(
+function sanitizeLitterboxRetention(
   value: unknown,
-  sourceSchema: number,
 ): KikiLinkSettings["linkChat"]["imageUploads"]["retention"] {
-  if (value === "1d" || value === "3d" || value === "7d" || value === "30d") return value;
-  if (sourceSchema < 20) {
-    // Preserve the closest privacy expectation when upgrading old temporary-host settings.
-    if (value === "72h") return "3d";
-    if (value === "1h" || value === "12h" || value === "24h") return "1d";
-  }
+  if (value === "1h" || value === "12h" || value === "24h" || value === "72h") return value;
+  // Preserve the nearest supported lifetime when returning from WaifuVault settings.
+  if (value === "1d") return "24h";
+  if (value === "3d" || value === "7d" || value === "30d") return "72h";
   return DEFAULT_SETTINGS.linkChat.imageUploads.retention;
 }
 

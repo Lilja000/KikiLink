@@ -30,6 +30,8 @@ afterEach(() => {
     "DialogMenuMode",
     "DialogActivity",
     "DialogMenuMapping",
+    "CurrentScreen",
+    "DialogLeave",
   ]) {
     Reflect.deleteProperty(globalThis, key);
   }
@@ -435,6 +437,76 @@ describe("native Custom Activities", () => {
     ]);
     expect(reload).toHaveBeenCalledTimes(2);
     service.stop();
+  });
+
+  it("repairs and runs a native custom-activity button without relying on BC function hooks", async () => {
+    vi.useFakeTimers();
+    const arms: BCAssetGroup = {
+      Name: "ItemArms",
+      Description: "Arms",
+      Category: "Item",
+    };
+    globalThis.ActivityFemale3DCG = [
+      { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
+    ];
+    globalThis.ActivityFemale3DCGOrdering = ["Caress"];
+    globalThis.AssetGroup = [arms];
+    globalThis.Player = { MemberNumber: 999, Name: "Kiki", FriendNames: new Map() };
+    const target = { MemberNumber: 123, Name: "Reina", FocusGroup: arms };
+    globalThis.CharacterGetCurrent = () => target;
+    globalThis.DialogMenuMode = "activities";
+    globalThis.DialogActivity = [];
+    globalThis.DialogMenuMapping = { activities: { Reload: vi.fn() } };
+    globalThis.CurrentScreen = "ChatRoom";
+    globalThis.DialogLeave = vi.fn();
+    globalThis.ChatRoomPublishCustomAction = vi.fn();
+    const service = new LinkActivitiesService(
+      {
+        registerCustomActivityIntegration: () => () => undefined,
+        getOwnMemberNumber: () => 999,
+        sendRoomEmote: vi.fn(),
+      } as unknown as BCAdapter,
+      settingsWithElbowTouch(),
+    );
+
+    service.start();
+    const itemActivity = globalThis.DialogActivity[0]!;
+    const button = document.createElement("button");
+    button.className = "dialog-grid-button";
+    button.name = itemActivity.Activity.Name;
+    button.dataset.index = "0";
+    button.dataset.group = "ItemArms";
+    const brokenImage = document.createElement("img");
+    brokenImage.className = "button-image";
+    brokenImage.src = "./Assets/Female3DCG/Activity/Missing.png";
+    const brokenLabel = document.createElement("span");
+    brokenLabel.className = "button-label";
+    brokenLabel.textContent = `MISSING TEXT IN \"ActivityDictionary.csv\": ${itemActivity.Activity.Name}`;
+    button.append(brokenImage, brokenLabel);
+    const nativeClick = vi.fn();
+    button.addEventListener("click", nativeClick);
+    document.body.append(button);
+
+    await Promise.resolve();
+    vi.advanceTimersByTime(500);
+    expect(brokenLabel.textContent).toBe("Elbow touch");
+    expect(brokenImage.getAttribute("src")).toBe("./Assets/Female3DCG/Activity/Caress.png");
+    expect(button.querySelector("[data-kikilink-activity-mark]")).not.toBeNull();
+
+    button.click();
+    expect(globalThis.ChatRoomPublishCustomAction).toHaveBeenCalledWith(
+      "KikiLinkCustomActivity",
+      false,
+      expect.arrayContaining([
+        expect.objectContaining({ Text: "Kiki touches Reina's elbow." }),
+      ]),
+    );
+    expect(nativeClick).not.toHaveBeenCalled();
+    expect(globalThis.DialogLeave).toHaveBeenCalledOnce();
+
+    service.stop();
+    button.click();
+    expect(nativeClick).toHaveBeenCalledOnce();
   });
 
   it("publishes only the finished sentence while carrying validated arousal metadata", () => {

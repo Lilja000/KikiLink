@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.22.4 - 2026-08-26
+
+- Restored the pre-0.22.2 upload split: temporary chat images and room media use Litterbox with
+  1, 12, 24, or 72 hour retention, while Music can upload long-lived anonymous tracks to Catbox.
+  Restored both userscript host permissions, multipart POST formats, strict response validation,
+  generic filenames, progress reporting, and schema migration from the WaifuVault-era settings.
+- Removed Music's obsolete WaifuVault lifetime control. Saved `hosted` tracks migrate to `catbox`
+  without losing their URL, and current anonymous Catbox retention is described accurately.
+- Fixed Custom Activity labels, vanilla pictures, and execution independently of page-function
+  hooks. KikiLink now repairs native activity-card DOM and captures its click before Bondage Club can
+  fall through to the missing `ActivityDictionary.csv` entry; mirrored activity groups are supported.
+
 ## 0.22.3 - 2026-08-26
 
 - Fixed Custom Activity cards losing their label and selected vanilla picture, then falling through

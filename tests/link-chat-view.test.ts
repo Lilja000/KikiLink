@@ -8,7 +8,7 @@ import type { KikiLinkEvents } from "../src/core/types";
 import { LinkActivitiesService } from "../src/modules/link-activities/link-activities-service";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import type {
-  WaifuVaultUploadConfig,
+  LitterboxUploadConfig,
   LocalImageUploader,
 } from "../src/modules/link-chat/image-upload";
 import { LinkChatView } from "../src/modules/link-chat/view";
@@ -203,7 +203,7 @@ describe("LinkChatView", () => {
         roomName: "Moon Garden",
         isAdmin: roomAdmin,
         customization: {
-          imageUrl: "https://waifuvault.moe/f/old.webp",
+          imageUrl: "https://litter.catbox.moe/old.webp",
           musicUrl: "https://cdn.example/old.mp3",
           sizeMode: 2,
           musicSync: false,
@@ -223,7 +223,7 @@ describe("LinkChatView", () => {
           whitelist: [123],
           blacklist: [],
           custom: {
-            imageUrl: "https://waifuvault.moe/f/old.webp",
+            imageUrl: "https://litter.catbox.moe/old.webp",
             imageFilter: "",
             musicUrl: "https://cdn.example/old.mp3",
             sizeMode: 2,
@@ -260,7 +260,7 @@ describe("LinkChatView", () => {
         direction: "incoming",
         peerNumber: 123,
         peerName: "Reina",
-        content: "https://waifuvault.moe/f/gallery.webp",
+        content: "https://litter.catbox.moe/gallery.webp",
         sentAt: 1_000,
         includeRoom: false,
       },
@@ -281,10 +281,10 @@ describe("LinkChatView", () => {
     });
     const imageUrl = shadow?.querySelector<HTMLInputElement>(".kl-room-media input[type=url]");
     if (!imageUrl) throw new Error("Missing room background control");
-    imageUrl.value = "https://waifuvault.moe/f/new.webp";
+    imageUrl.value = "https://litter.catbox.moe/new.webp";
     shadow?.querySelector<HTMLButtonElement>(".kl-room-media .kl-text-button--primary")?.click();
     expect(updateRoomCustomization).toHaveBeenCalledWith(
-      expect.objectContaining({ imageUrl: "https://waifuvault.moe/f/new.webp", sizeMode: 2 }),
+      expect.objectContaining({ imageUrl: "https://litter.catbox.moe/new.webp", sizeMode: 2 }),
     );
     [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-room-player-actions button") ?? [])]
       .find((button) => button.textContent === "Make admin")
@@ -317,7 +317,7 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLButtonElement>(".kl-sidebar-heading-actions button")?.click();
     await vi.waitFor(() => {
       expect(shadow?.querySelector<HTMLElement>(".kl-gallery-page")?.hidden).toBe(false);
-      expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("WaifuVault");
+      expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("Litterbox");
       expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain("Show original");
       expect(shadow?.querySelector(".kl-gallery-item")?.textContent).toContain(
         "Use as room background",
@@ -339,32 +339,32 @@ describe("LinkChatView", () => {
       ?.click();
     const galleryUrl = shadow?.querySelector<HTMLInputElement>(".kl-image-url");
     if (!galleryUrl) throw new Error("Missing Gallery image URL field");
-    galleryUrl.value = "https://waifuvault.moe/f/direct-gallery.png";
+    galleryUrl.value = "https://litter.catbox.moe/direct-gallery.png";
     galleryUrl.dispatchEvent(new Event("input", { bubbles: true }));
     shadow
       ?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")
       ?.click();
     await vi.waitFor(() => {
       expect(settings.get().linkChat.gallery.saved).toMatchObject([
-        { url: "https://waifuvault.moe/f/direct-gallery.png" },
+        { url: "https://litter.catbox.moe/direct-gallery.png" },
       ]);
       expect(
         shadow?.querySelector<HTMLElement>(
-          '[data-gallery-url="https://waifuvault.moe/f/direct-gallery.png"]',
+          '[data-gallery-url="https://litter.catbox.moe/direct-gallery.png"]',
         ),
       ).not.toBeNull();
     });
 
     shadow
       ?.querySelector<HTMLElement>(
-        '[data-gallery-url="https://waifuvault.moe/f/direct-gallery.png"]',
+        '[data-gallery-url="https://litter.catbox.moe/direct-gallery.png"]',
       )
       ?.querySelector<HTMLButtonElement>(".kl-gallery-remove")
       ?.click();
     await vi.waitFor(() => {
       expect(settings.get().linkChat.gallery.saved).toEqual([]);
       expect(settings.get().linkChat.gallery.hiddenUrls).toContain(
-        "https://waifuvault.moe/f/direct-gallery.png",
+        "https://litter.catbox.moe/direct-gallery.png",
       );
     });
 
@@ -488,25 +488,21 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-music-playlist-actions")?.textContent).toContain("Duplicate");
     expect(shadow?.querySelector("style")?.textContent).toContain("@media (max-width: 900px)");
     const musicFileMode = shadow?.querySelector<HTMLSelectElement>(".kl-music-file-mode");
-    const musicLifetime = shadow?.querySelector<HTMLSelectElement>(".kl-music-upload-retention");
-    if (!musicFileMode || !musicLifetime) throw new Error("Missing Music sharing controls");
-    expect(musicLifetime.value).toBe("auto");
-    expect(musicLifetime.disabled).toBe(true);
-    musicFileMode.value = "hosted";
-    musicFileMode.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(musicLifetime.disabled).toBe(false);
-    musicLifetime.value = "30d";
-    musicLifetime.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(settings.get().linkMusic.uploadRetention).toBe("30d");
-    expect(settings.get().linkChat.imageUploads.retention).toBe("7d");
+    if (!musicFileMode) throw new Error("Missing Music sharing controls");
+    expect([...musicFileMode.options].map((option) => [option.value, option.text])).toContainEqual([
+      "catbox",
+      "Upload to long-lived Catbox",
+    ]);
+    expect(shadow?.querySelector(".kl-music-upload-retention")).toBeNull();
+    expect(settings.get().linkChat.imageUploads.retention).toBe("24h");
     musicTitle.value = "Moon Song";
-    musicUrl.value = "https://waifuvault.moe/f/moon.mp3";
+    musicUrl.value = "https://files.catbox.moe/moon.mp3";
     shadow?.querySelector<HTMLButtonElement>(".kl-music-add .kl-text-button--primary")?.click();
     await vi.waitFor(() => {
       expect(settings.get().linkMusic.playlists[0]?.tracks[0]).toMatchObject({
         title: "Moon Song",
         source: "url",
-        locator: "https://waifuvault.moe/f/moon.mp3",
+        locator: "https://files.catbox.moe/moon.mp3",
       });
     });
     const queueSearch = shadow?.querySelector<HTMLInputElement>(".kl-music-queue-search");
@@ -1058,12 +1054,12 @@ describe("LinkChatView", () => {
     settings.update((draft) => {
       draft.linkChat.imageUploads = {
         enabled: true,
-        retention: "7d",
+        retention: "24h",
       };
     });
     const service = new ChatService(new MemoryChatRepository(), settings);
     const preparedBlob = new Blob([Uint8Array.of(1, 2, 3)], { type: "image/webp" });
-    const imageUploader: LocalImageUploader<WaifuVaultUploadConfig> = {
+    const imageUploader: LocalImageUploader<LitterboxUploadConfig> = {
       prepare: vi.fn(async () => ({
         blob: preparedBlob,
         width: 640,
@@ -1071,7 +1067,7 @@ describe("LinkChatView", () => {
         sourceBytes: 10,
       })),
       upload: vi.fn(async () =>
-        "https://waifuvault.moe/f/photo.webp"),
+        "https://litter.catbox.moe/photo.webp"),
     };
     const localGallery: DeviceGalleryImage[] = [];
     const galleryStore: GalleryStore = {
@@ -1140,11 +1136,11 @@ describe("LinkChatView", () => {
     await vi.waitFor(() => {
       expect(imageUploader.upload).toHaveBeenCalledWith(
         expect.objectContaining({ blob: preparedBlob, width: 640, height: 480 }),
-        { retention: "7d" },
+        { retention: "24h" },
       );
       expect(sendBeep).toHaveBeenCalledWith(
         123,
-        "https://waifuvault.moe/f/photo.webp",
+        "https://litter.catbox.moe/photo.webp",
         false,
       );
     });

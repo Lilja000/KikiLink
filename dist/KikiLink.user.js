@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.22.3
+// @version      0.22.4
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -17,7 +17,8 @@
 // @inject-into  page
 // @sandbox      raw
 // @grant        GM_xmlhttpRequest
-// @connect      waifuvault.moe
+// @connect      catbox.moe
+// @connect      litterbox.catbox.moe
 // ==/UserScript==
 "use strict";
 (() => {
@@ -1929,7 +1930,8 @@ One of mods you are using is using an old version of SDK. It will work for now b
   function galleryMediaProvider(value) {
     try {
       const host = new URL(value).hostname.toLocaleLowerCase();
-      if (host === "waifuvault.moe") return "waifuvault";
+      if (host === "files.catbox.moe") return "catbox";
+      if (host === "litter.catbox.moe") return "litterbox";
     } catch {
     }
     return "other";
@@ -2142,7 +2144,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/core/settings.ts
   var DEFAULT_SETTINGS = {
-    schemaVersion: 21,
+    schemaVersion: 22,
     ui: {
       accent: "#d71932",
       theme: "dark",
@@ -2172,7 +2174,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       imagePreviews: "ask",
       imageUploads: {
         enabled: true,
-        retention: "7d"
+        retention: "24h"
       },
       gallery: {
         saved: [],
@@ -2225,7 +2227,6 @@ One of mods you are using is using an old version of SDK. It will work for now b
     linkMusic: {
       playlists: [{ id: "main", name: "My playlist", tracks: [] }],
       activePlaylistId: "main",
-      uploadRetention: "auto",
       repeatMode: "off",
       shuffle: false,
       volume: 70
@@ -2312,7 +2313,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     const linkRoom = isRecord3(source.linkRoom) ? source.linkRoom : {};
     const linkMusic = isRecord3(source.linkMusic) ? source.linkMusic : {};
     return {
-      schemaVersion: 21,
+      schemaVersion: 22,
       ui: {
         accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
         theme: ui.theme === "light" || ui.theme === "system" || ui.theme === "dark" ? ui.theme : DEFAULT_SETTINGS.ui.theme,
@@ -2457,7 +2458,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
             if (trackBudget <= 0 || !isRecord3(track)) break;
             const trackId = safeLocalId(track.id);
             const title = cleanBoundedText(track.title, 80);
-            const source = track.source === "local" ? "local" : track.source === "hosted" || sourceSchema < 20 && typeof track.source === "string" && track.source !== "url" ? "hosted" : "url";
+            const source = track.source === "local" ? "local" : track.source === "catbox" || track.source === "hosted" || sourceSchema < 20 && typeof track.source === "string" && track.source !== "url" ? "catbox" : "url";
             const locator = source === "local" ? safeLocalId(track.locator) : sanitizeAudioUrl(track.locator);
             if (!trackId || !title || !locator || trackIds.has(trackId)) continue;
             tracks.push({
@@ -2481,29 +2482,23 @@ One of mods you are using is using an old version of SDK. It will work for now b
     return {
       playlists,
       activePlaylistId,
-      uploadRetention: sanitizeMusicUploadRetention(value.uploadRetention),
       repeatMode: value.repeatMode === "all" || value.repeatMode === "one" ? value.repeatMode : "off",
       shuffle: booleanOr(value.shuffle, DEFAULT_SETTINGS.linkMusic.shuffle),
       volume: integerInRange3(value.volume, 0, 100, DEFAULT_SETTINGS.linkMusic.volume)
     };
-  }
-  function sanitizeMusicUploadRetention(value) {
-    return value === "auto" || value === "1d" || value === "3d" || value === "7d" || value === "30d" ? value : DEFAULT_SETTINGS.linkMusic.uploadRetention;
   }
   function sanitizeImageUploads(value, sourceSchema) {
     return {
       // Schema 13 stored Cloudinary credentials. Do not silently reinterpret its enabled switch as
       // consent to upload to a different third-party provider after upgrading.
       enabled: sourceSchema < 14 ? false : booleanOr(value.enabled, DEFAULT_SETTINGS.linkChat.imageUploads.enabled),
-      retention: sanitizeHostedRetention(value.retention, sourceSchema)
+      retention: sanitizeLitterboxRetention(value.retention)
     };
   }
-  function sanitizeHostedRetention(value, sourceSchema) {
-    if (value === "1d" || value === "3d" || value === "7d" || value === "30d") return value;
-    if (sourceSchema < 20) {
-      if (value === "72h") return "3d";
-      if (value === "1h" || value === "12h" || value === "24h") return "1d";
-    }
+  function sanitizeLitterboxRetention(value) {
+    if (value === "1h" || value === "12h" || value === "24h" || value === "72h") return value;
+    if (value === "1d") return "24h";
+    if (value === "3d" || value === "7d" || value === "30d") return "72h";
     return DEFAULT_SETTINGS.linkChat.imageUploads.retention;
   }
   function sanitizeGallery(value) {
@@ -3254,23 +3249,71 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #registeredActivities;
     #registeredOrdering;
     #registryMonitor;
+    #activityButtonObserver;
+    #activityClickListenerAttached = false;
     #unregister;
+    #handleNativeActivityClick = (event) => {
+      const origin = event.target;
+      if (!origin || typeof origin.closest !== "function") return;
+      const button = origin.closest(
+        'button.dialog-grid-button[name^="KikiLinkCustom_"]'
+      );
+      if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") {
+        return;
+      }
+      const activityName = button.getAttribute("name") ?? "";
+      const definition = this.#runtimeActivities.get(activityName);
+      if (!definition) return;
+      let acted;
+      try {
+        acted = typeof CharacterGetCurrent === "function" ? CharacterGetCurrent() : typeof CurrentCharacter !== "undefined" ? CurrentCharacter : void 0;
+      } catch {
+        return;
+      }
+      const actor = typeof Player === "object" && Player !== null ? Player : void 0;
+      const targetGroup = acted?.FocusGroup;
+      if (!actor || !acted || !targetGroup) return;
+      const groupName = targetGroup.Name;
+      const index = Number.parseInt(button.dataset.index ?? "", 10);
+      const dialogItem = typeof DialogActivity !== "undefined" && Array.isArray(DialogActivity) && Number.isSafeInteger(index) ? DialogActivity[index] : void 0;
+      const itemActivity = dialogItem?.Activity?.Name === activityName ? dialogItem : {
+        Activity: this.#injectedActivities.get(activityName) ?? createNativeActivity(activityName, definition),
+        Group: groupName
+      };
+      if (!this.run(actor, acted, targetGroup, itemActivity)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (typeof CurrentScreen === "string" && CurrentScreen === "ChatRoom" && typeof DialogLeave === "function") {
+        try {
+          DialogLeave();
+        } catch {
+        }
+      }
+    };
     start() {
       if (!this.#unregister) {
         this.#unregister = this.adapter.registerCustomActivityIntegration(this);
       }
       if (this.#registryMonitor === void 0) {
         this.#registryMonitor = setInterval(() => {
+          this.#ensureNativeActivityDomBridge();
           this.#ensureRegistryInjection();
           this.#syncOpenNativeDialog();
         }, REGISTRY_MONITOR_INTERVAL_MS);
       }
+      this.#ensureNativeActivityDomBridge();
       this.syncFromSettings();
     }
     stop() {
       if (this.#registryMonitor !== void 0) {
         clearInterval(this.#registryMonitor);
         this.#registryMonitor = void 0;
+      }
+      this.#activityButtonObserver?.disconnect();
+      this.#activityButtonObserver = void 0;
+      if (this.#activityClickListenerAttached && typeof document !== "undefined") {
+        document.removeEventListener("click", this.#handleNativeActivityClick, true);
+        this.#activityClickListenerAttached = false;
       }
       this.#unregister?.();
       this.#unregister = void 0;
@@ -3437,7 +3480,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
       if (typeof activityName !== "string") return false;
       const definition = this.#runtimeActivities.get(activityName);
       if (!definition) return false;
-      if (!actor || !acted || !targetGroup || !Number.isSafeInteger(actor.MemberNumber) || !Number.isSafeInteger(acted.MemberNumber) || !SAFE_ASSET_NAME2.test(targetGroup.Name) || targetGroup.Name !== definition.targetGroup) {
+      if (!actor || !acted || !targetGroup || !Number.isSafeInteger(actor.MemberNumber) || !Number.isSafeInteger(acted.MemberNumber) || !SAFE_ASSET_NAME2.test(targetGroup.Name) || !activityGroupsMatch(definition.targetGroup, targetGroup.Name)) {
         return false;
       }
       const text = expandCustomActivityTemplate(definition.template, {
@@ -3572,6 +3615,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
      * KikiLink activities silently disappear from an already-open native menu.
      */
     #syncOpenNativeDialog() {
+      this.#repairNativeActivityButtons();
       if (typeof DialogMenuMode === "undefined" || DialogMenuMode !== "activities" || typeof DialogActivity === "undefined" || !Array.isArray(DialogActivity)) {
         return;
       }
@@ -3596,6 +3640,52 @@ One of mods you are using is using an old version of SDK. It will work for now b
           if (pending && typeof pending.catch === "function") void pending.catch(() => void 0);
         }
       } catch {
+      }
+      this.#repairNativeActivityButtons();
+    }
+    #ensureNativeActivityDomBridge() {
+      if (typeof document === "undefined") return;
+      if (!this.#activityClickListenerAttached) {
+        document.addEventListener("click", this.#handleNativeActivityClick, true);
+        this.#activityClickListenerAttached = true;
+      }
+      if (this.#activityButtonObserver || !document.body || typeof MutationObserver !== "function") {
+        return;
+      }
+      this.#activityButtonObserver = new MutationObserver(() => {
+        this.#repairNativeActivityButtons();
+      });
+      this.#activityButtonObserver.observe(document.body, { childList: true, subtree: true });
+      this.#repairNativeActivityButtons();
+    }
+    #repairNativeActivityButtons() {
+      if (typeof document === "undefined" || this.#runtimeActivities.size === 0) return;
+      for (const button of document.querySelectorAll(
+        'button.dialog-grid-button[name^="KikiLinkCustom_"]'
+      )) {
+        const activityName = button.getAttribute("name") ?? "";
+        const definition = this.#runtimeActivities.get(activityName);
+        if (!definition) continue;
+        let image = button.querySelector("img.button-image");
+        if (!image) {
+          image = document.createElement("img");
+          image.className = "button-image";
+          button.prepend(image);
+        }
+        const imageUrl = activityImageUrl(definition.image);
+        if (image.getAttribute("src") !== imageUrl) image.setAttribute("src", imageUrl);
+        image.alt = definition.name;
+        let label = button.querySelector(".button-label");
+        if (!label) {
+          label = document.createElement("span");
+          label.className = "button-label";
+          button.append(label);
+        }
+        if (label.textContent !== definition.name) label.textContent = definition.name;
+        this.decorateButton(button, {
+          Activity: this.#injectedActivities.get(activityName) ?? createNativeActivity(activityName, definition),
+          Group: button.dataset.group || definition.targetGroup
+        });
       }
     }
     #registryInjectionIsHealthy(registry) {
@@ -9188,11 +9278,12 @@ select:focus-visible {
   var MAX_LOCAL_IMAGE_EDGE = 2560;
   var MAX_LOCAL_IMAGE_PIXELS = 32e6;
   var MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
-  var MAX_HOSTED_MUSIC_BYTES = 80 * 1024 * 1024;
+  var MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
   var MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
   var IMAGE_UPLOAD_TIMEOUT_MS = 6e4;
-  var WAIFUVAULT_UPLOAD_ENDPOINT = "https://waifuvault.moe/rest";
-  var WaifuVaultImageUploader = class {
+  var LITTERBOX_UPLOAD_ENDPOINT = "https://litterbox.catbox.moe/resources/internals/api.php";
+  var CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
+  var LitterboxImageUploader = class {
     constructor(request) {
       this.request = request;
     }
@@ -9201,104 +9292,91 @@ select:focus-visible {
       return prepareLocalImage(file);
     }
     async upload(image, config) {
-      const normalizedConfig = normalizeWaifuVaultUploadConfig(config);
+      const normalizedConfig = normalizeLitterboxUploadConfig(config);
       if (!normalizedConfig) throw new Error("Choose a valid temporary image lifetime");
       validatePreparedImage(image);
       const form = new FormData();
-      form.append("file", preparedImageFile(image));
+      form.append("reqtype", "fileupload");
+      form.append("time", normalizedConfig.retention);
+      form.append("fileToUpload", preparedImageFile(image));
       const response = await uploadMultipart(
-        waifuVaultUploadUrl(normalizedConfig.retention),
+        LITTERBOX_UPLOAD_ENDPOINT,
         form,
         IMAGE_UPLOAD_TIMEOUT_MS,
-        this.request,
-        void 0,
-        "PUT"
+        this.request
       );
       if (!response.ok) {
         throw new Error(cleanProviderError(response.body) || `Image host returned HTTP ${response.status}`);
       }
-      const directUrl = waifuVaultResponseUrl(response.body, ["webp"]);
-      if (!directUrl || !normalizeImageUrl(directUrl)) {
+      const directUrl = normalizeImageUrl(response.body.trim());
+      if (!directUrl || !isExpectedLitterboxUrl(directUrl)) {
         throw new Error("The temporary image host returned an unexpected link");
       }
       return directUrl;
     }
   };
-  async function uploadRoomAudioToWaifuVault(file, config, request) {
-    const normalizedConfig = normalizeWaifuVaultUploadConfig(config);
+  async function uploadLocalRoomAudio(file, config, request) {
+    const normalizedConfig = normalizeLitterboxUploadConfig(config);
     if (!normalizedConfig) throw new Error("Choose a valid temporary music lifetime");
     if (file.size <= 0) throw new Error("Choose a non-empty audio file");
     if (file.size > MAX_LOCAL_ROOM_AUDIO_BYTES) throw new Error("Choose room music up to 20 MB");
     const extension = roomAudioExtension(file);
     if (!extension) throw new Error("Bondage Club room music must be an MP3 or MP4 file");
     const form = new FormData();
+    form.append("reqtype", "fileupload");
+    form.append("time", normalizedConfig.retention);
     form.append(
-      "file",
+      "fileToUpload",
       new File([file], `kikilink-room-music.${extension}`, {
         type: file.type || `audio/${extension}`,
         lastModified: 0
       })
     );
     const response = await uploadMultipart(
-      waifuVaultUploadUrl(normalizedConfig.retention),
+      LITTERBOX_UPLOAD_ENDPOINT,
       form,
       IMAGE_UPLOAD_TIMEOUT_MS,
-      request,
-      void 0,
-      "PUT"
+      request
     );
     if (!response.ok) {
       throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
     }
-    const url = waifuVaultResponseUrl(response.body, ["mp3", "mp4"]);
+    const url = normalizeLitterboxAudioUrl(response.body.trim());
     if (!url) throw new Error("The temporary audio host returned an unexpected link");
     return url;
   }
-  async function uploadMusicToWaifuVault(file, config, request, onProgress) {
-    const normalizedConfig = normalizeWaifuVaultUploadConfig(config);
-    if (!normalizedConfig) throw new Error("Choose a valid shared track lifetime");
+  async function uploadMusicToCatbox(file, request, onProgress) {
     if (file.size <= 0) throw new Error("Choose a non-empty audio file");
-    if (file.size > MAX_HOSTED_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
+    if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
     const extension = playlistAudioExtension(file);
     if (!extension) throw new Error("Choose an MP3, MP4, M4A, OGG, WAV, FLAC, AAC, or WebM track");
     const form = new FormData();
+    form.append("reqtype", "fileupload");
     form.append(
-      "file",
+      "fileToUpload",
       new File([file], `kikilink-track.${extension}`, {
         type: file.type || "application/octet-stream",
         lastModified: 0
       })
     );
     const response = await uploadMultipart(
-      waifuVaultUploadUrl(normalizedConfig.retention),
+      CATBOX_UPLOAD_ENDPOINT,
       form,
       3e5,
       request,
-      onProgress,
-      "PUT"
+      onProgress
     );
     if (!response.ok) {
       throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
     }
-    const url = waifuVaultResponseUrl(response.body, [
-      "aac",
-      "flac",
-      "m4a",
-      "mp3",
-      "mp4",
-      "oga",
-      "ogg",
-      "opus",
-      "wav",
-      "webm"
-    ]);
-    if (!url) throw new Error("WaifuVault returned an unexpected track link");
+    const url = normalizeCatboxAudioUrl(response.body.trim());
+    if (!url) throw new Error("Catbox returned an unexpected track link");
     return url;
   }
-  function normalizeWaifuVaultUploadConfig(value) {
+  function normalizeLitterboxUploadConfig(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const retention = value.retention;
-    return retention === "auto" || retention === "1d" || retention === "3d" || retention === "7d" || retention === "30d" ? { retention } : null;
+    return retention === "1h" || retention === "12h" || retention === "24h" || retention === "72h" ? { retention } : null;
   }
   async function prepareLocalImage(file) {
     await validateLocalImageFile(file);
@@ -9394,21 +9472,14 @@ select:focus-visible {
       );
     });
   }
-  function waifuVaultUploadUrl(retention) {
-    const url = new URL(WAIFUVAULT_UPLOAD_ENDPOINT);
-    if (retention !== "auto") url.searchParams.set("expires", retention);
-    url.searchParams.set("hide_filename", "true");
-    return url.href;
+  function isExpectedLitterboxUrl(value) {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "litter.catbox.moe" && !url.username && !url.password && !url.search && !url.hash && /^\/[a-z0-9_-]+\.webp$/iu.test(url.pathname);
   }
-  function waifuVaultResponseUrl(body, extensions) {
+  function normalizeLitterboxAudioUrl(value) {
     try {
-      const payload = JSON.parse(body);
-      if (typeof payload.url !== "string" || typeof payload.token !== "string" || !payload.token) {
-        return null;
-      }
-      const url = new URL(payload.url);
-      const extension = url.pathname.toLocaleLowerCase().match(/\.([a-z0-9]+)$/u)?.[1];
-      if (url.protocol !== "https:" || url.hostname !== "waifuvault.moe" || url.username || url.password || url.search || url.hash || !url.pathname.startsWith("/f/") || !extension || !extensions.includes(extension)) {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.hostname !== "litter.catbox.moe" || url.username || url.password || url.search || url.hash || !/^\/[a-z0-9_-]+\.(?:mp3|mp4)$/iu.test(url.pathname)) {
         return null;
       }
       return url.href;
@@ -9445,6 +9516,17 @@ select:focus-visible {
     };
     return mime ? byMime[mime] : void 0;
   }
+  function normalizeCatboxAudioUrl(value) {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.hostname !== "files.catbox.moe" || url.username || url.password || url.search || url.hash || !/^\/[a-z0-9_-]+\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(url.pathname)) {
+        return void 0;
+      }
+      return url.href;
+    } catch {
+      return void 0;
+    }
+  }
   function validatePreparedImage(image) {
     if (image.blob.type !== "image/webp" || image.blob.size <= 0 || image.blob.size > MAX_PREPARED_IMAGE_BYTES || !Number.isSafeInteger(image.width) || image.width <= 0 || !Number.isSafeInteger(image.height) || image.height <= 0) {
       throw new Error("The prepared image is invalid");
@@ -9456,12 +9538,12 @@ select:focus-visible {
       lastModified: 0
     });
   }
-  async function uploadMultipart(endpoint, form, timeoutMs, request, onProgress, method = "POST") {
-    if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request, method);
+  async function uploadMultipart(endpoint, form, timeoutMs, request, onProgress) {
+    if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request);
     if (typeof GM_xmlhttpRequest === "function") {
       return new Promise((resolve, reject) => {
         GM_xmlhttpRequest({
-          method,
+          method: "POST",
           url: endpoint,
           data: form,
           anonymous: true,
@@ -9487,14 +9569,14 @@ select:focus-visible {
         });
       });
     }
-    return uploadMultipartWithFetch(endpoint, form, timeoutMs, globalThis.fetch.bind(globalThis), method);
+    return uploadMultipartWithFetch(endpoint, form, timeoutMs, globalThis.fetch.bind(globalThis));
   }
-  async function uploadMultipartWithFetch(endpoint, form, timeoutMs, request, method) {
+  async function uploadMultipartWithFetch(endpoint, form, timeoutMs, request) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await request(endpoint, {
-        method,
+        method: "POST",
         body: form,
         credentials: "omit",
         referrerPolicy: "no-referrer",
@@ -9726,7 +9808,7 @@ select:focus-visible {
       adapter,
       new PeopleRepository(new MemoryKeyValueStorage()),
       settings
-    ), presence, imageUploader = new WaifuVaultImageUploader(), soundStore = new DeviceNotificationSoundStore(
+    ), presence, imageUploader = new LitterboxImageUploader(), soundStore = new DeviceNotificationSoundStore(
       adapter.getOwnMemberNumber()
     ), musicStore = new DeviceMusicStore(
       adapter.getOwnMemberNumber()
@@ -9975,16 +10057,12 @@ select:focus-visible {
     #musicFileMode = element("select", {
       className: "kl-select kl-music-file-mode"
     });
-    #musicUploadRetention = element("select", {
-      className: "kl-select kl-music-upload-retention"
-    });
     #musicAddButton = element("button", {
       className: "kl-text-button kl-text-button--primary",
       type: "button",
       text: "Add track"
     });
     #musicAddStatus = element("div", { className: "kl-music-add-status" });
-    #musicShareLifetime = element("span", { className: "kl-music-share-lifetime" });
     #musicQueue = element("div", { className: "kl-music-queue" });
     #musicQueueSearch = element("input", {
       className: "kl-search kl-music-queue-search",
@@ -11277,7 +11355,7 @@ select:focus-visible {
         this.#imagePreviewSelect
       );
       this.#imageUploadsToggle.type = "checkbox";
-      this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary WaifuVault sharing");
+      this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary Litterbox sharing");
       this.#imageUploadsToggle.addEventListener(
         "change",
         () => this.#renderImageUploadSettingsOptions()
@@ -11289,23 +11367,23 @@ select:focus-visible {
         element("span", { className: "kl-switch-track" })
       );
       this.#imageUploadRetentionSelect.replaceChildren(
-        selectOption2("1d", "1 day"),
-        selectOption2("3d", "3 days"),
-        selectOption2("7d", "7 days"),
-        selectOption2("30d", "30 days")
+        selectOption2("1h", "1 hour"),
+        selectOption2("12h", "12 hours"),
+        selectOption2("24h", "24 hours"),
+        selectOption2("72h", "3 days")
       );
-      this.#imageUploadRetentionSelect.setAttribute("aria-label", "Shared file lifetime");
-      const waifuVaultLink = element("a", {
+      this.#imageUploadRetentionSelect.setAttribute("aria-label", "Temporary file lifetime");
+      const litterboxLink = element("a", {
         className: "kl-inline-link",
-        text: "WaifuVault"
+        text: "Litterbox by Catbox"
       });
-      waifuVaultLink.href = "https://waifuvault.moe/";
-      waifuVaultLink.target = "_blank";
-      waifuVaultLink.rel = "noopener noreferrer";
+      litterboxLink.href = "https://litterbox.catbox.moe/";
+      litterboxLink.target = "_blank";
+      litterboxLink.rel = "noopener noreferrer";
       this.#imageUploadSettingsOptions.append(
         this.#settingRow(
-          "Shared file lifetime",
-          "The host removes shared images, room audio, and hosted playlist tracks after this period.",
+          "Temporary link lifetime",
+          "Litterbox removes shared chat images and room media after this period.",
           this.#imageUploadRetentionSelect
         ),
         element(
@@ -11315,9 +11393,9 @@ select:focus-visible {
           element(
             "span",
             {},
-            "Only an explicit Share or Upload action makes a network request. KikiLink hides the original filename; images are resized and stripped of metadata before the public file is sent to ",
-            waifuVaultLink,
-            ". The service hashes connection IPs. Expiration cannot remove copies another person already saved. Manual Gallery files stay on this device and are never uploaded automatically."
+            "Only an explicit Share or Upload action makes a network request. KikiLink replaces the filename; images are resized and stripped of metadata before the public file is sent to ",
+            litterboxLink,
+            ". Audio may retain embedded metadata. Expiration cannot remove copies another person already saved. Manual Gallery files stay on this device and are never uploaded automatically."
           )
         )
       );
@@ -11330,7 +11408,7 @@ select:focus-visible {
         }),
         this.#settingRow(
           "Share local files",
-          "Create expiring public links through WaifuVault without an account.",
+          "Create expiring public links through Litterbox without an account.",
           imageUploadsSwitch
         ),
         this.#imageUploadSettingsOptions
@@ -12396,7 +12474,7 @@ select:focus-visible {
           { className: "kl-image-upload-note kl-image-file-privacy" },
           kikiIcon("lock"),
           element("span", {
-            text: "Nothing uploads on selection. KikiLink removes the filename and metadata first. Chat sharing creates an expiring WaifuVault link; adding to Gallery keeps the prepared file only on this device."
+            text: "Nothing uploads on selection. KikiLink removes the filename and metadata first. Chat sharing creates an expiring Litterbox link; adding to Gallery keeps the prepared file only on this device."
           })
         )
       );
@@ -12675,7 +12753,7 @@ select:focus-visible {
     }
     #renderLocalImageComposeState() {
       const settings = this.settings.get().linkChat.imageUploads;
-      const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
+      const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
       const deviceGallery = this.#imageDestination === "gallery";
       const setupButton = this.#imageFilePanel.querySelector(
         ".kl-image-upload-setup"
@@ -12708,7 +12786,7 @@ select:focus-visible {
             "span",
             {},
             element("strong", { text: "Temporary upload is off" }),
-            element("small", { text: "Enable WaifuVault sharing once in Chat settings." })
+            element("small", { text: "Enable Litterbox sharing once in Chat settings." })
           )
         );
         this.#localImageStatus.dataset.state = "empty";
@@ -12858,7 +12936,7 @@ select:focus-visible {
         return;
       }
       const uploadSettings = this.settings.get().linkChat.imageUploads;
-      const config = uploadSettings.enabled ? normalizeWaifuVaultUploadConfig(uploadSettings) : null;
+      const config = uploadSettings.enabled ? normalizeLitterboxUploadConfig(uploadSettings) : null;
       if (!image || !config || this.#imageUploadBusy) {
         this.#renderLocalImageComposeState();
         return;
@@ -12996,7 +13074,7 @@ select:focus-visible {
           category: "Destination",
           title: "Media Gallery",
           detail: "Images you add directly and media from saved LinkChat conversations",
-          keywords: "gallery library add upload images pictures device waifuvault media all chats",
+          keywords: "gallery library add upload images pictures device litterbox catbox media all chats",
           priority: 70,
           action: { kind: "workspace", target: "gallery" }
         },
@@ -13388,7 +13466,7 @@ select:focus-visible {
           "div",
           { className: "kl-gallery-meta" },
           element("strong", {
-            text: item.provider === "device" ? "On this device" : item.provider === "waifuvault" ? "WaifuVault" : "Image"
+            text: item.provider === "device" ? "On this device" : item.provider === "catbox" ? "Catbox" : item.provider === "litterbox" ? "Litterbox" : "Image"
           }),
           element("span", {
             text: item.chat ? `${item.chat.direction === "outgoing" ? "Sent to" : "From"} ${item.chat.peerName} \xB7 ${formatMessageTime(item.chat.sentAt)}` : item.localId ? `Stored permanently on this device \xB7 ${formatMessageTime(item.sortAt)}` : `Added to Gallery \xB7 ${formatMessageTime(item.sortAt)}`
@@ -13458,7 +13536,7 @@ select:focus-visible {
     async #shareLocalGalleryImage(item) {
       if (!item.localId) return;
       const uploadSettings = this.settings.get().linkChat.imageUploads;
-      const config = uploadSettings.enabled ? normalizeWaifuVaultUploadConfig(uploadSettings) : null;
+      const config = uploadSettings.enabled ? normalizeLitterboxUploadConfig(uploadSettings) : null;
       if (!config) {
         this.#toast("Enable shared uploads in Chat settings first.", "error");
         this.#openSettings("chat");
@@ -13614,7 +13692,7 @@ select:focus-visible {
         this.#roomPlaylistSyncStatus,
         element("p", {
           className: "kl-room-media-note",
-          text: "Shared backgrounds and music use your WaifuVault lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use a durable HTTPS link you control."
+          text: "Uploaded backgrounds and room music use your temporary Litterbox lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a long-lived room, use a durable HTTPS link you control."
         }),
         this.#roomSaveButton
       );
@@ -14071,7 +14149,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#roomImageFileInput.value = "";
       if (!file) return;
       const settings = this.settings.get().linkChat.imageUploads;
-      const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
+      const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
       if (!config) {
         this.#toast("Enable temporary local image uploads in Chat settings first.", "error");
         this.#openSettings("chat");
@@ -14097,7 +14175,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#roomMusicFileInput.value = "";
       if (!file) return;
       const settings = this.settings.get().linkChat.imageUploads;
-      const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
+      const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
       if (!config) {
         this.#toast("Enable temporary local uploads in Chat settings first.", "error");
         this.#openSettings("chat");
@@ -14105,7 +14183,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       }
       try {
         this.#roomAdminStatus.textContent = "Uploading temporary room music\u2026";
-        this.#roomMusicUrl.value = await uploadRoomAudioToWaifuVault(file, config);
+        this.#roomMusicUrl.value = await uploadLocalRoomAudio(file, config);
         await this.#renderRoomTools(false);
         this.#toast("Music uploaded. Apply room media when ready.");
       } catch (error) {
@@ -14191,29 +14269,8 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       this.#musicFileInput.multiple = true;
       this.#musicFileMode.replaceChildren(
         selectOption2("local", "Keep only on this device"),
-        selectOption2("hosted", "Share temporarily via WaifuVault")
+        selectOption2("catbox", "Upload to long-lived Catbox")
       );
-      this.#musicUploadRetention.replaceChildren(
-        selectOption2("auto", "Maximum available (30\u2013365 days)"),
-        selectOption2("30d", "30 days"),
-        selectOption2("7d", "7 days"),
-        selectOption2("3d", "3 days"),
-        selectOption2("1d", "1 day")
-      );
-      this.#musicFileMode.addEventListener("change", () => {
-        this.#musicUploadRetention.disabled = this.#musicFileMode.value !== "hosted";
-      });
-      this.#musicUploadRetention.addEventListener("change", () => {
-        const config = normalizeWaifuVaultUploadConfig({
-          retention: this.#musicUploadRetention.value
-        });
-        if (!config) return;
-        this.settings.update((draft) => {
-          draft.linkMusic.uploadRetention = config.retention;
-        });
-        void this.#renderMusicPage();
-      });
-      this.#musicUploadRetention.disabled = true;
       this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
       this.#musicQueueSearch.type = "search";
       this.#musicQueueSearch.placeholder = "Search this playlist";
@@ -14245,18 +14302,10 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
         element("div", { className: "kl-music-add-divider", text: "or choose a file" }),
         element("label", {}, element("span", { text: "Audio files" }), this.#musicFileInput),
         element("label", {}, element("span", { text: "File handling" }), this.#musicFileMode),
-        element(
-          "label",
-          {},
-          element("span", { text: "Shared-link lifetime" }),
-          this.#musicUploadRetention
-        ),
-        element(
-          "p",
-          { className: "kl-setting-help" },
-          "Local files stay in this browser without a KikiLink expiry. WaifuVault creates public bearer links. ",
-          this.#musicShareLifetime
-        ),
+        element("p", {
+          className: "kl-setting-help",
+          text: "Local files stay in this browser. Anonymous Catbox uploads are public bearer links and are retained until two years of inactivity; account-linked uploads would be permanent."
+        }),
         this.#musicAddStatus,
         this.#musicAddButton
       );
@@ -14381,9 +14430,6 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
     async #renderMusicPage(forceLocalRefresh = false) {
       const token = ++this.#musicRenderToken;
       const settings = this.settings.get().linkMusic;
-      this.#musicUploadRetention.value = settings.uploadRetention;
-      this.#musicUploadRetention.disabled = this.#musicFileMode.value !== "hosted";
-      this.#musicShareLifetime.textContent = settings.uploadRetention === "auto" ? "Anonymous uploads cannot be permanent; maximum lifetime is 30\u2013365 days based on file size." : `Selected lifetime: ${formatRetention(settings.uploadRetention)}.`;
       this.#playlistSelect.replaceChildren(
         ...settings.playlists.map((playlist2) => selectOption2(playlist2.id, `${playlist2.name} \xB7 ${playlist2.tracks.length}`))
       );
@@ -14472,7 +14518,7 @@ ${track.source}`.toLocaleLowerCase().includes(query));
           { className: "kl-music-track-copy" },
           element("strong", { text: track.title }),
           element("span", {
-            text: unavailable ? "Local file missing on this device" : track.source === "local" ? "On this device" : track.source === "hosted" ? "WaifuVault" : "Direct link"
+            text: unavailable ? "Local file missing on this device" : track.source === "local" ? "On this device" : track.source === "catbox" ? "Catbox" : "Direct link"
           })
         ),
         menu
@@ -14502,17 +14548,13 @@ ${track.source}`.toLocaleLowerCase().includes(query));
             let source;
             let locator;
             let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
-            if (this.#musicFileMode.value === "hosted") {
-              const uploadConfig = normalizeWaifuVaultUploadConfig({
-                retention: this.settings.get().linkMusic.uploadRetention
-              });
-              if (!uploadConfig) throw new Error("Choose a valid shared-track lifetime");
-              this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to WaifuVault\u2026`;
-              locator = await uploadMusicToWaifuVault(file, uploadConfig, void 0, (progress) => {
+            if (this.#musicFileMode.value === "catbox") {
+              this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to Catbox\u2026`;
+              locator = await uploadMusicToCatbox(file, void 0, (progress) => {
                 const amount = progress.percent === void 0 ? "" : ` \xB7 ${progress.percent}%`;
                 this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length}${amount}`;
               });
-              source = "hosted";
+              source = "catbox";
             } else {
               this.#musicAddStatus.textContent = `Saving ${index + 1}/${files.length} on this device\u2026`;
               const localTrackIds = await this.#getLocalMusicTrackIds();
@@ -14775,7 +14817,7 @@ ${track.source}`.toLocaleLowerCase().includes(query));
       const settings = this.settings.get().linkMusic;
       const track = settings.playlists.flatMap((playlist) => playlist.tracks).find((candidate) => candidate.id === this.#activeTrackId);
       this.#musicNowTitle.textContent = track?.title ?? "Nothing playing";
-      this.#musicNowSource.textContent = track ? track.source === "local" ? "On this device" : track.source === "hosted" ? "WaifuVault" : "Direct link" : "Choose a track";
+      this.#musicNowSource.textContent = track ? track.source === "local" ? "On this device" : track.source === "catbox" ? "Catbox" : "Direct link" : "Choose a track";
       this.#musicPlayButton.replaceChildren(kikiIcon(track && !this.#audio.paused ? "pause" : "play"));
       this.#musicPlayButton.title = track && !this.#audio.paused ? "Pause" : "Play";
       this.#musicPlayButton.setAttribute("aria-label", this.#musicPlayButton.title);
@@ -16958,7 +17000,7 @@ ${expanded}` : expanded;
         draft.linkChat.imagePreviews = this.#imagePreviewSelect.value === "always" || this.#imagePreviewSelect.value === "never" ? this.#imagePreviewSelect.value : "ask";
         draft.linkChat.imageUploads = {
           enabled: this.#imageUploadsToggle.checked,
-          retention: this.#imageUploadRetentionSelect.value === "1d" || this.#imageUploadRetentionSelect.value === "3d" || this.#imageUploadRetentionSelect.value === "30d" ? this.#imageUploadRetentionSelect.value : "7d"
+          retention: this.#imageUploadRetentionSelect.value === "1h" || this.#imageUploadRetentionSelect.value === "12h" || this.#imageUploadRetentionSelect.value === "72h" ? this.#imageUploadRetentionSelect.value : "24h"
         };
         draft.linkChat.quickActions = this.#readQuickActionEditor();
         draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
@@ -17480,8 +17522,8 @@ ${expanded}` : expanded;
       {
         section: "chat",
         title: "Chat & history",
-        detail: "Typing, temporary WaifuVault sharing, history, retention, and Quick Actions",
-        keywords: "beep messages typing indicator realtime image picture preview upload local waifuvault temporary privacy enter send newline save storage days clear wave hug boop template afk idle avatar profile"
+        detail: "Typing, temporary Litterbox sharing, history, retention, and Quick Actions",
+        keywords: "beep messages typing indicator realtime image picture preview upload local litterbox catbox temporary privacy enter send newline save storage hours days clear wave hug boop template afk idle avatar profile"
       },
       {
         section: "players",
@@ -17712,9 +17754,10 @@ ${expanded}` : expanded;
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   }
   function formatRetention(value) {
-    if (value === "auto") return "the maximum available lifetime";
-    const days = Number.parseInt(value, 10);
-    return `${days} day${days === 1 ? "" : "s"}`;
+    const hours = Number.parseInt(value, 10);
+    if (hours === 24) return "1 day";
+    if (hours === 72) return "3 days";
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
   }
   function imageUploadErrorMessage(error) {
     const message = error instanceof Error ? error.message.trim() : "Unable to prepare this image";
@@ -19111,7 +19154,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.22.3");
+    const app = new KikiLinkApp("0.22.4");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

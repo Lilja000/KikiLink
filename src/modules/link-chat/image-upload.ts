@@ -4,11 +4,13 @@ export const MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_LOCAL_IMAGE_EDGE = 2_560;
 export const MAX_LOCAL_IMAGE_PIXELS = 32_000_000;
 export const MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
-export const MAX_HOSTED_MUSIC_BYTES = 80 * 1024 * 1024;
+export const MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
 
 const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
 const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
-const WAIFUVAULT_UPLOAD_ENDPOINT = "https://waifuvault.moe/rest";
+const LITTERBOX_UPLOAD_ENDPOINT =
+  "https://litterbox.catbox.moe/resources/internals/api.php";
+const CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
 const CLOUD_NAME_PATTERN = /^[a-z0-9_-]{1,64}$/iu;
 const UPLOAD_PRESET_PATTERN = /^[a-z0-9_-]{1,128}$/iu;
 
@@ -26,10 +28,10 @@ interface MultipartUploadResponse {
   body: string;
 }
 
-export type HostedFileRetention = "auto" | "1d" | "3d" | "7d" | "30d";
+export type LitterboxRetention = "1h" | "12h" | "24h" | "72h";
 
-export interface WaifuVaultUploadConfig {
-  retention: HostedFileRetention;
+export interface LitterboxUploadConfig {
+  retention: LitterboxRetention;
 }
 
 export interface CloudinaryUploadConfig {
@@ -44,7 +46,7 @@ export interface PreparedLocalImage {
   sourceBytes: number;
 }
 
-export interface LocalImageUploader<Config = WaifuVaultUploadConfig> {
+export interface LocalImageUploader<Config = LitterboxUploadConfig> {
   prepare(file: File): Promise<PreparedLocalImage>;
   upload(image: PreparedLocalImage, config: Config): Promise<string>;
 }
@@ -54,59 +56,52 @@ interface CloudinaryUploadResponse {
   error?: { message?: unknown };
 }
 
-interface WaifuVaultUploadResponse {
-  url?: unknown;
-  token?: unknown;
-  retentionPeriod?: unknown;
-  options?: unknown;
-}
-
 /**
- * A zero-account temporary uploader backed by WaifuVault.
+ * A zero-account temporary uploader backed by Litterbox.
  *
  * File selection and preparation remain fully local. The prepared, generically named WebP is sent
  * only when `upload` is called explicitly.
  */
-export class WaifuVaultImageUploader implements LocalImageUploader<WaifuVaultUploadConfig> {
+export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploadConfig> {
   constructor(private readonly request?: typeof fetch) {}
 
   prepare(file: File): Promise<PreparedLocalImage> {
     return prepareLocalImage(file);
   }
 
-  async upload(image: PreparedLocalImage, config: WaifuVaultUploadConfig): Promise<string> {
-    const normalizedConfig = normalizeWaifuVaultUploadConfig(config);
+  async upload(image: PreparedLocalImage, config: LitterboxUploadConfig): Promise<string> {
+    const normalizedConfig = normalizeLitterboxUploadConfig(config);
     if (!normalizedConfig) throw new Error("Choose a valid temporary image lifetime");
     validatePreparedImage(image);
 
     const form = new FormData();
-    form.append("file", preparedImageFile(image));
+    form.append("reqtype", "fileupload");
+    form.append("time", normalizedConfig.retention);
+    form.append("fileToUpload", preparedImageFile(image));
     const response = await uploadMultipart(
-      waifuVaultUploadUrl(normalizedConfig.retention),
+      LITTERBOX_UPLOAD_ENDPOINT,
       form,
       IMAGE_UPLOAD_TIMEOUT_MS,
       this.request,
-      undefined,
-      "PUT",
     );
     if (!response.ok) {
       throw new Error(cleanProviderError(response.body) || `Image host returned HTTP ${response.status}`);
     }
 
-    const directUrl = waifuVaultResponseUrl(response.body, ["webp"]);
-    if (!directUrl || !normalizeImageUrl(directUrl)) {
+    const directUrl = normalizeImageUrl(response.body.trim());
+    if (!directUrl || !isExpectedLitterboxUrl(directUrl)) {
       throw new Error("The temporary image host returned an unexpected link");
     }
     return directUrl;
   }
 }
 
-export async function uploadRoomAudioToWaifuVault(
+export async function uploadLocalRoomAudio(
   file: File,
-  config: WaifuVaultUploadConfig,
+  config: LitterboxUploadConfig,
   request?: typeof fetch,
 ): Promise<string> {
-  const normalizedConfig = normalizeWaifuVaultUploadConfig(config);
+  const normalizedConfig = normalizeLitterboxUploadConfig(config);
   if (!normalizedConfig) throw new Error("Choose a valid temporary music lifetime");
   if (file.size <= 0) throw new Error("Choose a non-empty audio file");
   if (file.size > MAX_LOCAL_ROOM_AUDIO_BYTES) throw new Error("Choose room music up to 20 MB");
@@ -114,66 +109,61 @@ export async function uploadRoomAudioToWaifuVault(
   if (!extension) throw new Error("Bondage Club room music must be an MP3 or MP4 file");
 
   const form = new FormData();
+  form.append("reqtype", "fileupload");
+  form.append("time", normalizedConfig.retention);
   form.append(
-    "file",
+    "fileToUpload",
     new File([file], `kikilink-room-music.${extension}`, {
       type: file.type || `audio/${extension}`,
       lastModified: 0,
     }),
   );
   const response = await uploadMultipart(
-    waifuVaultUploadUrl(normalizedConfig.retention),
+    LITTERBOX_UPLOAD_ENDPOINT,
     form,
     IMAGE_UPLOAD_TIMEOUT_MS,
     request,
-    undefined,
-    "PUT",
   );
   if (!response.ok) {
     throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
   }
-  const url = waifuVaultResponseUrl(response.body, ["mp3", "mp4"]);
+  const url = normalizeLitterboxAudioUrl(response.body.trim());
   if (!url) throw new Error("The temporary audio host returned an unexpected link");
   return url;
 }
 
-/** Uploads an explicitly selected track to a public, expiring WaifuVault link. */
-export async function uploadMusicToWaifuVault(
+/** Uploads an explicitly selected track to long-lived public Catbox storage. */
+export async function uploadMusicToCatbox(
   file: File,
-  config: WaifuVaultUploadConfig,
   request?: typeof fetch,
   onProgress?: UploadProgressListener,
 ): Promise<string> {
-  const normalizedConfig = normalizeWaifuVaultUploadConfig(config);
-  if (!normalizedConfig) throw new Error("Choose a valid shared track lifetime");
   if (file.size <= 0) throw new Error("Choose a non-empty audio file");
-  if (file.size > MAX_HOSTED_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
+  if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
   const extension = playlistAudioExtension(file);
   if (!extension) throw new Error("Choose an MP3, MP4, M4A, OGG, WAV, FLAC, AAC, or WebM track");
 
   const form = new FormData();
+  form.append("reqtype", "fileupload");
   form.append(
-    "file",
+    "fileToUpload",
     new File([file], `kikilink-track.${extension}`, {
       type: file.type || "application/octet-stream",
       lastModified: 0,
     }),
   );
   const response = await uploadMultipart(
-    waifuVaultUploadUrl(normalizedConfig.retention),
+    CATBOX_UPLOAD_ENDPOINT,
     form,
     300_000,
     request,
     onProgress,
-    "PUT",
   );
   if (!response.ok) {
     throw new Error(cleanProviderError(response.body) || `Audio host returned HTTP ${response.status}`);
   }
-  const url = waifuVaultResponseUrl(response.body, [
-    "aac", "flac", "m4a", "mp3", "mp4", "oga", "ogg", "opus", "wav", "webm",
-  ]);
-  if (!url) throw new Error("WaifuVault returned an unexpected track link");
+  const url = normalizeCatboxAudioUrl(response.body.trim());
+  if (!url) throw new Error("Catbox returned an unexpected track link");
   return url;
 }
 
@@ -242,14 +232,13 @@ export function normalizeCloudinaryUploadConfig(value: unknown): CloudinaryUploa
   return { cloudName, uploadPreset };
 }
 
-export function normalizeWaifuVaultUploadConfig(value: unknown): WaifuVaultUploadConfig | null {
+export function normalizeLitterboxUploadConfig(value: unknown): LitterboxUploadConfig | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const retention = (value as Record<string, unknown>).retention;
-  return retention === "auto" ||
-    retention === "1d" ||
-    retention === "3d" ||
-    retention === "7d" ||
-    retention === "30d"
+  return retention === "1h" ||
+    retention === "12h" ||
+    retention === "24h" ||
+    retention === "72h"
     ? { retention }
     : null;
 }
@@ -390,31 +379,30 @@ function isExpectedCloudinaryUrl(value: string, cloudName: string): boolean {
   );
 }
 
-function waifuVaultUploadUrl(retention: HostedFileRetention): string {
-  const url = new URL(WAIFUVAULT_UPLOAD_ENDPOINT);
-  if (retention !== "auto") url.searchParams.set("expires", retention);
-  url.searchParams.set("hide_filename", "true");
-  return url.href;
+function isExpectedLitterboxUrl(value: string): boolean {
+  const url = new URL(value);
+  return (
+    url.protocol === "https:" &&
+    url.hostname === "litter.catbox.moe" &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    /^\/[a-z0-9_-]+\.webp$/iu.test(url.pathname)
+  );
 }
 
-function waifuVaultResponseUrl(body: string, extensions: readonly string[]): string | null {
+function normalizeLitterboxAudioUrl(value: string): string | null {
   try {
-    const payload = JSON.parse(body) as WaifuVaultUploadResponse;
-    if (typeof payload.url !== "string" || typeof payload.token !== "string" || !payload.token) {
-      return null;
-    }
-    const url = new URL(payload.url);
-    const extension = url.pathname.toLocaleLowerCase().match(/\.([a-z0-9]+)$/u)?.[1];
+    const url = new URL(value);
     if (
       url.protocol !== "https:" ||
-      url.hostname !== "waifuvault.moe" ||
+      url.hostname !== "litter.catbox.moe" ||
       url.username ||
       url.password ||
       url.search ||
       url.hash ||
-      !url.pathname.startsWith("/f/") ||
-      !extension ||
-      !extensions.includes(extension)
+      !/^\/[a-z0-9_-]+\.(?:mp3|mp4)$/iu.test(url.pathname)
     ) {
       return null;
     }
@@ -455,6 +443,26 @@ function playlistAudioExtension(file: File): string | undefined {
   return mime ? byMime[mime] : undefined;
 }
 
+function normalizeCatboxAudioUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "files.catbox.moe" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !/^\/[a-z0-9_-]+\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/iu.test(url.pathname)
+    ) {
+      return undefined;
+    }
+    return url.href;
+  } catch {
+    return undefined;
+  }
+}
+
 function validatePreparedImage(image: PreparedLocalImage): void {
   if (
     image.blob.type !== "image/webp" ||
@@ -482,13 +490,12 @@ async function uploadMultipart(
   timeoutMs: number,
   request?: typeof fetch,
   onProgress?: UploadProgressListener,
-  method: "POST" | "PUT" = "POST",
 ): Promise<MultipartUploadResponse> {
-  if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request, method);
+  if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request);
   if (typeof GM_xmlhttpRequest === "function") {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
-        method,
+        method: "POST",
         url: endpoint,
         data: form,
         anonymous: true,
@@ -520,7 +527,7 @@ async function uploadMultipart(
       });
     });
   }
-  return uploadMultipartWithFetch(endpoint, form, timeoutMs, globalThis.fetch.bind(globalThis), method);
+  return uploadMultipartWithFetch(endpoint, form, timeoutMs, globalThis.fetch.bind(globalThis));
 }
 
 async function uploadMultipartWithFetch(
@@ -528,13 +535,12 @@ async function uploadMultipartWithFetch(
   form: FormData,
   timeoutMs: number,
   request: typeof fetch,
-  method: "POST" | "PUT",
 ): Promise<MultipartUploadResponse> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await request(endpoint, {
-      method,
+      method: "POST",
       body: form,
       credentials: "omit",
       referrerPolicy: "no-referrer",

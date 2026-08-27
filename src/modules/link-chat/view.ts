@@ -69,11 +69,11 @@ import {
 import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
 import {
-  WaifuVaultImageUploader,
-  normalizeWaifuVaultUploadConfig,
-  uploadRoomAudioToWaifuVault,
-  uploadMusicToWaifuVault,
-  type WaifuVaultUploadConfig,
+  LitterboxImageUploader,
+  normalizeLitterboxUploadConfig,
+  uploadLocalRoomAudio,
+  uploadMusicToCatbox,
+  type LitterboxUploadConfig,
   type LocalImageUploader,
   type PreparedLocalImage,
 } from "./image-upload";
@@ -347,16 +347,12 @@ export class LinkChatView {
   readonly #musicFileMode = element("select", {
     className: "kl-select kl-music-file-mode",
   }) as HTMLSelectElement;
-  readonly #musicUploadRetention = element("select", {
-    className: "kl-select kl-music-upload-retention",
-  }) as HTMLSelectElement;
   readonly #musicAddButton = element("button", {
     className: "kl-text-button kl-text-button--primary",
     type: "button",
     text: "Add track",
   });
   readonly #musicAddStatus = element("div", { className: "kl-music-add-status" });
-  readonly #musicShareLifetime = element("span", { className: "kl-music-share-lifetime" });
   readonly #musicQueue = element("div", { className: "kl-music-queue" });
   readonly #musicQueueSearch = element("input", {
     className: "kl-search kl-music-queue-search",
@@ -712,7 +708,7 @@ export class LinkChatView {
       settings,
     ),
     presence?: LinkPresenceService,
-    private readonly imageUploader: LocalImageUploader<WaifuVaultUploadConfig> = new WaifuVaultImageUploader(),
+    private readonly imageUploader: LocalImageUploader<LitterboxUploadConfig> = new LitterboxImageUploader(),
     private readonly soundStore: NotificationSoundStore = new DeviceNotificationSoundStore(
       adapter.getOwnMemberNumber(),
     ),
@@ -1838,7 +1834,7 @@ export class LinkChatView {
     );
 
     this.#imageUploadsToggle.type = "checkbox";
-    this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary WaifuVault sharing");
+    this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary Litterbox sharing");
     this.#imageUploadsToggle.addEventListener("change", () =>
       this.#renderImageUploadSettingsOptions(),
     );
@@ -1849,23 +1845,23 @@ export class LinkChatView {
       element("span", { className: "kl-switch-track" }),
     );
     this.#imageUploadRetentionSelect.replaceChildren(
-      selectOption("1d", "1 day"),
-      selectOption("3d", "3 days"),
-      selectOption("7d", "7 days"),
-      selectOption("30d", "30 days"),
+      selectOption("1h", "1 hour"),
+      selectOption("12h", "12 hours"),
+      selectOption("24h", "24 hours"),
+      selectOption("72h", "3 days"),
     );
-    this.#imageUploadRetentionSelect.setAttribute("aria-label", "Shared file lifetime");
-    const waifuVaultLink = element("a", {
+    this.#imageUploadRetentionSelect.setAttribute("aria-label", "Temporary file lifetime");
+    const litterboxLink = element("a", {
       className: "kl-inline-link",
-      text: "WaifuVault",
+      text: "Litterbox by Catbox",
     });
-    waifuVaultLink.href = "https://waifuvault.moe/";
-    waifuVaultLink.target = "_blank";
-    waifuVaultLink.rel = "noopener noreferrer";
+    litterboxLink.href = "https://litterbox.catbox.moe/";
+    litterboxLink.target = "_blank";
+    litterboxLink.rel = "noopener noreferrer";
     this.#imageUploadSettingsOptions.append(
       this.#settingRow(
-        "Shared file lifetime",
-        "The host removes shared images, room audio, and hosted playlist tracks after this period.",
+        "Temporary link lifetime",
+        "Litterbox removes shared chat images and room media after this period.",
         this.#imageUploadRetentionSelect,
       ),
       element(
@@ -1875,9 +1871,9 @@ export class LinkChatView {
         element(
           "span",
           {},
-          "Only an explicit Share or Upload action makes a network request. KikiLink hides the original filename; images are resized and stripped of metadata before the public file is sent to ",
-          waifuVaultLink,
-          ". The service hashes connection IPs. Expiration cannot remove copies another person already saved. Manual Gallery files stay on this device and are never uploaded automatically.",
+          "Only an explicit Share or Upload action makes a network request. KikiLink replaces the filename; images are resized and stripped of metadata before the public file is sent to ",
+          litterboxLink,
+          ". Audio may retain embedded metadata. Expiration cannot remove copies another person already saved. Manual Gallery files stay on this device and are never uploaded automatically.",
         ),
       ),
     );
@@ -1890,7 +1886,7 @@ export class LinkChatView {
       }),
       this.#settingRow(
         "Share local files",
-        "Create expiring public links through WaifuVault without an account.",
+        "Create expiring public links through Litterbox without an account.",
         imageUploadsSwitch,
       ),
       this.#imageUploadSettingsOptions,
@@ -3015,7 +3011,7 @@ export class LinkChatView {
         { className: "kl-image-upload-note kl-image-file-privacy" },
         kikiIcon("lock"),
         element("span", {
-          text: "Nothing uploads on selection. KikiLink removes the filename and metadata first. Chat sharing creates an expiring WaifuVault link; adding to Gallery keeps the prepared file only on this device.",
+          text: "Nothing uploads on selection. KikiLink removes the filename and metadata first. Chat sharing creates an expiring Litterbox link; adding to Gallery keeps the prepared file only on this device.",
         }),
       ),
     );
@@ -3305,7 +3301,7 @@ export class LinkChatView {
 
   #renderLocalImageComposeState(): void {
     const settings = this.settings.get().linkChat.imageUploads;
-    const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
+    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
     const deviceGallery = this.#imageDestination === "gallery";
     const setupButton = this.#imageFilePanel.querySelector<HTMLButtonElement>(
       ".kl-image-upload-setup",
@@ -3345,7 +3341,7 @@ export class LinkChatView {
           "span",
           {},
           element("strong", { text: "Temporary upload is off" }),
-          element("small", { text: "Enable WaifuVault sharing once in Chat settings." }),
+          element("small", { text: "Enable Litterbox sharing once in Chat settings." }),
         ),
       );
       this.#localImageStatus.dataset.state = "empty";
@@ -3506,7 +3502,7 @@ export class LinkChatView {
     }
     const uploadSettings = this.settings.get().linkChat.imageUploads;
     const config = uploadSettings.enabled
-      ? normalizeWaifuVaultUploadConfig(uploadSettings)
+      ? normalizeLitterboxUploadConfig(uploadSettings)
       : null;
     if (!image || !config || this.#imageUploadBusy) {
       this.#renderLocalImageComposeState();
@@ -3653,7 +3649,7 @@ export class LinkChatView {
         category: "Destination",
         title: "Media Gallery",
         detail: "Images you add directly and media from saved LinkChat conversations",
-        keywords: "gallery library add upload images pictures device waifuvault media all chats",
+        keywords: "gallery library add upload images pictures device litterbox catbox media all chats",
         priority: 70,
         action: { kind: "workspace", target: "gallery" },
       },
@@ -4084,8 +4080,10 @@ export class LinkChatView {
         element("strong", {
           text: item.provider === "device"
             ? "On this device"
-            : item.provider === "waifuvault"
-              ? "WaifuVault"
+            : item.provider === "catbox"
+              ? "Catbox"
+              : item.provider === "litterbox"
+                ? "Litterbox"
               : "Image",
         }),
         element("span", {
@@ -4167,7 +4165,7 @@ export class LinkChatView {
     if (!item.localId) return;
     const uploadSettings = this.settings.get().linkChat.imageUploads;
     const config = uploadSettings.enabled
-      ? normalizeWaifuVaultUploadConfig(uploadSettings)
+      ? normalizeLitterboxUploadConfig(uploadSettings)
       : null;
     if (!config) {
       this.#toast("Enable shared uploads in Chat settings first.", "error");
@@ -4328,7 +4326,7 @@ export class LinkChatView {
       this.#roomPlaylistSyncStatus,
       element("p", {
         className: "kl-room-media-note",
-        text: "Shared backgrounds and music use your WaifuVault lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a permanent room, use a durable HTTPS link you control.",
+        text: "Uploaded backgrounds and room music use your temporary Litterbox lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a long-lived room, use a durable HTTPS link you control.",
       }),
       this.#roomSaveButton,
     );
@@ -4835,7 +4833,7 @@ export class LinkChatView {
     this.#roomImageFileInput.value = "";
     if (!file) return;
     const settings = this.settings.get().linkChat.imageUploads;
-    const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
+    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
     if (!config) {
       this.#toast("Enable temporary local image uploads in Chat settings first.", "error");
       this.#openSettings("chat");
@@ -4862,7 +4860,7 @@ export class LinkChatView {
     this.#roomMusicFileInput.value = "";
     if (!file) return;
     const settings = this.settings.get().linkChat.imageUploads;
-    const config = settings.enabled ? normalizeWaifuVaultUploadConfig(settings) : null;
+    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
     if (!config) {
       this.#toast("Enable temporary local uploads in Chat settings first.", "error");
       this.#openSettings("chat");
@@ -4870,7 +4868,7 @@ export class LinkChatView {
     }
     try {
       this.#roomAdminStatus.textContent = "Uploading temporary room music…";
-      this.#roomMusicUrl.value = await uploadRoomAudioToWaifuVault(file, config);
+      this.#roomMusicUrl.value = await uploadLocalRoomAudio(file, config);
       await this.#renderRoomTools(false);
       this.#toast("Music uploaded. Apply room media when ready.");
     } catch (error) {
@@ -4959,29 +4957,8 @@ export class LinkChatView {
     this.#musicFileInput.multiple = true;
     this.#musicFileMode.replaceChildren(
       selectOption("local", "Keep only on this device"),
-      selectOption("hosted", "Share temporarily via WaifuVault"),
+      selectOption("catbox", "Upload to long-lived Catbox"),
     );
-    this.#musicUploadRetention.replaceChildren(
-      selectOption("auto", "Maximum available (30–365 days)"),
-      selectOption("30d", "30 days"),
-      selectOption("7d", "7 days"),
-      selectOption("3d", "3 days"),
-      selectOption("1d", "1 day"),
-    );
-    this.#musicFileMode.addEventListener("change", () => {
-      this.#musicUploadRetention.disabled = this.#musicFileMode.value !== "hosted";
-    });
-    this.#musicUploadRetention.addEventListener("change", () => {
-      const config = normalizeWaifuVaultUploadConfig({
-        retention: this.#musicUploadRetention.value,
-      });
-      if (!config) return;
-      this.settings.update((draft) => {
-        draft.linkMusic.uploadRetention = config.retention;
-      });
-      void this.#renderMusicPage();
-    });
-    this.#musicUploadRetention.disabled = true;
     this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
     this.#musicQueueSearch.type = "search";
     this.#musicQueueSearch.placeholder = "Search this playlist";
@@ -5014,18 +4991,10 @@ export class LinkChatView {
       element("div", { className: "kl-music-add-divider", text: "or choose a file" }),
       element("label", {}, element("span", { text: "Audio files" }), this.#musicFileInput),
       element("label", {}, element("span", { text: "File handling" }), this.#musicFileMode),
-      element(
-        "label",
-        {},
-        element("span", { text: "Shared-link lifetime" }),
-        this.#musicUploadRetention,
-      ),
-      element(
-        "p",
-        { className: "kl-setting-help" },
-        "Local files stay in this browser without a KikiLink expiry. WaifuVault creates public bearer links. ",
-        this.#musicShareLifetime,
-      ),
+      element("p", {
+        className: "kl-setting-help",
+        text: "Local files stay in this browser. Anonymous Catbox uploads are public bearer links and are retained until two years of inactivity; account-linked uploads would be permanent.",
+      }),
       this.#musicAddStatus,
       this.#musicAddButton,
     );
@@ -5155,11 +5124,6 @@ export class LinkChatView {
   async #renderMusicPage(forceLocalRefresh = false): Promise<void> {
     const token = ++this.#musicRenderToken;
     const settings = this.settings.get().linkMusic;
-    this.#musicUploadRetention.value = settings.uploadRetention;
-    this.#musicUploadRetention.disabled = this.#musicFileMode.value !== "hosted";
-    this.#musicShareLifetime.textContent = settings.uploadRetention === "auto"
-      ? "Anonymous uploads cannot be permanent; maximum lifetime is 30–365 days based on file size."
-      : `Selected lifetime: ${formatRetention(settings.uploadRetention)}.`;
     this.#playlistSelect.replaceChildren(
       ...settings.playlists.map((playlist) => selectOption(playlist.id, `${playlist.name} · ${playlist.tracks.length}`)),
     );
@@ -5260,8 +5224,8 @@ export class LinkChatView {
             ? "Local file missing on this device"
             : track.source === "local"
               ? "On this device"
-              : track.source === "hosted"
-                ? "WaifuVault"
+              : track.source === "catbox"
+                ? "Catbox"
                 : "Direct link",
         }),
       ),
@@ -5293,17 +5257,13 @@ export class LinkChatView {
           let source: MusicTrack["source"];
           let locator: string;
           let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
-          if (this.#musicFileMode.value === "hosted") {
-            const uploadConfig = normalizeWaifuVaultUploadConfig({
-              retention: this.settings.get().linkMusic.uploadRetention,
-            });
-            if (!uploadConfig) throw new Error("Choose a valid shared-track lifetime");
-            this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to WaifuVault…`;
-            locator = await uploadMusicToWaifuVault(file, uploadConfig, undefined, (progress) => {
+          if (this.#musicFileMode.value === "catbox") {
+            this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to Catbox…`;
+            locator = await uploadMusicToCatbox(file, undefined, (progress) => {
               const amount = progress.percent === undefined ? "" : ` · ${progress.percent}%`;
               this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length}${amount}`;
             });
-            source = "hosted";
+            source = "catbox";
           } else {
             this.#musicAddStatus.textContent = `Saving ${index + 1}/${files.length} on this device…`;
             const localTrackIds = await this.#getLocalMusicTrackIds();
@@ -5590,8 +5550,8 @@ export class LinkChatView {
     this.#musicNowSource.textContent = track
       ? track.source === "local"
         ? "On this device"
-        : track.source === "hosted"
-          ? "WaifuVault"
+        : track.source === "catbox"
+          ? "Catbox"
           : "Direct link"
       : "Choose a track";
     this.#musicPlayButton.replaceChildren(kikiIcon(track && !this.#audio.paused ? "pause" : "play"));
@@ -8132,11 +8092,11 @@ export class LinkChatView {
       draft.linkChat.imageUploads = {
         enabled: this.#imageUploadsToggle.checked,
         retention:
-          this.#imageUploadRetentionSelect.value === "1d" ||
-          this.#imageUploadRetentionSelect.value === "3d" ||
-          this.#imageUploadRetentionSelect.value === "30d"
+          this.#imageUploadRetentionSelect.value === "1h" ||
+          this.#imageUploadRetentionSelect.value === "12h" ||
+          this.#imageUploadRetentionSelect.value === "72h"
             ? this.#imageUploadRetentionSelect.value
-            : "7d",
+            : "24h",
       };
       draft.linkChat.quickActions = this.#readQuickActionEditor();
       draft.linkRoster.enabled = this.#rosterEnabledToggle.checked;
@@ -8748,8 +8708,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "chat",
       title: "Chat & history",
-      detail: "Typing, temporary WaifuVault sharing, history, retention, and Quick Actions",
-      keywords: "beep messages typing indicator realtime image picture preview upload local waifuvault temporary privacy enter send newline save storage days clear wave hug boop template afk idle avatar profile",
+      detail: "Typing, temporary Litterbox sharing, history, retention, and Quick Actions",
+      keywords: "beep messages typing indicator realtime image picture preview upload local litterbox catbox temporary privacy enter send newline save storage hours days clear wave hug boop template afk idle avatar profile",
     },
     {
       section: "players",
@@ -9040,10 +9000,11 @@ function formatBytes(value: number): string {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function formatRetention(value: WaifuVaultUploadConfig["retention"]): string {
-  if (value === "auto") return "the maximum available lifetime";
-  const days = Number.parseInt(value, 10);
-  return `${days} day${days === 1 ? "" : "s"}`;
+function formatRetention(value: LitterboxUploadConfig["retention"]): string {
+  const hours = Number.parseInt(value, 10);
+  if (hours === 24) return "1 day";
+  if (hours === 72) return "3 days";
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
 }
 
 function imageUploadErrorMessage(error: unknown): string {

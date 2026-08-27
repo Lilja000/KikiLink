@@ -45,15 +45,17 @@ If the native activity grid is already open when a definition is saved or restor
 Bondage Club to rebuild that grid immediately; otherwise the next ordinary menu open discovers it.
 
 The activity uses `MaxProgress: 0`; optional arousal is not delegated to the vanilla activity cap.
-KikiLink intercepts only its own runtime names, reuses the chosen vanilla picture, and appends the
-upper-left Blossom marker after Bondage Club creates the native button. Other activities and hook
-handlers keep their normal chain.
+KikiLink still supplies its text, chosen vanilla picture, action runner, and upper-left Blossom
+marker through the normal integration path. Other activities and hook handlers keep their chain.
 
-The label lookup, native-button picture, and action runner also have a narrow live health guard
-outside the shared ModSDK router. If BC hot reload or a late addon replaces that router, KikiLink
-wraps the new function on the next lifecycle check. Vanilla calls still continue through the new
-chain, while KikiLink runtime names cannot fall through to nonexistent `ActivityDictionary.csv`
-entries or generated activity-image filenames.
+A hook-independent DOM bridge additionally recognizes only native activity-grid buttons whose exact
+runtime name belongs to the current account. It restores the card label and selected vanilla image,
+then captures that card's click before Bondage Club can run its dictionary-based fallback. The
+finished KikiLink action is published and the native dialog is closed normally. A mutation observer
+handles fresh grid renders immediately, while the existing lifecycle interval repairs missed or
+late replacements. This prevents KikiLink runtime names from reaching nonexistent
+`ActivityDictionary.csv` entries even when a userscript sandbox, BC hot reload, or another addon
+isolates or replaces all three page-function hooks.
 
 ## Visible action and optional effect
 

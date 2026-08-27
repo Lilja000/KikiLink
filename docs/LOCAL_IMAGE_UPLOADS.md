@@ -5,23 +5,19 @@ messages. It does not add a KikiLink media server or require an image-host accou
 
 ## Provider choice
 
-Shared files use WaifuVault's anonymous API. Chat images and room audio use a declared lifetime of
-1, 3, 7, or 30 days. Music has its own selector with those choices plus `Maximum available`; that
-option omits a custom expiry and lets WaifuVault apply its size-based anonymous lifetime, published
-as roughly 30–365 days. Anonymous uploads cannot be permanent: unlimited expiry requires provider
-credentials that KikiLink neither requests nor sends. KikiLink stores only the selected preference
-locally and sends no account token, cookie, or original filename. WaifuVault accepts general file
-types; KikiLink restricts each UI to formats that its image, music, or Bondage Club room-media
-consumer can actually use.
+Temporary chat images and room media use Litterbox's anonymous API with a selected lifetime of
+1, 12, 24, or 72 hours. Playlist music uses Catbox's anonymous file-upload API instead. Catbox's
+current FAQ says anonymous files are removed after two years without a download; account-associated
+files are permanent. KikiLink does not request or send a Catbox account token, so Music describes
+its uploads as long-lived rather than guaranteed permanent.
 
-WaifuVault links are public bearer links until they expire: anyone who obtains one can request the
-image. Expiry is useful retention, not access control or proof of immediate secure deletion. A
-persistent profile avatar should therefore use a separately managed durable HTTPS link instead of a
-temporary sharing URL.
+Both services return public bearer links: anyone who obtains a link can request the file. Expiry or
+inactivity retention is not access control and cannot remove copies another person already saved. A
+persistent profile avatar should use a separately managed durable HTTPS link.
 
-- <https://waifuvault.moe/>
-- <https://github.com/waifuvault/WaifuVault>
-- <https://github.com/waifuvault/waifuVault-node-api>
+- <https://litterbox.catbox.moe/tools.php>
+- <https://catbox.moe/tools.php>
+- <https://catbox.moe/faq.php>
 
 ## Data flow
 
@@ -31,12 +27,12 @@ temporary sharing URL.
    2560 pixels, and draws it to a new canvas.
 4. The canvas is encoded as a new WebP. This drops the source filename, EXIF, comments, and other
    embedded file metadata. The upload uses the generic name `kikilink-image.webp`.
-5. Only an explicit `Upload & send` action sends that prepared WebP with `PUT` to
-   `https://waifuvault.moe/rest`, requesting the selected expiry and a hidden filename. Credentials
-   and referrer information are omitted, and the request has a 60-second timeout.
-6. KikiLink parses the JSON response and accepts only a direct HTTPS
-   `waifuvault.moe/f/<id>.webp` URL with a non-empty deletion token and no credentials, query, or
-   fragment, then sends that URL as a normal Beep.
+5. Only an explicit `Upload & send` action sends that prepared WebP as multipart `POST` data to
+   `https://litterbox.catbox.moe/resources/internals/api.php`, with `reqtype=fileupload` and the
+   selected `time`. Credentials and referrer information are omitted, and the request has a
+   60-second timeout.
+6. KikiLink accepts only a direct HTTPS `litter.catbox.moe/<id>.webp` response with no credentials,
+   query, or fragment, then sends that URL as a normal Beep.
 
 ## Device Gallery
 
@@ -45,16 +41,16 @@ preparation, but never performs step 5. The prepared WebP is written to an Index
 name includes the authenticated BC MemberNumber. KikiLink asks the browser for persistent storage,
 keeps the record until the user deletes it, and does not put the blob in synchronized BC settings.
 Clearing the site's browser data still removes it. Selecting a device image as a room background is
-a separate explicit action that creates a temporary WaifuVault link.
+a separate explicit action that creates a temporary Litterbox link.
 
 ## Remaining risks and limits
 
-- WaifuVault receives the prepared pixels and network request. Its published privacy policy says the
-  source IP is SHA-256 hashed and is not stored in plaintext; KikiLink cannot independently verify
-  provider-side operation.
+- Catbox/Litterbox receives the prepared pixels and network request. KikiLink cannot independently
+  verify provider-side storage or deletion.
 - Re-encoding removes hidden file metadata, not personal information visible in the picture itself.
 - A recipient can copy or re-upload a temporary image before it expires.
-- KikiLink cannot revoke a link early, verify provider-side deletion, or extend a link after upload.
+- KikiLink cannot revoke an anonymous link early, verify provider-side deletion, or extend a
+  Litterbox link after upload.
 - Animated GIF and AVIF remain supported as direct links but are not accepted as local uploads,
   avoiding silent animation loss and inconsistent browser decoding.
 - Uploads can fail because of provider availability or policy, browser content-security policy, or

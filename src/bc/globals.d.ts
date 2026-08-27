@@ -236,6 +236,7 @@ declare global {
   function ActivityDictionaryText(keyword: string): string;
   function ActivityAllowedForGroup(character: BCCharacter, groupName: string): BCItemActivity[];
   function DialogBuildActivities(character: BCCharacter, reload?: boolean): void;
+  function DialogLeave(options?: unknown): void;
   function CharacterGetCurrent(): BCCharacter | null;
   function ActivityRun(
     actor: BCCharacter,

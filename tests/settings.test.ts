@@ -140,7 +140,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(21);
+    expect(settings.schemaVersion).toBe(22);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -264,7 +264,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(21);
+    expect(settings.schemaVersion).toBe(22);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -288,7 +288,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(21);
+    expect(settings.schemaVersion).toBe(22);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -354,7 +354,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(21);
+    expect(settings.schemaVersion).toBe(22);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -418,7 +418,7 @@ describe("SettingsStore", () => {
         schemaVersion: 13,
         linkChat: { imageUploads: { enabled: false, retention: "forever" } },
       }).linkChat.imageUploads,
-    ).toEqual({ enabled: false, retention: "7d" });
+    ).toEqual({ enabled: false, retention: "24h" });
 
     expect(
       sanitizeSettings({
@@ -431,7 +431,7 @@ describe("SettingsStore", () => {
           },
         },
       }).linkChat.imageUploads,
-    ).toEqual({ enabled: false, retention: "7d" });
+    ).toEqual({ enabled: false, retention: "24h" });
 
     expect(
       sanitizeSettings({
@@ -445,7 +445,7 @@ describe("SettingsStore", () => {
       }).linkChat.imageUploads,
     ).toEqual({
       enabled: true,
-      retention: "3d",
+      retention: "72h",
     });
   });
 
@@ -530,7 +530,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(21);
+    expect(settings.schemaVersion).toBe(22);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -559,13 +559,13 @@ describe("SettingsStore", () => {
       linkChat: {
         gallery: {
           saved: [
-            { url: " https://waifuvault.moe/f/keep.webp ", addedAt: 200 },
-            { url: "https://waifuvault.moe/f/keep.webp", addedAt: 100 },
-            { url: "https://waifuvault.moe/f/hidden.png", addedAt: 300 },
+            { url: " https://litter.catbox.moe/keep.webp ", addedAt: 200 },
+            { url: "https://litter.catbox.moe/keep.webp", addedAt: 100 },
+            { url: "https://litter.catbox.moe/hidden.png", addedAt: 300 },
             { url: "http://tracker.example/bad.png", addedAt: 400 },
           ],
           hiddenUrls: [
-            "https://waifuvault.moe/f/hidden.png",
+            "https://litter.catbox.moe/hidden.png",
             "javascript:alert(1)",
           ],
         },
@@ -574,8 +574,8 @@ describe("SettingsStore", () => {
 
     expect(settings.ui.settingsSection).toBe("about");
     expect(settings.linkChat.gallery).toEqual({
-      saved: [{ url: "https://waifuvault.moe/f/keep.webp", addedAt: 200 }],
-      hiddenUrls: ["https://waifuvault.moe/f/hidden.png"],
+      saved: [{ url: "https://litter.catbox.moe/keep.webp", addedAt: 200 }],
+      hiddenUrls: ["https://litter.catbox.moe/hidden.png"],
     });
   });
 
@@ -599,8 +599,8 @@ describe("SettingsStore", () => {
             access: ["All"],
             blockCategory: ["Extreme"],
             custom: {
-              imageUrl: "https://waifuvault.moe/f/room.webp",
-              musicUrl: "https://waifuvault.moe/f/song.mp3",
+              imageUrl: "https://litter.catbox.moe/room.webp",
+              musicUrl: "https://litter.catbox.moe/song.mp3",
               sizeMode: 2,
               musicSync: true,
             },
@@ -617,14 +617,14 @@ describe("SettingsStore", () => {
           name: "Night songs",
           tracks: [
             { id: "local-one", title: "Local", source: "local", locator: "blob-one", addedAt: 50 },
-            { id: "remote-one", title: "Remote", source: "legacy-host", locator: "https://waifuvault.moe/f/song.mp3", addedAt: 60 },
+            { id: "remote-one", title: "Remote", source: "legacy-host", locator: "https://files.catbox.moe/song.mp3", addedAt: 60 },
             { id: "bad", title: "Bad", source: "url", locator: "javascript:alert(1)", addedAt: 70 },
           ],
         }],
       },
     });
 
-    expect(settings.schemaVersion).toBe(21);
+    expect(settings.schemaVersion).toBe(22);
     expect(settings.linkRoom.presets[0]).toMatchObject({
       id: "moon_room",
       label: "Moon Garden",
@@ -637,23 +637,39 @@ describe("SettingsStore", () => {
     });
     expect(settings.linkMusic).toMatchObject({
       activePlaylistId: "night",
-      uploadRetention: "auto",
       repeatMode: "all",
       shuffle: true,
       volume: 42,
     });
     expect(settings.linkMusic.playlists[0]?.tracks).toHaveLength(2);
-    expect(settings.linkMusic.playlists[0]?.tracks[1]?.source).toBe("hosted");
+    expect(settings.linkMusic.playlists[0]?.tracks[1]?.source).toBe("catbox");
   });
 
-  it("keeps Music upload lifetime independent and rejects a fake permanent option", () => {
+  it("maps WaifuVault-era lifetimes and hosted tracks back to Catbox settings", () => {
     expect(sanitizeSettings({
       schemaVersion: 21,
-      linkMusic: { uploadRetention: "30d" },
-    }).linkMusic.uploadRetention).toBe("30d");
-    expect(sanitizeSettings({
+      linkChat: { imageUploads: { enabled: true, retention: "1d" } },
+    }).linkChat.imageUploads).toEqual({ enabled: true, retention: "24h" });
+    const migrated = sanitizeSettings({
       schemaVersion: 21,
-      linkMusic: { uploadRetention: "forever" },
-    }).linkMusic.uploadRetention).toBe("auto");
+      linkChat: { imageUploads: { enabled: true, retention: "30d" } },
+      linkMusic: {
+        uploadRetention: "30d",
+        playlists: [{
+          id: "main",
+          name: "My playlist",
+          tracks: [{
+            id: "remote-one",
+            title: "Remote",
+            source: "hosted",
+            locator: "https://files.catbox.moe/song.mp3",
+            addedAt: 60,
+          }],
+        }],
+      },
+    });
+    expect(migrated.linkChat.imageUploads.retention).toBe("72h");
+    expect(migrated.linkMusic.playlists[0]?.tracks[0]?.source).toBe("catbox");
+    expect(migrated.linkMusic).not.toHaveProperty("uploadRetention");
   });
 });

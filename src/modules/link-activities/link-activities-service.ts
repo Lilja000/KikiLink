@@ -119,7 +119,76 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   #registeredActivities: BCActivity[] | undefined;
   #registeredOrdering: string[] | undefined;
   #registryMonitor: ReturnType<typeof setInterval> | undefined;
+  #activityButtonObserver: MutationObserver | undefined;
+  #activityClickListenerAttached = false;
   #unregister: (() => void) | undefined;
+
+  readonly #handleNativeActivityClick = (event: MouseEvent): void => {
+    const origin = event.target as (EventTarget & { closest?: Element["closest"] }) | null;
+    if (!origin || typeof origin.closest !== "function") return;
+    const button = origin.closest<HTMLButtonElement>(
+      'button.dialog-grid-button[name^="KikiLinkCustom_"]',
+    );
+    if (
+      !button ||
+      button.disabled ||
+      button.getAttribute("aria-disabled") === "true"
+    ) {
+      return;
+    }
+    const activityName = button.getAttribute("name") ?? "";
+    const definition = this.#runtimeActivities.get(activityName);
+    if (!definition) return;
+
+    let acted: BCCharacter | null | undefined;
+    try {
+      acted =
+        typeof CharacterGetCurrent === "function"
+          ? CharacterGetCurrent()
+          : typeof CurrentCharacter !== "undefined"
+            ? CurrentCharacter
+            : undefined;
+    } catch {
+      return;
+    }
+    const actor = typeof Player === "object" && Player !== null ? Player : undefined;
+    const targetGroup = acted?.FocusGroup;
+    if (!actor || !acted || !targetGroup) return;
+    const groupName = targetGroup.Name;
+
+    const index = Number.parseInt(button.dataset.index ?? "", 10);
+    const dialogItem =
+      typeof DialogActivity !== "undefined" &&
+      Array.isArray(DialogActivity) &&
+      Number.isSafeInteger(index)
+        ? DialogActivity[index]
+        : undefined;
+    const itemActivity = dialogItem?.Activity?.Name === activityName
+      ? dialogItem
+      : {
+          Activity:
+            this.#injectedActivities.get(activityName) ??
+            createNativeActivity(activityName, definition),
+          Group: groupName,
+        };
+    if (!this.run(actor, acted, targetGroup, itemActivity)) return;
+
+    // This capture listener runs before BC's button listener. Once KikiLink handled the custom
+    // activity, suppress the native ActivityRun path that would emit ActivityDictionary.csv errors.
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (
+      typeof CurrentScreen === "string" &&
+      CurrentScreen === "ChatRoom" &&
+      typeof DialogLeave === "function"
+    ) {
+      try {
+        DialogLeave();
+      } catch {
+        // The activity was already published; a later native redraw can close the dialog.
+      }
+    }
+  };
 
   constructor(
     private readonly adapter: BCAdapter,
@@ -132,10 +201,12 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     }
     if (this.#registryMonitor === undefined) {
       this.#registryMonitor = setInterval(() => {
+        this.#ensureNativeActivityDomBridge();
         this.#ensureRegistryInjection();
         this.#syncOpenNativeDialog();
       }, REGISTRY_MONITOR_INTERVAL_MS);
     }
+    this.#ensureNativeActivityDomBridge();
     this.syncFromSettings();
   }
 
@@ -143,6 +214,12 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     if (this.#registryMonitor !== undefined) {
       clearInterval(this.#registryMonitor);
       this.#registryMonitor = undefined;
+    }
+    this.#activityButtonObserver?.disconnect();
+    this.#activityButtonObserver = undefined;
+    if (this.#activityClickListenerAttached && typeof document !== "undefined") {
+      document.removeEventListener("click", this.#handleNativeActivityClick, true);
+      this.#activityClickListenerAttached = false;
     }
     this.#unregister?.();
     this.#unregister = undefined;
@@ -378,7 +455,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       !Number.isSafeInteger(actor.MemberNumber) ||
       !Number.isSafeInteger(acted.MemberNumber) ||
       !SAFE_ASSET_NAME.test(targetGroup.Name) ||
-      targetGroup.Name !== definition.targetGroup
+      !activityGroupsMatch(definition.targetGroup, targetGroup.Name)
     ) {
       return false;
     }
@@ -539,6 +616,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
    * KikiLink activities silently disappear from an already-open native menu.
    */
   #syncOpenNativeDialog(): void {
+    this.#repairNativeActivityButtons();
     if (
       typeof DialogMenuMode === "undefined" ||
       DialogMenuMode !== "activities" ||
@@ -574,6 +652,57 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       }
     } catch {
       // DialogActivity is already repaired; the next native redraw will consume it.
+    }
+    this.#repairNativeActivityButtons();
+  }
+
+  #ensureNativeActivityDomBridge(): void {
+    if (typeof document === "undefined") return;
+    if (!this.#activityClickListenerAttached) {
+      document.addEventListener("click", this.#handleNativeActivityClick, true);
+      this.#activityClickListenerAttached = true;
+    }
+    if (this.#activityButtonObserver || !document.body || typeof MutationObserver !== "function") {
+      return;
+    }
+    this.#activityButtonObserver = new MutationObserver(() => {
+      this.#repairNativeActivityButtons();
+    });
+    this.#activityButtonObserver.observe(document.body, { childList: true, subtree: true });
+    this.#repairNativeActivityButtons();
+  }
+
+  #repairNativeActivityButtons(): void {
+    if (typeof document === "undefined" || this.#runtimeActivities.size === 0) return;
+    for (const button of document.querySelectorAll<HTMLButtonElement>(
+      'button.dialog-grid-button[name^="KikiLinkCustom_"]',
+    )) {
+      const activityName = button.getAttribute("name") ?? "";
+      const definition = this.#runtimeActivities.get(activityName);
+      if (!definition) continue;
+      let image = button.querySelector<HTMLImageElement>("img.button-image");
+      if (!image) {
+        image = document.createElement("img");
+        image.className = "button-image";
+        button.prepend(image);
+      }
+      const imageUrl = activityImageUrl(definition.image);
+      if (image.getAttribute("src") !== imageUrl) image.setAttribute("src", imageUrl);
+      image.alt = definition.name;
+
+      let label = button.querySelector<HTMLElement>(".button-label");
+      if (!label) {
+        label = document.createElement("span");
+        label.className = "button-label";
+        button.append(label);
+      }
+      if (label.textContent !== definition.name) label.textContent = definition.name;
+      this.decorateButton(button, {
+        Activity:
+          this.#injectedActivities.get(activityName) ??
+          createNativeActivity(activityName, definition),
+        Group: button.dataset.group || definition.targetGroup,
+      });
     }
   }
 

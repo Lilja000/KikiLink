@@ -9,7 +9,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface ChatMediaItem {
   url: string;
-  provider: "waifuvault" | "other";
+  provider: "catbox" | "litterbox" | "other";
   peerNumber: number;
   peerName: string;
   direction: LinkMessage["direction"];
@@ -279,7 +279,8 @@ function normalizeLocalAlias(value: string): string | undefined {
 export function galleryMediaProvider(value: string): ChatMediaItem["provider"] {
   try {
     const host = new URL(value).hostname.toLocaleLowerCase();
-    if (host === "waifuvault.moe") return "waifuvault";
+    if (host === "files.catbox.moe") return "catbox";
+    if (host === "litter.catbox.moe") return "litterbox";
   } catch {
     // parseMessageLinks already validates URLs; keep a harmless fallback for hostile globals.
   }

@@ -36,6 +36,7 @@ const GLOBAL_KEYS = [
   "CurrentScreen",
   "DialogActivity",
   "DialogBuildActivities",
+  "DialogLeave",
   "DialogMenuMapping",
   "DialogMenuMode",
   "DrawImageCanvas",
@@ -71,10 +72,12 @@ afterEach(async () => {
 });
 
 describe("published userscript runtime", () => {
-  it("keeps page-realm BC access while granting only the WaifuVault upload bridge", () => {
+  it("keeps page-realm BC access while granting only the Catbox upload bridges", () => {
     expect(USER_SCRIPT).toContain("// @sandbox      raw");
     expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
-    expect(USER_SCRIPT).toContain("// @connect      waifuvault.moe");
+    expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
+    expect(USER_SCRIPT).toContain("// @connect      litterbox.catbox.moe");
+    expect(USER_SCRIPT).not.toContain("// @connect      waifuvault.moe");
     expect(USER_SCRIPT).not.toContain("// @grant        none");
   });
 
@@ -307,7 +310,8 @@ describe("published userscript runtime", () => {
     });
     setGlobal("ActivityDictionaryText", (keyword: string) => keyword);
     setGlobal("PreferenceGetActivityFactor", () => 2);
-    setGlobal("ActivityRun", vi.fn());
+    const nativeActivityRun = vi.fn();
+    setGlobal("ActivityRun", nativeActivityRun);
     setGlobal("ChatRoomPublishCustomAction", vi.fn());
 
     const grid = document.createElement("div");
@@ -316,15 +320,31 @@ describe("published userscript runtime", () => {
     setGlobal("ElementButton", {
       CreateForActivity(
         id: string | null,
-        itemActivity: { Activity: { Name: string } },
+        itemActivity: { Activity: { Name: string }; Group: string },
         _character: unknown,
         _onClick: unknown,
         options?: { image?: string },
       ) {
         const button = document.createElement("button");
         button.id = id ?? "activity";
+        button.className = "dialog-grid-button";
+        button.name = itemActivity.Activity.Name;
+        button.dataset.index = id?.match(/(\d+)$/u)?.[1] ?? "0";
+        button.dataset.group = itemActivity.Group;
         button.dataset.activity = itemActivity.Activity.Name;
         if (options?.image) button.dataset.image = options.image;
+        const image = document.createElement("img");
+        image.className = "button-image";
+        image.src = options?.image ?? `./Assets/Female3DCG/Activity/${itemActivity.Activity.Name}.png`;
+        const label = document.createElement("span");
+        label.className = "button-label";
+        label.textContent = getGlobal<(keyword: string) => string>("ActivityDictionaryText")(
+          `Activity${itemActivity.Activity.Name}`,
+        );
+        button.append(image, label);
+        button.addEventListener("click", () => {
+          getGlobal<Function>("ActivityRun")(player, target, groups[0], itemActivity);
+        });
         grid.append(button);
         return button;
       },
@@ -392,7 +412,8 @@ describe("published userscript runtime", () => {
 
     expect(USER_SCRIPT).toContain("// @sandbox      raw");
     expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
-    expect(USER_SCRIPT).toContain("// @connect      waifuvault.moe");
+    expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
+    expect(USER_SCRIPT).toContain("// @connect      litterbox.catbox.moe");
     expect(USER_SCRIPT).not.toContain("unsafeWindow");
     expect(USER_SCRIPT).not.toContain("installBCPageContextBridge");
     expect(window.eval("typeof ServerSendBeepMessage")).toBe("function");
@@ -453,8 +474,8 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.22.3");
-    expect(version?.textContent).toBe("0.22.3");
+    expect(api.getVersion()).toBe("0.22.4");
+    expect(version?.textContent).toBe("0.22.4");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
@@ -489,12 +510,21 @@ describe("published userscript runtime", () => {
       activity.Name.startsWith(CUSTOM_ACTIVITY_PREFIX),
     );
     if (!customActivity) throw new Error("Built userscript did not register its custom activity");
-    getGlobal<Function>("ActivityRun")(
-      player,
-      target,
-      groups[0],
-      { Activity: customActivity, Group: "ItemArms" },
+    const customButton = grid.querySelector<HTMLButtonElement>(
+      `button.dialog-grid-button[name="${customActivity.Name}"]`,
     );
+    if (!customButton) throw new Error("Built userscript did not create its custom activity card");
+    const customLabel = customButton.querySelector<HTMLElement>(".button-label");
+    const customImage = customButton.querySelector<HTMLImageElement>(".button-image");
+    if (!customLabel || !customImage) throw new Error("Custom activity card is incomplete");
+    customLabel.textContent = `MISSING TEXT IN \"ActivityDictionary.csv\": ${customActivity.Name}`;
+    customImage.setAttribute("src", `./Assets/Female3DCG/Activity/${customActivity.Name}.png`);
+    await vi.waitFor(() => {
+      expect(customLabel.textContent).toBe("Runtime elbow touch");
+      expect(customImage.getAttribute("src")).toBe("./Assets/Female3DCG/Activity/Caress.png");
+    });
+    customButton.click();
+    expect(nativeActivityRun).not.toHaveBeenCalled();
     const publish = getGlobal<ReturnType<typeof vi.fn>>("ChatRoomPublishCustomAction");
     expect(publish).toHaveBeenCalledOnce();
     const publishedDictionary = publish.mock.calls[0]?.[2] as Array<Record<string, unknown>>;
@@ -513,7 +543,7 @@ describe("published userscript runtime", () => {
       v: 2,
       source: TEST_MEMBER_NUMBER,
       target: target.MemberNumber,
-      group: "ItemArms",
+      group: "ItemArmsMirror",
       arousal: 6,
       fallbackActivity: "Caress",
       fallbackCount: 2,
