@@ -322,13 +322,17 @@ export class RoomBlossomBadge {
     // sandbox-owned Path2D or Image object into Firefox's page canvas.
     if (typeof DrawImageResize === "function") {
       try {
-        return DrawImageResize(
-          BLOSSOM_ICON_DATA_URL,
-          position.left,
-          position.top,
-          position.size,
-          position.size,
-        );
+        if (
+          DrawImageResize(
+            BLOSSOM_ICON_DATA_URL,
+            position.left,
+            position.top,
+            position.size,
+            position.size,
+          )
+        ) {
+          return true;
+        }
       } catch {
         // Continue to progressively older drawing fallbacks below.
       }
@@ -338,11 +342,15 @@ export class RoomBlossomBadge {
     if (!context) return false;
     try {
       if (typeof DrawImageCanvas === "function") {
-        return DrawImageCanvas(BLOSSOM_ICON_DATA_URL, context, position.left, position.top, {
-          Width: position.size,
-          Height: position.size,
-          Alpha: BADGE_OPACITY,
-        });
+        if (
+          DrawImageCanvas(BLOSSOM_ICON_DATA_URL, context, position.left, position.top, {
+            Width: position.size,
+            Height: position.size,
+            Alpha: BADGE_OPACITY,
+          })
+        ) {
+          return true;
+        }
       }
       if (drawVectorBlossom(context, position)) return true;
       if (this.#fallbackImage?.complete && this.#fallbackImage.naturalWidth > 0) {

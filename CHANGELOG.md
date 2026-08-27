@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.22.11 - 2026-08-27
+
+- Fixed the remaining first-frame Blossom failure: Bondage Club's `DrawImageResize` legitimately
+  returns `false` while an image is still decoding. KikiLink now continues to its cached page-realm
+  vector renderer on that result, so the flower is visible immediately instead of depending on the
+  SVG image cache becoming ready.
+- Added a regression that keeps the native helper present but returning `false` and requires the
+  complete Blossom vector (petals, outlines, center, and highlights) to draw in the same frame.
+
 ## 0.22.10 - 2026-08-27
 
 - Fixed the Firefox `Permission denied to access object` crash introduced by 0.22.8/0.22.9.

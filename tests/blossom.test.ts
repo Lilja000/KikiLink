@@ -195,6 +195,36 @@ describe("room Blossom character positioning", () => {
     expect(typeof globalThis.DrawImageResize).toBe("undefined");
   });
 
+  it("draws the vector Blossom immediately while BC is still decoding its image", () => {
+    class FakePath2D {
+      constructor(readonly path: string) {}
+    }
+    vi.stubGlobal("Path2D", FakePath2D);
+    const { render, context } = fixture();
+    vi.mocked(globalThis.DrawImageResize).mockReturnValue(false);
+    Object.assign(context, {
+      translate: vi.fn(),
+      scale: vi.fn(),
+      fill: vi.fn(),
+      stroke: vi.fn(),
+      beginPath: vi.fn(),
+      arc: vi.fn(),
+      lineJoin: "miter",
+      lineCap: "butt",
+      fillStyle: "",
+      shadowColor: "",
+      shadowBlur: 0,
+      shadowOffsetY: 0,
+    });
+
+    render({ MemberNumber: 999, Name: "Kiki" }, 100, 20, 0.5);
+
+    expect(globalThis.DrawImageResize).toHaveBeenCalledOnce();
+    expect(context.fill).toHaveBeenCalledTimes(7);
+    expect(context.stroke).toHaveBeenCalledTimes(9);
+    expect(context.restore).toHaveBeenCalledOnce();
+  });
+
   it("keeps the normal-play DOM copy hidden and follows enabled settings", () => {
     const { badge, render, settings } = fixture();
     const own = document.querySelector<HTMLImageElement>(".kl-room-blossom");
