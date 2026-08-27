@@ -632,6 +632,7 @@ export class LinkChatView {
   #musicRenderToken = 0;
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #clockTimer: ReturnType<typeof setTimeout> | undefined;
+  #roomRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   #launcherDrag:
     | {
         pointerId: number;
@@ -792,6 +793,8 @@ export class LinkChatView {
     if (this.#toastTimer !== undefined) clearTimeout(this.#toastTimer);
     if (this.#clockTimer !== undefined) clearTimeout(this.#clockTimer);
     this.#clockTimer = undefined;
+    if (this.#roomRefreshTimer !== undefined) clearTimeout(this.#roomRefreshTimer);
+    this.#roomRefreshTimer = undefined;
     if (this.#presenceRenderFrame !== undefined) cancelAnimationFrame(this.#presenceRenderFrame);
     this.#presenceRenderFrame = undefined;
     this.#finderDialog.close();
@@ -4670,7 +4673,7 @@ export class LinkChatView {
     try {
       this.adapter.applyRoomPreset(preset.room);
       this.#toast(`Applying room preset “${preset.label}”…`);
-      setTimeout(() => void this.#renderRoomTools(true), 700);
+      this.#scheduleRoomToolsRefresh();
     } catch (error) {
       this.#toast(error instanceof Error ? error.message : "The room preset could not be applied.", "error");
     }
@@ -4821,10 +4824,18 @@ export class LinkChatView {
     try {
       this.adapter.runRoomMemberAction(player.memberNumber, action);
       this.#toast(`${roomActionPastTense(action)} ${player.memberName}.`);
-      setTimeout(() => void this.#renderRoomTools(true), 700);
+      this.#scheduleRoomToolsRefresh();
     } catch (error) {
       this.#toast(error instanceof Error ? error.message : "The room action failed.", "error");
     }
+  }
+
+  #scheduleRoomToolsRefresh(): void {
+    if (this.#roomRefreshTimer !== undefined) clearTimeout(this.#roomRefreshTimer);
+    this.#roomRefreshTimer = setTimeout(() => {
+      this.#roomRefreshTimer = undefined;
+      if (this.#mounted) void this.#renderRoomTools(true);
+    }, 700);
   }
 
   #saveRoomCustomization(): void {

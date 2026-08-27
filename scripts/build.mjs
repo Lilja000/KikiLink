@@ -8,6 +8,7 @@ const outDir = resolve(root, "dist");
 const outfile = resolve(outDir, "KikiLink.user.js");
 
 const userscriptHeader = `// ==UserScript==
+// @sandbox      raw
 // @name         KikiLink
 // @namespace    kikilink.bc
 // @version      ${packageJson.version}
@@ -24,7 +25,6 @@ const userscriptHeader = `// ==UserScript==
 // @match        https://*.bondage-asia.com/*
 // @run-at       document-end
 // @inject-into  page
-// @sandbox      raw
 // @grant        GM_xmlhttpRequest
 // @connect      catbox.moe
 // @connect      litterbox.catbox.moe

@@ -9,6 +9,19 @@ const CHARACTER_HEIGHT = 1_000;
 const BADGE_SIZE = 35;
 const BADGE_OPACITY = 0.78;
 const BADGE_DRAG_THRESHOLD = 5;
+const BLOSSOM_VIEWBOX_SIZE = 64;
+const BLOSSOM_PETAL_PATHS = [
+  "M32 33C24 28 22 18 26 10c2-4 10-4 12 0 4 8 2 18-6 23Z",
+  "M33 32c2-9 9-16 18-15 6 1 8 8 4 13-5 7-14 8-22 2Z",
+  "M34 34c9-2 18 2 21 10 2 6-4 11-10 9-8-3-13-10-11-19Z",
+  "M30 34c-9-2-18 2-21 10-2 6 4 11 10 9 8-3 13-10 11-19Z",
+  "M31 32c-2-9-9-16-18-15-6 1-8 8-4 13 5 7 14 8 22 2Z",
+] as const;
+const BLOSSOM_HIGHLIGHT_PATHS = [
+  "M30 12c-2 3-2 7-1 10",
+  "M48 21c-4 0-7 2-9 5",
+  "M48 44c-3-2-7-3-10-2",
+] as const;
 
 export interface NormalizedRoomBadgePosition {
   x: number;
@@ -37,6 +50,13 @@ interface RoomBadgeDrag {
 }
 
 type RoomBadgeConfig = KikiLinkSettings["ui"]["roomBadge"];
+
+interface BlossomVectorPaths {
+  petals: Path2D[];
+  highlights: Path2D[];
+}
+
+let blossomVectorPaths: BlossomVectorPaths | undefined;
 
 /** Slightly below the crowded native addon-icon row, clear of Echo/WCE/BCX status marks. */
 export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
@@ -301,17 +321,25 @@ export class RoomBlossomBadge {
     const context = mainCanvasContext();
     if (!context) return false;
     try {
-      // Echo and current BC R131 both use DrawImageResize for this character status-icon area.
+      // Draw from cached native canvas paths first. This has no image load, CORS, CSP, or BC image
+      // cache dependency, so the room icon is present on the first successful overlay frame.
+      if (drawVectorBlossom(context, position)) return true;
+
+      const source =
+        this.#fallbackImage?.complete && this.#fallbackImage.naturalWidth > 0
+          ? this.#fallbackImage
+          : BLOSSOM_ICON_DATA_URL;
+      // Older browsers without Path2D retain the same BC-native image path and a direct fallback.
       if (typeof DrawImageResize === "function") {
         return DrawImageResize(
-          BLOSSOM_ICON_DATA_URL,
+          source,
           position.left,
           position.top,
           position.size,
           position.size,
         );
       } else if (typeof DrawImageCanvas === "function") {
-        return DrawImageCanvas(BLOSSOM_ICON_DATA_URL, context, position.left, position.top, {
+        return DrawImageCanvas(source, context, position.left, position.top, {
           Width: position.size,
           Height: position.size,
           Alpha: BADGE_OPACITY,
@@ -432,6 +460,81 @@ export class RoomBlossomBadge {
       // The browser may already have released capture.
     }
   }
+}
+
+function drawVectorBlossom(
+  context: CanvasRenderingContext2D,
+  position: RoomBadgeCanvasPosition,
+): boolean {
+  const paths = getBlossomVectorPaths();
+  if (!paths) return false;
+  let saved = false;
+  try {
+    context.save();
+    saved = true;
+    context.translate(position.left, position.top);
+    const scale = position.size / BLOSSOM_VIEWBOX_SIZE;
+    context.scale(scale, scale);
+    context.globalAlpha = clamp(context.globalAlpha * BADGE_OPACITY, 0, 1);
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    context.lineWidth = 3;
+    context.shadowColor = "rgba(0, 0, 0, .55)";
+    context.shadowBlur = 2;
+    context.shadowOffsetY = 1;
+    context.fillStyle = "#ef6078";
+    context.strokeStyle = "#5f1b2a";
+    for (const petal of paths.petals) {
+      context.fill(petal);
+      context.stroke(petal);
+    }
+
+    context.shadowColor = "transparent";
+    context.shadowBlur = 0;
+    context.shadowOffsetY = 0;
+    context.strokeStyle = "#ffb2bf";
+    context.lineWidth = 2;
+    for (const highlight of paths.highlights) context.stroke(highlight);
+
+    context.beginPath();
+    context.arc(32, 33, 8, 0, Math.PI * 2);
+    context.fillStyle = "#f3b63f";
+    context.fill();
+    context.strokeStyle = "#5f1b2a";
+    context.lineWidth = 3;
+    context.stroke();
+
+    context.beginPath();
+    context.arc(29.5, 30.5, 2, 0, Math.PI * 2);
+    context.fillStyle = "#ffe6a1";
+    context.fill();
+    return true;
+  } catch {
+    // Path2D can be disabled by hardened browser settings; use the image fallback below.
+    return false;
+  } finally {
+    if (saved) {
+      try {
+        context.restore();
+      } catch {
+        // A room canvas can be replaced during a frame.
+      }
+    }
+  }
+}
+
+function getBlossomVectorPaths(): BlossomVectorPaths | null {
+  if (blossomVectorPaths) return blossomVectorPaths;
+  if (typeof Path2D !== "function") return null;
+  try {
+    blossomVectorPaths = {
+      petals: BLOSSOM_PETAL_PATHS.map((path) => new Path2D(path)),
+      highlights: BLOSSOM_HIGHLIGHT_PATHS.map((path) => new Path2D(path)),
+    };
+  } catch {
+    return null;
+  }
+  return blossomVectorPaths;
 }
 
 function mainCanvasContext(): CanvasRenderingContext2D | undefined {

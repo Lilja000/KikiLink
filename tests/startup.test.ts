@@ -57,12 +57,12 @@ describe("KikiLink startup", () => {
     expect(host?.shadowRoot?.querySelector(".kl-launcher")).not.toBeNull();
 
     loggedIn = false;
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(host?.hidden).toBe(true);
     expect(document.querySelector("#kikilink-root")).toBeNull();
 
     loggedIn = true;
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1_000);
     const restoredHost = document.querySelector<HTMLElement>("#kikilink-root");
     expect(restoredHost).not.toBeNull();
     expect(restoredHost).not.toBe(host);
@@ -97,7 +97,7 @@ describe("KikiLink startup", () => {
     globalThis.Player.MemberNumber = 222;
     globalThis.Player.Name = "SecondAccount";
     globalThis.Player.ExtensionSettings = {};
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1_000);
 
     const secondHost = document.querySelector<HTMLElement>("#kikilink-root");
     expect(secondHost).not.toBe(firstHost);

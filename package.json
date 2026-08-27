@@ -1,6 +1,6 @@
 {
   "name": "kikilink",
-  "version": "0.22.6",
+  "version": "0.22.7",
   "private": true,
   "description": "A polished, modular social and interaction addon for Bondage Club.",
   "license": "MIT",
@@ -8,9 +8,10 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm run test && npm run build"
+    "check": "npm run typecheck && npm run test"
   },
   "dependencies": {
     "bondage-club-mod-sdk": "1.2.0"

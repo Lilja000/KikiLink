@@ -16,6 +16,8 @@ import { ModuleRegistry } from "./module-registry";
 import { SettingsStore } from "./settings";
 import type { KikiLinkEvents, KikiLinkPublicApi } from "./types";
 
+const ACCOUNT_MONITOR_MS = 1_000;
+
 export class KikiLinkApp {
   readonly #logger = new Logger("core");
   readonly #bus = new EventBus<KikiLinkEvents>();
@@ -63,7 +65,9 @@ export class KikiLinkApp {
     this.#desiredMemberNumber = authenticatedMemberNumber();
     await this.#runAccountTransitions();
     if (!this.#started) return;
-    this.#accountMonitorTimer = setInterval(() => this.#monitorAccount(), 250);
+    // Account changes are rare and already have an immediate startup boundary. A one-second
+    // monitor avoids four permanent checks per second without making an in-page switch feel slow.
+    this.#accountMonitorTimer = setInterval(() => this.#monitorAccount(), ACCOUNT_MONITOR_MS);
   }
 
   async destroy(): Promise<void> {

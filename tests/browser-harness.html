@@ -55,6 +55,12 @@
       window.ChatRoomHideIconState = 0;
       window.MainCanvas = document.getElementById("MainCanvas").getContext("2d");
       window.__KIKILINK_NATIVE_DRAWS__ = [];
+      window.__KIKILINK_VECTOR_DRAWS__ = 0;
+      const nativeCanvasFill = window.MainCanvas.fill.bind(window.MainCanvas);
+      window.MainCanvas.fill = (...args) => {
+        window.__KIKILINK_VECTOR_DRAWS__ += 1;
+        return nativeCanvasFill(...args);
+      };
       window.DrawImageResize = (...args) => {
         window.__KIKILINK_NATIVE_DRAWS__.push(args);
         return true;
@@ -197,7 +203,8 @@
         const result = {
           publicApi: window.KikiLink?.getVersion?.() || null,
           versionBadge: version?.textContent || null,
-          blossomNativeDraw: window.__KIKILINK_NATIVE_DRAWS__.length > 0,
+          blossomNativeDraw:
+            window.__KIKILINK_VECTOR_DRAWS__ > 0 || window.__KIKILINK_NATIVE_DRAWS__.length > 0,
           blossomDomHidden: !!blossom && blossom.hidden && blossom.style.display === "none",
           customActivityInRegistry: window.ActivityFemale3DCG.some((activity) => activity.Name.startsWith("KikiLinkCustom_")),
           customActivityInDialog: !!custom,

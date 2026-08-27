@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.22.7 - 2026-08-27
+
+- Fixed the shared Firefox regression behind both the missing room Blossom and broken Custom
+  Activities. `@sandbox raw` is now the first userscript directive, keeping KikiLink in Bondage
+  Club's page realm while retaining the narrowly granted Catbox/Litterbox background uploader.
+- Made the Blossom independent of image loading and BC's image cache by drawing its upright flower
+  artwork from cached canvas paths. KikiLink now guards both current room overlay boundaries and
+  deduplicates their nested call, so the local and compatible-peer icon is drawn exactly once.
+- Hardened live upgrades and account switches: a partially broken older release can no longer block
+  the repaired bundle during cleanup, and delayed Room Tools refreshes cannot run after teardown.
+- Reduced permanent background work by consolidating compatibility health checks and lowering the
+  account-switch poll from four checks per second to one. The validation command now rebuilds the
+  published userscript before runtime tests, preventing stale `dist` code from producing false passes.
+
 ## 0.22.6 - 2026-08-27
 
 - Made Catbox/Litterbox upload failures readable and resilient: temporary HTTP 500, 502, 503, or

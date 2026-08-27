@@ -1,7 +1,8 @@
 // ==UserScript==
+// @sandbox      raw
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.22.6
+// @version      0.22.7
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -15,7 +16,6 @@
 // @match        https://*.bondage-asia.com/*
 // @run-at       document-end
 // @inject-into  page
-// @sandbox      raw
 // @grant        GM_xmlhttpRequest
 // @connect      catbox.moe
 // @connect      litterbox.catbox.moe
@@ -274,8 +274,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
 
   // src/bc/adapter.ts
   var READY_POLL_MS = 400;
-  var ACTIVITY_HOOK_RETRY_MS = 500;
-  var CHARACTER_OVERLAY_HOOK_RETRY_MS = 500;
+  var COMPATIBILITY_HOOK_RETRY_MS = 500;
   var SOCKET_REBIND_MS = 2e3;
   var BEEP_LOG_POLL_MS = 1e3;
   var RECENT_INCOMING_TTL_MS = 1e4;
@@ -290,7 +289,10 @@ One of mods you are using is using an old version of SDK. It will work for now b
     "ActivityRun",
     "ElementButton.CreateForActivity"
   ];
-  var CHARACTER_OVERLAY_HOOK_NAME = "ChatRoomDrawCharacterStatusIcons";
+  var CHARACTER_OVERLAY_HOOK_NAMES = [
+    "ChatRoomDrawCharacterStatusIcons",
+    "ChatRoomCharacterViewDrawOverlay"
+  ];
   function nonReentrantHook(hook) {
     let active = false;
     return (args, next) => {
@@ -326,8 +328,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     #socket;
     #socketRebindTimer;
     #beepLogTimer;
-    #activityHookRetryTimer;
-    #characterOverlayHookRetryTimer;
+    #compatibilityHookRetryTimer;
     #characterOverlayHookNames = /* @__PURE__ */ new Set();
     #overlayRenderSignatures = /* @__PURE__ */ new Set();
     #overlayRenderResetQueued = false;
@@ -384,14 +385,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
       this.#onlineFriendSignature = void 0;
       if (this.#socketRebindTimer !== void 0) clearInterval(this.#socketRebindTimer);
       if (this.#beepLogTimer !== void 0) clearInterval(this.#beepLogTimer);
-      if (this.#activityHookRetryTimer !== void 0) clearInterval(this.#activityHookRetryTimer);
-      if (this.#characterOverlayHookRetryTimer !== void 0) {
-        clearInterval(this.#characterOverlayHookRetryTimer);
+      if (this.#compatibilityHookRetryTimer !== void 0) {
+        clearInterval(this.#compatibilityHookRetryTimer);
       }
       this.#socketRebindTimer = void 0;
       this.#beepLogTimer = void 0;
-      this.#activityHookRetryTimer = void 0;
-      this.#characterOverlayHookRetryTimer = void 0;
+      this.#compatibilityHookRetryTimer = void 0;
       this.#detachSocketListeners();
       for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
       this.#modApi?.unload();
@@ -417,7 +416,7 @@ One of mods you are using is using an old version of SDK. It will work for now b
     }
     registerCharacterOverlay(renderer) {
       this.#characterOverlayRenderers.add(renderer);
-      if (this.#compatibilityHooksInitialized) this.#ensureCharacterOverlayHook();
+      if (this.#compatibilityHooksInitialized) this.#ensureCharacterOverlayHooks();
       return () => this.#characterOverlayRenderers.delete(renderer);
     }
     registerCustomActivityIntegration(integration) {
@@ -911,18 +910,12 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
       this.#ensureOutgoingBeepHooks();
       this.#ensureActivityHooks();
-      if (this.#activityHookRetryTimer === void 0) {
-        this.#activityHookRetryTimer = setInterval(
-          () => this.#ensureActivityHooks(),
-          ACTIVITY_HOOK_RETRY_MS
-        );
-      }
-      this.#ensureCharacterOverlayHook();
-      if (this.#characterOverlayHookRetryTimer === void 0) {
-        this.#characterOverlayHookRetryTimer = setInterval(
-          () => this.#ensureCharacterOverlayHook(),
-          CHARACTER_OVERLAY_HOOK_RETRY_MS
-        );
+      this.#ensureCharacterOverlayHooks();
+      if (this.#compatibilityHookRetryTimer === void 0) {
+        this.#compatibilityHookRetryTimer = setInterval(() => {
+          this.#ensureActivityHooks();
+          this.#ensureCharacterOverlayHooks();
+        }, COMPATIBILITY_HOOK_RETRY_MS);
       }
     }
     #ensureOutgoingBeepHooks() {
@@ -943,24 +936,28 @@ One of mods you are using is using an old version of SDK. It will work for now b
         this.#installedOutgoingHooks.add(name);
       }
     }
-    #ensureCharacterOverlayHook() {
+    #ensureCharacterOverlayHooks() {
       if (!this.#compatibilityHooksInitialized) return;
-      const name = CHARACTER_OVERLAY_HOOK_NAME;
-      const existing = this.#resilientHooks.get(name);
-      if (this.#characterOverlayHookNames.has(name)) {
-        if (existing) this.#ensureDirectHook(name, existing);
-        return;
+      for (const name of CHARACTER_OVERLAY_HOOK_NAMES) {
+        const existing = this.#resilientHooks.get(name);
+        if (this.#characterOverlayHookNames.has(name)) {
+          if (existing) this.#ensureDirectHook(name, existing);
+          continue;
+        }
+        if (!this.#characterOverlayFunctionAvailable(name)) continue;
+        const hook = nonReentrantHook((args, next) => {
+          const result = next(args);
+          this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
+          return result;
+        });
+        if (this.#installIntegrationHook(name, 10, hook)) {
+          this.#characterOverlayHookNames.add(name);
+          this.#ensureDirectHook(name, hook);
+        }
       }
-      if (typeof ChatRoomDrawCharacterStatusIcons !== "function") return;
-      const hook = nonReentrantHook((args, next) => {
-        const result = next(args);
-        this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
-        return result;
-      });
-      if (this.#installIntegrationHook(name, 10, hook)) {
-        this.#characterOverlayHookNames.add(name);
-        this.#ensureDirectHook(name, hook);
-      }
+    }
+    #characterOverlayFunctionAvailable(name) {
+      return name === "ChatRoomDrawCharacterStatusIcons" ? typeof ChatRoomDrawCharacterStatusIcons === "function" : typeof ChatRoomCharacterViewDrawOverlay === "function";
     }
     #ensureActivityHooks() {
       if (!this.#compatibilityHooksInitialized) return;
@@ -2786,6 +2783,20 @@ One of mods you are using is using an old version of SDK. It will work for now b
   var BADGE_SIZE = 35;
   var BADGE_OPACITY = 0.78;
   var BADGE_DRAG_THRESHOLD = 5;
+  var BLOSSOM_VIEWBOX_SIZE = 64;
+  var BLOSSOM_PETAL_PATHS = [
+    "M32 33C24 28 22 18 26 10c2-4 10-4 12 0 4 8 2 18-6 23Z",
+    "M33 32c2-9 9-16 18-15 6 1 8 8 4 13-5 7-14 8-22 2Z",
+    "M34 34c9-2 18 2 21 10 2 6-4 11-10 9-8-3-13-10-11-19Z",
+    "M30 34c-9-2-18 2-21 10-2 6 4 11 10 9 8-3 13-10 11-19Z",
+    "M31 32c-2-9-9-16-18-15-6 1-8 8-4 13 5 7 14 8 22 2Z"
+  ];
+  var BLOSSOM_HIGHLIGHT_PATHS = [
+    "M30 12c-2 3-2 7-1 10",
+    "M48 21c-4 0-7 2-9 5",
+    "M48 44c-3-2-7-3-10-2"
+  ];
+  var blossomVectorPaths;
   var DEFAULT_ROOM_BADGE_POSITION = Object.freeze({
     x: 0.78,
     y: 0.045
@@ -2996,16 +3007,18 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const context = mainCanvasContext();
       if (!context) return false;
       try {
+        if (drawVectorBlossom(context, position)) return true;
+        const source = this.#fallbackImage?.complete && this.#fallbackImage.naturalWidth > 0 ? this.#fallbackImage : kikilink_blossom_default;
         if (typeof DrawImageResize === "function") {
           return DrawImageResize(
-            kikilink_blossom_default,
+            source,
             position.left,
             position.top,
             position.size,
             position.size
           );
         } else if (typeof DrawImageCanvas === "function") {
-          return DrawImageCanvas(kikilink_blossom_default, context, position.left, position.top, {
+          return DrawImageCanvas(source, context, position.left, position.top, {
             Width: position.size,
             Height: position.size,
             Alpha: BADGE_OPACITY
@@ -3114,6 +3127,71 @@ One of mods you are using is using an old version of SDK. It will work for now b
       }
     }
   };
+  function drawVectorBlossom(context, position) {
+    const paths = getBlossomVectorPaths();
+    if (!paths) return false;
+    let saved = false;
+    try {
+      context.save();
+      saved = true;
+      context.translate(position.left, position.top);
+      const scale = position.size / BLOSSOM_VIEWBOX_SIZE;
+      context.scale(scale, scale);
+      context.globalAlpha = clamp(context.globalAlpha * BADGE_OPACITY, 0, 1);
+      context.lineJoin = "round";
+      context.lineCap = "round";
+      context.lineWidth = 3;
+      context.shadowColor = "rgba(0, 0, 0, .55)";
+      context.shadowBlur = 2;
+      context.shadowOffsetY = 1;
+      context.fillStyle = "#ef6078";
+      context.strokeStyle = "#5f1b2a";
+      for (const petal of paths.petals) {
+        context.fill(petal);
+        context.stroke(petal);
+      }
+      context.shadowColor = "transparent";
+      context.shadowBlur = 0;
+      context.shadowOffsetY = 0;
+      context.strokeStyle = "#ffb2bf";
+      context.lineWidth = 2;
+      for (const highlight of paths.highlights) context.stroke(highlight);
+      context.beginPath();
+      context.arc(32, 33, 8, 0, Math.PI * 2);
+      context.fillStyle = "#f3b63f";
+      context.fill();
+      context.strokeStyle = "#5f1b2a";
+      context.lineWidth = 3;
+      context.stroke();
+      context.beginPath();
+      context.arc(29.5, 30.5, 2, 0, Math.PI * 2);
+      context.fillStyle = "#ffe6a1";
+      context.fill();
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (saved) {
+        try {
+          context.restore();
+        } catch {
+        }
+      }
+    }
+  }
+  function getBlossomVectorPaths() {
+    if (blossomVectorPaths) return blossomVectorPaths;
+    if (typeof Path2D !== "function") return null;
+    try {
+      blossomVectorPaths = {
+        petals: BLOSSOM_PETAL_PATHS.map((path) => new Path2D(path)),
+        highlights: BLOSSOM_HIGHLIGHT_PATHS.map((path) => new Path2D(path))
+      };
+    } catch {
+      return null;
+    }
+    return blossomVectorPaths;
+  }
   function mainCanvasContext() {
     if (typeof MainCanvas === "undefined" || MainCanvas === null) return void 0;
     if (typeof MainCanvas.drawImage === "function") {
@@ -10363,6 +10441,7 @@ select:focus-visible {
     #musicRenderToken = 0;
     #toastTimer;
     #clockTimer;
+    #roomRefreshTimer;
     #launcherDrag;
     #panelDrag;
     #suppressLauncherClickUntil = 0;
@@ -10465,6 +10544,8 @@ select:focus-visible {
       if (this.#toastTimer !== void 0) clearTimeout(this.#toastTimer);
       if (this.#clockTimer !== void 0) clearTimeout(this.#clockTimer);
       this.#clockTimer = void 0;
+      if (this.#roomRefreshTimer !== void 0) clearTimeout(this.#roomRefreshTimer);
+      this.#roomRefreshTimer = void 0;
       if (this.#presenceRenderFrame !== void 0) cancelAnimationFrame(this.#presenceRenderFrame);
       this.#presenceRenderFrame = void 0;
       this.#finderDialog.close();
@@ -14030,7 +14111,7 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       try {
         this.adapter.applyRoomPreset(preset.room);
         this.#toast(`Applying room preset \u201C${preset.label}\u201D\u2026`);
-        setTimeout(() => void this.#renderRoomTools(true), 700);
+        this.#scheduleRoomToolsRefresh();
       } catch (error) {
         this.#toast(error instanceof Error ? error.message : "The room preset could not be applied.", "error");
       }
@@ -14159,10 +14240,17 @@ ${room.language}`.toLocaleLowerCase().includes(filter)
       try {
         this.adapter.runRoomMemberAction(player.memberNumber, action);
         this.#toast(`${roomActionPastTense(action)} ${player.memberName}.`);
-        setTimeout(() => void this.#renderRoomTools(true), 700);
+        this.#scheduleRoomToolsRefresh();
       } catch (error) {
         this.#toast(error instanceof Error ? error.message : "The room action failed.", "error");
       }
+    }
+    #scheduleRoomToolsRefresh() {
+      if (this.#roomRefreshTimer !== void 0) clearTimeout(this.#roomRefreshTimer);
+      this.#roomRefreshTimer = setTimeout(() => {
+        this.#roomRefreshTimer = void 0;
+        if (this.#mounted) void this.#renderRoomTools(true);
+      }, 700);
     }
     #saveRoomCustomization() {
       try {
@@ -19113,6 +19201,7 @@ ${expanded}` : expanded;
   };
 
   // src/core/kikilink.ts
+  var ACCOUNT_MONITOR_MS = 1e3;
   var KikiLinkApp = class {
     constructor(version) {
       this.version = version;
@@ -19158,7 +19247,7 @@ ${expanded}` : expanded;
       this.#desiredMemberNumber = authenticatedMemberNumber();
       await this.#runAccountTransitions();
       if (!this.#started) return;
-      this.#accountMonitorTimer = setInterval(() => this.#monitorAccount(), 250);
+      this.#accountMonitorTimer = setInterval(() => this.#monitorAccount(), ACCOUNT_MONITOR_MS);
     }
     async destroy() {
       if (!this.#started) return;
@@ -19303,8 +19392,14 @@ ${expanded}` : expanded;
   // src/index.ts
   async function bootstrap() {
     const previous = window.KikiLink;
-    if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.22.6");
+    if (previous) {
+      try {
+        await previous.destroy();
+      } catch (error) {
+        console.warn("[KikiLink] Previous release cleanup failed; continuing startup", error);
+      }
+    }
+    const app = new KikiLinkApp("0.22.7");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

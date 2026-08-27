@@ -102,6 +102,7 @@ afterEach(() => {
   }
   document.body.replaceChildren();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -157,6 +158,37 @@ describe("room Blossom character positioning", () => {
     badge.destroy();
     expect(own?.isConnected).toBe(false);
     expect(unregister).toHaveBeenCalledOnce();
+  });
+
+  it("draws the Blossom immediately from cached canvas paths without loading an image", () => {
+    class FakePath2D {
+      constructor(readonly path: string) {}
+    }
+    vi.stubGlobal("Path2D", FakePath2D);
+    const { render, context } = fixture();
+    Object.assign(context, {
+      translate: vi.fn(),
+      scale: vi.fn(),
+      fill: vi.fn(),
+      stroke: vi.fn(),
+      beginPath: vi.fn(),
+      arc: vi.fn(),
+      lineJoin: "miter",
+      lineCap: "butt",
+      fillStyle: "",
+      shadowColor: "",
+      shadowBlur: 0,
+      shadowOffsetY: 0,
+    });
+
+    render({ MemberNumber: 999, Name: "Kiki" }, 100, 20, 0.5);
+
+    expect(context.save).toHaveBeenCalledOnce();
+    expect(context.restore).toHaveBeenCalledOnce();
+    expect(context.fill).toHaveBeenCalledTimes(7);
+    expect(context.stroke).toHaveBeenCalledTimes(9);
+    expect(context.arc).toHaveBeenCalledTimes(2);
+    expect(globalThis.DrawImageResize).not.toHaveBeenCalled();
   });
 
   it("follows enabled settings without exposing a passive fixed DOM badge", () => {

@@ -11,10 +11,11 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.22.6` retries temporary Catbox/Litterbox server errors once, replaces raw HTML error pages
-with readable notices, and lets room administrators share a device-local MP3/MP4 directly from Music
-for room playback. It also includes the Blossom and Custom Activity repairs from the previous releases.
-The running version remains visible as tiny translucent digits in the lower-left corner.
+Version `0.22.7` restores the room Blossom and Custom Activities on Firefox without removing the
+Catbox/Litterbox upload bridge. The flower now draws directly on the BC canvas through both current
+room-overlay boundaries, while startup, account switching, delayed room refreshes, and release checks
+are more resilient and lighter. The running version remains visible as tiny translucent digits in the
+lower-left corner.
 
 ## Link Deck
 

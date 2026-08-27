@@ -744,6 +744,34 @@ describe("BCAdapter", () => {
     adapter.stop();
   });
 
+  it("draws one overlay through BC's current nested character-view boundaries", async () => {
+    const calls: string[] = [];
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ServerSendBeepMessage = vi.fn();
+    globalThis.ChatRoomDrawCharacterStatusIcons = vi.fn(() => calls.push("native status"));
+    globalThis.ChatRoomCharacterViewDrawOverlay = vi.fn((character, x, y, zoom) => {
+      calls.push("native outer");
+      globalThis.ChatRoomDrawCharacterStatusIcons(character, x, y, zoom);
+    });
+
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.22.7");
+    const renderer = vi.fn(() => calls.push("kikilink"));
+    adapter.registerCharacterOverlay(renderer);
+    await adapter.start();
+
+    const character = { MemberNumber: 999, Name: "AccountKiki" };
+    globalThis.ChatRoomCharacterViewDrawOverlay(character, 120, 30, 0.75);
+
+    expect(calls).toEqual(["native outer", "native status", "kikilink"]);
+    expect(renderer).toHaveBeenCalledOnce();
+    expect(renderer).toHaveBeenCalledWith(character, 120, 30, 0.75);
+    adapter.stop();
+  });
+
   it("shares one ModSDK status-icon chain with Echo, BCX, and AFC-style addons", async () => {
     vi.useFakeTimers();
     const calls: string[] = [];

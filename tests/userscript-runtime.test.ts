@@ -72,13 +72,34 @@ afterEach(async () => {
 });
 
 describe("published userscript runtime", () => {
-  it("keeps page-realm BC access while granting only the Catbox upload bridges", () => {
+  it("keeps Firefox in the page realm while granting only the Catbox upload bridges", () => {
+    const metadata = USER_SCRIPT.slice(0, USER_SCRIPT.indexOf("// ==/UserScript=="));
+    const metadataLines = metadata.split("\n");
+    // Tampermonkey Firefox has historically required raw to be the first metadata directive.
+    // Keeping it here prevents GM_xmlhttpRequest from silently isolating every BC hook.
+    expect(metadataLines[1]).toBe("// @sandbox      raw");
     expect(USER_SCRIPT).toContain("// @sandbox      raw");
     expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
     expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
     expect(USER_SCRIPT).toContain("// @connect      litterbox.catbox.moe");
     expect(USER_SCRIPT).not.toContain("// @connect      waifuvault.moe");
     expect(USER_SCRIPT).not.toContain("// @grant        none");
+  });
+
+  it("starts the repaired bundle even when an older partial release cannot clean up", async () => {
+    const previous = { destroy: vi.fn(async () => Promise.reject(new Error("broken cleanup"))) };
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    setGlobal("KikiLink", previous);
+
+    window.eval(USER_SCRIPT);
+
+    await vi.waitFor(() => expect(getGlobal("KikiLink")).not.toBe(previous));
+    expect(previous.destroy).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledWith(
+      "[KikiLink] Previous release cleanup failed; continuing startup",
+      expect.any(Error),
+    );
+    await getGlobal<{ destroy(): Promise<void> }>("KikiLink").destroy();
   });
 
   it("joins Echo and AFC in one ModSDK status-icon router in the built userscript", async () => {
@@ -494,8 +515,8 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.22.6");
-    expect(version?.textContent).toBe("0.22.6");
+    expect(api.getVersion()).toBe("0.22.7");
+    expect(version?.textContent).toBe("0.22.7");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);

@@ -13,8 +13,7 @@ import type { EventBus } from "../core/event-bus";
 import { cleanBeepMessageContent } from "./message-content";
 
 const READY_POLL_MS = 400;
-const ACTIVITY_HOOK_RETRY_MS = 500;
-const CHARACTER_OVERLAY_HOOK_RETRY_MS = 500;
+const COMPATIBILITY_HOOK_RETRY_MS = 500;
 const SOCKET_REBIND_MS = 2_000;
 const BEEP_LOG_POLL_MS = 1_000;
 const RECENT_INCOMING_TTL_MS = 10_000;
@@ -29,7 +28,10 @@ const CRITICAL_CUSTOM_ACTIVITY_HOOKS = [
   "ActivityRun",
   "ElementButton.CreateForActivity",
 ] as const;
-const CHARACTER_OVERLAY_HOOK_NAME = "ChatRoomDrawCharacterStatusIcons";
+const CHARACTER_OVERLAY_HOOK_NAMES = [
+  "ChatRoomDrawCharacterStatusIcons",
+  "ChatRoomCharacterViewDrawOverlay",
+] as const;
 
 interface RecentIncoming {
   fingerprint: string;
@@ -154,8 +156,7 @@ export class BCAdapter {
   #socket: BCServerSocket | undefined;
   #socketRebindTimer: ReturnType<typeof setInterval> | undefined;
   #beepLogTimer: ReturnType<typeof setInterval> | undefined;
-  #activityHookRetryTimer: ReturnType<typeof setInterval> | undefined;
-  #characterOverlayHookRetryTimer: ReturnType<typeof setInterval> | undefined;
+  #compatibilityHookRetryTimer: ReturnType<typeof setInterval> | undefined;
   readonly #characterOverlayHookNames = new Set<string>();
   readonly #overlayRenderSignatures = new Set<string>();
   #overlayRenderResetQueued = false;
@@ -224,14 +225,12 @@ export class BCAdapter {
     this.#onlineFriendSignature = undefined;
     if (this.#socketRebindTimer !== undefined) clearInterval(this.#socketRebindTimer);
     if (this.#beepLogTimer !== undefined) clearInterval(this.#beepLogTimer);
-    if (this.#activityHookRetryTimer !== undefined) clearInterval(this.#activityHookRetryTimer);
-    if (this.#characterOverlayHookRetryTimer !== undefined) {
-      clearInterval(this.#characterOverlayHookRetryTimer);
+    if (this.#compatibilityHookRetryTimer !== undefined) {
+      clearInterval(this.#compatibilityHookRetryTimer);
     }
     this.#socketRebindTimer = undefined;
     this.#beepLogTimer = undefined;
-    this.#activityHookRetryTimer = undefined;
-    this.#characterOverlayHookRetryTimer = undefined;
+    this.#compatibilityHookRetryTimer = undefined;
     this.#detachSocketListeners();
     for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
     this.#modApi?.unload();
@@ -261,7 +260,7 @@ export class BCAdapter {
 
   registerCharacterOverlay(renderer: BCCharacterOverlayRenderer): () => void {
     this.#characterOverlayRenderers.add(renderer);
-    if (this.#compatibilityHooksInitialized) this.#ensureCharacterOverlayHook();
+    if (this.#compatibilityHooksInitialized) this.#ensureCharacterOverlayHooks();
     return () => this.#characterOverlayRenderers.delete(renderer);
   }
 
@@ -892,18 +891,12 @@ export class BCAdapter {
     this.#ensureOutgoingBeepHooks();
 
     this.#ensureActivityHooks();
-    if (this.#activityHookRetryTimer === undefined) {
-      this.#activityHookRetryTimer = setInterval(
-        () => this.#ensureActivityHooks(),
-        ACTIVITY_HOOK_RETRY_MS,
-      );
-    }
-    this.#ensureCharacterOverlayHook();
-    if (this.#characterOverlayHookRetryTimer === undefined) {
-      this.#characterOverlayHookRetryTimer = setInterval(
-        () => this.#ensureCharacterOverlayHook(),
-        CHARACTER_OVERLAY_HOOK_RETRY_MS,
-      );
+    this.#ensureCharacterOverlayHooks();
+    if (this.#compatibilityHookRetryTimer === undefined) {
+      this.#compatibilityHookRetryTimer = setInterval(() => {
+        this.#ensureActivityHooks();
+        this.#ensureCharacterOverlayHooks();
+      }, COMPATIBILITY_HOOK_RETRY_MS);
     }
   }
 
@@ -927,32 +920,42 @@ export class BCAdapter {
     }
   }
 
-  #ensureCharacterOverlayHook(): void {
+  #ensureCharacterOverlayHooks(): void {
     if (!this.#compatibilityHooksInitialized) return;
-    const name = CHARACTER_OVERLAY_HOOK_NAME;
-    const existing = this.#resilientHooks.get(name);
-    if (this.#characterOverlayHookNames.has(name)) {
-      // Keep a narrow live guard outside the shared ModSDK router as well. BC hot reloads and
-      // late addons can replace the global status-icon function without removing our ModSDK
-      // registration, which otherwise makes every Blossom disappear while KikiLink still thinks
-      // the hook is healthy.
-      if (existing) this.#ensureDirectHook(name, existing);
-      return;
-    }
-    if (typeof ChatRoomDrawCharacterStatusIcons !== "function") return;
+    for (const name of CHARACTER_OVERLAY_HOOK_NAMES) {
+      const existing = this.#resilientHooks.get(name);
+      if (this.#characterOverlayHookNames.has(name)) {
+        // Keep a narrow live guard outside the shared ModSDK router as well. BC hot reloads and
+        // late addons can replace either room overlay boundary without removing our ModSDK
+        // registration, which otherwise makes every Blossom disappear while KikiLink still
+        // thinks the hook is healthy.
+        if (existing) this.#ensureDirectHook(name, existing);
+        continue;
+      }
+      if (!this.#characterOverlayFunctionAvailable(name)) continue;
 
-    // Echo Activities uses this exact native status-icon entrypoint. The same non-reentrant hook
-    // participates in ModSDK and guards the live global function: delegating through the router
-    // skips KikiLink's duplicate invocation while preserving Echo, BCX, WCE, AFC, and native draw.
-    const hook = nonReentrantHook((args, next) => {
-      const result = next(args);
-      this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
-      return result;
-    });
-    if (this.#installIntegrationHook(name, 10, hook)) {
-      this.#characterOverlayHookNames.add(name);
-      this.#ensureDirectHook(name, hook);
+      // Echo Activities uses the native status-icon entrypoint while BC's character view calls it
+      // from ChatRoomCharacterViewDrawOverlay. Hooking both boundaries makes the Blossom survive a
+      // late replacement of either one. The per-frame signature guard below keeps the nested live
+      // BC call to one draw while preserving Echo, BCX, WCE, AFC, and the native implementation.
+      const hook = nonReentrantHook((args, next) => {
+        const result = next(args);
+        this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
+        return result;
+      });
+      if (this.#installIntegrationHook(name, 10, hook)) {
+        this.#characterOverlayHookNames.add(name);
+        this.#ensureDirectHook(name, hook);
+      }
     }
+  }
+
+  #characterOverlayFunctionAvailable(
+    name: (typeof CHARACTER_OVERLAY_HOOK_NAMES)[number],
+  ): boolean {
+    return name === "ChatRoomDrawCharacterStatusIcons"
+      ? typeof ChatRoomDrawCharacterStatusIcons === "function"
+      : typeof ChatRoomCharacterViewDrawOverlay === "function";
   }
 
   #ensureActivityHooks(): void {
