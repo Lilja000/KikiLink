@@ -150,7 +150,7 @@ describe("published userscript runtime", () => {
     const statusIcons = getGlobal<
       (character: typeof player, x: number, y: number, zoom: number) => void
     >("ChatRoomDrawCharacterStatusIcons");
-    expect(statusIcons).toBe(sharedRouter);
+    expect(statusIcons).not.toBe(sharedRouter);
     expect(() => statusIcons(player, 100, 0, 1)).not.toThrow();
     expect(calls).toEqual(["echo", "afc", "native"]);
     expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
@@ -165,6 +165,26 @@ describe("published userscript runtime", () => {
       name: "ChatRoomDrawCharacterStatusIcons",
       priority: 10,
     });
+
+    const draw = getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize");
+    const drawsBeforeReplacement = draw.mock.calls.length;
+    const lateReplacement = vi.fn(() => calls.push("late replacement"));
+    setGlobal("ChatRoomDrawCharacterStatusIcons", lateReplacement);
+    await new Promise<void>((resolve) => setTimeout(resolve, 550));
+    calls.length = 0;
+    getGlobal<(character: typeof player, x: number, y: number, zoom: number) => void>(
+      "ChatRoomDrawCharacterStatusIcons",
+    )(player, 130, 20, 0.5);
+    expect(lateReplacement).toHaveBeenCalledOnce();
+    expect(calls).toEqual(["late replacement"]);
+    expect(draw).toHaveBeenCalledTimes(drawsBeforeReplacement + 1);
+    expect(draw).toHaveBeenLastCalledWith(
+      expect.stringContaining("data:image/svg+xml"),
+      325,
+      42.5,
+      17.5,
+      17.5,
+    );
 
     await getGlobal<{ destroy(): Promise<void> }>("KikiLink").destroy();
     echo.unload();
@@ -474,8 +494,8 @@ describe("published userscript runtime", () => {
     ).toBe("Connected");
     expect(getGlobal<{ registerMod: unknown }>("bcModSdk").registerMod).toBe(registerMod);
     expect(registerMod).toHaveBeenCalledTimes(1);
-    expect(api.getVersion()).toBe("0.22.4");
-    expect(version?.textContent).toBe("0.22.4");
+    expect(api.getVersion()).toBe("0.22.5");
+    expect(version?.textContent).toBe("0.22.5");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);

@@ -11,10 +11,10 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.22.4` restores Catbox and Litterbox uploads and makes Custom Activity cards independent
-from Bondage Club function hooks: their label, selected vanilla picture, and click action are repaired
-directly in the native activity grid.
-The running version remains visible as tiny translucent digits in the lower-left corner.
+Version `0.22.5` restores the Blossom icon above the local character and compatible KikiLink peers
+even after Bondage Club or a late addon replaces the live status-icon renderer. It also includes
+the Catbox/Litterbox and Custom Activity fixes from `0.22.4`. The running version remains visible
+as tiny translucent digits in the lower-left corner.
 
 ## Link Deck
 

@@ -745,6 +745,7 @@ describe("BCAdapter", () => {
   });
 
   it("shares one ModSDK status-icon chain with Echo, BCX, and AFC-style addons", async () => {
+    vi.useFakeTimers();
     const calls: string[] = [];
     const hookRequests: Array<{ mod: string; name: string; priority: number }> = [];
     type Hook = {
@@ -840,7 +841,8 @@ describe("BCAdapter", () => {
     const sharedRouter = globalThis.ChatRoomDrawCharacterStatusIcons;
 
     const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.20.7");
-    adapter.registerCharacterOverlay(() => calls.push("kikilink"));
+    const renderer = vi.fn(() => calls.push("kikilink"));
+    adapter.registerCharacterOverlay(renderer);
     try {
       await adapter.start();
       const character = { MemberNumber: 999, Name: "AccountKiki" };
@@ -852,17 +854,27 @@ describe("BCAdapter", () => {
       expect(calls).toContain("native");
       expect(calls).toContain("kikilink");
       expect(calls.filter((entry) => entry === "native")).toHaveLength(1);
-      expect(globalThis.ChatRoomDrawCharacterStatusIcons).toBe(sharedRouter);
+      expect(globalThis.ChatRoomDrawCharacterStatusIcons).not.toBe(sharedRouter);
       expect(hookRequests).toContainEqual({
         mod: "KikiLink",
         name: "ChatRoomDrawCharacterStatusIcons",
         priority: 10,
       });
+
+      calls.length = 0;
+      const lateReplacement = vi.fn(() => calls.push("late replacement"));
+      globalThis.ChatRoomDrawCharacterStatusIcons = lateReplacement;
+      await vi.advanceTimersByTimeAsync(500);
+      globalThis.ChatRoomDrawCharacterStatusIcons(character, 140, 40, 0.65);
+      expect(lateReplacement).toHaveBeenCalledOnce();
+      expect(calls).toEqual(["late replacement", "kikilink"]);
+      expect(renderer).toHaveBeenLastCalledWith(character, 140, 40, 0.65);
     } finally {
       adapter.stop();
       echoLike.unload();
       afcLike.unload();
       Object.defineProperty(window, "bcModSdk", { configurable: true, value: liveSdk });
+      vi.useRealTimers();
     }
   });
 

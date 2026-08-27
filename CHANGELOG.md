@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.22.5 - 2026-08-27
+
+- Restored the Blossom icon above the local character and compatible KikiLink peers after a BC
+  hot reload or late addon replaced `ChatRoomDrawCharacterStatusIcons`. The canvas overlay now has
+  the same self-healing live guard as the critical Custom Activity hooks while preserving the
+  native, Echo, BCX, WCE, and AFC draw chain without duplicate rendering.
+
 ## 0.22.4 - 2026-08-26
 
 - Restored the pre-0.22.2 upload split: temporary chat images and room media use Litterbox with

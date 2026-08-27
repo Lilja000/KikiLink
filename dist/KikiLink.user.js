@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KikiLink
 // @namespace    kikilink.bc
-// @version      0.22.4
+// @version      0.22.5
 // @description  A polished social and interaction addon for Bondage Club.
 // @author       KikiLink contributors
 // @license      MIT
@@ -948,17 +948,18 @@ One of mods you are using is using an old version of SDK. It will work for now b
       const name = CHARACTER_OVERLAY_HOOK_NAME;
       const existing = this.#resilientHooks.get(name);
       if (this.#characterOverlayHookNames.has(name)) {
-        if (!this.#modApi && existing) this.#ensureDirectHook(name, existing);
+        if (existing) this.#ensureDirectHook(name, existing);
         return;
       }
       if (typeof ChatRoomDrawCharacterStatusIcons !== "function") return;
-      const hook = (args, next) => {
+      const hook = nonReentrantHook((args, next) => {
         const result = next(args);
         this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
         return result;
-      };
+      });
       if (this.#installIntegrationHook(name, 10, hook)) {
         this.#characterOverlayHookNames.add(name);
+        this.#ensureDirectHook(name, hook);
       }
     }
     #ensureActivityHooks() {
@@ -19154,7 +19155,7 @@ ${expanded}` : expanded;
   async function bootstrap() {
     const previous = window.KikiLink;
     if (previous) await previous.destroy();
-    const app = new KikiLinkApp("0.22.4");
+    const app = new KikiLinkApp("0.22.5");
     window.KikiLink = app.publicApi();
     try {
       await app.start();

@@ -932,22 +932,26 @@ export class BCAdapter {
     const name = CHARACTER_OVERLAY_HOOK_NAME;
     const existing = this.#resilientHooks.get(name);
     if (this.#characterOverlayHookNames.has(name)) {
-      // A direct wrapper is used only when ModSDK registration is completely unavailable. Keep
-      // that fallback healthy if BC loads or replaces the native function after login.
-      if (!this.#modApi && existing) this.#ensureDirectHook(name, existing);
+      // Keep a narrow live guard outside the shared ModSDK router as well. BC hot reloads and
+      // late addons can replace the global status-icon function without removing our ModSDK
+      // registration, which otherwise makes every Blossom disappear while KikiLink still thinks
+      // the hook is healthy.
+      if (existing) this.#ensureDirectHook(name, existing);
       return;
     }
     if (typeof ChatRoomDrawCharacterStatusIcons !== "function") return;
 
-    // Echo Activities uses this exact native status-icon entrypoint. Joining the shared ModSDK
-    // chain avoids placing an untracked wrapper around BCX, WCE, Echo, or AFC functions.
-    const hook: ResilientHook = (args, next) => {
+    // Echo Activities uses this exact native status-icon entrypoint. The same non-reentrant hook
+    // participates in ModSDK and guards the live global function: delegating through the router
+    // skips KikiLink's duplicate invocation while preserving Echo, BCX, WCE, AFC, and native draw.
+    const hook = nonReentrantHook((args, next) => {
       const result = next(args);
       this.#renderCharacterOverlays(args[0], args[1], args[2], args[3]);
       return result;
-    };
+    });
     if (this.#installIntegrationHook(name, 10, hook)) {
       this.#characterOverlayHookNames.add(name);
+      this.#ensureDirectHook(name, hook);
     }
   }
 
