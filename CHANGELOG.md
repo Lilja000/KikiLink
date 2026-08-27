@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.22.12 - 2026-08-27
+
+- Moved the default Blossom from the clipped right edge into a stacked slot directly below Echo's
+  clothing-skirt icon: both use `CharX + 420×Zoom`; Echo stays at `CharY + 5` and Blossom now uses
+  `CharY + 45`. Existing positions saved through the placement control remain unchanged.
+- Separated addon detection from optional Presence profile sharing. A small capability-only packet
+  now confirms KikiLink even when status sharing is disabled, so the Blossom appears for every
+  confirmed KikiLink user and never for players who did not answer the KikiLink protocol.
+- Reduced native room-frame work by removing the obsolete string/microtask draw deduplicator,
+  repeated normal-play DOM style writes, temporary frame/position allocations, and redundant probes
+  for already-confirmed peers. Added regressions for the Echo/Blossom stack, disabled-Presence
+  discovery, invalid peers, and repeated canvas passes.
+
 ## 0.22.11 - 2026-08-27
 
 - Fixed the remaining first-frame Blossom failure: Bondage Club's `DrawImageResize` legitimately

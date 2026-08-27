@@ -740,9 +740,11 @@ describe("BCAdapter", () => {
 
     const character = { MemberNumber: 999, Name: "AccountKiki" };
     globalThis.ChatRoomDrawCharacterStatusIcons(character, 120, 30, 0.75);
+    globalThis.ChatRoomDrawCharacterStatusIcons(character, 120, 30, 0.75);
 
-    expect(nativeOverlay).toHaveBeenCalledWith(character, 120, 30, 0.75);
-    expect(renderer).toHaveBeenCalledWith(character, 120, 30, 0.75);
+    expect(nativeOverlay).toHaveBeenCalledTimes(2);
+    expect(renderer).toHaveBeenCalledTimes(2);
+    expect(renderer).toHaveBeenLastCalledWith(character, 120, 30, 0.75);
     adapter.stop();
   });
 

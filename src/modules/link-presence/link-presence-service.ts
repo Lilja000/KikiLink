@@ -10,6 +10,7 @@ import { createId } from "../../utils/id";
 import { normalizeImageUrl } from "../link-chat/media";
 
 const NATIVE_REFRESH_MS = 30_000;
+const CAPABILITY_REFRESH_MS = 2 * 60_000;
 const STATUS_CHECK_MS = 15_000;
 const REMOTE_STATUS_TTL_MS = 5 * 60_000;
 const RECENT_PACKET_ONLINE_MS = 90_000;
@@ -24,6 +25,7 @@ type PresenceListener = (memberNumber?: number) => void;
 
 type PresencePacket =
   | { t: "pq"; i: string; b?: 1 }
+  | { t: "pc"; v: string }
   | { t: "ps"; i?: string; s: PresenceStatus; m?: string; a?: string; u: number; v: string }
   | { t: "ty"; a: 0 | 1 };
 
@@ -48,6 +50,7 @@ export interface OwnProfilePreferences {
 
 export class LinkPresenceService {
   readonly #remote = new Map<number, RemotePresence>();
+  readonly #compatiblePeers = new Map<number, number>();
   readonly #listeners = new Set<PresenceListener>();
   readonly #lastRequestAt = new Map<number, number>();
   readonly #lastResponseAt = new Map<number, number>();
@@ -63,6 +66,7 @@ export class LinkPresenceService {
   #lastInteractionAt = Date.now();
   #lastEffectiveStatus: PresenceStatus = "online";
   #lastRoomName = "";
+  #lastCapabilityBroadcastAt = 0;
   #started = false;
 
   readonly #onInteraction = (): void => {
@@ -148,6 +152,7 @@ export class LinkPresenceService {
     }
     this.#listeners.clear();
     this.#remote.clear();
+    this.#compatiblePeers.clear();
     this.#localTyping.clear();
     this.#remoteTypingUntil.clear();
     for (const timer of this.#typingExpiryTimers.values()) clearTimeout(timer);
@@ -308,7 +313,6 @@ export class LinkPresenceService {
     if (
       !Number.isSafeInteger(memberNumber) ||
       memberNumber < 0 ||
-      !this.settings.get().linkPresence.enabled ||
       memberNumber === this.adapter.getOwnMemberNumber()
     ) {
       return false;
@@ -334,7 +338,6 @@ export class LinkPresenceService {
    * Repeated renders are cheap: queued members and the normal request cooldown are deduplicated.
    */
   requestMany(memberNumbers: Iterable<number>): number {
-    if (!this.settings.get().linkPresence.enabled) return 0;
     const ownMemberNumber = this.adapter.getOwnMemberNumber();
     const now = Date.now();
     let added = 0;
@@ -344,6 +347,7 @@ export class LinkPresenceService {
         !Number.isSafeInteger(memberNumber) ||
         memberNumber < 0 ||
         memberNumber === ownMemberNumber ||
+        this.hasCompatiblePeer(memberNumber, now) ||
         this.#queuedRequests.has(memberNumber) ||
         now - (this.#lastRequestAt.get(memberNumber) ?? 0) < REQUEST_COOLDOWN_MS
       ) {
@@ -365,8 +369,8 @@ export class LinkPresenceService {
 
   hasCompatiblePeer(memberNumber: number, now = Date.now()): boolean {
     if (memberNumber === this.adapter.getOwnMemberNumber()) return true;
-    const remote = this.#remote.get(memberNumber);
-    return remote !== undefined && now - remote.receivedAt <= REMOTE_STATUS_TTL_MS;
+    const lastSeenAt = this.#compatiblePeers.get(memberNumber);
+    return lastSeenAt !== undefined && now - lastSeenAt <= REMOTE_STATUS_TTL_MS;
   }
 
   setTyping(memberNumber: number, active: boolean, force = false): boolean {
@@ -413,21 +417,38 @@ export class LinkPresenceService {
     if (senderNumber === this.adapter.getOwnMemberNumber()) return;
     const packet = parsePresencePacket(payload);
     if (!packet) return;
+    const receivedAt = Date.now();
+    const wasCompatible = this.hasCompatiblePeer(senderNumber, receivedAt);
+    this.#compatiblePeers.set(senderNumber, receivedAt);
     if (packet.t === "ty") {
-      if (!this.settings.get().linkChat.typingIndicators) return;
+      if (!this.settings.get().linkChat.typingIndicators) {
+        if (!wasCompatible) this.#notify(senderNumber);
+        return;
+      }
       this.#receiveTyping(senderNumber, packet.a === 1);
       return;
     }
-    if (!this.settings.get().linkPresence.enabled) return;
     if (packet.t === "pq") {
-      const now = Date.now();
-      if (now - (this.#lastResponseAt.get(senderNumber) ?? 0) < RESPONSE_COOLDOWN_MS) return;
-      this.#lastResponseAt.set(senderNumber, now);
-      this.#sendPresence(senderNumber, packet.i);
+      if (!wasCompatible) this.#notify(senderNumber);
+      if (receivedAt - (this.#lastResponseAt.get(senderNumber) ?? 0) < RESPONSE_COOLDOWN_MS) {
+        return;
+      }
+      this.#lastResponseAt.set(senderNumber, receivedAt);
+      if (this.settings.get().linkPresence.enabled) this.#sendPresence(senderNumber, packet.i);
+      else this.#sendCapability(senderNumber);
+      return;
+    }
+    if (packet.t === "pc") {
+      if (!wasCompatible) this.#notify(senderNumber);
+      return;
+    }
+    // Capability and profile sharing are deliberately separate. A valid packet proves the addon
+    // is installed (and enables Blossom), while disabled Presence still withholds remote profiles.
+    if (!this.settings.get().linkPresence.enabled) {
+      if (!wasCompatible) this.#notify(senderNumber);
       return;
     }
 
-    const receivedAt = Date.now();
     this.#remote.set(senderNumber, {
       status: packet.s,
       ...(packet.m ? { statusMessage: packet.m } : {}),
@@ -480,6 +501,16 @@ export class LinkPresenceService {
     }
   }
 
+  #sendCapability(target?: number): void {
+    const payload = JSON.stringify({ t: "pc", v: this.version } satisfies PresencePacket);
+    try {
+      if (target === undefined) this.adapter.broadcastKikiLinkProtocol(payload);
+      else this.adapter.sendKikiLinkProtocol(target, payload);
+    } catch {
+      // Discovery is best-effort; the room/player can disappear between native frames.
+    }
+  }
+
   #publishOwnPresence(
     statusOverride?: PresenceStatus,
     force = false,
@@ -506,16 +537,24 @@ export class LinkPresenceService {
     const roomName = this.adapter.isInChatRoom() ? this.adapter.getCurrentRoomName() ?? "?" : "";
     const roomChanged = roomName !== this.#lastRoomName;
     this.#lastRoomName = roomName;
-    if (!roomName || !this.settings.get().linkPresence.enabled) return;
+    if (!roomName) return;
 
     // A peer can join after our first room announcement or can finish loading its addon later.
-    // Repeat the compact presence packet on the existing 30-second heartbeat so every compatible
-    // player eventually learns about every other KikiLink user without visible chat noise.
+    // The query runs on entry; enabled profiles use the existing heartbeat while disabled profiles
+    // send only a much slower capability refresh. Neither produces visible chat noise.
     if (force || roomChanged) {
       const query: PresencePacket = { t: "pq", i: createId("room").slice(-18), b: 1 };
       this.adapter.broadcastKikiLinkProtocol(JSON.stringify(query));
     }
-    this.#publishOwnPresence();
+    if (this.settings.get().linkPresence.enabled) {
+      this.#publishOwnPresence();
+      return;
+    }
+    const now = Date.now();
+    if (force || roomChanged || now - this.#lastCapabilityBroadcastAt >= CAPABILITY_REFRESH_MS) {
+      this.#lastCapabilityBroadcastAt = now;
+      this.#sendCapability();
+    }
   }
 
   #checkOwnStatus(): void {
@@ -527,11 +566,18 @@ export class LinkPresenceService {
   }
 
   #prune(now = Date.now()): void {
+    const changed = new Set<number>();
     for (const [memberNumber, remote] of this.#remote) {
       if (now - remote.receivedAt <= REMOTE_STATUS_TTL_MS) continue;
       this.#remote.delete(memberNumber);
-      this.#notify(memberNumber);
+      changed.add(memberNumber);
     }
+    for (const [memberNumber, lastSeenAt] of this.#compatiblePeers) {
+      if (now - lastSeenAt <= REMOTE_STATUS_TTL_MS) continue;
+      this.#compatiblePeers.delete(memberNumber);
+      changed.add(memberNumber);
+    }
+    for (const memberNumber of changed) this.#notify(memberNumber);
   }
 
   #notify(memberNumber?: number): void {
@@ -556,6 +602,17 @@ function parsePresencePacket(payload: string): PresencePacket | null {
   if (value.t === "ty") {
     if (!("a" in value) || (value.a !== 0 && value.a !== 1)) return null;
     return { t: "ty", a: value.a };
+  }
+  if (value.t === "pc") {
+    if (
+      !("v" in value) ||
+      typeof value.v !== "string" ||
+      value.v.length < 1 ||
+      value.v.length > 24
+    ) {
+      return null;
+    }
+    return { t: "pc", v: value.v };
   }
   if (
     value.t !== "ps" ||

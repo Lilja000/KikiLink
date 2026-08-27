@@ -107,6 +107,79 @@ describe("LinkPresenceService", () => {
     service.stop();
   });
 
+  it("discovers the addon while Presence sharing is disabled without accepting profile data", () => {
+    const {
+      bus,
+      service,
+      settings,
+      sendKikiLinkProtocol,
+      broadcastKikiLinkProtocol,
+    } = setup({ inRoom: true });
+    settings.update((draft) => {
+      draft.linkPresence.enabled = false;
+    });
+    service.start();
+
+    const initialPackets = broadcastKikiLinkProtocol.mock.calls.map(([payload]) => payload);
+    expect(initialPackets.some((payload) => payload.includes('"t":"pq"'))).toBe(true);
+    expect(initialPackets.some((payload) => payload.includes('"t":"pc"'))).toBe(true);
+    expect(initialPackets.some((payload) => payload.includes('"t":"ps"'))).toBe(false);
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pq", i: "capability-only" }),
+    });
+    expect(service.hasCompatiblePeer(123)).toBe(true);
+    expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
+      123,
+      JSON.stringify({ t: "pc", v: "0.11.0" }),
+    );
+    expect(service.requestMany([123])).toBe(0);
+
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "dnd",
+        m: "Must stay private",
+        u: Date.now(),
+        v: "0.22.12",
+      }),
+    });
+    expect(service.hasCompatiblePeer(456)).toBe(true);
+    expect(service.get(456)).toMatchObject({ status: "online", source: "room" });
+    expect(service.get(456).statusMessage).toBeUndefined();
+
+    expect(service.request(321, true)).toBe(true);
+    expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
+      321,
+      expect.stringContaining('"t":"pq"'),
+    );
+    service.stop();
+  });
+
+  it("requires a valid KikiLink capability packet before showing a peer Blossom", () => {
+    const { bus, service } = setup();
+    service.start();
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pc", v: "" }),
+    });
+    expect(service.hasCompatiblePeer(123)).toBe(false);
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pc", v: "0.22.12" }),
+    });
+    expect(service.hasCompatiblePeer(123)).toBe(true);
+    service.stop();
+  });
+
   it("publishes user-selected status without changing Bondage Club state", () => {
     const { service, settings } = setup();
     service.setOwnStatus("offline");

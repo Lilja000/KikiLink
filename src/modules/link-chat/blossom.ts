@@ -58,10 +58,10 @@ interface BlossomVectorPaths {
 
 let blossomVectorPaths: BlossomVectorPaths | undefined;
 
-/** Dedicated slot after Echo: CharX + 460×Zoom, CharY + 5, 35×Zoom. */
+/** Stacked directly below Echo's clothing icon: CharX + 420×Zoom, CharY + 45, 35×Zoom. */
 export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
-  x: 0.92,
-  y: 0.005,
+  x: 0.84,
+  y: 0.045,
 });
 
 export { BLOSSOM_ICON_DATA_URL };
@@ -71,11 +71,22 @@ export function resolveRoomBadgePosition(
   position: NormalizedRoomBadgePosition | null,
   frame: CharacterCanvasFrame,
 ): RoomBadgeCanvasPosition {
-  const normalized = sanitizePosition(position) ?? DEFAULT_ROOM_BADGE_POSITION;
+  // This runs once per visible KikiLink character and frame. Resolve the two scalars in place
+  // instead of allocating a temporary sanitized-position object on the hot canvas path.
+  const normalizedX = clamp(
+    position && Number.isFinite(position.x) ? position.x : DEFAULT_ROOM_BADGE_POSITION.x,
+    0,
+    1,
+  );
+  const normalizedY = clamp(
+    position && Number.isFinite(position.y) ? position.y : DEFAULT_ROOM_BADGE_POSITION.y,
+    0,
+    1,
+  );
   const zoom = finitePositive(frame.zoom, 1);
   return {
-    left: finiteNumber(frame.x) + normalized.x * CHARACTER_WIDTH * zoom,
-    top: finiteNumber(frame.y) + normalized.y * CHARACTER_HEIGHT * zoom,
+    left: finiteNumber(frame.x) + normalizedX * CHARACTER_WIDTH * zoom,
+    top: finiteNumber(frame.y) + normalizedY * CHARACTER_HEIGHT * zoom,
     size: BADGE_SIZE * zoom,
   };
 }
@@ -120,11 +131,19 @@ export class RoomBlossomBadge {
     if (!character || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) return;
     const own = character.MemberNumber === this.#adapter.getOwnMemberNumber();
     if (own) {
-      this.#ownFrame = { x, y, zoom };
+      if (this.#ownFrame) {
+        this.#ownFrame.x = x;
+        this.#ownFrame.y = y;
+        this.#ownFrame.zoom = zoom;
+      } else {
+        this.#ownFrame = { x, y, zoom };
+      }
       if (this.#config.enabled && this.#iconsAreVisible()) {
         this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame));
       }
-      this.#syncOwnElement();
+      // The DOM copy exists only for an explicitly armed placement. Avoid writing hidden/display
+      // on every normal room frame when all drawing is already native canvas work.
+      if (this.#placementActive) this.#syncOwnElement();
       return;
     }
     if (!this.#config.enabled || !this.#iconsAreVisible()) return;
@@ -603,16 +622,6 @@ function visibleCharacterFrame(memberNumber: number): CharacterCanvasFrame | und
     return undefined;
   }
   return frame;
-}
-
-function sanitizePosition(
-  position: NormalizedRoomBadgePosition | null,
-): NormalizedRoomBadgePosition | null {
-  if (!position) return null;
-  return {
-    x: clamp(Number.isFinite(position.x) ? position.x : DEFAULT_ROOM_BADGE_POSITION.x, 0, 1),
-    y: clamp(Number.isFinite(position.y) ? position.y : DEFAULT_ROOM_BADGE_POSITION.y, 0, 1),
-  };
 }
 
 function finiteNumber(value: number): number {

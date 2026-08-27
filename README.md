@@ -11,12 +11,14 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.22.11` runs all Bondage Club and ModSDK integration in the page realm without reading
+Version `0.22.12` runs all Bondage Club and ModSDK integration in the page realm without reading
 `unsafeWindow`. Only structured upload fields cross into the DOM-only userscript sandbox for the narrowly
 granted Catbox/Litterbox request. The Blossom joins the same BC-native status-icon boundary as Echo
-and WCE exactly once and uses a dedicated slot after Echo; it never wraps BCX's outer overlay or
-polls the character draw loop during normal play. If BC is still decoding the SVG, a cached vector
-copy renders the Blossom immediately in the same canvas frame.
+and WCE exactly once and sits directly below Echo's clothing icon, clear of the chat edge. It is
+shown only for the authenticated character and protocol-confirmed KikiLink peers, independently of
+optional Presence profile sharing. KikiLink never wraps BCX's outer overlay or polls the character
+draw loop during normal play. If BC is still decoding the SVG, a cached vector copy renders the
+Blossom immediately in the same canvas frame.
 The running version remains visible as tiny translucent digits in the
 lower-left corner.
 

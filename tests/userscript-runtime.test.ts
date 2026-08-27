@@ -201,8 +201,8 @@ describe("published userscript runtime", () => {
     expect(calls).toEqual(["echo", "afc", "native"]);
     expect(pageWindow.DrawImageResize).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
-      560,
-      5,
+      520,
+      45,
       35,
       35,
     );
@@ -521,23 +521,23 @@ describe("published userscript runtime", () => {
       priority: 10,
     });
     expect(pageWindow.KikiLink).toBe(api);
-    expect(api.getVersion()).toBe("0.22.11");
-    expect(version?.textContent).toBe("0.22.11");
+    expect(api.getVersion()).toBe("0.22.12");
+    expect(version?.textContent).toBe("0.22.12");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
     expect(blossom?.style.display).toBe("none");
     expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
-      560,
-      5,
+      520,
+      45,
       35,
       35,
     );
     expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
-      1060,
-      5,
+      1020,
+      45,
       35,
       35,
     );

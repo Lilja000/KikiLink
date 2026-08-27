@@ -139,8 +139,6 @@ export class BCAdapter {
   #beepLogTimer: ReturnType<typeof setInterval> | undefined;
   #compatibilityHookRetryTimer: ReturnType<typeof setInterval> | undefined;
   readonly #characterOverlayHookNames = new Set<string>();
-  readonly #overlayRenderSignatures = new Set<string>();
-  #overlayRenderResetQueued = false;
   #beepLogCursor = 0;
   #seenIncomingPayloads = new WeakSet<object>();
   #seenRoomProtocolPayloads = new WeakSet<object>();
@@ -221,8 +219,6 @@ export class BCAdapter {
     this.#installedActivityHooks.clear();
     this.#installedOutgoingHooks.clear();
     this.#characterOverlayHookNames.clear();
-    this.#overlayRenderSignatures.clear();
-    this.#overlayRenderResetQueued = false;
   }
 
   isReady(): boolean {
@@ -1085,17 +1081,10 @@ export class BCAdapter {
     characterY: number,
     zoom: number,
   ): void {
-    const signature = `${character?.MemberNumber ?? "?"}:${characterX}:${characterY}:${zoom}`;
-    if (this.#overlayRenderSignatures.has(signature)) return;
-    this.#overlayRenderSignatures.add(signature);
-    if (!this.#overlayRenderResetQueued) {
-      this.#overlayRenderResetQueued = true;
-      queueMicrotask(() => {
-        this.#overlayRenderSignatures.clear();
-        this.#overlayRenderResetQueued = false;
-      });
-    }
-    for (const renderer of [...this.#characterOverlayRenderers]) {
+    // KikiLink owns exactly one status-icon hook. Render each native invocation directly: a
+    // per-microtask signature cache both allocated strings in the frame loop and could suppress a
+    // legitimate second canvas pass after Bondage Club cleared or replaced the room canvas.
+    for (const renderer of this.#characterOverlayRenderers) {
       try {
         renderer(character, characterX, characterY, zoom);
       } catch (error) {
