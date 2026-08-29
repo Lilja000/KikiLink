@@ -9,6 +9,20 @@ export interface KikiLinkNewsRelease {
 /** A compact, curated changelog for the in-addon News page. */
 export const KIKILINK_NEWS: readonly KikiLinkNewsRelease[] = [
   {
+    version: "0.25.0",
+    date: "2026-08-29",
+    title: "Group clarity and expressive profiles",
+    summary: "Group chats are easier to follow, while profile banners and decorations gain careful privacy controls.",
+    highlights: [
+      "Find groups in their own prominent searchable section, with aggregate unread, avatar stacks, clickable participants and message authors, and incremental history loading.",
+      "Reach non-friend group members across rooms through a bounded one-hop creator relay when a direct BC route is unavailable; relay remains online-only, rate-bounded, best-effort, and unconfirmed.",
+      "Use creator-supplied display names without weakening identity checks: authenticated MemberNumbers remain authoritative.",
+      "Upload a privacy-prepared 1200×400 WebP profile banner to public Catbox storage, then view remote banners under Ask first, Always show, or Links only.",
+      "Choose a strict HEX profile outline plus Golden laurel, Crimson thorns, Moonlit orbit, or Silk ribbons, with corrected status-dot layering and clearly clickable avatars.",
+      "Keep expanded profile details bounded and on demand under settings schema 25, without changing the proven Blossom hook.",
+    ],
+  },
+  {
     version: "0.24.0",
     date: "2026-08-29",
     title: "Group chats and addon profiles",

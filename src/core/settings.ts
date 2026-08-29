@@ -19,7 +19,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 24,
+  schemaVersion: 25,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -66,8 +66,10 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     status: "online",
     statusMessage: "",
     avatarUrl: "",
+    bannerUrl: "",
     avatarFrame: "none",
     profileStyle: "classic",
+    profileOutlineColor: "",
     autoIdleMinutes: 10,
     afkAutoReply: {
       enabled: false,
@@ -220,7 +222,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 24,
+    schemaVersion: 25,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -299,16 +301,22 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? cleanBoundedText(linkPresence.statusMessage, 80)
           : DEFAULT_SETTINGS.linkPresence.statusMessage,
       avatarUrl: sanitizeAvatarUrl(linkPresence.avatarUrl),
+      bannerUrl: sanitizeAvatarUrl(linkPresence.bannerUrl),
       avatarFrame:
         linkPresence.avatarFrame === "blossom" ||
         linkPresence.avatarFrame === "rose" ||
-        linkPresence.avatarFrame === "starlight"
+        linkPresence.avatarFrame === "starlight" ||
+        linkPresence.avatarFrame === "laurel" ||
+        linkPresence.avatarFrame === "thorn" ||
+        linkPresence.avatarFrame === "moon" ||
+        linkPresence.avatarFrame === "ribbon"
           ? linkPresence.avatarFrame
           : DEFAULT_SETTINGS.linkPresence.avatarFrame,
       profileStyle:
         linkPresence.profileStyle === "garden" || linkPresence.profileStyle === "midnight"
           ? linkPresence.profileStyle
           : DEFAULT_SETTINGS.linkPresence.profileStyle,
+      profileOutlineColor: sanitizeOptionalColor(linkPresence.profileOutlineColor),
       autoIdleMinutes: integerInRange(
         linkPresence.autoIdleMinutes,
         0,
@@ -568,9 +576,21 @@ function sanitizeAfkAutoReply(
 }
 
 function sanitizeAvatarUrl(value: unknown): string {
-  if (typeof value !== "string" || value.trim().length > 500) return "";
-  const normalized = normalizeImageUrl(value);
-  return normalized && normalized.length <= 500 ? normalized : "";
+  if (typeof value !== "string") return "";
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 500) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return "";
+  }
+  const normalized = normalizeImageUrl(candidate);
+  return normalized && normalized === parsed.href && normalized.length <= 500 ? normalized : "";
+}
+
+function sanitizeOptionalColor(value: unknown): string {
+  return validColor(value) ? value.toLowerCase() : "";
 }
 
 function sanitizeRoomBadge(

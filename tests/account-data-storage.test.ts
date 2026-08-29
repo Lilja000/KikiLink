@@ -134,6 +134,8 @@ describe("BC account-scoped KikiLink storage", () => {
     settings.update((draft) => {
       draft.ui.accent = "#123456";
       draft.linkPresence.avatarUrl = "https://example.com/kiki.png";
+      draft.linkPresence.bannerUrl = "https://files.catbox.moe/kiki-banner.webp";
+      draft.linkPresence.profileOutlineColor = "#a14fd6";
       draft.linkActivities.customActivities.push({
         id: "elbow-touch",
         name: "Elbow touch",
@@ -171,6 +173,10 @@ describe("BC account-scoped KikiLink storage", () => {
     const mobileSettings = new SettingsStore(mobile).get();
     expect(mobileSettings.ui.accent).toBe("#123456");
     expect(mobileSettings.linkPresence.avatarUrl).toBe("https://example.com/kiki.png");
+    expect(mobileSettings.linkPresence.bannerUrl).toBe(
+      "https://files.catbox.moe/kiki-banner.webp",
+    );
+    expect(mobileSettings.linkPresence.profileOutlineColor).toBe("#a14fd6");
     expect(mobileSettings.linkActivities.customActivities).toMatchObject([
       { id: "elbow-touch", targetGroup: "ItemArms", arousal: 4 },
     ]);

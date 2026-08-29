@@ -17,6 +17,12 @@ export const GROUP_INVITE_RATE_REFILL_MS = 15_000;
 export const GROUP_MESSAGE_RATE_BURST = 60;
 export const GROUP_MESSAGE_RATE_REFILL_MS = 250;
 export const GROUP_PERSISTENCE_DELAY_MS = 300;
+/** Prevents a steady stream of drafts/messages from postponing durable state forever. */
+export const GROUP_PERSISTENCE_MAX_WAIT_MS = 1_800;
+export const GROUP_RELAY_QUEUE_CAPACITY = 60;
+export const GROUP_RELAY_INTERVAL_MS = 210;
+export const GROUP_RELAY_TTL_MS = 15_000;
+export const GROUP_MEMBER_NAME_MAX_CHARS = 40;
 
 const GROUP_STORAGE_VERSION = 1;
 const GROUP_MAX_TOTAL_MESSAGES = 3_000;
@@ -25,6 +31,10 @@ const GROUP_MAX_REPLAY_IDS_PER_GROUP = 1_000;
 const GROUP_MAX_REPLAY_IDS_TOTAL = 3_000;
 const GROUP_MAX_RATE_SENDERS = 128;
 const GROUP_RATE_STATE_TTL_MS = 10 * 60_000;
+const GROUP_ORIGIN_RATE_BURST = 12;
+const GROUP_ORIGIN_RATE_REFILL_MS = 500;
+const GROUP_AGGREGATE_RATE_BURST = 20;
+const GROUP_AGGREGATE_RATE_REFILL_MS = 250;
 const GROUP_INVITE_REPAIR_INTERVAL_MS = 60_000;
 const GROUP_ID_MAX_CHARS = 64;
 const MESSAGE_ID_MAX_CHARS = 64;
@@ -39,7 +49,7 @@ const DISALLOWED_CONTROL_PATTERN_GLOBAL = /[\u0000-\u0008\u000b\u000c\u000e-\u00
  * JSON quotes, slashes, tabs, and newlines can expand to two characters. Unpaired UTF-16
  * surrogates are rejected, so a factor of two is the exact worst case for accepted content.
  */
-const WORST_MESSAGE_ENVELOPE_CHARS = JSON.stringify({
+const WORST_DIRECT_MESSAGE_ENVELOPE_CHARS = JSON.stringify({
   t: "gm",
   v: 1,
   g: "g".repeat(GROUP_ID_MAX_CHARS),
@@ -48,8 +58,23 @@ const WORST_MESSAGE_ENVELOPE_CHARS = JSON.stringify({
   u: Number.MAX_SAFE_INTEGER,
 }).length;
 
+const WORST_RELAY_MESSAGE_ENVELOPE_CHARS = JSON.stringify({
+  t: "gr",
+  v: 1,
+  g: "g".repeat(GROUP_ID_MAX_CHARS),
+  o: Number.MAX_SAFE_INTEGER,
+  i: "i".repeat(MESSAGE_ID_MAX_CHARS),
+  c: "",
+  u: Number.MAX_SAFE_INTEGER,
+}).length;
+
+/** Old direct v1 packets remain readable even though newly authored messages must also fit `gr`. */
+const GROUP_LEGACY_DIRECT_MESSAGE_MAX_CONTENT = Math.floor(
+  (GROUP_PACKET_MAX_CHARS - WORST_DIRECT_MESSAGE_ENVELOPE_CHARS) / 2,
+);
+
 export const GROUP_MESSAGE_MAX_CONTENT = Math.floor(
-  (GROUP_PACKET_MAX_CHARS - WORST_MESSAGE_ENVELOPE_CHARS) / 2,
+  (GROUP_PACKET_MAX_CHARS - WORST_RELAY_MESSAGE_ENVELOPE_CHARS) / 2,
 );
 export const GROUP_DRAFT_MAX_CHARS = GROUP_MESSAGE_MAX_CONTENT;
 
@@ -122,6 +147,12 @@ export interface GroupSendResult {
   persisted: boolean;
   handedOffTo: number[];
   failed: GroupDeliveryFailure[];
+  /** Creator that was handed the authored packet for one-hop delivery to `relayTargets`. */
+  relayViaCreator?: number;
+  /** Remote members covered by the creator relay path. Delivery remains unconfirmed. */
+  relayTargets?: number[];
+  /** Members with neither a successful direct handoff nor a successful creator-relay handoff. */
+  unreachable?: number[];
 }
 
 export type GroupChatUpdate =
@@ -156,7 +187,31 @@ export interface GroupWireMessagePacket {
   u: number;
 }
 
-export type GroupChatPacket = GroupInvitePacket | GroupWireMessagePacket;
+export interface GroupRelayMessagePacket {
+  t: "gr";
+  v: 1;
+  g: string;
+  /** Original, authenticated-at-the-creator sender. Display identity only at recipients. */
+  o: number;
+  i: string;
+  c: string;
+  u: number;
+}
+
+export interface GroupMemberNamesPacket {
+  t: "gn";
+  v: 1;
+  g: string;
+  /** Canonical `[MemberNumber, display name]` tuples for the immutable membership. */
+  d: Array<[number, string]>;
+  u: number;
+}
+
+export type GroupChatPacket =
+  | GroupInvitePacket
+  | GroupWireMessagePacket
+  | GroupRelayMessagePacket
+  | GroupMemberNamesPacket;
 
 interface StoredGroupChatState {
   version: 1;
@@ -179,6 +234,20 @@ interface InboundRateState {
   messages: InboundRateBucket;
 }
 
+interface GroupInboundRateState {
+  lastSeenAt: number;
+  aggregate: InboundRateBucket;
+  origins: Map<number, InboundRateBucket>;
+}
+
+interface RelayQueueItem {
+  groupId: string;
+  originNumber: number;
+  targetNumber: number;
+  payload: string;
+  expiresAt: number;
+}
+
 /**
  * Addon-only group conversations delivered as one authenticated BC packet per remote member.
  * Membership is immutable in protocol v1, which keeps every participant's authorization view
@@ -190,6 +259,8 @@ export class GroupChatService {
   readonly #tombstones = new Map<string, number>();
   readonly #messageTombstones = new Map<string, Map<string, number>>();
   readonly #inboundRates = new Map<number, InboundRateState>();
+  readonly #groupInboundRates = new Map<string, GroupInboundRateState>();
+  readonly #relayQueue: RelayQueueItem[] = [];
   readonly #lastInviteRepairAt = new Map<string, number>();
   readonly #listeners = new Set<GroupChatListener>();
   readonly #mutationQueues = new Map<string, Promise<unknown>>();
@@ -199,6 +270,8 @@ export class GroupChatService {
   readonly #accountMemberNumber: number;
   #accountInvalidated = false;
   #persistenceTimer: ReturnType<typeof setTimeout> | undefined;
+  #persistenceMaxWaitTimer: ReturnType<typeof setTimeout> | undefined;
+  #relayTimer: ReturnType<typeof setTimeout> | undefined;
   #persistenceDirty = false;
   #persistenceDegraded = false;
   #persistenceWriteBlocked = false;
@@ -282,7 +355,11 @@ export class GroupChatService {
       const members = canonicalMembers([ownMemberNumber, ...selectedMemberNumbers]);
       assertMemberCount(members);
       for (const memberNumber of members) {
-        if (memberNumber !== ownMemberNumber && this.#isBlocked(memberNumber)) {
+        if (memberNumber === ownMemberNumber) continue;
+        if (!this.#isKnownFriend(memberNumber)) {
+          throw new Error(`Member ${memberNumber} must be a known BC friend`);
+        }
+        if (this.#isBlocked(memberNumber, true)) {
           throw new Error(`Member ${memberNumber} is blocked or ghosted`);
         }
       }
@@ -321,7 +398,8 @@ export class GroupChatService {
       this.#messages.set(groupId, []);
       this.#schedulePersistence();
       this.#notify({ kind: "group-added", groupId, group: cloneGroup(group), incoming: false });
-      const delivery = this.#multicast(group, payload);
+      const delivery = this.#multicastDirect(group, payload);
+      this.#sendMemberNames(group, delivery.handedOffTo);
       return { group: cloneGroup(group), ...delivery };
     });
   }
@@ -343,6 +421,8 @@ export class GroupChatService {
     return this.#enqueue(packet.g, () => {
       if (!this.#isBoundAccountCurrent()) return false;
       if (packet.t === "gi") return this.#receiveInvite(event.senderNumber, packet);
+      if (packet.t === "gn") return this.#receiveMemberNames(event.senderNumber, packet);
+      if (packet.t === "gr") return this.#receiveRelay(event.senderNumber, packet, activeGroupId);
       return this.#receiveMessage(event.senderNumber, packet, activeGroupId);
     });
   }
@@ -383,7 +463,7 @@ export class GroupChatService {
         u: sentAt,
       });
       this.#repairInvitesBeforeMessage(group, ownMemberNumber, sentAt);
-      const delivery = this.#multicast(group, payload);
+      const delivery = this.#routeAuthoredMessage(group, payload);
       const persisted = delivery.handedOffTo.length > 0;
       if (persisted) {
         this.#appendMessage(group, message);
@@ -446,10 +526,13 @@ export class GroupChatService {
       if (!this.#groups.delete(groupId)) return false;
       this.#messages.delete(groupId);
       this.#messageTombstones.delete(groupId);
+      this.#groupInboundRates.delete(groupId);
+      this.#removeQueuedRelaysForGroup(groupId);
       this.#lastInviteRepairAt.delete(groupId);
       this.#tombstones.set(groupId, safeNow(this.#now));
       this.#trimTombstones();
       this.#markPersistenceDirty();
+      this.#clearPersistenceTimers();
       this.#flushPersistenceNow();
       this.#notify({ kind: "group-removed", groupId });
       return true;
@@ -465,8 +548,10 @@ export class GroupChatService {
     this.#tombstones.clear();
     this.#messageTombstones.clear();
     this.#inboundRates.clear();
+    this.#groupInboundRates.clear();
+    this.#clearRelayQueue();
     this.#lastInviteRepairAt.clear();
-    this.#clearPersistenceTimer();
+    this.#clearPersistenceTimers();
     this.#persistenceDirty = true;
     // Clear is the one explicit operation allowed to replace storage that could not be parsed or
     // read at startup. A failed clear stays dirty so a later flush retries the validated empty state.
@@ -497,6 +582,7 @@ export class GroupChatService {
     }
     if (removed > 0) {
       this.#markPersistenceDirty();
+      this.#clearPersistenceTimers();
       this.#flushPersistenceNow();
     }
     return removed;
@@ -504,15 +590,17 @@ export class GroupChatService {
 
   /** Flushes every mutation that reached the service before this call. */
   async flush(): Promise<GroupPersistenceState> {
-    this.#clearPersistenceTimer();
+    this.#clearPersistenceTimers();
     await this.#settleMutations();
+    // A mutation already queued when flush started can schedule timers while it settles.
+    this.#clearPersistenceTimers();
     this.#flushPersistenceNow();
     return this.getPersistenceState();
   }
 
   /** Synchronous best effort for the browser pagehide boundary. */
   flushNow(): GroupPersistenceState {
-    this.#clearPersistenceTimer();
+    this.#clearPersistenceTimers();
     this.#flushPersistenceNow();
     return this.getPersistenceState();
   }
@@ -520,7 +608,8 @@ export class GroupChatService {
   destroy(): Promise<GroupPersistenceState> {
     if (this.#destroyPromise) return this.#destroyPromise;
     this.#closing = true;
-    this.#clearPersistenceTimer();
+    this.#clearPersistenceTimers();
+    this.#clearRelayQueue();
     this.#destroyPromise = (async () => {
       await this.#settleMutations();
       this.#flushPersistenceNow();
@@ -535,6 +624,11 @@ export class GroupChatService {
     if (this.#tombstones.has(packet.g)) return false;
     if (!packet.m.includes(this.#ownMemberNumber()) || !packet.m.includes(senderNumber)) return false;
     if (!this.#canAutoAccept(senderNumber)) return false;
+    for (const memberNumber of packet.m) {
+      if (memberNumber !== this.#ownMemberNumber() && this.#isBlocked(memberNumber, true)) {
+        return false;
+      }
+    }
 
     const existing = this.#groups.get(packet.g);
     if (existing) {
@@ -569,6 +663,21 @@ export class GroupChatService {
     return true;
   }
 
+  #receiveMemberNames(senderNumber: number, packet: GroupMemberNamesPacket): boolean {
+    const group = this.#groups.get(packet.g);
+    if (!group || senderNumber !== group.creatorNumber) return false;
+    if (!sameMembers(group.memberNumbers, packet.d.map(([memberNumber]) => memberNumber))) {
+      return false;
+    }
+    const names = Object.fromEntries(packet.d.map(([memberNumber, name]) => [memberNumber, name]));
+    if (sameMemberNames(group.memberNames, names, group.memberNumbers)) return true;
+    group.memberNames = names;
+    group.updatedAt = safeNow(this.#now);
+    this.#schedulePersistence();
+    this.#notify({ kind: "group-updated", groupId: group.groupId, group: cloneGroup(group) });
+    return true;
+  }
+
   #receiveMessage(
     senderNumber: number,
     packet: GroupWireMessagePacket,
@@ -577,19 +686,65 @@ export class GroupChatService {
     const group = this.#groups.get(packet.g);
     if (!group || !group.memberNumbers.includes(senderNumber)) return false;
     if (this.#hasSeenMessageId(packet.g, packet.i)) return false;
+    if (!this.#consumeGroupMessageRate(packet.g, senderNumber)) return false;
 
     const receivedAt = safeNow(this.#now);
     const message: GroupMessage = {
       id: packet.i,
       groupId: packet.g,
       senderNumber,
-      senderName: this.#memberName(senderNumber),
+      senderName: this.#displayMemberName(group, senderNumber),
       direction: "incoming",
       content: packet.c,
       sentAt: clampRemoteTimestamp(packet.u, receivedAt),
       read: activeGroupId === packet.g,
     };
     group.memberNames = { ...group.memberNames, [senderNumber]: message.senderName };
+    this.#appendMessage(group, message);
+    this.#schedulePersistence();
+    this.#notify({ kind: "message", groupId: packet.g, message: structuredClone(message), incoming: true });
+    if (
+      this.#ownMemberNumber() === group.creatorNumber &&
+      senderNumber !== group.creatorNumber &&
+      packet.c.length <= GROUP_MESSAGE_MAX_CONTENT
+    ) {
+      this.#queueRelay(group, senderNumber, packet);
+    }
+    return true;
+  }
+
+  #receiveRelay(
+    senderNumber: number,
+    packet: GroupRelayMessagePacket,
+    activeGroupId: string | undefined,
+  ): boolean {
+    const group = this.#groups.get(packet.g);
+    const ownMemberNumber = this.#ownMemberNumber();
+    if (
+      !group ||
+      senderNumber !== group.creatorNumber ||
+      ownMemberNumber === group.creatorNumber ||
+      packet.o === group.creatorNumber ||
+      packet.o === ownMemberNumber ||
+      !group.memberNumbers.includes(packet.o) ||
+      this.#isBlocked(packet.o, true) ||
+      this.#hasSeenMessageId(packet.g, packet.i)
+    ) {
+      return false;
+    }
+    if (!this.#consumeGroupMessageRate(packet.g, packet.o)) return false;
+
+    const receivedAt = safeNow(this.#now);
+    const message: GroupMessage = {
+      id: packet.i,
+      groupId: packet.g,
+      senderNumber: packet.o,
+      senderName: this.#displayMemberName(group, packet.o),
+      direction: "incoming",
+      content: packet.c,
+      sentAt: clampRemoteTimestamp(packet.u, receivedAt),
+      read: activeGroupId === packet.g,
+    };
     this.#appendMessage(group, message);
     this.#schedulePersistence();
     this.#notify({ kind: "message", groupId: packet.g, message: structuredClone(message), incoming: true });
@@ -623,7 +778,7 @@ export class GroupChatService {
     group.updatedAt = safeNow(this.#now);
   }
 
-  #multicast(
+  #multicastDirect(
     group: GroupConversation,
     payload: string,
   ): Pick<GroupSendResult, "handedOffTo" | "failed"> {
@@ -632,8 +787,15 @@ export class GroupChatService {
     const failed: GroupDeliveryFailure[] = [];
     for (const memberNumber of group.memberNumbers) {
       if (memberNumber === ownMemberNumber) continue;
-      if (this.#isBlocked(memberNumber)) {
+      if (this.#isBlocked(memberNumber, true)) {
         failed.push({ memberNumber, message: "Member is blocked or ghosted" });
+        continue;
+      }
+      if (!this.#canDirectSend(memberNumber)) {
+        failed.push({
+          memberNumber,
+          message: "No same-room or known-friend route is available",
+        });
         continue;
       }
       try {
@@ -647,6 +809,234 @@ export class GroupChatService {
       }
     }
     return { handedOffTo, failed };
+  }
+
+  #routeAuthoredMessage(
+    group: GroupConversation,
+    payload: string,
+  ): Pick<
+    GroupSendResult,
+    "handedOffTo" | "failed" | "relayViaCreator" | "relayTargets" | "unreachable"
+  > {
+    const ownMemberNumber = this.#ownMemberNumber();
+    const handedOffTo: number[] = [];
+    const failed: GroupDeliveryFailure[] = [];
+    const blocked = new Set<number>();
+    for (const memberNumber of group.memberNumbers) {
+      if (memberNumber === ownMemberNumber) continue;
+      if (this.#isBlocked(memberNumber, true)) blocked.add(memberNumber);
+    }
+    const creatorRelayWouldBypassBlock =
+      ownMemberNumber !== group.creatorNumber &&
+      [...blocked].some((memberNumber) => memberNumber !== group.creatorNumber);
+    for (const memberNumber of group.memberNumbers) {
+      if (memberNumber === ownMemberNumber) continue;
+      if (blocked.has(memberNumber)) {
+        failed.push({ memberNumber, message: "Member is blocked or ghosted" });
+        continue;
+      }
+      if (memberNumber === group.creatorNumber && creatorRelayWouldBypassBlock) {
+        failed.push({
+          memberNumber,
+          message: "Creator relay is disabled while another group member is blocked or ghosted",
+        });
+        continue;
+      }
+      if (!this.#canDirectSend(memberNumber)) continue;
+      try {
+        this.transport.sendKikiLinkProtocol(memberNumber, payload);
+        handedOffTo.push(memberNumber);
+      } catch (error) {
+        failed.push({
+          memberNumber,
+          message: error instanceof Error ? error.message : "KikiLink packet could not be sent",
+        });
+      }
+    }
+
+    const handedOff = new Set(handedOffTo);
+    const canUseCreatorRelay =
+      ownMemberNumber !== group.creatorNumber && handedOff.has(group.creatorNumber);
+    const relayTargets = canUseCreatorRelay
+      ? group.memberNumbers.filter((memberNumber) =>
+          memberNumber !== ownMemberNumber &&
+          memberNumber !== group.creatorNumber &&
+          !blocked.has(memberNumber) &&
+          !handedOff.has(memberNumber),
+        )
+      : [];
+    const reachable = new Set([...handedOffTo, ...relayTargets]);
+    const unreachable = group.memberNumbers.filter((memberNumber) =>
+      memberNumber !== ownMemberNumber && !reachable.has(memberNumber),
+    );
+    for (const memberNumber of unreachable) {
+      if (failed.some((failure) => failure.memberNumber === memberNumber)) continue;
+      failed.push({
+        memberNumber,
+        message: memberNumber === group.creatorNumber
+          ? "The group creator is unavailable for relay"
+          : "No direct route is available and the group creator could not relay",
+      });
+    }
+    return {
+      handedOffTo,
+      failed,
+      ...(relayTargets.length > 0 ? { relayViaCreator: group.creatorNumber, relayTargets } : {}),
+      unreachable,
+    };
+  }
+
+  #canDirectSend(memberNumber: number): boolean {
+    try {
+      if (this.transport.isMemberInCurrentRoom?.(memberNumber) === true) return true;
+    } catch {
+      // Continue with the friend route; guarded room state is not proof that it is unavailable.
+    }
+    try {
+      return this.transport.isKnownFriend?.(memberNumber) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  #sendMemberNames(group: GroupConversation, memberNumbers: readonly number[]): void {
+    if (group.creatorNumber !== this.#ownMemberNumber() || memberNumbers.length === 0) return;
+    let payload: string;
+    try {
+      payload = serializeGroupChatPacket({
+        t: "gn",
+        v: 1,
+        g: group.groupId,
+        d: group.memberNumbers.map((memberNumber) => [
+          memberNumber,
+          normalizeWireMemberName(group.memberNames[memberNumber], memberNumber),
+        ]),
+        u: group.createdAt,
+      });
+    } catch {
+      return;
+    }
+    for (const memberNumber of memberNumbers) {
+      try {
+        this.transport.sendKikiLinkProtocol(memberNumber, payload);
+      } catch {
+        // Names are display-only. Invitation delivery remains the authoritative reported operation.
+      }
+    }
+  }
+
+  #queueRelay(
+    group: GroupConversation,
+    originNumber: number,
+    packet: GroupWireMessagePacket,
+  ): void {
+    if (
+      this.#closing ||
+      this.#destroyed ||
+      this.#ownMemberNumber() !== group.creatorNumber ||
+      originNumber === group.creatorNumber
+    ) {
+      return;
+    }
+    let payload: string;
+    try {
+      payload = serializeGroupChatPacket({
+        t: "gr",
+        v: 1,
+        g: packet.g,
+        o: originNumber,
+        i: packet.i,
+        c: packet.c,
+        u: packet.u,
+      });
+    } catch {
+      return;
+    }
+    const now = safeNow(this.#now);
+    for (const targetNumber of group.memberNumbers) {
+      if (
+        this.#relayQueue.length >= GROUP_RELAY_QUEUE_CAPACITY ||
+        targetNumber === group.creatorNumber ||
+        targetNumber === originNumber ||
+        this.#isBlocked(targetNumber, true) ||
+        !this.#canDirectSend(targetNumber)
+      ) {
+        continue;
+      }
+      this.#relayQueue.push({
+        groupId: group.groupId,
+        originNumber,
+        targetNumber,
+        payload,
+        expiresAt: now + GROUP_RELAY_TTL_MS,
+      });
+    }
+    this.#scheduleRelayDrain();
+  }
+
+  #scheduleRelayDrain(): void {
+    if (
+      this.#closing ||
+      this.#destroyed ||
+      this.#relayTimer !== undefined ||
+      this.#relayQueue.length === 0
+    ) {
+      return;
+    }
+    this.#relayTimer = setTimeout(() => {
+      this.#relayTimer = undefined;
+      this.#drainRelayQueue();
+    }, GROUP_RELAY_INTERVAL_MS);
+  }
+
+  #drainRelayQueue(): void {
+    if (this.#closing || this.#destroyed || !this.#isBoundAccountCurrent()) {
+      this.#clearRelayQueue();
+      return;
+    }
+    const now = safeNow(this.#now);
+    while (this.#relayQueue.length > 0) {
+      const item = this.#relayQueue.shift();
+      if (!item || item.expiresAt <= now) continue;
+      const group = this.#groups.get(item.groupId);
+      if (
+        !group ||
+        group.creatorNumber !== this.#ownMemberNumber() ||
+        !group.memberNumbers.includes(item.originNumber) ||
+        !group.memberNumbers.includes(item.targetNumber) ||
+        item.originNumber === group.creatorNumber ||
+        item.targetNumber === group.creatorNumber ||
+        item.targetNumber === item.originNumber ||
+        this.#isBlocked(item.originNumber, true) ||
+        this.#isBlocked(item.targetNumber, true) ||
+        !this.#canDirectSend(item.targetNumber)
+      ) {
+        continue;
+      }
+      try {
+        this.transport.sendKikiLinkProtocol(item.targetNumber, item.payload);
+      } catch {
+        // The queue is deliberately best-effort and never retries beyond its short lifetime.
+      }
+      break;
+    }
+    this.#scheduleRelayDrain();
+  }
+
+  #removeQueuedRelaysForGroup(groupId: string): void {
+    for (let index = this.#relayQueue.length - 1; index >= 0; index -= 1) {
+      if (this.#relayQueue[index]?.groupId === groupId) this.#relayQueue.splice(index, 1);
+    }
+    if (this.#relayQueue.length === 0 && this.#relayTimer !== undefined) {
+      clearTimeout(this.#relayTimer);
+      this.#relayTimer = undefined;
+    }
+  }
+
+  #clearRelayQueue(): void {
+    if (this.#relayTimer !== undefined) clearTimeout(this.#relayTimer);
+    this.#relayTimer = undefined;
+    this.#relayQueue.splice(0);
   }
 
   #repairInvitesBeforeMessage(
@@ -671,8 +1061,11 @@ export class GroupChatService {
       n: group.title,
       u: group.createdAt,
     });
-    const repair = this.#multicast(group, payload);
-    if (repair.handedOffTo.length > 0) this.#lastInviteRepairAt.set(group.groupId, now);
+    const repair = this.#multicastDirect(group, payload);
+    if (repair.handedOffTo.length > 0) {
+      this.#sendMemberNames(group, repair.handedOffTo);
+      this.#lastInviteRepairAt.set(group.groupId, now);
+    }
   }
 
   #consumeInboundRate(senderNumber: number, packetType: GroupChatPacket["t"]): boolean {
@@ -689,7 +1082,7 @@ export class GroupChatService {
       this.#inboundRates.set(senderNumber, state);
     }
     state.lastSeenAt = Math.max(state.lastSeenAt, now);
-    return packetType === "gi"
+    return packetType === "gi" || packetType === "gn"
       ? consumeRateToken(
           state.invites,
           GROUP_INVITE_RATE_BURST,
@@ -702,6 +1095,41 @@ export class GroupChatService {
           GROUP_MESSAGE_RATE_REFILL_MS,
           now,
         );
+  }
+
+  #consumeGroupMessageRate(groupId: string, originNumber: number): boolean {
+    const now = safeNow(this.#now);
+    for (const [candidateGroupId, state] of this.#groupInboundRates) {
+      if (now >= state.lastSeenAt && now - state.lastSeenAt > GROUP_RATE_STATE_TTL_MS) {
+        this.#groupInboundRates.delete(candidateGroupId);
+      }
+    }
+    let state = this.#groupInboundRates.get(groupId);
+    if (!state) {
+      state = {
+        lastSeenAt: now,
+        aggregate: { tokens: GROUP_AGGREGATE_RATE_BURST, refilledAt: now },
+        origins: new Map(),
+      };
+      this.#groupInboundRates.set(groupId, state);
+    }
+    state.lastSeenAt = Math.max(state.lastSeenAt, now);
+    let origin = state.origins.get(originNumber);
+    if (!origin) {
+      origin = { tokens: GROUP_ORIGIN_RATE_BURST, refilledAt: now };
+      state.origins.set(originNumber, origin);
+    }
+    refillRateBucket(
+      state.aggregate,
+      GROUP_AGGREGATE_RATE_BURST,
+      GROUP_AGGREGATE_RATE_REFILL_MS,
+      now,
+    );
+    refillRateBucket(origin, GROUP_ORIGIN_RATE_BURST, GROUP_ORIGIN_RATE_REFILL_MS, now);
+    if (state.aggregate.tokens < 1 || origin.tokens < 1) return false;
+    state.aggregate.tokens -= 1;
+    origin.tokens -= 1;
+    return true;
   }
 
   #pruneInboundRates(now: number): void {
@@ -762,17 +1190,24 @@ export class GroupChatService {
   }
 
   #canAutoAccept(senderNumber: number): boolean {
+    return this.#isKnownFriend(senderNumber);
+  }
+
+  #isKnownFriend(memberNumber: number): boolean {
     try {
-      return this.transport.isKnownFriend?.(senderNumber) === true;
+      return this.transport.isKnownFriend?.(memberNumber) === true;
     } catch {
       // A guarded cross-realm BC object must not bypass the explicit friend trust boundary.
       return false;
     }
   }
 
-  #isBlocked(memberNumber: number, failClosed = false): boolean {
+  #isBlocked(memberNumber: number, failClosed = true): boolean {
+    const readRelationships = this.transport.getPlayerRelationships;
+    if (typeof readRelationships !== "function") return failClosed;
     try {
-      const relationships = this.transport.getPlayerRelationships?.(memberNumber) ?? [];
+      const relationships = readRelationships.call(this.transport, memberNumber);
+      if (!Array.isArray(relationships)) return failClosed;
       return relationships.some((relationship) =>
         relationship === "blacklist" ||
         relationship === "blacklisted" ||
@@ -796,6 +1231,13 @@ export class GroupChatService {
     } catch {
       return `Member ${memberNumber}`;
     }
+  }
+
+  #displayMemberName(group: GroupConversation, memberNumber: number): string {
+    const fallback = `Member ${memberNumber}`;
+    const locallyResolved = this.#memberName(memberNumber);
+    if (locallyResolved !== fallback) return locallyResolved;
+    return normalizeMemberName(group.memberNames[memberNumber], memberNumber);
   }
 
   #ownMemberNumber(): number {
@@ -889,20 +1331,33 @@ export class GroupChatService {
 
   #schedulePersistence(): void {
     this.#markPersistenceDirty();
-    if (this.#closing || this.#destroyed || this.#persistenceTimer !== undefined) return;
+    if (this.#closing || this.#destroyed) return;
+    if (this.#persistenceTimer !== undefined) clearTimeout(this.#persistenceTimer);
     this.#persistenceTimer = setTimeout(() => {
-      this.#persistenceTimer = undefined;
-      this.#flushPersistenceNow();
+      this.#flushScheduledPersistence();
     }, this.#persistenceDelayMs);
+    if (this.#persistenceMaxWaitTimer !== undefined) return;
+    this.#persistenceMaxWaitTimer = setTimeout(() => {
+      this.#flushScheduledPersistence();
+    }, GROUP_PERSISTENCE_MAX_WAIT_MS);
   }
 
   #markPersistenceDirty(): void {
     this.#persistenceDirty = true;
   }
 
-  #clearPersistenceTimer(): void {
+  #flushScheduledPersistence(): void {
+    this.#clearPersistenceTimers();
+    this.#flushPersistenceNow();
+  }
+
+  #clearPersistenceTimers(): void {
     if (this.#persistenceTimer !== undefined) clearTimeout(this.#persistenceTimer);
+    if (this.#persistenceMaxWaitTimer !== undefined) {
+      clearTimeout(this.#persistenceMaxWaitTimer);
+    }
     this.#persistenceTimer = undefined;
+    this.#persistenceMaxWaitTimer = undefined;
   }
 
   #flushPersistenceNow(): boolean {
@@ -1281,6 +1736,23 @@ export function parseGroupChatPacket(payload: string): GroupChatPacket | null {
     if (!validMessageId(value.i) || typeof value.c !== "string") return null;
     if (
       value.c.length < 1 ||
+      value.c.length > GROUP_LEGACY_DIRECT_MESSAGE_MAX_CONTENT ||
+      DISALLOWED_CONTROL_PATTERN.test(value.c) ||
+      hasUnpairedSurrogate(value.c)
+    ) {
+      return null;
+    }
+    const content = normalizeMessageContent(value.c);
+    if (!content || content.length > GROUP_LEGACY_DIRECT_MESSAGE_MAX_CONTENT) return null;
+    return { t: "gm", v: 1, g: value.g, i: value.i, c: content, u: value.u };
+  }
+  if (value.t === "gr") {
+    if (!hasExactKeys(value, ["t", "v", "g", "o", "i", "c", "u"])) return null;
+    if (
+      !validMemberNumber(value.o) ||
+      !validMessageId(value.i) ||
+      typeof value.c !== "string" ||
+      value.c.length < 1 ||
       value.c.length > GROUP_MESSAGE_MAX_CONTENT ||
       DISALLOWED_CONTROL_PATTERN.test(value.c) ||
       hasUnpairedSurrogate(value.c)
@@ -1289,7 +1761,21 @@ export function parseGroupChatPacket(payload: string): GroupChatPacket | null {
     }
     const content = normalizeMessageContent(value.c);
     if (!content || content.length > GROUP_MESSAGE_MAX_CONTENT) return null;
-    return { t: "gm", v: 1, g: value.g, i: value.i, c: content, u: value.u };
+    return {
+      t: "gr",
+      v: 1,
+      g: value.g,
+      o: value.o,
+      i: value.i,
+      c: content,
+      u: value.u,
+    };
+  }
+  if (value.t === "gn") {
+    if (!hasExactKeys(value, ["t", "v", "g", "d", "u"])) return null;
+    const memberNames = strictCanonicalMemberNames(value.d);
+    if (!memberNames) return null;
+    return { t: "gn", v: 1, g: value.g, d: memberNames, u: value.u };
   }
   return null;
 }
@@ -1359,7 +1845,7 @@ function sanitizeStoredMessage(
     return undefined;
   }
   const content = normalizeMessageContent(value.content);
-  if (!content || content.length > GROUP_MESSAGE_MAX_CONTENT) return undefined;
+  if (!content || content.length > GROUP_LEGACY_DIRECT_MESSAGE_MAX_CONTENT) return undefined;
   const direction: MessageDirection = value.senderNumber === ownMemberNumber ? "outgoing" : "incoming";
   return {
     id: value.id,
@@ -1406,6 +1892,40 @@ function sameMembers(left: readonly number[], right: readonly number[]): boolean
   return left.length === right.length && left.every((member, index) => member === right[index]);
 }
 
+function strictCanonicalMemberNames(value: unknown): Array<[number, string]> | undefined {
+  if (!Array.isArray(value) || value.length < GROUP_MIN_MEMBERS || value.length > GROUP_MAX_MEMBERS) {
+    return undefined;
+  }
+  const memberNames: Array<[number, string]> = [];
+  for (const candidate of value) {
+    if (!Array.isArray(candidate) || candidate.length !== 2) return undefined;
+    const [memberNumber, name] = candidate;
+    if (
+      !validMemberNumber(memberNumber) ||
+      typeof name !== "string" ||
+      name.length < 1 ||
+      name.length > GROUP_MEMBER_NAME_MAX_CHARS ||
+      DISALLOWED_CONTROL_PATTERN.test(name) ||
+      hasUnpairedSurrogate(name) ||
+      normalizeWireMemberName(name, memberNumber) !== name
+    ) {
+      return undefined;
+    }
+    const previous = memberNames.at(-1)?.[0];
+    if (previous !== undefined && previous >= memberNumber) return undefined;
+    memberNames.push([memberNumber, name]);
+  }
+  return memberNames;
+}
+
+function sameMemberNames(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+  memberNumbers: readonly number[],
+): boolean {
+  return memberNumbers.every((memberNumber) => left[memberNumber] === right[memberNumber]);
+}
+
 function normalizeTitle(value: unknown): string {
   if (typeof value !== "string" || hasUnpairedSurrogate(value)) return "";
   const normalized = value
@@ -1437,6 +1957,11 @@ function normalizeMemberName(value: unknown, memberNumber: number): string {
     .trim()
     .slice(0, 80);
   return name || `Member ${memberNumber}`;
+}
+
+function normalizeWireMemberName(value: unknown, memberNumber: number): string {
+  const name = normalizeMemberName(value, memberNumber);
+  return sliceCompleteUtf16(name, GROUP_MEMBER_NAME_MAX_CHARS);
 }
 
 function defaultGroupTitle(
@@ -1486,14 +2011,23 @@ function consumeRateToken(
   refillMs: number,
   now: number,
 ): boolean {
+  refillRateBucket(bucket, capacity, refillMs, now);
+  if (bucket.tokens < 1) return false;
+  bucket.tokens -= 1;
+  return true;
+}
+
+function refillRateBucket(
+  bucket: InboundRateBucket,
+  capacity: number,
+  refillMs: number,
+  now: number,
+): void {
   if (now >= bucket.refilledAt) {
     const elapsed = now - bucket.refilledAt;
     bucket.tokens = Math.min(capacity, bucket.tokens + elapsed / refillMs);
     bucket.refilledAt = now;
   }
-  if (bucket.tokens < 1) return false;
-  bucket.tokens -= 1;
-  return true;
 }
 
 function cloneGroup(group: GroupConversation): GroupConversation {

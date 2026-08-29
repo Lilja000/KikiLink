@@ -3,8 +3,9 @@
 KikiLink 0.11 introduced peer presence without a KikiLink account or remote database.
 KikiLink 0.12 added ephemeral typing state, and 0.20 added an optional direct avatar URL.
 KikiLink 0.24 extends the voluntary profile with an avatar frame, a profile-card style, and the
-remote addon's version. It deliberately keeps Bondage Club-observable facts separate from profile
-details a player chooses to share.
+remote addon's version. KikiLink 0.25 adds an on-demand profile banner and strict hexadecimal card
+outline without putting either field in room broadcasts. It deliberately keeps Bondage
+Club-observable facts separate from profile details a player chooses to share.
 
 ## Presence sources
 
@@ -29,9 +30,13 @@ last recorded room, and encounter history are never added to a presence packet.
 - Outside a shared room, opening a conversation may send one typed `KikiLink` account packet to that
   member. The standard client ignores this type, so it is not shown, logged as a normal Beep, or
   announced with a Beep sound.
-- Explicitly opening a compatible KikiLink profile asks once more for current voluntary fields,
-  including when capability was already known; a separate two-second forced-request cooldown prevents
-  repeated clicks from producing an unbounded packet burst.
+- Explicitly opening a compatible KikiLink profile sets `p: 1` on its targeted query. The peer may
+  answer with its ordinary presence plus one separate `pf` packet containing the current banner and
+  outline. Ordinary discovery never requests these heavier details. Profile-detail request and
+  response cooldowns are independent from ordinary discovery, so opening a profile immediately
+  after a roster query still works without permitting repeated clicks to create an unbounded burst.
+- A `pf` response echoes the request ID and is accepted only for the matching outstanding explicit
+  lookup. An exact-key empty `pf` response clears previously cached banner and outline values.
 - Requests are throttled per member, responses are rate-limited, remote state expires, and stale
   request/response bookkeeping is pruned.
 - Status changes may announce once to the current room. KikiLink never loops over the entire friend
@@ -39,31 +44,34 @@ last recorded room, and encounter history are never added to a presence packet.
 - Typing starts are point-to-point, throttled while input continues, stopped on pause, blur, send,
   conversation change, or close, and expire automatically if a stop packet is lost.
 
-Packets use a compact JSON envelope carried under the adapter's `KIKILINK/1 ` marker. Four packet
+Packets use a compact JSON envelope carried under the adapter's `KIKILINK/1 ` marker. Five packet
 shapes are recognized:
 
 | Type | Required fields | Optional fields | Purpose |
 | --- | --- | --- | --- |
-| `pq` | `t`, request `i` | broadcast hint `b` | Ask a compatible peer to identify itself and, if enabled, share presence. |
+| `pq` | `t`, request `i` | broadcast hint `b`, explicit profile-details request `p` | Ask a compatible peer to identify itself and, if enabled, share presence. |
 | `pc` | `t`, addon version `v` | group support `g` | Confirm KikiLink capability without sharing a profile. |
 | `ps` | `t`, status `s`, time `u`, version `v` | request `i`, note `m`, avatar `a`, frame `f`, style `c`, group support `g` | Share voluntary presence/profile state. |
+| `pf` | `t`, echoed request `i` | banner `h`, outline `o` | Return on-demand profile details to one explicit requester; omitted details deliberately clear stale values. |
 | `ty` | `t`, active flag `a` | none | Start or stop an ephemeral typing indicator. |
 
-The 0.24 decoration values are intentionally closed sets: `f` is `none`, `blossom`, `rose`, or
-`starlight`; `c` is `classic`, `garden`, or `midnight`. Unknown values are ignored rather than
-interpreted as markup or asset paths.
+The decoration values are intentionally closed sets: `f` is `none`, `blossom`, `rose`, `starlight`,
+`laurel`, `thorn`, `moon`, or `ribbon`; `c` is `classic`, `garden`, or `midnight`. Unknown values are
+ignored rather than interpreted as markup or asset paths. `o` is either omitted or exactly one
+`#RRGGBB` color; it can never contain CSS syntax.
 
-`g: 1` explicitly advertises group-chat protocol v1. A valid packet without `g` still confirms the
-addon for Blossom, direct chat, and profile discovery, but that older peer is not offered in the New
-group picker. The picker also requires a known BC friend, matching the recipient-side invitation
-trust boundary. This keeps group creation from silently selecting people or addon versions that will
-reject or cannot understand group invitations.
+`g: 1` advertises legacy group-chat protocol v1, while `g: 2` advertises the relay-capable 0.25
+protocol. Stored v1 groups remain recognizable, but creation of a new relay group requires every
+selected peer to have recently advertised `g: 2`. A valid packet without `g` still confirms the
+addon for Blossom, direct chat, and profile discovery without claiming group support.
 
-Every JSON payload is capped at 700 characters before it reaches the common KikiLink transport.
+Every JSON payload is capped at 700 UTF-8 bytes before it reaches the common KikiLink transport.
 For a local presence state, status, timestamp, and addon version take priority; if optional content
 would exceed the limit, the serializer drops avatar, status note, decoration, style, and request ID
-in that order until the packet fits. Remote packet text also removes control characters and Unicode
-directional controls, collapses whitespace, and applies its field limit before display.
+in that order until the packet fits. A `pf` packet accepts only the exact `t`, `i`, `h`, and `o`
+keys; its direct HTTPS banner is at most 500 characters, so a valid packet remains below the same
+ceiling. Remote packet text also removes control characters and Unicode directional controls,
+collapses whitespace, and applies its field limit before display.
 
 Packets cannot invoke UI actions, edit settings, access notes, or run arbitrary code. Malformed
 JSON, unsupported values, invalid member identity from the transport, and oversized payloads are
@@ -76,30 +84,35 @@ answers discovery with the small `pc` capability packet and occasionally refresh
 inside the current room. This is enough to confirm a compatible peer for the Blossom without
 revealing status notes, avatar URLs, frames, or card styles.
 
-The room Blossom renderer itself is unchanged in 0.24: it uses the single existing
+The room Blossom renderer itself remains unchanged since 0.24: it uses the single existing
 `ChatRoomDrawCharacterStatusIcons` ModSDK hook and never adds an outer character-overlay or
 character-loop hook.
 
 ## Privacy and accuracy
 
+- A Presence service instance is pinned to the positive authenticated MemberNumber available when it
+  is constructed. A confirmed account change permanently invalidates that instance and clears its
+  remote profile, capability, typing, request, timer, and listener state before any old-account packet
+  can cross the new account. A temporarily guarded or revoked Player wrapper fails silent without
+  changing the pin, so the same account can recover after a Firefox cross-realm transition.
 - Turning Presence off first publishes an Offline state without optional profile fields, then stops
-  publishing or replying with `ps` profile state. It also clears cached remote voluntary profile
-  fields immediately, keeping reciprocal profile privacy independent of cache timing. Capability-only
-  discovery remains active as described above.
+  publishing or replying with `ps` profile state. It never sends or accepts `pf` details while
+  disabled and clears cached remote voluntary profile fields immediately, keeping reciprocal profile
+  privacy independent of cache timing. Capability-only discovery remains active as described above.
 - `Appear Offline` changes KikiLink presence only. Bondage Club may still expose the player's native
   online state to friends.
-- Status notes are limited to 80 characters. Avatar URLs are limited to 500 characters, must pass
-  the same direct HTTPS image validation as chat previews, and are shared only with compatible peers
-  reached through the transports above.
-- Remote avatars load without credentials or referrer data. The loader refuses redirects and
+- Status notes are limited to 80 characters. Avatar and banner URLs are limited to 500 characters
+  and must pass the same direct HTTPS image validation as chat previews. Avatar state follows normal
+  presence exchange; a banner is sent only to the member who explicitly opened the profile.
+- Remote avatars and banners load without credentials or referrer data. The loader refuses redirects and
   local/private/reserved IP literals, then validates the HTTPS response URL, supported image MIME,
   and a 5 MiB limit before exposing only a local blob URL to the image element. It permits at most
   four active fetches and 32 active-plus-queued requests, applies a 15-second deadline across queueing
   and transfer, and cancels work when its last consumer closes or replaces the image. `Always show`
-  loads automatically; `Ask before loading` keeps initials until
-  the user reveals that exact member-and-normalized-URL pair for the session, and a changed URL asks
-  again; `Links only` never requests it. Frames and card styles contain no remote image URL and can
-  render around initials.
+  loads automatically; `Ask before loading` keeps initials or the built-in banner until the user
+  reveals that exact member-and-normalized-URL pair for the session, and a changed URL asks again;
+  `Links only` never requests it. Frames, card styles, and outline colors contain no remote image URL
+  and can render without loading remote pixels.
 - A displayed current room comes from Bondage Club's room or online-friend state, not from an
   arbitrary room name in the peer's profile packet.
 - The optional AFK response is an ordinary private Beep, not a presence packet. It is sent only while

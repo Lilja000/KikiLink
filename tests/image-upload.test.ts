@@ -5,8 +5,12 @@ import {
   CloudinaryImageUploader,
   detectLocalImageType,
   LitterboxImageUploader,
+  MAX_PROFILE_BANNER_BYTES,
   normalizeCloudinaryUploadConfig,
   normalizeLitterboxUploadConfig,
+  prepareProfileBanner,
+  PROFILE_BANNER_HEIGHT,
+  PROFILE_BANNER_WIDTH,
   uploadLocalRoomAudio,
   uploadMusicToCatbox,
   uploadPreparedImageToCatbox,
@@ -18,6 +22,8 @@ import { installUserscriptUploadHost } from "../src/userscript-upload-host";
 const TEST_UPLOAD_CAPABILITY = "a".repeat(64);
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   Reflect.deleteProperty(globalThis, "GM_xmlhttpRequest");
   Reflect.deleteProperty(globalThis, "__KIKILINK_UPLOAD_CAPABILITY__");
   document.getElementById("kikilink-upload-bridge-v1")?.remove();
@@ -49,6 +55,63 @@ describe("local image uploads", () => {
     await expect(validateLocalImageFile(disguisedText)).rejects.toThrow(
       "Use a real JPG, PNG, or WebP image",
     );
+  });
+
+  it("privacy-prepares a centered, exact 3:1 profile banner", async () => {
+    const preparedBlob = new Blob([bytes(1, 2, 3)], { type: "image/webp" });
+    const harness = installImagePreparationHarness(2_400, 1_200, [preparedBlob]);
+    const file = pngFile("private-banner-name.png");
+
+    await expect(prepareProfileBanner(file)).resolves.toEqual({
+      blob: preparedBlob,
+      width: PROFILE_BANNER_WIDTH,
+      height: PROFILE_BANNER_HEIGHT,
+      sourceBytes: file.size,
+    });
+
+    expect(harness.drawImage).toHaveBeenCalledWith(
+      harness.bitmap,
+      0,
+      200,
+      2_400,
+      800,
+      0,
+      0,
+      1_200,
+      400,
+    );
+    expect(harness.context.imageSmoothingEnabled).toBe(true);
+    expect(harness.context.imageSmoothingQuality).toBe("high");
+    expect(harness.toBlob).toHaveBeenCalledWith(expect.any(Function), "image/webp", 0.88);
+    expect(harness.close).toHaveBeenCalledOnce();
+  });
+
+  it("lowers WebP quality until a profile banner fits the 2 MiB limit", async () => {
+    const oversized = new Blob([new Uint8Array(MAX_PROFILE_BANNER_BYTES + 1)], {
+      type: "image/webp",
+    });
+    const compact = new Blob([bytes(1, 2, 3)], { type: "image/webp" });
+    const harness = installImagePreparationHarness(1_200, 400, [oversized, compact]);
+
+    const prepared = await prepareProfileBanner(pngFile());
+
+    expect(prepared.blob).toBe(compact);
+    expect(prepared.blob.size).toBeLessThanOrEqual(MAX_PROFILE_BANNER_BYTES);
+    expect(harness.toBlob.mock.calls.map((call) => call[2])).toEqual([0.88, 0.76]);
+    expect(harness.close).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when a profile banner cannot be encoded below 2 MiB", async () => {
+    const oversized = new Blob([new Uint8Array(MAX_PROFILE_BANNER_BYTES + 1)], {
+      type: "image/webp",
+    });
+    const harness = installImagePreparationHarness(1_200, 400, [oversized]);
+
+    await expect(prepareProfileBanner(pngFile())).rejects.toThrow(
+      "profile banner is still larger than 2 MB",
+    );
+    expect(harness.toBlob).toHaveBeenCalledTimes(5);
+    expect(harness.close).toHaveBeenCalledOnce();
   });
 
   it("accepts only compact Cloudinary public identifiers", () => {
@@ -387,4 +450,37 @@ describe("local image uploads", () => {
 
 function bytes(...values: number[]): ArrayBuffer {
   return Uint8Array.from(values).buffer;
+}
+
+function pngFile(name = "banner.png"): File {
+  return new File(
+    [bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)],
+    name,
+    { type: "image/png" },
+  );
+}
+
+function installImagePreparationHarness(
+  width: number,
+  height: number,
+  encodedBlobs: readonly Blob[],
+) {
+  const close = vi.fn();
+  const bitmap = { width, height, close } as unknown as ImageBitmap;
+  vi.stubGlobal("createImageBitmap", vi.fn(async () => bitmap));
+
+  const drawImage = vi.fn();
+  const context = {
+    drawImage,
+    imageSmoothingEnabled: false,
+    imageSmoothingQuality: "low",
+  } as unknown as CanvasRenderingContext2D;
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context);
+  let encodeIndex = 0;
+  const toBlob = vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
+    const blob = encodedBlobs[Math.min(encodeIndex, encodedBlobs.length - 1)] ?? null;
+    encodeIndex += 1;
+    callback(blob);
+  });
+  return { bitmap, close, context, drawImage, toBlob };
 }

@@ -11,12 +11,13 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.24.0` runs all Bondage Club and ModSDK integration in the page realm without reading
+Version `0.25.0` runs all Bondage Club and ModSDK integration in the page realm without reading
 `unsafeWindow`. Only structured upload fields cross into the DOM-only userscript sandbox for the narrowly
-granted Catbox/Litterbox request. This release adds group chats, addon profile cards, and safer lobby
-navigation without changing the proven Blossom integration: the flower still joins the same BC-native
-status-icon boundary as Echo and WCE exactly once and sits directly below Echo's clothing icon, clear
-of the chat edge. It is
+granted Catbox/Litterbox request. This release makes group chats prominent and searchable, adds a bounded
+online-only creator relay for otherwise unreachable members, and expands addon profiles with public
+privacy-prepared banners, strict color outlines, and more decorations. It does not change the proven
+Blossom integration: the flower still joins the same BC-native status-icon boundary as Echo and WCE
+exactly once and sits directly below Echo's clothing icon, clear of the chat edge. It is
 shown only for the authenticated character and protocol-confirmed KikiLink peers, independently of
 optional Presence profile sharing. KikiLink never wraps BCX's outer overlay or polls the character
 draw loop during normal play. If BC is still decoding the SVG, a cached vector copy renders the
@@ -71,7 +72,13 @@ lower-left corner.
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - KikiLink profile cards opened from compatible avatars or player action menus, with name, presence,
   custom status, observable room, addon version, and relationship badges in one compact view
-- Optional Blossom, Rose, or Starlight avatar frames and Classic, Garden, or Midnight profile styles
+- Public profile banners can be prepared locally as an exact 1200×400 metadata-free WebP, capped at
+  2 MiB, and uploaded through an explicitly labeled action to long-lived public Catbox storage
+- Remote profile banners follow the same `Ask first`, `Always show`, or `Links only` privacy choice
+  and guarded image loader as avatars
+- Optional Blossom, Rose, Starlight, Golden laurel, Crimson thorns, Moonlit orbit, or Silk ribbons
+  avatar decorations, Classic, Garden, or Midnight profile styles, and a strict custom HEX outline
+- Clickable avatars expose a pointer cursor, and the presence dot stays above every decoration
 - A clearly separated `Only visible to you` section for the private note, tags, last recorded room,
   and encounter count
 - Private notes and searchable tags for individual players
@@ -90,15 +97,28 @@ so they can follow that same account to another device.
 ## LinkChat
 
 - Conversation list instead of one isolated Beep at a time
-- Separate addon group conversations for 3–5 total members, including the creator
-- Choose 2–4 known BC friends that recently advertised group-chat v1 support and confirm the complete
+- A prominent, independently searchable Groups section for separate 3–5-member addon conversations
+- Aggregate group unread, participant-avatar stacks, member-aware previews, pins, and per-group unread
+- Choose 2–4 known BC friends that recently advertised relay-capable group support and confirm the complete
   participant list before invitations are sent; version-1 membership is fixed, so changing
   participants means starting a new group
-- Group drafts, unread counts, pins, removal, member-aware labels, and honest per-recipient local BC
-  handoff feedback; the protocol does not claim delivery receipts
+- Clickable participant chips, creation/confirmation members, and message-author avatars open KikiLink
+  profiles with the same mouse, keyboard, context-menu, and touch behavior as other player avatars
+- The newest 120 group messages render first, with older history added in bounded 100-message pages;
+  the composer follows the same Enter-to-send preference as direct chat and supports Ctrl/Cmd+Enter
+- Group drafts, removal, and honest per-recipient local BC handoff feedback; the protocol does not
+  claim delivery receipts
 - Incoming group invitations auto-accept only from known BC friends; sharing a room alone never lets
   another participant create local group records
-- A strict 257-character group-message limit keeps every point-to-point packet within the validated
+- When BC has no direct route between two members, the author may hand the packet to the group creator
+  for one-hop forwarding. This works only while the creator is online, running the compatible addon,
+  reachable, and able to reach the recipient; there is no offline queue, retry service, or confirmation
+- Creator relay is rate-bounded, short-lived, block-aware, restricted to the immutable member list,
+  and never relays a relayed packet. The creator remains the v1 trust root, so groups should be created
+  only with a trusted creator
+- Creator-supplied display names help identify participants without becoming authority: authenticated
+  MemberNumbers still control sender identity, membership, replay checks, and rate limits
+- A strict 246-character group-message limit keeps both direct and creator-relay packets within the validated
   700-character wire bound, even when JSON escaping expands the content
 - Native recent Beeps imported from the current game session without duplicates
 - Persistent message history in a separate local database for each BC account
@@ -298,8 +318,10 @@ is stored in that same player's Bondage Club `ExtensionSettings` so settings, ac
 preferences, notebook data, and recent chats can follow the account to another device. Presence uses
 small validated compatibility packets through Bondage Club: a hidden room handshake on entry,
 a compact hidden presence heartbeat for late-loading peers, and a point-to-point request for an
-opened chat—never a background Beep broadcast to every friend. Addon group chats likewise send one
-validated KikiLink packet to each remote participant instead of using a KikiLink group server.
+opened chat—never a background Beep broadcast to every friend. Expanded banner and outline details use
+a separate bounded response requested only when a compatible profile is explicitly opened. Addon group
+chats use direct validated packets where BC provides a route; otherwise an authored packet may take one
+best-effort hop through the online group creator. KikiLink has no group server or offline relay queue.
 
 ## Account data and switching
 

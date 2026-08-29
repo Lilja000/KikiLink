@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.25.0 - 2026-08-29
+
+- Promoted group chats into a prominent, searchable section of LinkChat. The section now exposes an
+  aggregate unread count, recognizable participant-avatar stacks, member-aware previews, and clearer
+  pinned and unread state without mixing groups into ordinary one-to-one conversations.
+- Made group people consistently actionable. Participant chips, group-creation contacts, confirmation
+  members, and message-author avatars open the same KikiLink profile surface as other compatible-player
+  avatars, with keyboard, context-menu, and touch behavior supplied by the host view.
+- Kept large group histories responsive by rendering the newest 120 messages first and adding
+  `Load older messages` in bounded 100-message increments. The group composer now follows LinkChat's
+  existing Enter-to-send preference, while Ctrl/Cmd+Enter remains an explicit send shortcut.
+- Made direct/group navigation latest-intent-wins across asynchronous storage work, so a newer group
+  click or panel close cannot be overwritten by an older pending direct-chat open. Group activation
+  now hides the direct pane before awaiting read-state persistence.
+- Added a creator-mediated, one-hop route for messages between group members who are neither BC
+  friends nor in the same room. A member first hands the authored packet to the group creator; the
+  creator may forward it only to the group's immutable members over routes BC currently permits.
+  Relay packets preserve the original MemberNumber and message ID and cannot be relayed again.
+- Kept creator relay deliberately limited: it works only while the creator is online, running the
+  compatible addon, and reachable; it has a bounded short-lived queue, per-origin and aggregate input
+  limits, paced forwarding, block/ghost checks, and no offline storage or retry service. Handoff and
+  relay are best-effort and unconfirmed—KikiLink still does not claim delivery receipts. The creator
+  remains the trust root for this v1 group shape, so members should create groups only with a creator
+  they trust.
+- Replaced repeated full group-history writes during busy chats with a 300 ms trailing batch and a
+  hard 1.8-second durability deadline. Lifecycle boundaries still flush immediately, while sustained
+  message or draft activity no longer serializes the complete bounded snapshot several times a second.
+- Added creator-authenticated group display names so participants are recognizable even without a
+  local BC contact record. Name packets are accepted only from the immutable group's creator and only
+  for the exact member list; names are presentation data and never replace the authenticated sender
+  MemberNumber for identity, membership, rate limits, or authorization.
+- Added local profile-banner upload. KikiLink validates the selected JPG, PNG, or WebP, decodes and
+  center-crops it to an exact 1200×400 canvas, removes source filename and metadata through WebP
+  re-encoding, adapts quality, and fails closed unless the result is at most 2 MiB. The explicit upload
+  action opens the file picker, then stores the chosen prepared banner on Catbox's long-lived public
+  storage. The dialog labels that public-storage boundary before selection.
+- Applied the existing remote-image privacy boundary to profile banners: `Ask first` reveals only the
+  exact member-and-URL pair for the current session, `Always show` may load automatically, and
+  `Links only` makes no image request. Banners use the same credential-free, no-referrer, no-redirect,
+  reserved-address-blocking, MIME-checked, 5 MiB bounded loader and cancellable local blob URLs as
+  profile avatars.
+- Added strict optional `#RRGGBB` profile outlines and four new avatar decorations: Golden laurel,
+  Crimson thorns, Moonlit orbit, and Silk ribbons. Refined profiles keep the presence dot above every
+  decoration, expose a pointer cursor on clickable avatars, and retain initials when remote images are
+  hidden.
+- Migrated settings to schema 25 and moved banner URL and outline details into a separate bounded `pf`
+  response requested only when a compatible profile is explicitly opened. These optional fields are
+  not added to periodic presence broadcasts, are never retried automatically, and are discarded when
+  Presence sharing is disabled.
+- Bound each Presence instance to the authenticated BC MemberNumber captured at construction. A
+  confirmed account switch now irreversibly clears old voluntary profile, capability, typing, request,
+  listener, and timer state before the instance can receive or send through the new account; transient
+  guarded Firefox reads stay silent and can recover for the same account.
+- Left the proven Blossom integration unchanged: KikiLink still owns exactly one
+  `ChatRoomDrawCharacterStatusIcons` ModSDK hook and does not wrap the outer character overlay or loop.
+
 ## 0.24.0 - 2026-08-29
 
 - Added separate addon group chats for 3–5 total members, including the creator. A new group is

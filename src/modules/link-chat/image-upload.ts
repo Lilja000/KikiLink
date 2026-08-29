@@ -4,10 +4,14 @@ import { uploadMultipartViaUserscriptBridge } from "../../userscript-upload-clie
 export const MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_LOCAL_IMAGE_EDGE = 2_560;
 export const MAX_LOCAL_IMAGE_PIXELS = 32_000_000;
+export const PROFILE_BANNER_WIDTH = 1_200;
+export const PROFILE_BANNER_HEIGHT = 400;
+export const MAX_PROFILE_BANNER_BYTES = 2 * 1024 * 1024;
 export const MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
 export const MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
 
 const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
+const PROFILE_BANNER_WEBP_QUALITIES = [0.88, 0.76, 0.64, 0.52, 0.4] as const;
 const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const RETRYABLE_UPLOAD_STATUSES = new Set([500, 502, 503, 504]);
 const LITTERBOX_UPLOAD_ENDPOINT =
@@ -303,6 +307,74 @@ export async function prepareLocalImage(file: File): Promise<PreparedLocalImage>
   }
 }
 
+/**
+ * Re-encodes a local image as an exact 3:1 profile banner without carrying source metadata.
+ *
+ * A successful result is always a WebP no larger than 2 MiB, which also keeps it comfortably
+ * below the remote image loader's limit. The existing gallery preparation path intentionally
+ * remains separate so banner cropping and its stricter byte budget cannot affect gallery images.
+ */
+export async function prepareProfileBanner(file: File): Promise<PreparedLocalImage> {
+  await validateLocalImageFile(file);
+
+  const decoded = await decodeLocalImage(file);
+  try {
+    if (
+      !Number.isSafeInteger(decoded.width) ||
+      !Number.isSafeInteger(decoded.height) ||
+      decoded.width <= 0 ||
+      decoded.height <= 0 ||
+      decoded.width * decoded.height > MAX_LOCAL_IMAGE_PIXELS
+    ) {
+      throw new Error("This image has too many pixels to prepare safely");
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = PROFILE_BANNER_WIDTH;
+    canvas.height = PROFILE_BANNER_HEIGHT;
+    const context = canvas.getContext("2d", { alpha: true });
+    if (!context) throw new Error("Your browser could not prepare this image");
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+
+    const targetAspect = PROFILE_BANNER_WIDTH / PROFILE_BANNER_HEIGHT;
+    const sourceAspect = decoded.width / decoded.height;
+    let sourceX = 0;
+    let sourceY = 0;
+    let sourceWidth = decoded.width;
+    let sourceHeight = decoded.height;
+    if (sourceAspect > targetAspect) {
+      sourceWidth = decoded.height * targetAspect;
+      sourceX = (decoded.width - sourceWidth) / 2;
+    } else if (sourceAspect < targetAspect) {
+      sourceHeight = decoded.width / targetAspect;
+      sourceY = (decoded.height - sourceHeight) / 2;
+    }
+
+    context.drawImage(
+      decoded.source,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      PROFILE_BANNER_WIDTH,
+      PROFILE_BANNER_HEIGHT,
+    );
+
+    const blob = await canvasToWebpWithinLimit(canvas, MAX_PROFILE_BANNER_BYTES);
+    return {
+      blob,
+      width: PROFILE_BANNER_WIDTH,
+      height: PROFILE_BANNER_HEIGHT,
+      sourceBytes: file.size,
+    };
+  } finally {
+    decoded.dispose();
+  }
+}
+
 export async function validateLocalImageFile(file: File): Promise<void> {
   if (file.size <= 0) throw new Error("Choose a non-empty image file");
   if (file.size > MAX_LOCAL_IMAGE_BYTES) throw new Error("Choose an image up to 10 MB");
@@ -381,6 +453,24 @@ async function decodeLocalImage(
 }
 
 function canvasToWebp(canvas: HTMLCanvasElement): Promise<Blob> {
+  return canvasToWebpAtQuality(canvas, 0.88);
+}
+
+async function canvasToWebpWithinLimit(
+  canvas: HTMLCanvasElement,
+  maxBytes: number,
+): Promise<Blob> {
+  for (const quality of PROFILE_BANNER_WEBP_QUALITIES) {
+    const blob = await canvasToWebpAtQuality(canvas, quality);
+    if (blob.size <= 0) {
+      throw new Error("Your browser could not create a privacy-safe WebP image");
+    }
+    if (blob.size <= maxBytes) return blob;
+  }
+  throw new Error("The privacy-prepared profile banner is still larger than 2 MB");
+}
+
+function canvasToWebpAtQuality(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
@@ -391,7 +481,7 @@ function canvasToWebp(canvas: HTMLCanvasElement): Promise<Blob> {
         resolve(blob);
       },
       "image/webp",
-      0.88,
+      quality,
     );
   });
 }

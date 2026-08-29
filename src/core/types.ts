@@ -22,7 +22,15 @@ export type BCConnectionState = "connecting" | "ready" | "error";
 export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
 export type PresenceState = PresenceStatus | "unknown";
 export type PresenceSource = "kikilink" | "room" | "friend-list" | "unknown";
-export type AvatarFrame = "none" | "blossom" | "rose" | "starlight";
+export type AvatarFrame =
+  | "none"
+  | "blossom"
+  | "rose"
+  | "starlight"
+  | "laurel"
+  | "thorn"
+  | "moon"
+  | "ribbon";
 export type ProfileCardStyle = "classic" | "garden" | "midnight";
 export type ImagePreviewPreference = "ask" | "always" | "never";
 export type ImageUploadRetention = "1h" | "12h" | "24h" | "72h";
@@ -107,9 +115,11 @@ export interface PresenceSnapshot {
   updatedAt: number;
   statusMessage?: string;
   avatarUrl?: string;
+  bannerUrl?: string;
   roomName?: string;
   avatarFrame?: AvatarFrame;
   profileStyle?: ProfileCardStyle;
+  profileOutlineColor?: string;
   addonVersion?: string;
 }
 
@@ -263,7 +273,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 24;
+  schemaVersion: 25;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -307,8 +317,10 @@ export interface KikiLinkSettings {
     status: PresenceStatus;
     statusMessage: string;
     avatarUrl: string;
+    bannerUrl: string;
     avatarFrame: AvatarFrame;
     profileStyle: ProfileCardStyle;
+    profileOutlineColor: string;
     autoIdleMinutes: number;
     afkAutoReply: {
       enabled: boolean;
