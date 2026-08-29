@@ -10,5 +10,15 @@ export interface ChatRepository {
   deleteMessagesOlderThan(timestamp: number): Promise<number>;
   trimConversation(peerNumber: number, keepNewest: number): Promise<number>;
   clearAll(): Promise<void>;
+  /**
+   * Clears the active view and reports whether older durable rows can return after a reload.
+   * Wrappers that can fall back to session memory should implement this explicitly.
+   */
+  clearAllDurably?(): Promise<boolean>;
+  /**
+   * Returns false when reads are only a partial/session fallback and must not replace the
+   * account-portable chat snapshot. Repositories without a guard are treated as complete.
+   */
+  canSafelyCapturePortableSnapshot?(): boolean;
   close(): void;
 }

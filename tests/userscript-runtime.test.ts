@@ -10,6 +10,11 @@ const USER_SCRIPT = readFileSync(
 );
 const TEST_MEMBER_NUMBER = 999_001;
 const CUSTOM_ACTIVITY_PREFIX = "KikiLinkCustom_";
+const OUTER_CHARACTER_HOOK_TARGETS = [
+  "ChatRoomCharacterViewDrawOverlay",
+  "ChatRoomCharacterViewDraw",
+  "ChatRoomCharacterViewLoopCharacters",
+] as const;
 const GLOBAL_KEYS = [
   "ActivityAllowedForGroup",
   "ActivityDictionaryText",
@@ -24,6 +29,7 @@ const GLOBAL_KEYS = [
   "CharacterNickname",
   "ChatRoomCharacter",
   "ChatRoomCharacterDrawlist",
+  "ChatRoomCharacterViewDraw",
   "ChatRoomCharacterViewDrawOverlay",
   "ChatRoomCharacterViewLoopCharacters",
   "ChatRoomData",
@@ -89,8 +95,32 @@ describe("published userscript runtime", () => {
     expect(USER_SCRIPT).not.toContain("// @grant        unsafeWindow");
     expect(USER_SCRIPT).not.toContain("// @grant        none");
     expect(USER_SCRIPT).toContain("installUserscriptUploadHost");
+    expect(USER_SCRIPT).toContain("crypto.getRandomValues(new Uint8Array(32))");
+    expect(USER_SCRIPT).toContain("source.capability !== capability");
+    expect(USER_SCRIPT).not.toMatch(
+      /const __KIKILINK_UPLOAD_CAPABILITY__\s*=\s*["'][0-9a-f]{64}["']/u,
+    );
     expect(USER_SCRIPT).toContain("kikilinkPageRuntime");
     expect(USER_SCRIPT).not.toContain("installBCPageContextBridge");
+  });
+
+  it("retains the upload host across BFCache and tears it down on final navigation", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    evaluatePublishedUserscript();
+
+    const markerId = "kikilink-upload-bridge-v1";
+    expect(document.getElementById(markerId)).not.toBeNull();
+    const cachedHide = new PageTransitionEvent("pagehide");
+    Object.defineProperty(cachedHide, "persisted", { value: true });
+    window.dispatchEvent(cachedHide);
+    expect(document.getElementById(markerId)).not.toBeNull();
+    const finalHide = new PageTransitionEvent("pagehide");
+    Object.defineProperty(finalHide, "persisted", { value: false });
+    window.dispatchEvent(finalHide);
+    expect(document.getElementById(markerId)).toBeNull();
+
+    await getGlobal<{ destroy(): Promise<void> }>("KikiLink").destroy();
   });
 
   it("never reads unsafeWindow and starts even when an older release cannot clean up", async () => {
@@ -161,6 +191,10 @@ describe("published userscript runtime", () => {
     setGlobal("Player", player);
     setGlobal("ChatRoomCharacter", [player]);
     setGlobal("ChatRoomCharacterDrawlist", [player]);
+    const outerCharacterEntrypoints = new Map(
+      OUTER_CHARACTER_HOOK_TARGETS.map((name) => [name, vi.fn()] as const),
+    );
+    for (const [name, entrypoint] of outerCharacterEntrypoints) setGlobal(name, entrypoint);
     setGlobal("ChatRoomHideIconState", 0);
     setGlobal("ChatRoomData", { Name: "Shared Chain", Visibility: ["All"] });
     setGlobal("CurrentScreen", "ChatRoom");
@@ -197,27 +231,49 @@ describe("published userscript runtime", () => {
       (character: typeof player, x: number, y: number, zoom: number) => void
     );
     expect(statusIcons).toBe(sharedRouter);
-    expect(() => statusIcons(player, 100, 0, 1)).not.toThrow();
+    expect(() => statusIcons(player, 100, 20, 0.5)).not.toThrow();
     expect(calls).toEqual(["echo", "afc", "native"]);
     expect(pageWindow.DrawImageResize).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
-      520,
-      45,
-      35,
-      35,
+      310,
+      42.5,
+      17.5,
+      17.5,
     );
     expect(pageWindow.DrawImageResize).toHaveBeenCalledWith(
       "data:image/png;base64,echo",
-      520,
-      5,
-      35,
-      35,
+      310,
+      25,
+      17.5,
+      17.5,
     );
-    expect(sharedSdk.requests).toContainEqual({
-      mod: "KikiLink",
-      name: "ChatRoomDrawCharacterStatusIcons",
-      priority: 10,
-    });
+    const blossomDraw = pageWindow.DrawImageResize.mock.calls.find(
+      ([source]: unknown[]) => String(source).startsWith("data:image/svg+xml"),
+    );
+    const echoDraw = pageWindow.DrawImageResize.mock.calls.find(
+      ([source]: unknown[]) => source === "data:image/png;base64,echo",
+    );
+    expect(blossomDraw?.[2]).toBeGreaterThanOrEqual(Number(echoDraw?.[2]) + Number(echoDraw?.[4]));
+    expect(
+      sharedSdk.requests.filter(
+        ({ mod, name }) => mod === "KikiLink" && name === "ChatRoomDrawCharacterStatusIcons",
+      ),
+    ).toEqual([
+      {
+        mod: "KikiLink",
+        name: "ChatRoomDrawCharacterStatusIcons",
+        priority: 10,
+      },
+    ]);
+    expect(
+      sharedSdk.requests.filter(
+        ({ mod, name }) =>
+          mod === "KikiLink" && OUTER_CHARACTER_HOOK_TARGETS.some((target) => target === name),
+      ),
+    ).toEqual([]);
+    for (const [name, entrypoint] of outerCharacterEntrypoints) {
+      expect(pageWindow[name]).toBe(entrypoint);
+    }
     expect(pageWindow.KikiLink).toBe(getGlobal("KikiLink"));
 
     await pageWindow.KikiLink.destroy();
@@ -521,8 +577,8 @@ describe("published userscript runtime", () => {
       priority: 10,
     });
     expect(pageWindow.KikiLink).toBe(api);
-    expect(api.getVersion()).toBe("0.23.0");
-    expect(version?.textContent).toBe("0.23.0");
+    expect(api.getVersion()).toBe("0.24.0");
+    expect(version?.textContent).toBe("0.24.0");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);

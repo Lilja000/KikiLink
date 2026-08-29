@@ -182,6 +182,13 @@ declare global {
     | BCServerRoomSearchData[]
     | { err?: unknown; error?: unknown; value?: BCServerRoomSearchData[] };
 
+  interface BCServerResult<T = unknown> {
+    ok?: boolean;
+    value?: T;
+    err?: unknown;
+    error?: unknown;
+  }
+
   interface BCAccountQueryResponse {
     Query: string;
     Result: unknown;
@@ -300,6 +307,11 @@ declare global {
     query: string,
     data: BCServerRoomSearchRequest,
   ): Promise<BCServerRoomSearchResult>;
+  function ServerRoomJoin(roomName: string): Promise<BCServerResult<string>>;
+  function ChatRoomCanLeave(): boolean;
+  function ChatRoomIsLeavingSlowly(): boolean;
+  function ChatRoomAttemptLeave(): void;
+  function ChatSearchJoin(roomName: string): void;
   function CharacterNickname(character: BCCharacter): string;
   function ChatRoomDrawCharacterStatusIcons(
     character: BCCharacter,

@@ -22,6 +22,8 @@ export type BCConnectionState = "connecting" | "ready" | "error";
 export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
 export type PresenceState = PresenceStatus | "unknown";
 export type PresenceSource = "kikilink" | "room" | "friend-list" | "unknown";
+export type AvatarFrame = "none" | "blossom" | "rose" | "starlight";
+export type ProfileCardStyle = "classic" | "garden" | "midnight";
 export type ImagePreviewPreference = "ask" | "always" | "never";
 export type ImageUploadRetention = "1h" | "12h" | "24h" | "72h";
 export type ReactionTrigger =
@@ -106,6 +108,9 @@ export interface PresenceSnapshot {
   statusMessage?: string;
   avatarUrl?: string;
   roomName?: string;
+  avatarFrame?: AvatarFrame;
+  profileStyle?: ProfileCardStyle;
+  addonVersion?: string;
 }
 
 export interface QuickAction {
@@ -116,6 +121,8 @@ export interface QuickAction {
 export interface SavedGalleryImage {
   url: string;
   addedAt: number;
+  /** Known host expiry for temporary Gallery uploads. */
+  expiresAt?: number;
 }
 
 export interface RoomActivity {
@@ -256,7 +263,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 23;
+  schemaVersion: 24;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -300,6 +307,8 @@ export interface KikiLinkSettings {
     status: PresenceStatus;
     statusMessage: string;
     avatarUrl: string;
+    avatarFrame: AvatarFrame;
+    profileStyle: ProfileCardStyle;
     autoIdleMinutes: number;
     afkAutoReply: {
       enabled: boolean;

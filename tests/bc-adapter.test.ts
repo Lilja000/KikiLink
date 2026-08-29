@@ -37,6 +37,11 @@ afterEach(() => {
     "InformationSheetLoadCharacter",
     "ServerSend",
     "ServerRoomSearch",
+    "ServerRoomJoin",
+    "ChatRoomCanLeave",
+    "ChatRoomIsLeavingSlowly",
+    "ChatRoomAttemptLeave",
+    "ChatSearchJoin",
     "ServerIsLoggedIn",
     "ServerPlayerIsInChatRoom",
     "ChatRoomPlayerIsAdmin",
@@ -53,6 +58,24 @@ afterEach(() => {
 });
 
 describe("BCAdapter", () => {
+  it("fails closed instead of throwing when Firefox revokes the local player proxy", () => {
+    const guardedPlayer = Proxy.revocable<BCPlayer>({
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      Nickname: "Kiki",
+      FriendNames: new Map(),
+    }, {});
+    globalThis.Player = guardedPlayer.proxy;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    expect(adapter.getOwnMemberNumber()).toBe(999);
+    expect(adapter.getOwnName()).toBe("Kiki");
+    guardedPlayer.revoke();
+    expect(() => adapter.getOwnMemberNumber()).not.toThrow();
+    expect(adapter.getOwnMemberNumber()).toBe(-1);
+    expect(adapter.getOwnName()).toBe("me");
+  });
+
   it("sends through the native Beep function even before hook registration completes", () => {
     const nativeSend = vi.fn();
     globalThis.ServerSendBeepMessage = nativeSend;
@@ -205,6 +228,52 @@ describe("BCAdapter", () => {
     expect(adapter.getRecentBeeps()).toMatchObject([
       { peerNumber: 123, peerName: "Reina", content: "Recent hello", sentAt: 1000 },
     ]);
+  });
+
+  it("skips an inaccessible recent Beep without losing later startup history", () => {
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map([[123, "AccountReina"]]),
+    };
+    const guarded = Proxy.revocable<BCFriendListBeepLogMessage>({
+      MemberNumber: 555,
+      MemberName: "Guarded",
+      Sent: false,
+      Time: new Date(10),
+      Message: "Unreadable",
+    }, {});
+    guarded.revoke();
+    globalThis.FriendListBeepLog = [
+      guarded.proxy,
+      {
+        MemberNumber: 123,
+        MemberName: "AccountReina",
+        Sent: false,
+        Time: new Date(20),
+        Message: "Still imported",
+      },
+    ];
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    try {
+      expect(adapter.getRecentBeeps()).toMatchObject([
+        {
+          direction: "incoming",
+          peerNumber: 123,
+          peerName: "AccountReina",
+          content: "Still imported",
+          sentAt: 20,
+        },
+      ]);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("recent native Beep log entry"),
+        expect.any(Error),
+      );
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it("lists room targets by nickname and sends through the native Emote path", () => {
@@ -383,6 +452,7 @@ describe("BCAdapter", () => {
         {
           Name: "Open room",
           Language: "EN",
+          MapType: "map",
           MemberCount: 2,
           MemberLimit: 10,
           Description: "Public",
@@ -419,6 +489,609 @@ describe("BCAdapter", () => {
     }));
     expect(rooms.map((room) => room.name)).toEqual(["Friends room", "Open room"]);
     expect(rooms[0]?.friends).toEqual([{ memberNumber: 123, memberName: "Reina" }]);
+    expect(rooms[1]?.mapType).toBe("Always");
+  });
+
+  it("normalizes the current room for the lobby and fails closed for guarded room data", () => {
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      Nickname: "Kiki",
+      FriendNames: new Map([[123, "AccountReina"]]),
+      FriendList: [123],
+    };
+    globalThis.ChatRoomData = {
+      Name: "  Moon Garden  ",
+      Description: "\u0000Quiet\troom\n",
+      Language: "  EN  ",
+      Limit: 0,
+      Visibility: ["Invite"],
+      Access: [],
+      MapData: { Type: "grid" },
+    };
+    globalThis.ChatRoomCharacter = [
+      globalThis.Player,
+      { MemberNumber: 123, Name: "AccountReina", Nickname: "  Reina  " },
+      { MemberNumber: 456, Name: "AccountMina", Nickname: "Mina" },
+    ];
+    globalThis.ServerPlayerIsInChatRoom = () => true;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    expect(adapter.getCurrentLobbyRoom()).toEqual({
+      name: "Moon Garden",
+      description: "Quiet room",
+      language: "EN",
+      memberCount: 3,
+      memberLimit: 3,
+      canJoin: true,
+      locked: false,
+      privateRoom: true,
+      mapType: "Always",
+      friends: [{ memberNumber: 123, memberName: "Reina" }],
+    });
+
+    globalThis.ChatRoomData.Visibility = ["All"];
+    globalThis.ChatRoomData.Access = ["All"];
+    expect(adapter.getCurrentLobbyRoom()).toMatchObject({
+      locked: false,
+      privateRoom: false,
+    });
+
+    const guardedRoom = Proxy.revocable<BCChatRoomData>({ Name: "Hidden room" }, {});
+    globalThis.ChatRoomData = guardedRoom.proxy;
+    guardedRoom.revoke();
+    let summary: ReturnType<BCAdapter["getCurrentLobbyRoom"]>;
+    expect(() => {
+      summary = adapter.getCurrentLobbyRoom();
+    }).not.toThrow();
+    expect(summary!).toBeUndefined();
+  });
+
+  it("treats a normalized current-room join as a no-op", async () => {
+    const serverSend = vi.fn();
+    const canLeave = vi.fn(() => true);
+    const attemptLeave = vi.fn();
+    const serverRoomJoin = vi.fn();
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = { Name: "Moon   Garden" };
+    globalThis.ChatRoomCharacter = [globalThis.Player];
+    globalThis.ServerSend = serverSend;
+    globalThis.ServerPlayerIsInChatRoom = () => true;
+    globalThis.ChatRoomCanLeave = canLeave;
+    globalThis.ChatRoomAttemptLeave = attemptLeave;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    await adapter.joinRoom("  moon garden  ");
+
+    expect(canLeave).not.toHaveBeenCalled();
+    expect(attemptLeave).not.toHaveBeenCalled();
+    expect(serverRoomJoin).not.toHaveBeenCalled();
+    expect(serverSend).not.toHaveBeenCalled();
+  });
+
+  it("falls back safely when a patched native room observation throws during a join", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.CurrentScreen = "ChatSearch";
+    globalThis.ChatRoomData = null;
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => {
+      throw new Error("Permission denied to access object");
+    };
+    globalThis.ServerRoomJoin = vi.fn(async (roomName: string) => {
+      globalThis.CurrentScreen = "ChatRoom";
+      globalThis.ChatRoomData = { Name: roomName };
+      return { ok: true, value: roomName, error: null, err: false };
+    });
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    try {
+      expect(() => adapter.isInChatRoom()).not.toThrow();
+      expect(adapter.isInChatRoom()).toBe(false);
+      await expect(adapter.joinRoom("Golden Den")).resolves.toBeUndefined();
+
+      expect(adapter.isInChatRoom()).toBe(true);
+      expect(adapter.getCurrentRoomName()).toBe("Golden Den");
+      expect(warning).toHaveBeenCalledTimes(1);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("does not start a join when Bondage Club prevents leaving", async () => {
+    const attemptLeave = vi.fn();
+    const serverRoomJoin = vi.fn();
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = { Name: "Moon Garden" };
+    globalThis.ChatRoomCharacter = [globalThis.Player];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => true;
+    globalThis.ChatRoomCanLeave = () => false;
+    globalThis.ChatRoomAttemptLeave = attemptLeave;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    await expect(adapter.joinRoom("Golden Den")).rejects.toThrow(
+      "Bondage Club currently prevents you from leaving this room",
+    );
+
+    expect(attemptLeave).not.toHaveBeenCalled();
+    expect(serverRoomJoin).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates only the same concurrent target and rejects a different target", async () => {
+    vi.useFakeTimers();
+    const order: string[] = [];
+    let inRoom = true;
+    const attemptLeave = vi.fn(() => {
+      order.push("attempt-leave");
+    });
+    const serverRoomJoin = vi.fn(async (roomName: string) => {
+      order.push("server-join");
+      expect(inRoom).toBe(false);
+      expect(globalThis.ChatRoomData).toBeNull();
+      globalThis.ChatRoomData = { Name: roomName };
+      inRoom = true;
+      return { ok: true, value: roomName };
+    });
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = { Name: "Moon Garden" };
+    globalThis.ChatRoomCharacter = [globalThis.Player];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => inRoom;
+    globalThis.ChatRoomCanLeave = () => true;
+    globalThis.ChatRoomAttemptLeave = attemptLeave;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const first = adapter.joinRoom("Golden Den");
+    const second = adapter.joinRoom("  golden   den  ");
+
+    expect(second).toBe(first);
+    expect(attemptLeave).toHaveBeenCalledOnce();
+    expect(serverRoomJoin).not.toHaveBeenCalled();
+    await expect(adapter.joinRoom("Rose Hall")).rejects.toThrow(
+      "Already joining another room",
+    );
+    await expect(adapter.joinRoom("Moon Garden")).rejects.toThrow(
+      "Already joining another room",
+    );
+    expect(serverRoomJoin).not.toHaveBeenCalled();
+
+    globalThis.ChatRoomData = null;
+    inRoom = false;
+    await vi.advanceTimersByTimeAsync(100);
+    await Promise.all([first, second]);
+
+    expect(attemptLeave).toHaveBeenCalledOnce();
+    expect(serverRoomJoin).toHaveBeenCalledOnce();
+    expect(serverRoomJoin).toHaveBeenCalledWith("Golden Den");
+    expect(order).toEqual(["attempt-leave", "server-join"]);
+  });
+
+  it("waits for stale ChatRoomData to clear even after BC reports no active room", async () => {
+    vi.useFakeTimers();
+    let inRoom = false;
+    const serverRoomJoin = vi.fn(async (roomName: string) => {
+      expect(globalThis.ChatRoomData).toBeNull();
+      globalThis.ChatRoomData = { Name: roomName };
+      inRoom = true;
+      return { ok: true, value: roomName, error: null, err: false };
+    });
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = { Name: "Previous room" };
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => inRoom;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const joining = adapter.joinRoom("Golden Den");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(serverRoomJoin).not.toHaveBeenCalled();
+
+    globalThis.ChatRoomData = null;
+    await vi.advanceTimersByTimeAsync(100);
+    await joining;
+
+    expect(serverRoomJoin).toHaveBeenCalledOnce();
+    expect(serverRoomJoin).toHaveBeenCalledWith("Golden Den");
+  });
+
+  it("waits for an existing native slow leave without cancelling it", async () => {
+    vi.useFakeTimers();
+    let inRoom = true;
+    let leavingSlowly = true;
+    const attemptLeave = vi.fn();
+    const serverRoomJoin = vi.fn(async (roomName: string) => {
+      globalThis.ChatRoomData = { Name: roomName };
+      inRoom = true;
+      return { ok: true, value: roomName, error: null, err: false };
+    });
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = { Name: "Moon Garden" };
+    globalThis.ChatRoomCharacter = [globalThis.Player];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => inRoom;
+    globalThis.ChatRoomIsLeavingSlowly = () => leavingSlowly;
+    globalThis.ChatRoomCanLeave = () => false;
+    globalThis.ChatRoomAttemptLeave = attemptLeave;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const joining = adapter.joinRoom("Golden Den");
+    expect(attemptLeave).not.toHaveBeenCalled();
+    expect(serverRoomJoin).not.toHaveBeenCalled();
+
+    leavingSlowly = false;
+    inRoom = false;
+    globalThis.ChatRoomData = null;
+    await vi.advanceTimersByTimeAsync(100);
+    await joining;
+
+    expect(attemptLeave).not.toHaveBeenCalled();
+    expect(serverRoomJoin).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a pending room transition when the adapter stops", async () => {
+    const attemptLeave = vi.fn();
+    const serverRoomJoin = vi.fn();
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = { Name: "Moon Garden" };
+    globalThis.ChatRoomCharacter = [globalThis.Player];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => true;
+    globalThis.ChatRoomCanLeave = () => true;
+    globalThis.ChatRoomAttemptLeave = attemptLeave;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const joining = adapter.joinRoom("Golden Den");
+    adapter.stop();
+
+    await expect(joining).rejects.toThrow("Room join was cancelled");
+    expect(attemptLeave).toHaveBeenCalledOnce();
+    expect(serverRoomJoin).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending native join response on stop and consumes its late rejection", async () => {
+    let rejectNative: ((reason?: unknown) => void) | undefined;
+    const serverRoomJoin = vi.fn(
+      () => new Promise<BCServerResult<string>>((_resolve, reject) => {
+        rejectNative = reject;
+      }),
+    );
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = null;
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => false;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const joining = adapter.joinRoom("Golden Den");
+    const failure = expect(joining).rejects.toThrow("Room join was cancelled");
+    await vi.waitFor(() => expect(serverRoomJoin).toHaveBeenCalledOnce());
+    adapter.stop();
+    await failure;
+
+    rejectNative?.(new Error("Late native wrapper failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("surfaces native join failures without reporting a successful room sync", async () => {
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = null;
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => false;
+    globalThis.ServerRoomJoin = vi.fn(async () => ({
+      ok: false,
+      error: { name: "RoomFull" },
+    }));
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    await expect(adapter.joinRoom("Golden Den")).rejects.toThrow("That room is full");
+  });
+
+  it("waits for the selected room's actual sync after the join response succeeds", async () => {
+    vi.useFakeTimers();
+    let inRoom = false;
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = null;
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => inRoom;
+    globalThis.ServerRoomJoin = vi.fn(async (roomName: string) => ({
+      ok: true,
+      value: roomName,
+    }));
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+    let settled = false;
+
+    const joining = adapter.joinRoom("Golden Den").then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(settled).toBe(false);
+
+    globalThis.ChatRoomData = { Name: "Golden Den" };
+    inRoom = true;
+    await vi.advanceTimersByTimeAsync(100);
+    await joining;
+
+    expect(settled).toBe(true);
+  });
+
+  it("accepts Bondage Club's native successful Result shape", async () => {
+    let inRoom = false;
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = null;
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => inRoom;
+    globalThis.ServerRoomJoin = vi.fn(async (roomName: string) => {
+      globalThis.ChatRoomData = { Name: roomName };
+      inRoom = true;
+      return {
+        ok: true,
+        value: roomName,
+        error: null,
+        get err() {
+          return false;
+        },
+      };
+    });
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    await expect(adapter.joinRoom("Golden Den")).resolves.toBeUndefined();
+
+    expect(globalThis.ServerRoomJoin).toHaveBeenCalledOnce();
+    expect(adapter.getCurrentRoomName()).toBe("Golden Den");
+  });
+
+  it("bounds an unresolved native join response and keeps the exact-sync quarantine", async () => {
+    vi.useFakeTimers();
+    let inRoom = false;
+    let rejectNative: ((reason?: unknown) => void) | undefined;
+    const serverRoomJoin = vi.fn(
+      () => new Promise<BCServerResult<string>>((_resolve, reject) => {
+        rejectNative = reject;
+      }),
+    );
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = null;
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => inRoom;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const firstJoin = adapter.joinRoom("Golden Den");
+    const firstFailure = expect(firstJoin).rejects.toThrow(
+      "Bondage Club timed out while joining that room",
+    );
+    await vi.advanceTimersByTimeAsync(8_000);
+    await firstFailure;
+
+    await expect(adapter.joinRoom("Rose Hall")).rejects.toThrow(
+      "still finishing the previous room join",
+    );
+    const originalTarget = adapter.joinRoom("Golden Den");
+    expect(serverRoomJoin).toHaveBeenCalledOnce();
+
+    globalThis.ChatRoomData = { Name: "Golden Den" };
+    inRoom = true;
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(originalTarget).resolves.toBeUndefined();
+
+    // The abandoned native promise can still reject after the exact sync. Its rejection is
+    // observed by the bounded waiter and must not surface as an unhandled test/runtime error.
+    rejectNative?.(new Error("Late native wrapper failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("releases an unresolved native response after the documented 8s plus 7s bound", async () => {
+    vi.useFakeTimers();
+    let inRoom = false;
+    let rejectOriginal: ((reason?: unknown) => void) | undefined;
+    const serverRoomJoin = vi.fn((roomName: string) => {
+      if (roomName === "Golden Den") {
+        return new Promise<BCServerResult<string>>((_resolve, reject) => {
+          rejectOriginal = reject;
+        });
+      }
+      globalThis.ChatRoomData = { Name: roomName };
+      inRoom = true;
+      return Promise.resolve({ ok: true, value: roomName, error: null, err: false });
+    });
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = null;
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => inRoom;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const firstJoin = adapter.joinRoom("Golden Den");
+    const firstFailure = expect(firstJoin).rejects.toThrow(
+      "Bondage Club timed out while joining that room",
+    );
+    await vi.advanceTimersByTimeAsync(8_000);
+    await firstFailure;
+
+    await vi.advanceTimersByTimeAsync(6_900);
+    await expect(adapter.joinRoom("Rose Hall")).rejects.toThrow(
+      "still finishing the previous room join",
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(adapter.joinRoom("Rose Hall")).resolves.toBeUndefined();
+
+    expect(serverRoomJoin.mock.calls.map(([roomName]) => roomName)).toEqual([
+      "Golden Den",
+      "Rose Hall",
+    ]);
+    rejectOriginal?.(new Error("Original wrapper rejected after the full 15s bound"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("quarantines a timed-out native join before allowing a different target", async () => {
+    vi.useFakeTimers();
+    let inRoom = false;
+    const serverRoomJoin = vi.fn(async (roomName: string) => {
+      if (roomName === "Golden Den") {
+        // Prove that the 8s public timeout plus 7s quarantine starts after BC's successful
+        // native response, rather than when the user first clicked Join.
+        await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+      }
+      if (roomName === "Rose Hall") {
+        globalThis.ChatRoomData = { Name: roomName };
+        inRoom = true;
+      }
+      return { ok: true, value: roomName, error: null, err: false };
+    });
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = null;
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => inRoom;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const firstJoin = adapter.joinRoom("Golden Den");
+    const firstFailure = expect(firstJoin).rejects.toThrow(
+      "Bondage Club did not finish loading “Golden Den”",
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(8_000);
+    await firstFailure;
+
+    await expect(adapter.joinRoom("Rose Hall")).rejects.toThrow(
+      "still finishing the previous room join",
+    );
+    expect(serverRoomJoin).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(6_900);
+    await expect(adapter.joinRoom("Rose Hall")).rejects.toThrow(
+      "still finishing the previous room join",
+    );
+    expect(serverRoomJoin).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(adapter.joinRoom("Rose Hall")).resolves.toBeUndefined();
+
+    expect(serverRoomJoin.mock.calls.map(([roomName]) => roomName)).toEqual([
+      "Golden Den",
+      "Rose Hall",
+    ]);
+  });
+
+  it("releases the post-timeout quarantine when the original room sync arrives late", async () => {
+    vi.useFakeTimers();
+    let inRoom = false;
+    const serverRoomJoin = vi.fn(async (roomName: string) => {
+      if (roomName === "Rose Hall") {
+        globalThis.ChatRoomData = { Name: roomName };
+        inRoom = true;
+      }
+      return { ok: true, value: roomName, error: null, err: false };
+    });
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "Kiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomData = null;
+    globalThis.ChatRoomCharacter = [];
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerPlayerIsInChatRoom = () => inRoom;
+    globalThis.ServerRoomJoin = serverRoomJoin;
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const firstJoin = adapter.joinRoom("Golden Den");
+    const firstFailure = expect(firstJoin).rejects.toThrow(
+      "Bondage Club did not finish loading “Golden Den”",
+    );
+    await vi.advanceTimersByTimeAsync(8_000);
+    await firstFailure;
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    globalThis.ChatRoomData = { Name: "Golden Den" };
+    inRoom = true;
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Simulate leaving the late-arriving target before choosing another room. The important part
+    // is that no stale first-operation guard survives the observed exact sync.
+    globalThis.ChatRoomData = null;
+    inRoom = false;
+    await expect(adapter.joinRoom("Rose Hall")).resolves.toBeUndefined();
+
+    expect(serverRoomJoin.mock.calls.map(([roomName]) => roomName)).toEqual([
+      "Golden Den",
+      "Rose Hall",
+    ]);
   });
 
   it("opens native Whisper and profile actions for a current-room nickname", () => {
@@ -581,6 +1254,256 @@ describe("BCAdapter", () => {
     adapter.stop();
   });
 
+  it("returns a defensive clone for an individual online friend", async () => {
+    let onlineFriendsListener: ((data: unknown) => void) | undefined;
+    const socket = {
+      connected: true,
+      on: vi.fn((event: string, listener: (data: unknown) => void) => {
+        if (event === "AccountQueryResult") onlineFriendsListener = listener;
+      }),
+      off: vi.fn(),
+    };
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map([[123, "AccountReina"]]),
+      FriendList: [123],
+    };
+    globalThis.ServerSocket = socket as unknown as BCServerSocket;
+    globalThis.ServerSendBeepMessage = vi.fn();
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    try {
+      await adapter.start();
+      if (!onlineFriendsListener) throw new Error("Expected the online-friends listener to be installed");
+      onlineFriendsListener({
+        Query: "OnlineFriends",
+        Result: [{
+          Type: "Friend",
+          MemberNumber: 123,
+          MemberName: "AccountReina",
+          MemberNickname: "Reina",
+          ChatRoomName: "Moon Garden",
+          ChatRoomSpace: "MainHall",
+        }],
+      });
+
+      const returned = adapter.getOnlineFriend(123);
+      expect(returned).toEqual({
+        memberNumber: 123,
+        memberName: "Reina",
+        roomName: "Moon Garden",
+        roomSpace: "MainHall",
+        privateRoom: false,
+      });
+      if (!returned) throw new Error("Expected the online friend to be available");
+      returned.memberName = "Mutated outside the adapter";
+      returned.roomName = "Different room";
+      returned.privateRoom = true;
+
+      expect(adapter.getOnlineFriend(123)).toEqual({
+        memberNumber: 123,
+        memberName: "Reina",
+        roomName: "Moon Garden",
+        roomSpace: "MainHall",
+        privateRoom: false,
+      });
+      expect(adapter.getOnlineFriend(456)).toBeUndefined();
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  it("lets native hooks and socket dispatch continue for inaccessible cross-compartment payloads", async () => {
+    type CapturedHook = (
+      args: any[],
+      next: (args: any[]) => unknown,
+    ) => unknown;
+    const hooks = new Map<string, CapturedHook>();
+    const socketListeners = new Map<string, (data: unknown) => void>();
+    const socket = {
+      connected: true,
+      on: vi.fn((event: string, listener: (data: unknown) => void) => {
+        socketListeners.set(event, listener);
+      }),
+      off: vi.fn(),
+    };
+    const liveSdk = (window as unknown as { bcModSdk?: unknown }).bcModSdk;
+    Object.defineProperty(window, "bcModSdk", {
+      configurable: true,
+      value: {
+        registerMod: () => ({
+          hookFunction: (name: string, _priority: number, hook: CapturedHook) => {
+            hooks.set(name, hook);
+            return vi.fn();
+          },
+          unload: vi.fn(),
+        }),
+      },
+    });
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ServerSocket = socket as unknown as BCServerSocket;
+    globalThis.ServerSendBeepMessage = vi.fn();
+    globalThis.ServerAccountBeep = vi.fn();
+    globalThis.ServerAccountQueryResult = vi.fn();
+    globalThis.ChatRoomMessage = vi.fn();
+    globalThis.ServerSend = vi.fn();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    const revokedProxy = (): object => {
+      const guarded = Proxy.revocable<Record<string, unknown>>({}, {});
+      guarded.revoke();
+      return guarded.proxy;
+    };
+
+    try {
+      await adapter.start();
+
+      for (const event of ["AccountBeep", "AccountQueryResult", "ChatRoomMessage"]) {
+        const listener = socketListeners.get(event);
+        if (!listener) throw new Error(`Expected the ${event} socket listener to be installed`);
+        expect(() => listener(revokedProxy())).not.toThrow();
+      }
+
+      for (const name of [
+        "ServerAccountBeep",
+        "ServerAccountQueryResult",
+        "ChatRoomMessage",
+        "ServerSend",
+      ]) {
+        const hook = hooks.get(name);
+        if (!hook) throw new Error(`Expected the ${name} hook to be installed`);
+        const payload = revokedProxy();
+        const args = name === "ServerSend" ? ["AccountBeep", payload] : [payload];
+        const next = vi.fn<(args: any[]) => unknown>(() => "native result");
+        let result: unknown;
+        expect(() => {
+          result = hook(args, next);
+        }).not.toThrow();
+        expect(result!).toBe("native result");
+        expect(next).toHaveBeenCalledOnce();
+        expect(next.mock.calls[0]?.[0]).toBe(args);
+      }
+      expect(warning).toHaveBeenCalled();
+    } finally {
+      adapter.stop();
+      warning.mockRestore();
+      Object.defineProperty(window, "bcModSdk", { configurable: true, value: liveSdk });
+    }
+  });
+
+  it("keeps valid online friends when one snapshot entry is inaccessible", async () => {
+    const socketListeners = new Map<string, (data: unknown) => void>();
+    const socket = {
+      connected: true,
+      on: vi.fn((event: string, listener: (data: unknown) => void) => {
+        socketListeners.set(event, listener);
+      }),
+      off: vi.fn(),
+    };
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map([[123, "AccountReina"]]),
+    };
+    globalThis.ServerSocket = socket as unknown as BCServerSocket;
+    globalThis.ServerSendBeepMessage = vi.fn();
+    globalThis.ServerSend = vi.fn();
+    const guarded = Proxy.revocable<BCOnlineFriendInfo>({
+      Type: "Friend",
+      MemberNumber: 555,
+      MemberName: "Guarded",
+    }, {});
+    guarded.revoke();
+    const bus = new EventBus<KikiLinkEvents>();
+    const online = vi.fn();
+    bus.on("bc:online-friends", online);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = new BCAdapter(bus, "0.24.0");
+
+    try {
+      await adapter.start();
+      const listener = socketListeners.get("AccountQueryResult");
+      if (!listener) throw new Error("Expected the online-friends socket listener to be installed");
+      expect(() =>
+        listener({
+          Query: "OnlineFriends",
+          Result: [
+            guarded.proxy,
+            {
+              Type: "Friend",
+              MemberNumber: 123,
+              MemberName: "AccountReina",
+              MemberNickname: "Reina",
+              ChatRoomName: "Moon Garden",
+            },
+          ],
+        }),
+      ).not.toThrow();
+
+      expect(adapter.getOnlineFriends()).toEqual([
+        {
+          memberNumber: 123,
+          memberName: "Reina",
+          roomName: "Moon Garden",
+          privateRoom: false,
+        },
+      ]);
+      expect(online).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("online friend entry"),
+        expect.any(Error),
+      );
+    } finally {
+      adapter.stop();
+      warning.mockRestore();
+    }
+  });
+
+  it("falls back to removeListener when socket.off cannot detach an event", async () => {
+    const off = vi.fn((event: string) => {
+      if (event === "AccountBeep") throw new Error("cross-compartment off failure");
+    });
+    const removeListener = vi.fn();
+    const socket = {
+      connected: true,
+      on: vi.fn(),
+      off,
+      removeListener,
+    };
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ServerSocket = socket as unknown as BCServerSocket;
+    globalThis.ServerSendBeepMessage = vi.fn();
+    globalThis.ServerSend = vi.fn();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    try {
+      await adapter.start();
+      adapter.stop();
+
+      expect(off).toHaveBeenCalledTimes(3);
+      expect(removeListener).toHaveBeenCalledOnce();
+      expect(removeListener).toHaveBeenCalledWith("AccountBeep", expect.any(Function));
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("socket.off"),
+        expect.any(Error),
+      );
+    } finally {
+      adapter.stop();
+      warning.mockRestore();
+    }
+  });
+
   it("uses the live BC socket for incoming Beeps and OnlineFriends even when hooks are unavailable", async () => {
     vi.useFakeTimers();
     const listeners = new Map<string, Set<(data: unknown) => void>>();
@@ -689,6 +1612,74 @@ describe("BCAdapter", () => {
     expect(replacementSocket.off).toHaveBeenCalledTimes(3);
   });
 
+  it("continues removing socket listeners and ModSDK hooks after individual cleanup failures", async () => {
+    vi.useFakeTimers();
+    type CapturedHook = (args: any[], next: (args: any[]) => unknown) => unknown;
+    const detachedEvents: string[] = [];
+    const socket = {
+      connected: true,
+      on: vi.fn(),
+      off: vi.fn((event: string) => {
+        detachedEvents.push(event);
+        if (event === "AccountBeep") throw new Error("stale socket listener");
+      }),
+    };
+    const removals: Array<{ name: string; remove: ReturnType<typeof vi.fn> }> = [];
+    const unload = vi.fn();
+    const liveSdk = (window as unknown as { bcModSdk?: unknown }).bcModSdk;
+    Object.defineProperty(window, "bcModSdk", {
+      configurable: true,
+      value: {
+        registerMod: () => ({
+          hookFunction: (name: string, _priority: number, _hook: CapturedHook) => {
+            const remove = vi.fn(() => {
+              if (name === "ServerSend") throw new Error("stale ModSDK hook");
+            });
+            removals.push({ name, remove });
+            return remove;
+          },
+          unload,
+        }),
+      },
+    });
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map(),
+    };
+    globalThis.ServerSocket = socket as unknown as BCServerSocket;
+    globalThis.ServerSendBeepMessage = vi.fn();
+    globalThis.ServerAccountBeep = vi.fn();
+    globalThis.ServerAccountQueryResult = vi.fn();
+    globalThis.FriendListLoadFriendList = vi.fn();
+    globalThis.ChatRoomMessage = vi.fn();
+    globalThis.ServerSend = vi.fn();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "0.24.0");
+
+    try {
+      await adapter.start();
+      expect(removals.some(({ name }) => name === "ServerSend")).toBe(true);
+
+      expect(() => adapter.stop()).not.toThrow();
+
+      expect(detachedEvents).toEqual([
+        "AccountBeep",
+        "AccountQueryResult",
+        "ChatRoomMessage",
+      ]);
+      expect(socket.off).toHaveBeenCalledTimes(3);
+      expect(removals.length).toBeGreaterThanOrEqual(5);
+      for (const { remove } of removals) expect(remove).toHaveBeenCalledOnce();
+      expect(unload).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalled();
+    } finally {
+      adapter.stop();
+      warning.mockRestore();
+      Object.defineProperty(window, "bcModSdk", { configurable: true, value: liveSdk });
+    }
+  });
+
   it("recovers incoming Beeps from the native Beep log without duplicating a socket event", async () => {
     vi.useFakeTimers();
     globalThis.Player = {
@@ -741,6 +1732,56 @@ describe("BCAdapter", () => {
 
     adapter.stop();
     vi.useRealTimers();
+  });
+
+  it("skips a revoked native Beep-log entry without losing later valid entries", async () => {
+    vi.useFakeTimers();
+    globalThis.Player = {
+      MemberNumber: 999,
+      Name: "AccountKiki",
+      FriendNames: new Map([[123, "AccountReina"]]),
+      FriendList: [123],
+    };
+    globalThis.ServerSendBeepMessage = vi.fn();
+    globalThis.ServerSend = vi.fn();
+    globalThis.ServerAccountBeep = vi.fn();
+    globalThis.FriendListBeepLog = [];
+    const bus = new EventBus<KikiLinkEvents>();
+    const incoming = vi.fn();
+    bus.on("beep:received", incoming);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = new BCAdapter(bus, "0.24.0");
+    await adapter.start();
+
+    const guarded = Proxy.revocable<BCFriendListBeepLogMessage>({
+      MemberNumber: 555,
+      MemberName: "Guarded",
+      Sent: false,
+      Time: new Date(),
+      Message: "Unreadable",
+    }, {});
+    guarded.revoke();
+    globalThis.FriendListBeepLog.push(
+      guarded.proxy,
+      {
+        MemberNumber: 123,
+        MemberName: "AccountReina",
+        Sent: false,
+        Time: new Date(),
+        Message: "Still recovered",
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(1_001);
+
+    expect(incoming).toHaveBeenCalledOnce();
+    expect(incoming).toHaveBeenCalledWith(expect.objectContaining({ content: "Still recovered" }));
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining("native Beep log entry"),
+      expect.any(Error),
+    );
+    adapter.stop();
+    warning.mockRestore();
   });
 
   it("shares the native character overlay without replacing other addon drawing", async () => {

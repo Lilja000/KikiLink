@@ -16,7 +16,9 @@ export interface RosterSyncResult {
   left: number[];
 }
 
-const HEARTBEAT_MS = 30_000;
+// Room joins/leaves are still detected every two seconds by the module. This slower persistence
+// heartbeat keeps long sessions current without rewriting the full account notebook twice a minute.
+const HEARTBEAT_MS = 5 * 60_000;
 
 export class LinkRosterService {
   readonly #present = new Map<number, RoomCharacter>();

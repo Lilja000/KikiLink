@@ -9,6 +9,20 @@ export interface KikiLinkNewsRelease {
 /** A compact, curated changelog for the in-addon News page. */
 export const KIKILINK_NEWS: readonly KikiLinkNewsRelease[] = [
   {
+    version: "0.24.0",
+    date: "2026-08-29",
+    title: "Group chats and addon profiles",
+    summary: "Small-group conversations, richer profiles, and safer room navigation arrive together.",
+    highlights: [
+      "Create a separate addon group with 2–4 group-compatible KikiLink friends (3–5 people total) and a fixed, clearly confirmed participant list.",
+      "Accept incoming groups only from known BC friends, with coalesced local saves and visible storage-retry feedback.",
+      "Keep your current room first in Lobbies through directory omissions, filters, and refresh failures, with a Current room badge and a native leave-then-join flow.",
+      "Open a compatible player's KikiLink profile from their avatar or action menu, with optional decorations and an Only visible to you notes, tags, room, and encounter section.",
+      "Keep profile-avatar loading under Ask first, Always show, or Links only privacy control, with bounded and cancellable requests.",
+      "Benefit from tighter packet validation, bounded account data, and more resilient storage without changing the proven Blossom hook.",
+    ],
+  },
+  {
     version: "0.23.0",
     date: "2026-08-27",
     title: "Rooms, contacts, and Gallery control",

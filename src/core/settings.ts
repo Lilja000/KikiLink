@@ -6,14 +6,20 @@ import {
 import { sanitizeReactionRules } from "../modules/link-reactions/reaction-rules";
 import { normalizeImageUrl } from "../modules/link-chat/media";
 
+export type KeyValueStorageReadResult =
+  | { ok: true; value: string | null }
+  | { ok: false };
+
 export interface KeyValueStorage {
   getItem(key: string): string | null;
+  /** Distinguishes an absent key from a contained browser-storage read failure. */
+  getItemResult?(key: string): KeyValueStorageReadResult;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 23,
+  schemaVersion: 24,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -60,6 +66,8 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     status: "online",
     statusMessage: "",
     avatarUrl: "",
+    avatarFrame: "none",
+    profileStyle: "classic",
     autoIdleMinutes: 10,
     afkAutoReply: {
       enabled: false,
@@ -178,6 +186,14 @@ export class MemoryKeyValueStorage implements KeyValueStorage {
     return this.#values.get(key) ?? null;
   }
 
+  getItemResult(key: string): KeyValueStorageReadResult {
+    try {
+      return { ok: true, value: this.getItem(key) };
+    } catch {
+      return { ok: false };
+    }
+  }
+
   setItem(key: string, value: string): void {
     this.#values.set(key, value);
   }
@@ -204,7 +220,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 23,
+    schemaVersion: 24,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -280,9 +296,19 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           : DEFAULT_SETTINGS.linkPresence.status,
       statusMessage:
         typeof linkPresence.statusMessage === "string"
-          ? linkPresence.statusMessage.trim().slice(0, 80)
+          ? cleanBoundedText(linkPresence.statusMessage, 80)
           : DEFAULT_SETTINGS.linkPresence.statusMessage,
       avatarUrl: sanitizeAvatarUrl(linkPresence.avatarUrl),
+      avatarFrame:
+        linkPresence.avatarFrame === "blossom" ||
+        linkPresence.avatarFrame === "rose" ||
+        linkPresence.avatarFrame === "starlight"
+          ? linkPresence.avatarFrame
+          : DEFAULT_SETTINGS.linkPresence.avatarFrame,
+      profileStyle:
+        linkPresence.profileStyle === "garden" || linkPresence.profileStyle === "midnight"
+          ? linkPresence.profileStyle
+          : DEFAULT_SETTINGS.linkPresence.profileStyle,
       autoIdleMinutes: integerInRange(
         linkPresence.autoIdleMinutes,
         0,
@@ -469,7 +495,10 @@ function sanitizeGallery(value: unknown): KikiLinkSettings["linkChat"]["gallery"
   const source = isRecord(value) ? value : {};
   const hiddenUrls = sanitizeImageUrlList(source.hiddenUrls, 80);
   const hidden = new Set(hiddenUrls);
-  const savedByUrl = new Map<string, { url: string; addedAt: number }>();
+  const savedByUrl = new Map<
+    string,
+    { url: string; addedAt: number; expiresAt?: number }
+  >();
   if (Array.isArray(source.saved)) {
     for (const candidate of source.saved.slice(0, 80)) {
       if (!isRecord(candidate)) continue;
@@ -481,7 +510,18 @@ function sanitizeGallery(value: unknown): KikiLinkSettings["linkChat"]["gallery"
         candidate.addedAt > 0
           ? Math.min(Date.now(), Math.round(candidate.addedAt))
           : Date.now();
-      savedByUrl.set(url, { url, addedAt });
+      const expiresAt =
+        typeof candidate.expiresAt === "number" &&
+        Number.isFinite(candidate.expiresAt) &&
+        candidate.expiresAt > addedAt &&
+        candidate.expiresAt <= 8_640_000_000_000_000
+          ? Math.round(candidate.expiresAt)
+          : undefined;
+      savedByUrl.set(url, {
+        url,
+        addedAt,
+        ...(expiresAt === undefined ? {} : { expiresAt }),
+      });
       if (savedByUrl.size >= 40) break;
     }
   }
@@ -619,7 +659,11 @@ function safeLocalId(value: unknown): string | undefined {
 
 function cleanBoundedText(value: unknown, maxLength: number): string {
   return typeof value === "string"
-    ? value.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, maxLength)
+    ? value
+        .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, " ")
+        .replace(/\s+/gu, " ")
+        .trim()
+        .slice(0, maxLength)
     : "";
 }
 

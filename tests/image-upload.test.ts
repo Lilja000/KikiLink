@@ -15,8 +15,11 @@ import {
 } from "../src/modules/link-chat/image-upload";
 import { installUserscriptUploadHost } from "../src/userscript-upload-host";
 
+const TEST_UPLOAD_CAPABILITY = "a".repeat(64);
+
 afterEach(() => {
   Reflect.deleteProperty(globalThis, "GM_xmlhttpRequest");
+  Reflect.deleteProperty(globalThis, "__KIKILINK_UPLOAD_CAPABILITY__");
   document.getElementById("kikilink-upload-bridge-v1")?.remove();
 });
 
@@ -279,7 +282,21 @@ describe("local image uploads", () => {
       });
       return { abort: vi.fn() };
     });
-    const uninstallHost = installUserscriptUploadHost();
+    Object.defineProperty(globalThis, "__KIKILINK_UPLOAD_CAPABILITY__", {
+      configurable: true,
+      value: TEST_UPLOAD_CAPABILITY,
+    });
+    const uninstallHost = installUserscriptUploadHost(TEST_UPLOAD_CAPABILITY);
+    // happy-dom exposes a distinct internal Window as MessageEvent.source. Real browsers preserve
+    // the same WindowProxy identity; dispatch exact metadata here so this remains an integration
+    // test for the client/host capability rather than a happy-dom identity quirk.
+    const postMessage = vi.spyOn(window, "postMessage").mockImplementation((data) => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data,
+        origin: window.location.origin,
+        source: window,
+      }));
+    });
     const file = new File([bytes(1, 2, 3, 4)], "private title.ogg", {
       type: "audio/ogg",
     });
@@ -299,6 +316,7 @@ describe("local image uploads", () => {
       expect((form.get("fileToUpload") as File).name).toBe("kikilink-track.ogg");
       expect(progress).toHaveBeenCalledWith({ loaded: 3, total: 4, percent: 75 });
     } finally {
+      postMessage.mockRestore();
       uninstallHost();
     }
   });

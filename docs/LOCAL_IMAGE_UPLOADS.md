@@ -34,14 +34,41 @@ persistent profile avatar should use a separately managed durable HTTPS link.
 6. KikiLink accepts only a direct HTTPS `litter.catbox.moe/<id>.webp` response with no credentials,
    query, or fragment, then sends that URL as a normal Beep.
 
+## Privileged upload bridge boundary
+
+The userscript sandbox keeps `GM_xmlhttpRequest`; Bondage Club and the KikiLink page runtime do not
+receive that privilege. Each page load creates a cryptographically random 256-bit capability and
+passes it only into the injected runtime's lexical scope. Upload requests must carry that capability,
+come from the same top-level window and exact HTTPS origin, use one of the two fixed provider
+endpoints, and pass the bounded multipart schema before the sandbox starts a request. The capability
+is never stored in the DOM marker, a window property, or responses.
+
+A hostile page-realm addon could still observe a legitimate upload request and learn its capability,
+so the token is defense in depth rather than the sole resource boundary. The sandbox independently
+allows at most two concurrent uploads, 12 admitted requests and 160 MiB per rolling 10-minute window,
+and one file of at most 80 MiB per request. Exceeding either rolling limit fails closed behind a
+one-minute cooldown. Final navigation aborts active transports and clears this state; a BFCache
+freeze retains the same capability and listener so restored uploads continue to work.
+
 ## Device Gallery
 
 Choosing `Add to Gallery` and selecting a local file follows the same validation and privacy
-preparation, but never performs step 5. The prepared WebP is written to an IndexedDB database whose
-name includes the authenticated BC MemberNumber. KikiLink asks the browser for persistent storage,
-keeps the record until the user deletes it, and does not put the blob in synchronized BC settings.
-Clearing the site's browser data still removes it. Selecting a device image as a room background is
-a separate explicit action that creates a temporary Litterbox link.
+preparation, but selection itself makes no network request. The final save action offers three
+explicit storage choices:
+
+- `This device` writes the prepared WebP to an IndexedDB database whose name includes the
+  authenticated BC MemberNumber. KikiLink asks the browser for persistent storage, keeps the record
+  until the user deletes it, and does not put the blob in synchronized BC settings. Clearing the
+  site's browser data still removes it.
+- `Catbox` uploads the prepared WebP anonymously and saves its long-lived public bearer link.
+  KikiLink does not set an automatic expiry, but the file is not guaranteed permanent: Catbox's
+  current policy can remove an anonymous file after two years without a download.
+- `Litterbox` uploads the prepared WebP anonymously and saves its public bearer link for the selected
+  1, 12, 24, or 72-hour lifetime.
+
+Device storage is the default. Catbox and Litterbox require choosing public storage and then the
+final upload action. Selecting a device image as a room background is a separate explicit action
+that creates a temporary Litterbox link.
 
 ## Device Music and room sharing
 
@@ -68,7 +95,13 @@ an HTML error page, KikiLink shows a short provider/status notice rather than ex
 - Uploads can fail because of provider availability or policy, browser content-security policy, or
   connectivity. A successful URL is kept in the link field if Beep sending fails, so it is not lost.
 
-Remote chat previews and profile avatars remain separate privacy decisions. The default chat preview
-preference is still `Ask before loading`; small profile avatars load automatically in identity lists.
-`Always show` loads chat media automatically and `Links only` never does. Image requests omit
-credentials and referrer data.
+Remote chat previews and profile avatars follow the same privacy preference. The default is
+`Ask before loading`: chat media stays behind a button and profile avatars stay as initials until
+`Show profile avatar` is chosen for that exact member-and-normalized-URL pair in the browser session;
+changing the advertised URL asks again. `Always show` loads both automatically; `Links only` loads
+neither. Image requests use anonymous CORS, omit credentials and referrer data, refuse redirects,
+reject local/private/reserved IP literals, validate the reported HTTPS URL, supported image MIME,
+and 5 MiB maximum, then expose only a local blob URL to the image element. The shared loader allows
+at most four active fetches and 32 active-plus-queued requests, uses a 15-second queue-and-transfer
+deadline, and cancels detached or replaced previews. A host without CORS support can still be opened
+through the original link.

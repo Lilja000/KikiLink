@@ -30,11 +30,11 @@ export class IndexedDbChatRepository implements ChatRepository {
     const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
     const messages: LinkMessage[] = [];
 
-    await iterateCursor(index.openCursor(range, "prev"), (cursor) => {
+    const cursor = iterateCursor(index.openCursor(range, "prev"), (cursor) => {
       messages.push(cursor.value as LinkMessage);
       return messages.length < limit;
     });
-    await done;
+    await Promise.all([cursor, done]);
     return messages.reverse();
   }
 
@@ -42,22 +42,22 @@ export class IndexedDbChatRepository implements ChatRepository {
     const database = await this.#database();
     const transaction = database.transaction(CONVERSATION_STORE, "readonly");
     const done = transactionDone(transaction);
-    const value = await requestResult<ConversationMeta | undefined>(
+    const value = requestResult<ConversationMeta | undefined>(
       transaction.objectStore(CONVERSATION_STORE).get(peerNumber),
     );
-    await done;
-    return value;
+    const [conversation] = await Promise.all([value, done]);
+    return conversation;
   }
 
   async listConversations(): Promise<ConversationMeta[]> {
     const database = await this.#database();
     const transaction = database.transaction(CONVERSATION_STORE, "readonly");
     const done = transactionDone(transaction);
-    const values = await requestResult<ConversationMeta[]>(
+    const values = requestResult<ConversationMeta[]>(
       transaction.objectStore(CONVERSATION_STORE).getAll(),
     );
-    await done;
-    return values.sort(sortConversations);
+    const [conversations] = await Promise.all([values, done]);
+    return conversations.sort(sortConversations);
   }
 
   async putConversation(conversation: ConversationMeta): Promise<void> {
@@ -75,11 +75,11 @@ export class IndexedDbChatRepository implements ChatRepository {
     transaction.objectStore(CONVERSATION_STORE).delete(peerNumber);
     const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
     const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, Number.MAX_SAFE_INTEGER]);
-    await iterateCursor(index.openCursor(range), (cursor) => {
+    const cursor = iterateCursor(index.openCursor(range), (cursor) => {
       cursor.delete();
       return true;
     });
-    await done;
+    await Promise.all([cursor, done]);
   }
 
   async deleteMessagesOlderThan(timestamp: number): Promise<number> {
@@ -90,12 +90,12 @@ export class IndexedDbChatRepository implements ChatRepository {
     const range = IDBKeyRange.upperBound(timestamp, true);
     let removed = 0;
 
-    await iterateCursor(index.openCursor(range), (cursor) => {
+    const cursor = iterateCursor(index.openCursor(range), (cursor) => {
       cursor.delete();
       removed += 1;
       return true;
     });
-    await done;
+    await Promise.all([cursor, done]);
     return removed;
   }
 
@@ -108,7 +108,7 @@ export class IndexedDbChatRepository implements ChatRepository {
     let visited = 0;
     let removed = 0;
 
-    await iterateCursor(index.openCursor(range, "prev"), (cursor) => {
+    const cursor = iterateCursor(index.openCursor(range, "prev"), (cursor) => {
       visited += 1;
       if (visited > keepNewest) {
         cursor.delete();
@@ -116,7 +116,7 @@ export class IndexedDbChatRepository implements ChatRepository {
       }
       return true;
     });
-    await done;
+    await Promise.all([cursor, done]);
     return removed;
   }
 
@@ -131,7 +131,7 @@ export class IndexedDbChatRepository implements ChatRepository {
 
   close(): void {
     if (!this.#databasePromise) return;
-    void this.#databasePromise.then((database) => database.close());
+    void this.#databasePromise.then((database) => database.close()).catch(() => undefined);
     this.#databasePromise = undefined;
   }
 
@@ -144,8 +144,15 @@ export class IndexedDbChatRepository implements ChatRepository {
 function openDatabase(databaseName: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(databaseName, DATABASE_VERSION);
-    request.onerror = () => reject(request.error ?? new Error("Unable to open KikiLink storage"));
-    request.onblocked = () => reject(new Error("KikiLink storage upgrade is blocked"));
+    let settled = false;
+    const rejectOnce = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    request.onerror = () =>
+      rejectOnce(request.error ?? new Error("Unable to open KikiLink storage"));
+    request.onblocked = () => rejectOnce(new Error("KikiLink storage upgrade is blocked"));
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains(MESSAGE_STORE)) {
@@ -157,7 +164,18 @@ function openDatabase(databaseName: string): Promise<IDBDatabase> {
         database.createObjectStore(CONVERSATION_STORE, { keyPath: "peerNumber" });
       }
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const database = request.result;
+      database.onversionchange = () => database.close();
+      if (settled) {
+        // A blocked request may still succeed after the caller has already switched to the
+        // memory fallback. Do not leak that late database connection.
+        database.close();
+        return;
+      }
+      settled = true;
+      resolve(database);
+    };
   });
 }
 

@@ -24,6 +24,11 @@ const KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
 const MAX_PROTOCOL_PAYLOAD = 700;
 const CUSTOM_ACTIVITY_HOOK_COUNT = 6;
 const CHARACTER_OVERLAY_HOOK_NAME = "ChatRoomDrawCharacterStatusIcons";
+const ROOM_LEAVE_TIMEOUT_MS = 35_000;
+const ROOM_JOIN_RESPONSE_TIMEOUT_MS = 8_000;
+const ROOM_SYNC_TIMEOUT_MS = 8_000;
+const ROOM_SYNC_QUARANTINE_MS = 7_000;
+const ROOM_TRANSITION_POLL_MS = 100;
 
 interface RecentIncoming {
   fingerprint: string;
@@ -149,6 +154,18 @@ export class BCAdapter {
   #onlineFriendSignature: string | undefined;
   #compatibilityHooksInitialized = false;
   #roomMessageHookInstalled = false;
+  #roomMembershipObservationFailed = false;
+  #roomNameObservationFailed = false;
+  #joinRoomPromise: Promise<void> | undefined;
+  #joinRoomTargetKey: string | undefined;
+  #joinRoomAbortController: AbortController | undefined;
+  #joinRoomQuarantine:
+    | {
+        controller: AbortController;
+        targetKey: string;
+        promise: Promise<void>;
+      }
+    | undefined;
 
   readonly #socketBeepListener = (data: BCServerAccountBeepResponse): void => {
     this.#captureIncomingPayload(data);
@@ -194,6 +211,11 @@ export class BCAdapter {
   stop(): void {
     this.#stopped = true;
     this.#ready = false;
+    this.#joinRoomAbortController?.abort();
+    this.#joinRoomAbortController = undefined;
+    this.#joinRoomPromise = undefined;
+    this.#joinRoomTargetKey = undefined;
+    this.#joinRoomQuarantine = undefined;
     this.#onlineFriends.clear();
     this.#nicknameCache.clear();
     this.#recentIncoming.splice(0);
@@ -211,8 +233,18 @@ export class BCAdapter {
     this.#beepLogTimer = undefined;
     this.#compatibilityHookRetryTimer = undefined;
     this.#detachSocketListeners();
-    for (const unhook of this.#unhooks.splice(0).reverse()) unhook();
-    this.#modApi?.unload();
+    for (const unhook of this.#unhooks.splice(0).reverse()) {
+      try {
+        unhook();
+      } catch (error) {
+        this.#logger.warn("A stale ModSDK hook could not be removed cleanly", error);
+      }
+    }
+    try {
+      this.#modApi?.unload();
+    } catch (error) {
+      this.#logger.warn("ModSDK unload did not finish cleanly", error);
+    }
     this.#modApi = undefined;
     this.#compatibilityHooksInitialized = false;
     this.#roomMessageHookInstalled = false;
@@ -253,6 +285,11 @@ export class BCAdapter {
 
   getOnlineFriends(): OnlineFriend[] {
     return [...this.#onlineFriends.values()].map((friend) => ({ ...friend }));
+  }
+
+  getOnlineFriend(memberNumber: number): OnlineFriend | undefined {
+    const friend = this.#onlineFriends.get(memberNumber);
+    return friend ? { ...friend } : undefined;
   }
 
   hasOnlineFriendSnapshot(): boolean {
@@ -393,25 +430,54 @@ export class BCAdapter {
   }
 
   getOwnMemberNumber(): number {
-    if (typeof Player !== "object" || Player === null) return -1;
-    return Number.isSafeInteger(Player.MemberNumber) ? Player.MemberNumber : -1;
+    try {
+      if (typeof Player !== "object" || Player === null) return -1;
+      return Number.isSafeInteger(Player.MemberNumber) ? Player.MemberNumber : -1;
+    } catch {
+      // Firefox can revoke a cross-compartment Player proxy during a native refresh.
+      return -1;
+    }
   }
 
   getOwnName(): string {
-    if (typeof Player !== "object" || Player === null) return "me";
-    return cleanName(Player.Nickname) ?? cleanName(Player.Name) ?? "me";
+    try {
+      if (typeof Player !== "object" || Player === null) return "me";
+      return cleanName(Player.Nickname) ?? cleanName(Player.Name) ?? "me";
+    } catch {
+      return "me";
+    }
   }
 
   isInChatRoom(): boolean {
-    if (typeof ServerPlayerIsInChatRoom === "function") {
-      return ServerPlayerIsInChatRoom();
+    try {
+      if (typeof ServerPlayerIsInChatRoom === "function") {
+        const inRoom = ServerPlayerIsInChatRoom();
+        this.#roomMembershipObservationFailed = false;
+        return inRoom;
+      }
+    } catch (error) {
+      // Patched functions and Firefox cross-compartment wrappers can become temporarily
+      // unreadable. Fall through to BC's older screen/character signal instead of allowing the
+      // exception to escape into UI click handlers or a room-transition polling callback.
+      if (!this.#roomMembershipObservationFailed) {
+        this.#logger.warn("Bondage Club's room membership state was not readable", error);
+        this.#roomMembershipObservationFailed = true;
+      }
     }
-    return (
-      typeof CurrentScreen === "string" &&
-      CurrentScreen === "ChatRoom" &&
-      typeof ChatRoomCharacter !== "undefined" &&
-      Array.isArray(ChatRoomCharacter)
-    );
+    try {
+      return (
+        typeof CurrentScreen === "string" &&
+        CurrentScreen === "ChatRoom" &&
+        typeof ChatRoomCharacter !== "undefined" &&
+        Array.isArray(ChatRoomCharacter)
+      );
+    } catch (error) {
+      if (!this.#roomMembershipObservationFailed) {
+        this.#logger.warn("Bondage Club's fallback room state was not readable", error);
+        this.#roomMembershipObservationFailed = true;
+      }
+      return false;
+    }
   }
 
   canSendRoomEmote(): boolean {
@@ -455,9 +521,58 @@ export class BCAdapter {
   }
 
   getCurrentRoomName(): string | undefined {
-    if (!this.isInChatRoom()) return undefined;
-    if (typeof ChatRoomData === "undefined" || ChatRoomData === null) return undefined;
-    return cleanName(ChatRoomData.Name);
+    try {
+      if (!this.isInChatRoom()) return undefined;
+      if (typeof ChatRoomData === "undefined" || ChatRoomData === null) return undefined;
+      const roomName = cleanName(ChatRoomData.Name);
+      this.#roomNameObservationFailed = false;
+      return roomName;
+    } catch (error) {
+      if (!this.#roomNameObservationFailed) {
+        this.#logger.warn("Bondage Club's current room name was not readable", error);
+        this.#roomNameObservationFailed = true;
+      }
+      return undefined;
+    }
+  }
+
+  getCurrentLobbyRoom(): BCLobbyRoom | undefined {
+    try {
+      if (!this.isInChatRoom() || typeof ChatRoomData !== "object" || ChatRoomData === null) {
+        return undefined;
+      }
+      const name = cleanName(ChatRoomData.Name);
+      if (!name) return undefined;
+      const roomCharacters = this.getRoomCharacters();
+      const friends = roomCharacters
+        .filter((character) => character.isFriend)
+        .map((character) => ({
+          memberNumber: character.memberNumber,
+          memberName: character.memberName,
+        }));
+      const visibility = cleanStringArray(ChatRoomData.Visibility, 8, 30);
+      const access = cleanStringArray(ChatRoomData.Access, 8, 30);
+      return {
+        name,
+        description: cleanText(ChatRoomData.Description, 500),
+        language: cleanText(ChatRoomData.Language, 24),
+        memberCount: Array.isArray(ChatRoomCharacter) ? ChatRoomCharacter.length : roomCharacters.length + 1,
+        memberLimit:
+          Number.isSafeInteger(ChatRoomData.Limit) && Number(ChatRoomData.Limit) > 0
+            ? Number(ChatRoomData.Limit)
+            : Math.max(roomCharacters.length + 1, 1),
+        canJoin: true,
+        locked: access.length > 0 && !access.includes("All"),
+        privateRoom: visibility.length > 0 && !visibility.includes("All"),
+        mapType: typeof ChatRoomData.MapData === "object" && ChatRoomData.MapData !== null
+          ? normalizeLobbyMapType("map")
+          : "",
+        friends,
+      };
+    } catch (error) {
+      this.#logger.warn("Current room summary was not readable during a native refresh", error);
+      return undefined;
+    }
   }
 
   getRoomAdminSnapshot(): BCRoomAdminSnapshot | undefined {
@@ -696,18 +811,189 @@ export class BCAdapter {
           right.friends.length - left.friends.length ||
           Number(right.canJoin) - Number(left.canJoin) ||
           left.name.localeCompare(right.name),
-        );
+        )
+        .slice(0, 500);
     } catch (error) {
       this.#logger.warn("Room directory could not be read", error);
       throw new Error("Bondage Club could not refresh the room list");
     }
   }
 
-  joinRoom(name: string): void {
+  joinRoom(name: string): Promise<void> {
     const roomName = cleanText(name, 80);
-    if (!roomName) throw new Error("Choose a room first");
-    if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
-    ServerSend("ChatRoomJoin", { Name: roomName });
+    if (!roomName) return Promise.reject(new Error("Choose a room first"));
+    const targetKey = lobbyRoomNameKey(roomName);
+
+    // A second native leave attempt cancels BC's slow-leave state. Share the active transition
+    // only when it has the same normalized target. A different target must fail before it can
+    // start a second native request or misleadingly resolve with the first room's result.
+    if (this.#joinRoomPromise) {
+      if (this.#joinRoomTargetKey === targetKey) return this.#joinRoomPromise;
+      return Promise.reject(
+        new Error(
+          `Already joining another room. Wait for that join to finish before choosing “${roomName}”.`,
+        ),
+      );
+    }
+    const quarantine = this.#joinRoomQuarantine;
+    if (quarantine) {
+      if (quarantine.targetKey === targetKey) return quarantine.promise;
+      return Promise.reject(
+        new Error(
+          "Bondage Club is still finishing the previous room join. Wait a moment before choosing another room.",
+        ),
+      );
+    }
+    if (typeof ServerSend !== "function") {
+      return Promise.reject(new Error("Bondage Club is still connecting"));
+    }
+
+    const currentName = this.getCurrentRoomName();
+    if (currentName && lobbyRoomNameKey(currentName) === targetKey) {
+      return Promise.resolve();
+    }
+    const controller = new AbortController();
+    this.#joinRoomAbortController = controller;
+    this.#joinRoomTargetKey = targetKey;
+    const transition = this.#joinRoomSafely(roomName, controller);
+    const shared = transition.finally(() => {
+      if (this.#joinRoomAbortController !== controller) return;
+      this.#joinRoomPromise = undefined;
+      this.#joinRoomTargetKey = undefined;
+      if (this.#joinRoomQuarantine?.controller !== controller) {
+        this.#joinRoomAbortController = undefined;
+      }
+    });
+    this.#joinRoomPromise = shared;
+    return shared;
+  }
+
+  async #joinRoomSafely(roomName: string, controller: AbortController): Promise<void> {
+    const signal = controller.signal;
+    throwIfRoomJoinAborted(signal);
+    if (this.isInChatRoom()) {
+      let alreadyLeaving = false;
+      try {
+        alreadyLeaving =
+          typeof ChatRoomIsLeavingSlowly === "function" && ChatRoomIsLeavingSlowly();
+      } catch (error) {
+        this.#logger.warn("Bondage Club's slow-leave state was not readable", error);
+      }
+      if (!alreadyLeaving) {
+        if (
+          typeof ChatRoomCanLeave !== "function" ||
+          typeof ChatRoomAttemptLeave !== "function"
+        ) {
+          throw new Error("Leave this room with Bondage Club first, then try joining again");
+        }
+        let canLeave = false;
+        try {
+          canLeave = ChatRoomCanLeave();
+        } catch (error) {
+          this.#logger.warn("Bondage Club could not check whether the room can be left", error);
+        }
+        if (!canLeave) {
+          throw new Error("Bondage Club currently prevents you from leaving this room");
+        }
+
+        // Calling this a second time cancels BC's native slow-leave timer, so it is only invoked
+        // when no native/addon transition is already in progress.
+        ChatRoomAttemptLeave();
+      }
+    }
+
+    // ServerPlayerIsInChatRoom can turn false one tick before BC clears the previous
+    // ChatRoomData object. Joining during that gap is still an AlreadyInRoom race on the native
+    // server path, so require both halves of BC's membership state to settle every time.
+    await waitForRoomTransition(
+      () => !this.isInChatRoom() && (typeof ChatRoomData === "undefined" || ChatRoomData === null),
+      ROOM_LEAVE_TIMEOUT_MS,
+      "Leaving the current room did not finish. The join was cancelled safely.",
+      signal,
+    );
+
+    throwIfRoomJoinAborted(signal);
+    if (typeof ServerRoomJoin === "function") {
+      let result: BCServerResult<string> | typeof ROOM_JOIN_RESPONSE_TIMED_OUT;
+      try {
+        // Invoke on a promise turn so a wrapper that throws synchronously is handled exactly like
+        // a rejected native request. The bounded waiter installs both fulfillment and rejection
+        // handlers immediately, so a stopped/timed-out request can never cause an unhandled late
+        // rejection after KikiLink has moved on.
+        const nativeJoin = Promise.resolve().then(() => ServerRoomJoin(roomName));
+        result = await waitForNativeRoomJoin(
+          nativeJoin,
+          ROOM_JOIN_RESPONSE_TIMEOUT_MS,
+          signal,
+        );
+      } catch (error) {
+        throwIfRoomJoinAborted(signal);
+        throw new Error(roomJoinErrorMessage(error));
+      }
+      throwIfRoomJoinAborted(signal);
+      if (result === ROOM_JOIN_RESPONSE_TIMED_OUT) {
+        // Some wrappers fail to settle their returned promise even though BC can still deliver the
+        // exact ChatRoomSync. Accept an already-observed target; otherwise retain the same bounded
+        // quarantine used for a late sync after a successful response.
+        if (
+          this.isInChatRoom() &&
+          lobbyRoomNameKey(this.getCurrentRoomName() ?? "") === lobbyRoomNameKey(roomName)
+        ) {
+          return;
+        }
+        this.#beginRoomJoinQuarantine(roomName, controller);
+        throw new Error("Bondage Club timed out while joining that room");
+      }
+      const failure = serverResultFailure(result);
+      if (failure !== undefined) {
+        throw new Error(roomJoinErrorMessage(failure));
+      }
+    } else if (typeof ChatSearchJoin === "function") {
+      ChatSearchJoin(roomName);
+    } else {
+      // Compatibility with older clients is safe only after native membership and ChatRoomData
+      // are both gone. A raw join while still in a room triggers BC's AlreadyInRoom guard.
+      ServerSend("ChatRoomJoin", { Name: roomName });
+    }
+
+    try {
+      await waitForRoomTransition(
+        () =>
+          this.isInChatRoom() &&
+          lobbyRoomNameKey(this.getCurrentRoomName() ?? "") === lobbyRoomNameKey(roomName),
+        ROOM_SYNC_TIMEOUT_MS,
+        `Bondage Club did not finish loading “${roomName}”`,
+        signal,
+      );
+    } catch (error) {
+      // The native join response can arrive before the exact ChatRoomSync. Report the normal
+      // timeout after eight seconds, but keep a short bounded quarantine so a second target cannot
+      // race a late sync from the first native request.
+      throwIfRoomJoinAborted(signal);
+      this.#beginRoomJoinQuarantine(roomName, controller);
+      throw error;
+    }
+  }
+
+  #beginRoomJoinQuarantine(roomName: string, controller: AbortController): void {
+    const targetKey = lobbyRoomNameKey(roomName);
+    const promise = waitForRoomTransition(
+      () =>
+        this.isInChatRoom() &&
+        lobbyRoomNameKey(this.getCurrentRoomName() ?? "") === targetKey,
+      ROOM_SYNC_QUARANTINE_MS,
+      `Bondage Club still did not finish loading “${roomName}”`,
+      controller.signal,
+    );
+    const quarantine = { controller, targetKey, promise };
+    this.#joinRoomQuarantine = quarantine;
+    void promise.catch(() => undefined).finally(() => {
+      if (this.#joinRoomQuarantine !== quarantine) return;
+      this.#joinRoomQuarantine = undefined;
+      if (this.#joinRoomAbortController === controller) {
+        this.#joinRoomAbortController = undefined;
+      }
+    });
   }
 
   runRoomMemberAction(memberNumber: number, action: BCRoomMemberAction): void {
@@ -817,10 +1103,18 @@ export class BCAdapter {
   getRecentBeeps(limit = 100): BeepEvent[] {
     if (typeof FriendListBeepLog === "undefined" || !Array.isArray(FriendListBeepLog)) return [];
 
-    return FriendListBeepLog.slice(-Math.max(0, limit))
-      .map((entry) => this.#normalizeBeepLogEntry(entry))
-      .filter((event): event is BeepEvent => event !== null)
-      .sort((left, right) => left.sentAt - right.sentAt);
+    const events: BeepEvent[] = [];
+    for (const entry of FriendListBeepLog.slice(-Math.max(0, limit))) {
+      try {
+        const event = this.#normalizeBeepLogEntry(entry);
+        if (event) events.push(event);
+      } catch (error) {
+        // A revoked Firefox cross-compartment object must not hide later valid history during the
+        // startup import. The polling path applies the same per-entry isolation.
+        this.#logger.warn("A recent native Beep log entry was not readable", error);
+      }
+    }
+    return events.sort((left, right) => left.sentAt - right.sentAt);
   }
 
   #installCompatibilityHooks(): void {
@@ -1158,13 +1452,13 @@ export class BCAdapter {
   }
 
   #attachSocketListeners(): void {
-    const socket =
-      typeof ServerSocket === "object" && ServerSocket !== null ? ServerSocket : undefined;
-    if (socket === this.#socket) return;
-    this.#detachSocketListeners();
-    if (!socket || typeof socket.on !== "function") return;
-    this.#socket = socket;
     try {
+      const socket =
+        typeof ServerSocket === "object" && ServerSocket !== null ? ServerSocket : undefined;
+      if (socket === this.#socket) return;
+      this.#detachSocketListeners();
+      if (!socket || typeof socket.on !== "function") return;
+      this.#socket = socket;
       socket.on("AccountBeep", this.#socketBeepListener);
       socket.on("AccountQueryResult", this.#socketQueryListener);
       socket.on("ChatRoomMessage", this.#socketRoomMessageListener);
@@ -1179,15 +1473,34 @@ export class BCAdapter {
     const socket = this.#socket;
     this.#socket = undefined;
     if (!socket) return;
-    if (typeof socket.off === "function") {
-      socket.off("AccountBeep", this.#socketBeepListener);
-      socket.off("AccountQueryResult", this.#socketQueryListener);
-      socket.off("ChatRoomMessage", this.#socketRoomMessageListener);
-      return;
+    const removeWith = (
+      method: "off" | "removeListener",
+      event: string,
+      listener: (...args: never[]) => void,
+    ): boolean => {
+      try {
+        const candidate = socket[method] as unknown;
+        if (typeof candidate !== "function") return false;
+        (candidate as (event: string, listener: (...args: never[]) => void) => unknown).call(
+          socket,
+          event,
+          listener,
+        );
+        return true;
+      } catch (error) {
+        this.#logger.warn(`Could not detach the ${event} listener with socket.${method}`, error);
+        return false;
+      }
+    };
+    for (const [event, listener] of [
+      ["AccountBeep", this.#socketBeepListener],
+      ["AccountQueryResult", this.#socketQueryListener],
+      ["ChatRoomMessage", this.#socketRoomMessageListener],
+    ] as const) {
+      if (!removeWith("off", event, listener)) {
+        removeWith("removeListener", event, listener);
+      }
     }
-    socket.removeListener?.("AccountBeep", this.#socketBeepListener);
-    socket.removeListener?.("AccountQueryResult", this.#socketQueryListener);
-    socket.removeListener?.("ChatRoomMessage", this.#socketRoomMessageListener);
   }
 
   #captureOutgoingServerPacket(messageType: unknown, payload: unknown): void {
@@ -1227,16 +1540,20 @@ export class BCAdapter {
   }
 
   #captureIncomingPayload(data: BCServerAccountBeepResponse): void {
-    if (!data || typeof data !== "object" || Array.isArray(data)) return;
-    if (this.#seenIncomingPayloads.has(data)) return;
-    this.#seenIncomingPayloads.add(data);
+    try {
+      if (!data || typeof data !== "object" || Array.isArray(data)) return;
+      if (this.#seenIncomingPayloads.has(data)) return;
+      this.#seenIncomingPayloads.add(data);
 
-    const protocol = this.#normalizeBeepProtocol(data);
-    if (protocol) this.bus.emit("bc:protocol", protocol);
-    const event = this.#normalizeIncoming(data);
-    if (!event) return;
-    this.#rememberIncoming(event);
-    this.bus.emit("beep:received", event);
+      const protocol = this.#normalizeBeepProtocol(data);
+      if (protocol) this.bus.emit("bc:protocol", protocol);
+      const event = this.#normalizeIncoming(data);
+      if (!event) return;
+      this.#rememberIncoming(event);
+      this.bus.emit("beep:received", event);
+    } catch (error) {
+      this.#logger.warn("Incoming AccountBeep metadata was not readable", error);
+    }
   }
 
   #initializeBeepLogCursor(): void {
@@ -1252,12 +1569,18 @@ export class BCAdapter {
     const entries = FriendListBeepLog.slice(this.#beepLogCursor);
     this.#beepLogCursor = FriendListBeepLog.length;
     for (const entry of entries) {
-      const event = this.#normalizeBeepLogEntry(entry);
-      if (!event) continue;
-      if (entry.Sent) {
-        this.#captureOutgoing(event, "log");
-      } else if (!this.#consumeRememberedIncoming(event)) {
-        this.bus.emit("beep:received", event);
+      try {
+        const event = this.#normalizeBeepLogEntry(entry);
+        if (!event) continue;
+        if (entry.Sent) {
+          this.#captureOutgoing(event, "log");
+        } else if (!this.#consumeRememberedIncoming(event)) {
+          this.bus.emit("beep:received", event);
+        }
+      } catch (error) {
+        // Firefox can leave a revoked cross-compartment object in the native log. Skip only that
+        // entry so later valid Beeps in the same polling batch are still recovered.
+        this.#logger.warn("A native Beep log entry was not readable", error);
       }
     }
     this.#pruneRememberedIncoming();
@@ -1397,64 +1720,73 @@ export class BCAdapter {
   }
 
   #captureOnlineFriends(data: BCAccountQueryResponse | BCOnlineFriendInfo[]): void {
-    const result = Array.isArray(data)
-      ? data
-      : data && data.Query === "OnlineFriends" && Array.isArray(data.Result)
-        ? data.Result
-        : undefined;
-    if (!result) return;
-    const friends = result
-      .map((entry): OnlineFriend | null => {
-        if (
-          !entry ||
-          typeof entry !== "object" ||
-          !("MemberNumber" in entry) ||
-          !Number.isSafeInteger(entry.MemberNumber) ||
-          !("MemberName" in entry) ||
-          typeof entry.MemberName !== "string"
-        ) {
-          return null;
+    try {
+      const result = Array.isArray(data)
+        ? data
+        : data && data.Query === "OnlineFriends" && Array.isArray(data.Result)
+          ? data.Result
+          : undefined;
+      if (!result) return;
+      const friends: OnlineFriend[] = [];
+      for (const entry of result) {
+        try {
+          if (
+            !entry ||
+            typeof entry !== "object" ||
+            !("MemberNumber" in entry) ||
+            !Number.isSafeInteger(entry.MemberNumber) ||
+            !("MemberName" in entry) ||
+            typeof entry.MemberName !== "string"
+          ) {
+            continue;
+          }
+          const nickname = "MemberNickname" in entry ? cleanName(entry.MemberNickname) : undefined;
+          if (nickname) this.#nicknameCache.set(entry.MemberNumber, nickname);
+          const roomName = "ChatRoomName" in entry ? cleanName(entry.ChatRoomName) : undefined;
+          const roomSpace = "ChatRoomSpace" in entry ? cleanName(entry.ChatRoomSpace) : undefined;
+          const relationship = entry.Type === "Submissive"
+            ? "sub"
+            : entry.Type === "Lover"
+              ? "lover"
+              : undefined;
+          friends.push({
+            memberNumber: entry.MemberNumber,
+            memberName: nickname ?? (entry.MemberName.trim() || `Member ${entry.MemberNumber}`),
+            privateRoom: "Private" in entry && entry.Private === true,
+            ...(roomName ? { roomName } : {}),
+            ...(roomSpace ? { roomSpace } : {}),
+            ...(relationship ? { relationship } : {}),
+          });
+        } catch (error) {
+          // One revoked Firefox cross-compartment entry must not discard the rest of a valid
+          // OnlineFriends snapshot.
+          this.#logger.warn("An online friend entry was not readable", error);
         }
-        const nickname = "MemberNickname" in entry ? cleanName(entry.MemberNickname) : undefined;
-        if (nickname) this.#nicknameCache.set(entry.MemberNumber, nickname);
-        const roomName = "ChatRoomName" in entry ? cleanName(entry.ChatRoomName) : undefined;
-        const roomSpace = "ChatRoomSpace" in entry ? cleanName(entry.ChatRoomSpace) : undefined;
-        const relationship = entry.Type === "Submissive"
-          ? "sub"
-          : entry.Type === "Lover"
-            ? "lover"
-            : undefined;
-        return {
-          memberNumber: entry.MemberNumber,
-          memberName: nickname ?? (entry.MemberName.trim() || `Member ${entry.MemberNumber}`),
-          privateRoom: "Private" in entry && entry.Private === true,
-          ...(roomName ? { roomName } : {}),
-          ...(roomSpace ? { roomSpace } : {}),
-          ...(relationship ? { relationship } : {}),
-        };
-      })
-      .filter((entry): entry is OnlineFriend => entry !== null);
+      }
 
-    const signature = friends
-      .map((friend) =>
-        [
-          friend.memberNumber,
-          friend.memberName,
-          friend.roomName ?? "",
-          friend.roomSpace ?? "",
-          friend.privateRoom ? 1 : 0,
-          friend.relationship ?? "",
-        ].join("\u001f"),
-      )
-      .sort()
-      .join("\u001e");
+      const signature = friends
+        .map((friend) =>
+          [
+            friend.memberNumber,
+            friend.memberName,
+            friend.roomName ?? "",
+            friend.roomSpace ?? "",
+            friend.privateRoom ? 1 : 0,
+            friend.relationship ?? "",
+          ].join("\u001f"),
+        )
+        .sort()
+        .join("\u001e");
 
-    this.#onlineFriends.clear();
-    for (const friend of friends) this.#onlineFriends.set(friend.memberNumber, friend);
-    this.#hasOnlineFriendSnapshot = true;
-    if (signature === this.#onlineFriendSignature) return;
-    this.#onlineFriendSignature = signature;
-    this.bus.emit("bc:online-friends", { friends: this.getOnlineFriends(), receivedAt: Date.now() });
+      this.#onlineFriends.clear();
+      for (const friend of friends) this.#onlineFriends.set(friend.memberNumber, friend);
+      this.#hasOnlineFriendSnapshot = true;
+      if (signature === this.#onlineFriendSignature) return;
+      this.#onlineFriendSignature = signature;
+      this.bus.emit("bc:online-friends", { friends: this.getOnlineFriends(), receivedAt: Date.now() });
+    } catch (error) {
+      this.#logger.warn("Online friend metadata was not readable", error);
+    }
   }
 
   #normalizeOutgoing(
@@ -1490,6 +1822,155 @@ function protocolWire(payload: string): string {
     throw new Error(`KikiLink protocol payload must be 1-${MAX_PROTOCOL_PAYLOAD} characters`);
   }
   return `${KIKILINK_PROTOCOL_PREFIX}${value}`;
+}
+
+function lobbyRoomNameKey(value: string): string {
+  return value.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+}
+
+const ROOM_JOIN_RESPONSE_TIMED_OUT = Symbol("room-join-response-timed-out");
+
+function waitForNativeRoomJoin<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<T | typeof ROOM_JOIN_RESPONSE_TIMED_OUT> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (
+      outcome:
+        | { type: "value"; value: T | typeof ROOM_JOIN_RESPONSE_TIMED_OUT }
+        | { type: "error"; error: unknown },
+    ): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      if (outcome.type === "error") reject(outcome.error);
+      else resolve(outcome.value);
+    };
+    const onAbort = (): void => finish({ type: "error", error: roomJoinCancelledError() });
+
+    // Attach both branches even if abort/timeout wins. This consumes any later rejection from a
+    // native or addon wrapper without keeping the public room transition pending indefinitely.
+    void operation.then(
+      (value) => finish({ type: "value", value }),
+      (error: unknown) => finish({ type: "error", error }),
+    );
+    signal.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(
+      () => finish({ type: "value", value: ROOM_JOIN_RESPONSE_TIMED_OUT }),
+      timeoutMs,
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+function waitForRoomTransition(
+  predicate: () => boolean,
+  timeoutMs: number,
+  timeoutMessage: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = (): void => finish(roomJoinCancelledError());
+    const check = (): void => {
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      try {
+        if (predicate()) {
+          finish();
+          return;
+        }
+      } catch {
+        // Native globals can be replaced between screens. Retry until the bounded deadline.
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        finish(new Error(timeoutMessage));
+        return;
+      }
+      timer = setTimeout(check, ROOM_TRANSITION_POLL_MS);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    check();
+  });
+}
+
+function throwIfRoomJoinAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw roomJoinCancelledError();
+}
+
+function roomJoinCancelledError(): Error {
+  return new Error("Room join was cancelled because KikiLink stopped");
+}
+
+function roomJoinErrorMessage(value: unknown): string {
+  const source = (() => {
+    if (typeof value === "string") return value;
+    if (value && typeof value === "object") {
+      try {
+        const record = value as { message?: unknown; name?: unknown; error?: unknown; err?: unknown };
+        if (typeof record.message === "string") return record.message;
+        if (typeof record.name === "string") return record.name;
+        if (typeof record.error === "string") return record.error;
+        if (typeof record.err === "string") return record.err;
+      } catch {
+        // Firefox can guard objects originating in another addon's compartment.
+      }
+    }
+    return "";
+  })();
+  const normalized = source.toLocaleLowerCase();
+  if (normalized.includes("full")) return "That room is full";
+  if (normalized.includes("lock")) return "That room is locked";
+  if (normalized.includes("ban") || normalized.includes("kick")) {
+    return "Bondage Club does not allow this account to join that room";
+  }
+  if (normalized.includes("find") || normalized.includes("exist")) {
+    return "That room is no longer available";
+  }
+  if (normalized.includes("timeout")) return "Bondage Club timed out while joining that room";
+  if (normalized.includes("progress")) return "Another Bondage Club room join is already in progress";
+  return source
+    ? `Bondage Club could not join the room: ${source}`
+    : "Bondage Club could not join that room";
+}
+
+/**
+ * BC's Result exposes `err` as a boolean getter. A successful native result therefore has
+ * `{ ok: true, error: null, err: false }`; `false` is status metadata, not an error payload.
+ */
+function serverResultFailure(result: BCServerResult<unknown> | null | undefined): unknown {
+  if (!result || typeof result !== "object") return undefined;
+  try {
+    const ok = result.ok;
+    const error = result.error;
+    const err = result.err;
+    if (ok === false) return error ?? (err !== false && err != null ? err : result);
+    if (error != null) return error;
+    if (err === true) return result;
+    // Preserve compatibility with older wrappers that put the failure itself in `err`, while
+    // never mistaking the native false getter for a failed request.
+    if (ok !== true && err !== false && err != null) return err;
+    return undefined;
+  } catch (error) {
+    // A guarded cross-compartment Result cannot be trusted as success.
+    return error;
+  }
 }
 
 function cleanName(value: unknown): string | undefined {
@@ -1569,13 +2050,18 @@ function normalizeLobbyRoom(value: BCServerRoomSearchData): BCLobbyRoom | undefi
       canJoin: value.CanJoin === true,
       locked: value.Locked === true || (access.length > 0 && !access.includes("All")),
       privateRoom: value.Private === true || (visibility.length > 0 && !visibility.includes("All")),
-      mapType: cleanText(value.MapType, 40),
+      mapType: normalizeLobbyMapType(value.MapType),
       friends,
     };
   } catch {
     // Firefox can deny reads from objects created in another userscript compartment.
     return undefined;
   }
+}
+
+function normalizeLobbyMapType(value: unknown): string {
+  const mapType = cleanText(value, 40);
+  return mapType.toLocaleLowerCase() === "map" ? "Always" : mapType;
 }
 
 function normalizeRoomSearchSpace(value: unknown): BCRoomSearchSpace {

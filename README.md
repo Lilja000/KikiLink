@@ -11,10 +11,12 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.23.0` runs all Bondage Club and ModSDK integration in the page realm without reading
+Version `0.24.0` runs all Bondage Club and ModSDK integration in the page realm without reading
 `unsafeWindow`. Only structured upload fields cross into the DOM-only userscript sandbox for the narrowly
-granted Catbox/Litterbox request. The Blossom joins the same BC-native status-icon boundary as Echo
-and WCE exactly once and sits directly below Echo's clothing icon, clear of the chat edge. It is
+granted Catbox/Litterbox request. This release adds group chats, addon profile cards, and safer lobby
+navigation without changing the proven Blossom integration: the flower still joins the same BC-native
+status-icon boundary as Echo and WCE exactly once and sits directly below Echo's clothing icon, clear
+of the chat edge. It is
 shown only for the authenticated character and protocol-confirmed KikiLink peers, independently of
 optional Presence profile sharing. KikiLink never wraps BCX's outer overlay or polls the character
 draw loop during normal play. If BC is still decoding the SVG, a cached vector copy renders the
@@ -63,10 +65,15 @@ lower-left corner.
 - Live list of everyone else in the current chat room, using character nicknames first
 - Presence dots and KikiLink status labels in player lists and detail cards
 - Visible player lists discover compatible KikiLink Presence through a quiet rate-limited queue
-- Small profile avatars load automatically in player identity controls; chat-image privacy remains
-  governed independently by `Ask first`, `Always show`, or `Links only`
+- Profile avatars use the same explicit `Ask first`, `Always show`, or `Links only` privacy choice;
+  initials and decorative frames remain available without requesting the remote image
 - Account-derived Friend, Owner, Sub, Lover, Whitelist, Blacklist, and Ghosted badges
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
+- KikiLink profile cards opened from compatible avatars or player action menus, with name, presence,
+  custom status, observable room, addon version, and relationship badges in one compact view
+- Optional Blossom, Rose, or Starlight avatar frames and Classic, Garden, or Midnight profile styles
+- A clearly separated `Only visible to you` section for the private note, tags, last recorded room,
+  and encounter count
 - Private notes and searchable tags for individual players
 - Favorites that remain easy to find after leaving the room
 - Per-account last-seen time, last room, and encounter count
@@ -83,6 +90,16 @@ so they can follow that same account to another device.
 ## LinkChat
 
 - Conversation list instead of one isolated Beep at a time
+- Separate addon group conversations for 3–5 total members, including the creator
+- Choose 2–4 known BC friends that recently advertised group-chat v1 support and confirm the complete
+  participant list before invitations are sent; version-1 membership is fixed, so changing
+  participants means starting a new group
+- Group drafts, unread counts, pins, removal, member-aware labels, and honest per-recipient local BC
+  handoff feedback; the protocol does not claim delivery receipts
+- Incoming group invitations auto-accept only from known BC friends; sharing a room alone never lets
+  another participant create local group records
+- A strict 257-character group-message limit keeps every point-to-point packet within the validated
+  700-character wire bound, even when JSON escaping expands the content
 - Native recent Beeps imported from the current game session without duplicates
 - Persistent message history in a separate local database for each BC account
 - A bounded mirror of up to 600 recent messages follows the same BC account to another device
@@ -114,7 +131,7 @@ so they can follow that same account to another device.
 - Enter-to-send with Shift+Enter for a new line, or an optional classic multiline mode
 - Right-click on desktop or hold on touch to open one player action menu from recent chats,
   the active chat, known contacts, and Players
-- Context actions for Message, Whisper, native Profile, favorites, notes, local nicknames,
+- Context actions for Message, Whisper, KikiLink Profile, native Profile, favorites, notes, local nicknames,
   pinning, marking unread, per-chat removal, and copying the member ID
 - New-chat dialog with known-contact search, direct member-number entry, All/Online/In-room filters,
   and Online-first or A–Z sorting
@@ -130,15 +147,20 @@ so they can follow that same account to another device.
   messages already on screen
 - Softly grouped incoming and outgoing bubbles with a very light one-pixel top gradient
 - Responsive desktop and mobile interface
-- Configurable history retention and a clear-history action
+- Configurable history retention and a durability-aware clear-history action that warns when browser
+  storage could clear only the current session
 
 ## Room Tools & Media Gallery
 
 - A Room destination that reads the current room and enables editing only for native room admins
 - Background URL, native resize mode, music URL, and synchronized playback controls
 - Compact `Room`, `Lobbies`, and `Presets` subtools without another primary navigation tab
-- Manual native room-directory refresh, local filtering, favorite-first then friend-first ordering,
-  clear Character/Map view labels, and up to five automatically loaded friend avatars per lobby
+- Manual native room-directory refresh, local filtering, current-room first then favorite- and
+  friend-first ordering, clear Character/Map view labels, and up to five friend avatars per lobby
+- The current room remains visible at the top through filters and directory failures, and replaces
+  its Join button with a non-interactive `Current room` badge
+- Lobby Join checks the native leave permission, waits for BC to finish leaving, performs the native
+  room join, and reports success only after the requested room becomes current
 - Account-scoped favorite room names with gold cards; friend rooms use the selected accent color
 - Account-scoped room presets for name, description, native/custom backgrounds, music, size,
   language, access, limits, admins, whitelist, blacklist, and blocked categories
@@ -276,7 +298,8 @@ is stored in that same player's Bondage Club `ExtensionSettings` so settings, ac
 preferences, notebook data, and recent chats can follow the account to another device. Presence uses
 small validated compatibility packets through Bondage Club: a hidden room handshake on entry,
 a compact hidden presence heartbeat for late-loading peers, and a point-to-point request for an
-opened chat—never a background Beep broadcast to every friend.
+opened chat—never a background Beep broadcast to every friend. Addon group chats likewise send one
+validated KikiLink packet to each remote participant instead of using a KikiLink group server.
 
 ## Account data and switching
 
@@ -286,6 +309,10 @@ opened chat—never a background Beep broadcast to every friend.
 - Legacy unscoped KikiLink data is quarantined, not silently assigned to whichever account logs in first.
 - The portable snapshot is bounded to 120,000 encoded characters. Settings are retained first;
   recent chats are trimmed before notebook data if the account approaches that safety bound.
+- Group chats use a separate account-scoped browser record bounded to 30 groups, 500 messages per
+  group, 3,000 group messages overall, and 60 removed-group tombstones.
+- Cloud-mirror writes are batched, and a temporary sync failure leaves the complete local copy and
+  pending changes available for a later retry.
 - The complete local account copy remains available even when BC account sync is temporarily unavailable.
 
 ## Architecture
@@ -295,7 +322,7 @@ src/
   bc/                 Bondage Club compatibility adapter
   core/               Event bus, settings, lifecycle, module registry
   modules/link-activities/  Native custom-activity registry, editor, migration, and safety
-  modules/link-chat/  LinkChat service and Shadow DOM interface
+  modules/link-chat/  Direct/group chat services, protocols, and Shadow DOM interface
   modules/link-presence/ Presence state, native-online merge, and compatibility protocol
   modules/link-reactions/ Local event rules and guarded reaction execution
   modules/link-roster/ Room roster, encounter tracking, and notebook service
@@ -303,7 +330,7 @@ src/
   utils/              Small dependency-free helpers
 design/branding/       Shipping KikiLink wolf emblem and Blossom marker
 design/references/     Full-resolution KikiLink visual reference
-docs/                  UX principles and accessibility decisions
+docs/                  UX principles, accessibility decisions, and protocol notes
 ```
 
 KikiLink listens to the native Bondage Club socket for Beeps and friend presence, and uses

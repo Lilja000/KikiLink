@@ -173,12 +173,32 @@ export class KikiLinkApp {
       return;
     }
 
-    this.#adapter.stop();
-    await this.#adapterStart;
+    try {
+      this.#adapter.stop();
+    } catch (error) {
+      this.#logger.warn("Bondage Club adapter teardown did not finish cleanly", error);
+    }
+    try {
+      await this.#adapterStart;
+    } catch (error) {
+      this.#logger.warn("Bondage Club adapter startup ended during teardown", error);
+    }
     this.#adapterStart = undefined;
-    await this.#modules.stopAll();
-    await this.#accountStorage?.destroy();
-    this.#repository?.close();
+    try {
+      await this.#modules.stopAll();
+    } catch (error) {
+      this.#logger.warn("Module teardown did not finish cleanly", error);
+    }
+    try {
+      await this.#accountStorage?.destroy();
+    } catch (error) {
+      this.#logger.warn("Account storage teardown did not finish cleanly", error);
+    }
+    try {
+      this.#repository?.close();
+    } catch (error) {
+      this.#logger.warn("Chat storage teardown did not finish cleanly", error);
+    }
     this.#repository = undefined;
     this.#settings = undefined;
     this.#accountStorage = undefined;

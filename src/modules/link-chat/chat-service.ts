@@ -239,10 +239,15 @@ export class ChatService {
     return this.repository.deleteMessagesOlderThan(Date.now() - config.retentionDays * DAY_MS);
   }
 
-  async clearHistory(): Promise<void> {
-    await this.repository.clearAll();
-    this.#ephemeralMessages.clear();
-    this.#ephemeralConversations.clear();
+  async clearHistory(): Promise<boolean> {
+    try {
+      return this.repository.clearAllDurably
+        ? await this.repository.clearAllDurably()
+        : await this.repository.clearAll().then(() => true);
+    } finally {
+      this.#ephemeralMessages.clear();
+      this.#ephemeralConversations.clear();
+    }
   }
 
   async #saveConversation(conversation: ConversationMeta): Promise<void> {

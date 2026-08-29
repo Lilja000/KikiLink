@@ -8,6 +8,10 @@ import {
   type KikiLinkUploadField,
 } from "./userscript-upload-protocol";
 
+declare const __KIKILINK_UPLOAD_CAPABILITY__: string;
+
+const UPLOAD_CAPABILITY_PATTERN = /^[a-f0-9]{64}$/u;
+
 export interface UserscriptMultipartResponse {
   ok: boolean;
   status: number;
@@ -45,7 +49,9 @@ export async function uploadMultipartViaUserscriptBridge(
   timeoutMs: number,
   onProgress?: (progress: UploadProgress) => void,
 ): Promise<UserscriptMultipartResponse | null> {
+  const capability = uploadCapability();
   if (
+    !capability ||
     !KIKILINK_ALLOWED_UPLOAD_ENDPOINTS.has(endpoint) ||
     !document.getElementById(KIKILINK_UPLOAD_BRIDGE_MARKER_ID)
   ) {
@@ -83,6 +89,7 @@ export async function uploadMultipartViaUserscriptBridge(
     window.postMessage(
       {
         type: KIKILINK_UPLOAD_REQUEST,
+        capability,
         id,
         endpoint,
         timeoutMs,
@@ -97,7 +104,7 @@ function installResponseListener(): void {
   if (listening) return;
   listening = true;
   window.addEventListener("message", (event: MessageEvent<unknown>) => {
-    if (event.origin && event.origin !== window.location.origin) return;
+    if (!isSameWindowMessage(event)) return;
     const data = event.data;
     if (!data || typeof data !== "object") return;
     const source = data as IncomingUploadMessage;
@@ -130,6 +137,25 @@ function installResponseListener(): void {
       body: typeof source.body === "string" ? source.body : "",
     });
   });
+}
+
+function isSameWindowMessage(event: MessageEvent<unknown>): boolean {
+  try {
+    return event.source === window && event.origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+function uploadCapability(): string | undefined {
+  try {
+    return typeof __KIKILINK_UPLOAD_CAPABILITY__ === "string" &&
+      UPLOAD_CAPABILITY_PATTERN.test(__KIKILINK_UPLOAD_CAPABILITY__)
+      ? __KIKILINK_UPLOAD_CAPABILITY__
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function uploadId(): string {

@@ -8,17 +8,36 @@ import {
   type KikiLinkUploadRequestMessage,
 } from "./userscript-upload-protocol";
 
-const MAX_UPLOAD_BYTES = 80 * 1024 * 1024;
+export const USERSCRIPT_UPLOAD_MAX_FILE_BYTES = 80 * 1024 * 1024;
+export const USERSCRIPT_UPLOAD_BUDGET_WINDOW_MS = 10 * 60_000;
+export const USERSCRIPT_UPLOAD_BUDGET_COOLDOWN_MS = 60_000;
+export const USERSCRIPT_UPLOAD_MAX_REQUESTS_PER_WINDOW = 12;
+export const USERSCRIPT_UPLOAD_MAX_BYTES_PER_WINDOW =
+  2 * USERSCRIPT_UPLOAD_MAX_FILE_BYTES;
+
 const MAX_ACTIVE_UPLOADS = 2;
 const ID_PATTERN = /^[a-z0-9-]{8,80}$/iu;
+const CAPABILITY_PATTERN = /^[a-f0-9]{64}$/u;
 const FILE_NAME_PATTERN = /^kikilink-(?:image\.webp|room-music\.(?:mp3|mp4)|track\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm))$/u;
-const activeUploads = new Set<string>();
 
-export function installUserscriptUploadHost(): () => void {
+interface UploadBudgetEntry {
+  startedAt: number;
+  bytes: number;
+}
+
+export function installUserscriptUploadHost(capability: string): () => void {
+  if (!CAPABILITY_PATTERN.test(capability)) {
+    throw new Error("KikiLink upload bridge requires a secure per-load capability");
+  }
+  const activeUploads = new Set<string>();
+  const activeRequests = new Map<string, () => void>();
+  const budget: UploadBudgetEntry[] = [];
+  let cooldownUntil = 0;
+  let disposed = false;
   ensureReadyMarker();
   const handleMessage = (event: MessageEvent<unknown>): void => {
-    if (event.origin && event.origin !== window.location.origin) return;
-    const request = validateRequest(event.data);
+    if (disposed || !isSameWindowMessage(event)) return;
+    const request = validateRequest(event.data, capability);
     if (!request) return;
     if (activeUploads.has(request.id)) {
       postError(request.id, "An upload with this identifier is already in progress");
@@ -28,18 +47,61 @@ export function installUserscriptUploadHost(): () => void {
       postError(request.id, "Another upload is already in progress");
       return;
     }
+    const admission = admitUpload(budget, requestBytes(request), cooldownUntil);
+    cooldownUntil = admission.cooldownUntil;
+    if (!admission.allowed) {
+      postError(request.id, "Upload safety limit reached. Please wait before trying again");
+      return;
+    }
     activeUploads.add(request.id);
-    void runUpload(request).finally(() => activeUploads.delete(request.id));
+    void runUpload(
+      request,
+      activeRequests,
+      () => !disposed,
+    ).finally(() => activeUploads.delete(request.id));
   };
   window.addEventListener("message", handleMessage);
   return () => {
+    if (disposed) return;
+    disposed = true;
     window.removeEventListener("message", handleMessage);
     document.getElementById(KIKILINK_UPLOAD_BRIDGE_MARKER_ID)?.remove();
+    for (const cancel of [...activeRequests.values()]) {
+      try {
+        cancel();
+      } catch {
+        // Cleanup is best-effort; all bridge state is still dropped below.
+      }
+    }
+    activeRequests.clear();
+    activeUploads.clear();
+    budget.length = 0;
+    cooldownUntil = 0;
   };
 }
 
-function runUpload(request: KikiLinkUploadRequestMessage): Promise<void> {
+function isSameWindowMessage(event: MessageEvent<unknown>): boolean {
+  try {
+    return event.source === window && event.origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+function runUpload(
+  request: KikiLinkUploadRequestMessage,
+  activeRequests: Map<string, () => void>,
+  canRespond: () => boolean,
+): Promise<void> {
   return new Promise((resolve) => {
+    let settled = false;
+    const settle = (send: () => void): void => {
+      if (settled) return;
+      settled = true;
+      activeRequests.delete(request.id);
+      if (canRespond()) send();
+      resolve();
+    };
     try {
       const form = new FormData();
       for (const field of request.fields) {
@@ -55,21 +117,14 @@ function runUpload(request: KikiLinkUploadRequestMessage): Promise<void> {
           );
         }
       }
-      let settled = false;
-      const settle = (send: () => void): void => {
-        if (settled) return;
-        settled = true;
-        send();
-        resolve();
-      };
-      GM_xmlhttpRequest({
+      const transport = GM_xmlhttpRequest({
         method: "POST",
         url: request.endpoint,
         data: form,
         anonymous: true,
         timeout: request.timeoutMs,
         onprogress: (event) => {
-          if (settled) return;
+          if (settled || !canRespond()) return;
           const loaded = finiteNonNegative(event.loaded);
           const total = finitePositive(event.total);
           window.postMessage(
@@ -103,18 +158,30 @@ function runUpload(request: KikiLinkUploadRequestMessage): Promise<void> {
         onabort: () => settle(() => postError(request.id, "The upload was cancelled")),
         ontimeout: () => settle(() => postError(request.id, "The upload timed out")),
       });
+      if (!settled) {
+        activeRequests.set(request.id, () => {
+          try {
+            transport.abort();
+          } finally {
+            settle(() => undefined);
+          }
+        });
+      }
     } catch {
-      postError(request.id, "The upload bridge could not prepare this file");
-      resolve();
+      settle(() => postError(request.id, "The upload bridge could not prepare this file"));
     }
   });
 }
 
-function validateRequest(value: unknown): KikiLinkUploadRequestMessage | null {
+function validateRequest(
+  value: unknown,
+  capability: string,
+): KikiLinkUploadRequestMessage | null {
   if (!value || typeof value !== "object") return null;
   const source = value as Partial<KikiLinkUploadRequestMessage>;
   if (
     source.type !== KIKILINK_UPLOAD_REQUEST ||
+    source.capability !== capability ||
     typeof source.id !== "string" ||
     !ID_PATTERN.test(source.id) ||
     typeof source.endpoint !== "string" ||
@@ -123,7 +190,9 @@ function validateRequest(value: unknown): KikiLinkUploadRequestMessage | null {
     !Number.isInteger(source.timeoutMs) ||
     source.timeoutMs < 1_000 ||
     source.timeoutMs > 300_000 ||
-    !Array.isArray(source.fields)
+    !Array.isArray(source.fields) ||
+    source.fields.length < 2 ||
+    source.fields.length > 3
   ) {
     return null;
   }
@@ -139,11 +208,46 @@ function validateRequest(value: unknown): KikiLinkUploadRequestMessage | null {
   }
   return {
     type: KIKILINK_UPLOAD_REQUEST,
+    capability,
     id: source.id,
     endpoint: source.endpoint,
     timeoutMs: source.timeoutMs,
     fields: validFields,
   };
+}
+
+function requestBytes(request: KikiLinkUploadRequestMessage): number {
+  return request.fields.reduce(
+    (total, field) => total + (field.kind === "file" ? field.blob.size : 0),
+    0,
+  );
+}
+
+function admitUpload(
+  budget: UploadBudgetEntry[],
+  bytes: number,
+  cooldownUntil: number,
+): { allowed: boolean; cooldownUntil: number } {
+  const now = Date.now();
+  while (
+    budget.length > 0 &&
+    now - (budget[0]?.startedAt ?? now) >= USERSCRIPT_UPLOAD_BUDGET_WINDOW_MS
+  ) {
+    budget.shift();
+  }
+  if (now < cooldownUntil) return { allowed: false, cooldownUntil };
+  const usedBytes = budget.reduce((total, entry) => total + entry.bytes, 0);
+  if (
+    budget.length >= USERSCRIPT_UPLOAD_MAX_REQUESTS_PER_WINDOW ||
+    usedBytes + bytes > USERSCRIPT_UPLOAD_MAX_BYTES_PER_WINDOW
+  ) {
+    return {
+      allowed: false,
+      cooldownUntil: now + USERSCRIPT_UPLOAD_BUDGET_COOLDOWN_MS,
+    };
+  }
+  budget.push({ startedAt: now, bytes });
+  return { allowed: true, cooldownUntil };
 }
 
 function validateField(value: unknown): KikiLinkUploadField | null {
@@ -161,7 +265,7 @@ function validateField(value: unknown): KikiLinkUploadField | null {
     source.name !== "fileToUpload" ||
     !(source.blob instanceof Blob) ||
     source.blob.size <= 0 ||
-    source.blob.size > MAX_UPLOAD_BYTES ||
+    source.blob.size > USERSCRIPT_UPLOAD_MAX_FILE_BYTES ||
     typeof source.fileName !== "string" ||
     !FILE_NAME_PATTERN.test(source.fileName) ||
     typeof source.mimeType !== "string" ||

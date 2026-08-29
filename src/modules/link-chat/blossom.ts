@@ -58,7 +58,7 @@ interface BlossomVectorPaths {
 
 let blossomVectorPaths: BlossomVectorPaths | undefined;
 
-/** Stacked directly below Echo's clothing icon: CharX + 420×Zoom, CharY + 45, 35×Zoom. */
+/** Stacked directly below Echo's clothing icon: CharX + 420×Zoom, CharY + 45×Zoom, 35×Zoom. */
 export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
   x: 0.84,
   y: 0.045,

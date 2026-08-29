@@ -7,6 +7,8 @@ import { LinkRosterService } from "../link-roster/link-roster-service";
 import { PeopleRepository } from "../../storage/people-repository";
 import { LinkPresenceService } from "../link-presence/link-presence-service";
 import { AfkAutoReplyService } from "./afk-auto-reply-service";
+import { GroupChatService } from "./group-chat-service";
+import { MemoryKeyValueStorage } from "../../core/settings";
 
 export class LinkChatModule implements KikiLinkModule {
   readonly id = "link-chat";
@@ -18,6 +20,7 @@ export class LinkChatModule implements KikiLinkModule {
   #roster: LinkRosterService | undefined;
   #presence: LinkPresenceService | undefined;
   #afkAutoReply: AfkAutoReplyService | undefined;
+  #groups: GroupChatService | undefined;
   #view: LinkChatView | undefined;
   #rosterTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -51,6 +54,10 @@ export class LinkChatModule implements KikiLinkModule {
       this.#presence.subscribe(() => this.#afkAutoReply?.syncStatus()),
     );
     this.#roster.prune();
+    this.#groups = new GroupChatService(
+      context.adapter,
+      context.accountStorage ?? new MemoryKeyValueStorage(),
+    );
     this.#view = new LinkChatView(
       context.adapter,
       this.#service,
@@ -60,7 +67,16 @@ export class LinkChatModule implements KikiLinkModule {
       this.#roster,
       this.#presence,
     );
+    this.#view.attachGroupChatService(this.#groups);
     this.#view.mount();
+
+    if (typeof window !== "undefined") {
+      const flushGroupsOnPageHide = () => this.#view?.flushGroupStateForPageHide();
+      window.addEventListener("pagehide", flushGroupsOnPageHide);
+      this.#unsubscribers.push(() =>
+        window.removeEventListener("pagehide", flushGroupsOnPageHide),
+      );
+    }
 
     this.#unsubscribers.push(
       context.bus.on("bc:status", ({ state, message }) =>
@@ -73,6 +89,7 @@ export class LinkChatModule implements KikiLinkModule {
       }),
       context.bus.on("beep:received", (event) => void this.#capture(event)),
       context.bus.on("beep:sent", (event) => void this.#capture(event)),
+      context.bus.on("bc:protocol", (event) => void this.#captureGroupProtocol(event)),
       context.bus.on("link-reactions:notification", (event) =>
         this.#view?.onNotification(event),
       ),
@@ -84,12 +101,20 @@ export class LinkChatModule implements KikiLinkModule {
     this.#rosterTimer = setInterval(() => this.#syncRoster(), 2_000);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.#rosterTimer !== undefined) clearInterval(this.#rosterTimer);
     this.#rosterTimer = undefined;
     for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
     this.#view?.destroy();
     this.#view = undefined;
+    const groups = this.#groups;
+    this.#groups = undefined;
+    if (groups) {
+      const persistence = await groups.destroy();
+      if (persistence.degraded) {
+        this.#logger.warn("Group changes remain session-only because browser storage is unavailable");
+      }
+    }
     this.#activities?.stop();
     this.#activities = undefined;
     this.#presence?.stop();
@@ -137,6 +162,15 @@ export class LinkChatModule implements KikiLinkModule {
       this.#logger.error("Failed to capture a Beep", error);
     }
     if (automaticReply) await this.#capture(automaticReply);
+  }
+
+  async #captureGroupProtocol(event: { senderNumber: number; payload: string }): Promise<void> {
+    if (!this.#groups) return;
+    try {
+      await this.#groups.receiveProtocol(event, this.#view?.getActiveGroupId());
+    } catch (error) {
+      this.#logger.error("Failed to capture a KikiLink group packet", error);
+    }
   }
 
   #syncRoster(): void {

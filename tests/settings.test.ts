@@ -140,7 +140,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(23);
+    expect(settings.schemaVersion).toBe(24);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -264,7 +264,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(23);
+    expect(settings.schemaVersion).toBe(24);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -288,7 +288,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(23);
+    expect(settings.schemaVersion).toBe(24);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -328,9 +328,49 @@ describe("SettingsStore", () => {
       status: "dnd",
       statusMessage: "In a scene",
       avatarUrl: "",
+      avatarFrame: "none",
+      profileStyle: "classic",
       autoIdleMinutes: 30,
       afkAutoReply: DEFAULT_SETTINGS.linkPresence.afkAutoReply,
     });
+  });
+
+  it("migrates schema-24 profile decorations and accepts only built-in IDs", () => {
+    const legacy = sanitizeSettings({
+      schemaVersion: 23,
+      linkPresence: { status: "dnd" },
+    });
+    expect(legacy.schemaVersion).toBe(24);
+    expect(legacy.linkPresence).toMatchObject({
+      avatarFrame: "none",
+      profileStyle: "classic",
+    });
+
+    const decorated = sanitizeSettings({
+      schemaVersion: 24,
+      linkPresence: {
+        avatarFrame: "starlight",
+        profileStyle: "midnight",
+      },
+    });
+    expect(decorated.linkPresence).toMatchObject({
+      avatarFrame: "starlight",
+      profileStyle: "midnight",
+    });
+
+    for (const [avatarFrame, profileStyle] of [
+      ["Starlight", "Midnight"],
+      ["starlight ", "garden "],
+      ["https://tracker.example/frame.css", "custom"],
+      [{ id: "rose" }, ["garden"]],
+    ] as const) {
+      const rejected = sanitizeSettings({
+        schemaVersion: 24,
+        linkPresence: { avatarFrame, profileStyle },
+      });
+      expect(rejected.linkPresence.avatarFrame).toBe("none");
+      expect(rejected.linkPresence.profileStyle).toBe("classic");
+    }
   });
 
   it("preserves advanced rules while adding schema-11 quick alerts", () => {
@@ -354,7 +394,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(23);
+    expect(settings.schemaVersion).toBe(24);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -530,7 +570,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(23);
+    expect(settings.schemaVersion).toBe(24);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -576,6 +616,39 @@ describe("SettingsStore", () => {
     expect(settings.linkChat.gallery).toEqual({
       saved: [{ url: "https://litter.catbox.moe/keep.webp", addedAt: 200 }],
       hiddenUrls: ["https://litter.catbox.moe/hidden.png"],
+    });
+  });
+
+  it("preserves valid Gallery expiry metadata and drops out-of-range dates", () => {
+    const now = Date.now();
+    const settings = sanitizeSettings({
+      schemaVersion: 24,
+      linkChat: {
+        gallery: {
+          saved: [
+            {
+              url: "https://litter.catbox.moe/temporary.webp",
+              addedAt: now - 1_000,
+              expiresAt: now + 72 * 60 * 60 * 1_000,
+            },
+            {
+              url: "https://litter.catbox.moe/malformed.webp",
+              addedAt: now - 2_000,
+              expiresAt: 1e20,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(settings.linkChat.gallery.saved).toContainEqual({
+      url: "https://litter.catbox.moe/temporary.webp",
+      addedAt: now - 1_000,
+      expiresAt: now + 72 * 60 * 60 * 1_000,
+    });
+    expect(settings.linkChat.gallery.saved).toContainEqual({
+      url: "https://litter.catbox.moe/malformed.webp",
+      addedAt: now - 2_000,
     });
   });
 
@@ -625,7 +698,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(23);
+    expect(settings.schemaVersion).toBe(24);
     expect(settings.linkRoom.favoriteRoomNames).toEqual(["Moon Garden", "Golden Hall"]);
     expect(settings.linkRoom.presets[0]).toMatchObject({
       id: "moon_room",

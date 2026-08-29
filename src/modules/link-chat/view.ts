@@ -6,6 +6,7 @@ import type {
   BCRoomMemberAction,
 } from "../../bc/adapter";
 import type {
+  AvatarFrame,
   BCConnectionState,
   ConversationMeta,
   KikiLinkSettings,
@@ -19,6 +20,7 @@ import type {
   PlayerRelationship,
   PresenceSnapshot,
   PresenceStatus,
+  ProfileCardStyle,
   QuickAction,
   ReactionRule,
   RoomPreset,
@@ -69,6 +71,7 @@ import {
 } from "../link-reactions/notification-sounds";
 import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
+import { RemoteImageLoader } from "./remote-image-loader";
 import {
   LitterboxImageUploader,
   normalizeLitterboxUploadConfig,
@@ -82,16 +85,27 @@ import {
 import { kikiIcon, type KikiLinkIconName } from "./icons";
 import { RoomBlossomBadge } from "./blossom";
 import { KIKILINK_NEWS } from "./news";
+import {
+  GroupChatPanel,
+  type GroupChatPanelFeedback,
+} from "./group-chat-panel";
+import type {
+  GroupConversation,
+  GroupChatService,
+  GroupChatUpdate,
+} from "./group-chat-service";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/branding/kikilink-emblem.webp";
 
 type WorkspaceView = "home" | "news" | "chat" | "gallery" | "roster" | "room" | "music" | "activities" | "settings";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
 type RoomSubView = "current" | "lobbies" | "presets";
 type GalleryFileStorage = "device" | "catbox" | "litterbox";
+type KnownContact = ReturnType<BCAdapter["getKnownContacts"]>[number];
 type FeatureTarget = WorkspaceView;
 type HomeAction =
   | { kind: "new-chat" }
   | { kind: "chat"; peerNumber?: number; peerName?: string }
+  | { kind: "group"; groupId: string }
   | { kind: "roster" }
   | { kind: "activities" }
   | { kind: "settings" };
@@ -128,8 +142,15 @@ interface GalleryItem {
   provider: ChatMediaItem["provider"] | "device";
   sortAt: number;
   saved: boolean;
+  expiresAt?: number;
   localId?: string;
   chat?: ChatMediaItem;
+}
+
+interface QueuedRemoteImageLoad {
+  target: HTMLElement;
+  url: string;
+  token: number;
 }
 
 interface SharedRoomMusic {
@@ -138,6 +159,8 @@ interface SharedRoomMusic {
 }
 
 const KIKILINK_CREATOR_MEMBER_NUMBER = 0;
+const MAX_AUTO_REMOTE_IMAGE_LOADS = 4;
+const MAX_FALLBACK_AUTO_REMOTE_IMAGE_LOADS = 12;
 const WORKSPACE_TITLES: Record<WorkspaceView, string> = {
   home: "Home",
   news: "News",
@@ -574,6 +597,14 @@ export class LinkChatView {
     className: "kl-search kl-presence-avatar-url",
   }) as HTMLInputElement;
   readonly #presenceAvatarPreview = element("div", { className: "kl-avatar kl-profile-avatar-preview" });
+  readonly #presenceAvatarFrame = element("select", {
+    className: "kl-select kl-profile-frame-select",
+    ariaLabel: "Avatar decoration",
+  }) as HTMLSelectElement;
+  readonly #presenceProfileStyle = element("select", {
+    className: "kl-select kl-profile-style-select",
+    ariaLabel: "Profile card style",
+  }) as HTMLSelectElement;
   readonly #afkAutoReplyToggle = element("input") as HTMLInputElement;
   readonly #afkAutoReplyMessage = element("textarea", {
     className: "kl-custom-activity-template kl-afk-reply-message",
@@ -625,6 +656,10 @@ export class LinkChatView {
     text: "Send image",
   });
   readonly #profileMenu = element("div", { className: "kl-profile-menu" });
+  readonly #addonProfileDialog = element("dialog", {
+    className: "kl-dialog kl-addon-profile-dialog",
+  });
+  readonly #addonProfileBody = element("div", { className: "kl-addon-profile-body" });
   readonly #aliasDialog = element("dialog", { className: "kl-dialog kl-alias-dialog" });
   readonly #aliasInput = element("input", { className: "kl-search kl-alias-input" }) as HTMLInputElement;
   readonly #saveAliasButton = element("button", {
@@ -675,6 +710,7 @@ export class LinkChatView {
   #finderRenderToken = 0;
   #galleryRenderToken = 0;
   #lobbyRenderToken = 0;
+  #lobbyJoinBusy = false;
   #musicRenderToken = 0;
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #clockTimer: ReturnType<typeof setTimeout> | undefined;
@@ -701,6 +737,9 @@ export class LinkChatView {
     | undefined;
   #suppressLauncherClickUntil = 0;
   #presenceUnsubscribe: (() => void) | undefined;
+  #groupChatService: GroupChatService | undefined;
+  #groupChatPanel: GroupChatPanel | undefined;
+  #groupChatUnsubscribe: (() => void) | undefined;
   #presenceRenderFrame: number | undefined;
   #pendingPresenceAll = false;
   readonly #pendingPresenceMembers = new Set<number>();
@@ -709,8 +748,27 @@ export class LinkChatView {
   #messageRenderPeer: number | undefined;
   #loadingOlderMessages = false;
   readonly #renderedMessageIds = new Set<string>();
+  readonly #remoteImageRenderTokens = new WeakMap<HTMLElement, number>();
+  readonly #remoteImageTargets = new Set<HTMLElement>();
+  readonly #remoteImageAbortControllers = new Map<HTMLElement, AbortController>();
+  readonly #remoteImageVisibilityTasks = new Map<HTMLElement, QueuedRemoteImageLoad>();
+  readonly #remoteImageFallbackTargets = new Set<HTMLElement>();
+  readonly #remoteImageAutoLoadQueue: QueuedRemoteImageLoad[] = [];
+  #remoteImageVisibilityObserver: IntersectionObserver | undefined;
+  #remoteImageAutoLoadsActive = 0;
+  #remoteImageAutoDrainScheduled = false;
+  readonly #remoteImageRemovalObserver = new MutationObserver(() =>
+    this.#cancelDetachedRemoteImageLoads(),
+  );
   readonly #suppressProfileClickUntil = new WeakMap<HTMLElement, number>();
+  readonly #profileMenuLongPressTimers = new Set<ReturnType<typeof setTimeout>>();
+  readonly #revealedAvatarUrls = new Set<string>();
   #profileMenuToken = 0;
+  #addonProfileToken = 0;
+  #addonProfileOpenToken = 0;
+  #addonProfilePresenceSignature = "";
+  #addonProfileTarget: ProfileTarget | undefined;
+  #addonProfileReturnFocus: HTMLElement | undefined;
   #aliasTarget: { memberNumber: number; nativeName: string } | undefined;
   #removeChatTarget: { memberNumber: number; displayName: string } | undefined;
   #imageSourceMode: "link" | "file" = "link";
@@ -777,6 +835,7 @@ export class LinkChatView {
     private readonly catboxImageUpload: (
       image: PreparedLocalImage,
     ) => Promise<string> = uploadPreparedImageToCatbox,
+    private readonly remoteImageLoader: Pick<RemoteImageLoader, "load" | "destroy"> = new RemoteImageLoader(),
   ) {
     this.presence =
       presence ??
@@ -791,6 +850,60 @@ export class LinkChatView {
   readonly #roomBadge: RoomBlossomBadge;
   readonly #notificationSounds: NotificationSoundService;
 
+  attachGroupChatService(service: GroupChatService): void {
+    if (this.#mounted) throw new Error("Attach group chats before mounting KikiLink");
+    this.#groupChatUnsubscribe?.();
+    this.#groupChatPanel?.destroy();
+    this.#groupChatService = service;
+    const panel = new GroupChatPanel(this.adapter, service, this.presence, {
+      onActivate: () => {
+        this.#stopLocalTyping();
+        this.#empty.hidden = true;
+        this.#chat.hidden = true;
+        panel.chatPane.hidden = false;
+        this.#panel.dataset.mobileView = "chat";
+        void this.#updateUnreadBadge();
+      },
+      onClose: () => {
+        this.#chat.hidden = this.#activePeer === undefined;
+        this.#empty.hidden = this.#activePeer !== undefined;
+        this.#panel.dataset.mobileView = "list";
+        void this.#updateUnreadBadge();
+      },
+      onFeedback: (feedback) => this.#onGroupFeedback(feedback),
+      confirmRemove: (group) =>
+        typeof window !== "undefined" &&
+        window.confirm(`Remove “${group.title}” from this account's KikiLink groups?`),
+    });
+    this.#groupChatPanel = panel;
+    this.#groupChatUnsubscribe = service.subscribe((update) => this.#onGroupChatUpdate(update));
+  }
+
+  flushGroupStateForPageHide(): void {
+    const service = this.#groupChatService;
+    if (!service) return;
+    const draft = this.#groupChatPanel?.flushPendingDraft() ?? Promise.resolve();
+    void draft.then(
+      () => service.flushNow(),
+      () => service.flushNow(),
+    );
+  }
+
+  getActiveGroupId(): string | undefined {
+    const panel = this.#groupChatPanel;
+    if (
+      !this.#mounted ||
+      this.#panel.hidden ||
+      this.#workspaceView !== "chat" ||
+      this.#chatLayout.hidden ||
+      !panel ||
+      panel.chatPane.hidden
+    ) {
+      return undefined;
+    }
+    return panel.activeGroupId;
+  }
+
   mount(): void {
     if (this.#mounted) return;
     this.#mounted = true;
@@ -804,6 +917,7 @@ export class LinkChatView {
     this.#buildNewChatDialog();
     this.#buildFinderDialog();
     this.#buildPresenceDialog();
+    this.#buildAddonProfileDialog();
     this.#buildImageDialog();
     this.#buildAliasDialog();
     this.#buildRemoveChatDialog();
@@ -817,12 +931,19 @@ export class LinkChatView {
       this.#newChatDialog,
       this.#finderDialog,
       this.#presenceDialog,
+      this.#addonProfileDialog,
       this.#imageDialog,
       this.#aliasDialog,
       this.#removeChatDialog,
       this.#profileMenu,
     );
+    if (this.#groupChatPanel) this.#shadow.append(this.#groupChatPanel.newGroupDialog);
     document.body.append(this.#host);
+    this.#remoteImageRemovalObserver.observe(this.#shadow, {
+      childList: true,
+      subtree: true,
+    });
+    this.#startRemoteImageVisibilityObserver();
     this.#roomBadge.mount();
     this.#positionLauncher();
     this.#positionPanel();
@@ -836,6 +957,10 @@ export class LinkChatView {
   }
 
   destroy(): void {
+    this.#mounted = false;
+    this.#invalidateGalleryRender();
+    this.#addonProfileOpenToken += 1;
+    this.#cancelProfileMenuLongPresses();
     this.#saveDraft.cancel();
     this.#imageUploadToken += 1;
     this.#imageUploadBusy = false;
@@ -850,6 +975,14 @@ export class LinkChatView {
     this.#finderDialog.close();
     this.#newChatDialog.close();
     this.#presenceDialog.close();
+    this.#addonProfileDialog.close();
+    this.#addonProfileTarget = undefined;
+    this.#addonProfilePresenceSignature = "";
+    this.#revealedAvatarUrls.clear();
+    this.#remoteImageRemovalObserver.disconnect();
+    this.#remoteImageVisibilityObserver?.disconnect();
+    this.#remoteImageVisibilityObserver = undefined;
+    this.#cancelAllRemoteImageLoads();
     this.#imageDialog.close();
     this.#resetLocalImage();
     this.#aliasDialog.close();
@@ -859,6 +992,11 @@ export class LinkChatView {
     document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
     this.#presenceUnsubscribe?.();
     this.#presenceUnsubscribe = undefined;
+    this.#groupChatUnsubscribe?.();
+    this.#groupChatUnsubscribe = undefined;
+    this.#groupChatPanel?.destroy();
+    this.#groupChatPanel = undefined;
+    this.#groupChatService = undefined;
     this.#audio.pause();
     this.#audio.removeAttribute("src");
     this.#clearMusicSleepTimer();
@@ -873,13 +1011,16 @@ export class LinkChatView {
     this.soundStore.close();
     this.musicStore.close();
     this.galleryStore.close();
-    this.#mounted = false;
+    this.remoteImageLoader.destroy();
   }
 
   isActiveConversation(peerNumber: number): boolean {
     return (
       !this.#panel.hidden &&
       this.#workspaceView === "chat" &&
+      !this.#chatLayout.hidden &&
+      !this.#chat.hidden &&
+      this.getActiveGroupId() === undefined &&
       this.#activePeer === peerNumber
     );
   }
@@ -947,6 +1088,38 @@ export class LinkChatView {
     void this.#notificationSounds.play(preset, { volume: sounds.volume });
   }
 
+  #onGroupFeedback(feedback: GroupChatPanelFeedback): void {
+    if (!this.#mounted) return;
+    if (feedback.tone === "error") this.#toast(feedback.message, "error");
+    else if (feedback.tone === "warning") this.#toast(feedback.message);
+  }
+
+  #onGroupChatUpdate(update: GroupChatUpdate): void {
+    if (!this.#mounted) return;
+    void this.#updateUnreadBadge();
+    if (this.#workspaceView === "home") void this.#renderHome();
+    if (this.presence.getOwnStatus() === "dnd") return;
+
+    if (update.kind === "group-added" && update.incoming) {
+      this.#toast(`${update.group.title} was added to your group chats.`);
+      return;
+    }
+    if (
+      update.kind !== "message" ||
+      !update.incoming ||
+      this.getActiveGroupId() === update.groupId
+    ) {
+      return;
+    }
+    const group = this.#groupChatService?.getGroup(update.groupId);
+    const title = group?.title ?? "Group chat";
+    this.#toast(`${title} · ${update.message.senderName}: ${messagePreview(update.message.content)}`);
+    const sounds = this.settings.get().linkReactions.sounds;
+    if (sounds.enabled) {
+      void this.#notificationSounds.play(sounds.chat, { volume: sounds.volume });
+    }
+  }
+
   async open(): Promise<void> {
     const settings = this.settings.get();
     const preference = settings.ui.launcherOpen;
@@ -964,14 +1137,20 @@ export class LinkChatView {
   }
 
   close(): void {
+    this.#addonProfileOpenToken += 1;
+    this.#cancelProfileMenuLongPresses();
     this.#stopLocalTyping();
     if (this.#finderDialog.open) this.#finderDialog.close();
     if (this.#newChatDialog.open) this.#newChatDialog.close();
     if (this.#presenceDialog.open) this.#presenceDialog.close();
+    if (this.#addonProfileDialog.open) this.#addonProfileDialog.close();
     if (this.#imageDialog.open) this.#imageDialog.close();
     if (this.#aliasDialog.open) this.#aliasDialog.close();
     if (this.#removeChatDialog.open) this.#removeChatDialog.close();
+    if (this.#groupChatPanel?.newGroupDialog.open) this.#groupChatPanel.newGroupDialog.close();
     this.#closeProfileMenu();
+    this.#invalidateGalleryRender();
+    this.#cancelAllRemoteImageLoads();
     this.#panel.hidden = true;
     this.#launcher.setAttribute("aria-expanded", "false");
   }
@@ -1032,6 +1211,7 @@ export class LinkChatView {
       this.service.listConversations(),
     ]);
     await this.#renderConversations(conversations);
+    this.#groupChatPanel?.refresh();
     await this.#renderHome(conversations);
   }
 
@@ -1165,6 +1345,7 @@ export class LinkChatView {
         element("div", { className: "kl-sidebar-heading-actions" }, this.#galleryButton, newChatButton),
       ),
       this.#conversationList,
+      this.#groupChatPanel?.sidebarSection,
     );
 
     this.#empty.append(
@@ -1183,7 +1364,13 @@ export class LinkChatView {
     );
 
     this.#buildChat();
-    const main = element("main", { className: "kl-main" }, this.#empty, this.#chat);
+    const main = element(
+      "main",
+      { className: "kl-main" },
+      this.#empty,
+      this.#chat,
+      this.#groupChatPanel?.chatPane,
+    );
     this.#chatLayout.append(sidebar, main);
     this.#buildRosterPage();
     this.#buildGalleryPage();
@@ -1230,6 +1417,7 @@ export class LinkChatView {
         !this.#newChatDialog.open &&
         !this.#finderDialog.open &&
         !this.#presenceDialog.open &&
+        !this.#addonProfileDialog.open &&
         !this.#imageDialog.open &&
         !this.#aliasDialog.open &&
         !this.#removeChatDialog.open
@@ -1333,6 +1521,8 @@ export class LinkChatView {
     );
     const releases = KIKILINK_NEWS.map((release) => {
       const current = release.version === this.version;
+      const published = element("time", { className: "kl-news-date", text: release.date });
+      published.dateTime = release.date;
       const article = element(
         "article",
         { className: "kl-news-release" },
@@ -1349,7 +1539,7 @@ export class LinkChatView {
             { className: "kl-news-release-meta" },
             element("span", { className: "kl-news-version", text: `v${release.version}` }),
             current ? element("span", { className: "kl-news-current", text: "Current" }) : null,
-            element("time", { className: "kl-news-date", text: release.date }),
+            published,
           ),
           element("h2", { text: release.title }),
           element("p", { className: "kl-news-summary", text: release.summary }),
@@ -1564,13 +1754,18 @@ export class LinkChatView {
       }
       return;
     }
+    if (action.kind === "group") {
+      await this.#openPanel("chat");
+      await this.#groupChatPanel?.activate(action.groupId);
+      return;
+    }
     this.#activateFeature(action.kind);
   }
 
   #showWorkspace(view: WorkspaceView, remember = true): void {
     if (this.#workspaceView === "roster" && view !== "roster") this.#saveNotebook(false);
     if (this.#workspaceView === "gallery" && view !== "gallery") {
-      this.#releaseGalleryObjectUrls();
+      this.#invalidateGalleryRender();
     }
     this.#workspaceView = view;
     if (remember && view !== "settings") this.#lastWorkspaceView = view;
@@ -1584,6 +1779,9 @@ export class LinkChatView {
     this.#musicPage.hidden = view !== "music";
     this.#activitiesPage.hidden = view !== "activities";
     this.#settingsPage.hidden = view !== "settings";
+    if (view === "chat" && this.#groupChatPanel?.activeGroupId) {
+      void this.#groupChatPanel.markVisibleActiveRead();
+    }
     if (view === "chat" && this.#activePeer === undefined) {
       this.#panel.dataset.mobileView = "list";
     }
@@ -1650,6 +1848,7 @@ export class LinkChatView {
         this.#activeName,
         bounds.right,
         bounds.bottom + 6,
+        this.#profileButton,
       );
     });
     this.#bindProfileMenu(this.#chatAvatar, () =>
@@ -1657,6 +1856,16 @@ export class LinkChatView {
         ? undefined
         : { memberNumber: this.#activePeer, displayName: this.#activeName },
     );
+    this.#chatAvatar.addEventListener("click", () => {
+      if (this.#activePeer !== undefined) {
+        void this.#openAddonProfile(this.#activePeer, this.#activeName);
+      }
+    });
+    this.#chatAvatar.addEventListener("keydown", (event) => {
+      if ((event.key !== "Enter" && event.key !== " ") || this.#activePeer === undefined) return;
+      event.preventDefault();
+      void this.#openAddonProfile(this.#activePeer, this.#activeName);
+    });
     this.#bindProfileMenu(person, () =>
       this.#activePeer === undefined
         ? undefined
@@ -1955,7 +2164,7 @@ export class LinkChatView {
     this.#imagePreviewSelect.setAttribute("aria-label", "Remote image previews");
     const imagePreviews = this.#settingRow(
       "Image previews",
-      "Controls images shared in chats. Small KikiLink profile avatars load automatically so player lists stay recognizable.",
+      "Controls chat images and KikiLink profile avatars. Ask keeps initials or a placeholder until you explicitly show the image.",
       this.#imagePreviewSelect,
     );
 
@@ -2904,6 +3113,18 @@ export class LinkChatView {
     this.#presenceAvatarUrl.spellcheck = false;
     this.#presenceAvatarUrl.setAttribute("aria-label", "Direct profile avatar URL");
     this.#presenceAvatarUrl.addEventListener("input", () => this.#renderOwnAvatarPreview());
+    this.#presenceAvatarFrame.replaceChildren(
+      selectOption("none", "None"),
+      selectOption("blossom", "Blossom wreath"),
+      selectOption("rose", "Rose ring"),
+      selectOption("starlight", "Starlight halo"),
+    );
+    this.#presenceAvatarFrame.addEventListener("change", () => this.#renderOwnAvatarPreview());
+    this.#presenceProfileStyle.replaceChildren(
+      selectOption("classic", "Classic"),
+      selectOption("garden", "Garden"),
+      selectOption("midnight", "Midnight"),
+    );
 
     this.#afkAutoReplyToggle.type = "checkbox";
     this.#afkAutoReplyToggle.setAttribute("aria-label", "Send an automatic reply while Idle or DND");
@@ -2955,6 +3176,22 @@ export class LinkChatView {
           }),
         ),
       ),
+      element(
+        "div",
+        { className: "kl-profile-style-fields" },
+        element(
+          "label",
+          { className: "kl-presence-field" },
+          element("span", { className: "kl-presence-field-label", text: "Avatar decoration" }),
+          this.#presenceAvatarFrame,
+        ),
+        element(
+          "label",
+          { className: "kl-presence-field" },
+          element("span", { className: "kl-presence-field-label", text: "Profile card" }),
+          this.#presenceProfileStyle,
+        ),
+      ),
       this.#settingRow(
         "Automatic Idle",
         "Minutes without a tap or keypress. Enter 0 to disable; maximum 120.",
@@ -2996,11 +3233,434 @@ export class LinkChatView {
     );
   }
 
+  #buildAddonProfileDialog(): void {
+    const title = element("div", { className: "kl-dialog-title", text: "KikiLink profile" });
+    title.id = "kikilink-addon-profile-title";
+    this.#addonProfileDialog.setAttribute("aria-labelledby", title.id);
+    const close = (): void => this.#addonProfileDialog.close();
+    this.#addonProfileDialog.append(
+      element(
+        "header",
+        { className: "kl-dialog-header kl-addon-profile-dialog-header" },
+        element(
+          "div",
+          { className: "kl-dialog-heading" },
+          title,
+          element("div", {
+            className: "kl-dialog-subtitle",
+            text: "Voluntary addon profile plus facts visible to your Bondage Club account.",
+          }),
+        ),
+        this.#dialogCloseButton("Close KikiLink profile", close),
+      ),
+      this.#addonProfileBody,
+    );
+    this.#addonProfileDialog.addEventListener("close", () => {
+      this.#cancelRemoteImageLoadsWithin(this.#addonProfileBody);
+      this.#addonProfileBody.replaceChildren();
+      this.#addonProfileTarget = undefined;
+      this.#addonProfileToken += 1;
+      this.#addonProfileOpenToken += 1;
+      this.#addonProfilePresenceSignature = "";
+      const returnFocus = this.#addonProfileReturnFocus;
+      this.#addonProfileReturnFocus = undefined;
+      if (returnFocus?.isConnected) returnFocus.focus();
+    });
+  }
+
+  async #openAddonProfile(
+    memberNumber: number,
+    displayName: string,
+    returnFocus?: HTMLElement,
+  ): Promise<void> {
+    if (
+      !Number.isSafeInteger(memberNumber) ||
+      memberNumber < 0 ||
+      !this.#mounted ||
+      this.#panel.hidden
+    ) {
+      return;
+    }
+    const operation = ++this.#addonProfileOpenToken;
+    this.#addonProfileToken += 1;
+    const active = this.#shadow.activeElement;
+    this.#addonProfileReturnFocus =
+      returnFocus?.isConnected === true
+        ? returnFocus
+        : active instanceof HTMLElement
+          ? active
+          : undefined;
+    this.#addonProfileTarget = undefined;
+    this.#addonProfilePresenceSignature = "";
+    this.#addonProfileBody.replaceChildren(
+      element("div", {
+        className: "kl-addon-profile-loading",
+        text: "Checking KikiLink profile…",
+      }),
+    );
+    if (!this.#addonProfileDialog.open) {
+      try {
+        this.#addonProfileDialog.showModal();
+      } catch {
+        if (!this.#addonProfileDialog.isConnected) return;
+        this.#addonProfileDialog.setAttribute("open", "");
+      }
+    }
+
+    let own = false;
+    try {
+      own = memberNumber === this.adapter.getOwnMemberNumber();
+    } catch {
+      // Discovery below remains fail-closed when a native wrapper is temporarily guarded.
+    }
+    if (!own) {
+      try {
+        // A capability or typing packet proves the addon exists but carries no optional profile.
+        // Refresh on every explicit open so a compatible card can populate or replace stale data.
+        this.presence.request(memberNumber, true);
+      } catch {
+        // Compatibility below still decides whether the reduced profile card may open.
+      }
+    }
+    let compatible = own;
+    try {
+      compatible ||= this.presence.hasCompatiblePeer(memberNumber);
+    } catch {
+      // Wait below remains fail-closed.
+    }
+    if (!compatible) compatible = await this.#waitForAddonProfilePeer(memberNumber, operation);
+    if (
+      operation !== this.#addonProfileOpenToken ||
+      !this.#mounted ||
+      this.#panel.hidden ||
+      !this.#addonProfileDialog.open
+    ) {
+      return;
+    }
+    if (!compatible) {
+      this.#addonProfileDialog.close();
+      if (this.#mounted) this.#toast("KikiLink is not detected for this player yet.", "error");
+      return;
+    }
+
+    this.#addonProfileTarget = { memberNumber, displayName };
+    await this.#renderAddonProfile();
+    if (
+      operation !== this.#addonProfileOpenToken ||
+      !this.#mounted ||
+      this.#panel.hidden ||
+      !this.#addonProfileDialog.open ||
+      this.#addonProfileTarget?.memberNumber !== memberNumber
+    ) {
+      return;
+    }
+    this.#addonProfileDialog
+      .querySelector<HTMLButtonElement>(".kl-addon-profile-action--primary")
+      ?.focus();
+  }
+
+  #waitForAddonProfilePeer(memberNumber: number, operation: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (value: boolean): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        unsubscribe();
+        resolve(value);
+      };
+      const detected = (): boolean => {
+        if (
+          operation !== this.#addonProfileOpenToken ||
+          !this.#mounted ||
+          this.#panel.hidden
+        ) {
+          return false;
+        }
+        try {
+          return this.presence.hasCompatiblePeer(memberNumber);
+        } catch {
+          return false;
+        }
+      };
+      const unsubscribe = this.presence.subscribe((changedMember) => {
+        if (changedMember !== undefined && changedMember !== memberNumber) return;
+        if (detected()) finish(true);
+      });
+      if (detected()) {
+        finish(true);
+        return;
+      }
+      timer = setTimeout(() => finish(detected()), 1_600);
+    });
+  }
+
+  async #renderAddonProfile(): Promise<void> {
+    const target = this.#addonProfileTarget;
+    if (!target) return;
+    const token = ++this.#addonProfileToken;
+    let conversation: ConversationMeta | undefined;
+    try {
+      conversation = await this.service.getConversation(target.memberNumber);
+    } catch {
+      if (
+        token === this.#addonProfileToken &&
+        this.#mounted &&
+        this.#addonProfileTarget?.memberNumber === target.memberNumber
+      ) {
+        if (this.#addonProfileDialog.open) this.#addonProfileDialog.close();
+        this.#toast("This KikiLink profile could not be read right now.", "error");
+      }
+      return;
+    }
+    if (token !== this.#addonProfileToken || this.#addonProfileTarget?.memberNumber !== target.memberNumber) {
+      return;
+    }
+    let adapterName = `Member ${target.memberNumber}`;
+    try {
+      adapterName = this.adapter.getMemberName(target.memberNumber);
+    } catch {
+      // The known conversation/display name below still keeps the profile usable.
+    }
+    const nativeName = conversation?.peerName || target.displayName || adapterName;
+    const shownName = conversation ? conversationDisplayName(conversation) : nativeName;
+    const snapshot = this.presence.get(target.memberNumber);
+    this.#addonProfilePresenceSignature = profilePresenceSignature(snapshot);
+    const notebook = this.roster.get(target.memberNumber, nativeName);
+    let relationships: PlayerRelationship[] = [];
+    let inRoom = false;
+    let isFriend = false;
+    let currentRoomName = "";
+    try {
+      relationships = typeof this.adapter.getPlayerRelationships === "function"
+        ? this.adapter.getPlayerRelationships(target.memberNumber)
+        : [];
+    } catch {
+      // BC can replace guarded cross-realm character objects while the dialog is open.
+    }
+    try {
+      inRoom = typeof this.adapter.isMemberInCurrentRoom === "function"
+        ? this.adapter.isMemberInCurrentRoom(target.memberNumber)
+        : false;
+      if (inRoom && typeof this.adapter.getCurrentRoomName === "function") {
+        currentRoomName = this.adapter.getCurrentRoomName() ?? "";
+      }
+    } catch {
+      // Keep the profile useful without claiming that the player is still in the room.
+    }
+    try {
+      isFriend = typeof this.adapter.isKnownFriend === "function"
+        ? this.adapter.isKnownFriend(target.memberNumber)
+        : false;
+    } catch {
+      // Friend state is native-observable and may briefly be unavailable during a BC refresh.
+    }
+    const style = snapshot.profileStyle ?? "classic";
+    const frame = snapshot.avatarFrame ?? "none";
+
+    const avatar = element("div", { className: "kl-avatar kl-addon-profile-avatar" });
+    avatar.dataset.avatarFrame = frame;
+    this.#renderAvatar(avatar, shownName, target.memberNumber);
+    const avatarShell = element(
+      "div",
+      { className: "kl-addon-profile-avatar-shell" },
+      avatar,
+      presenceDot(snapshot.status),
+    );
+    avatarShell.dataset.frame = frame;
+
+    const publicBadges = element("div", { className: "kl-addon-profile-badges" });
+    publicBadges.append(element("span", { className: "kl-addon-profile-badge", text: "KIKILINK" }));
+    if (isFriend) publicBadges.append(element("span", { className: "kl-addon-profile-badge", text: "FRIEND" }));
+    for (const relationship of relationships) {
+      publicBadges.append(
+        element("span", {
+          className: `kl-addon-profile-badge kl-addon-profile-badge--${relationship}`,
+          text: rosterRelationshipLabel(relationship).toUpperCase(),
+          title: rosterRelationshipDescription(relationship),
+        }),
+      );
+    }
+
+    const avatarPolicy = this.settings.get().linkChat.imagePreviews;
+    const avatarRevealed = Boolean(
+      snapshot.avatarUrl &&
+      this.#revealedAvatarUrls.has(avatarRevealKey(target.memberNumber, snapshot.avatarUrl)),
+    );
+    const hiddenAvatar = Boolean(snapshot.avatarUrl) &&
+      (avatarPolicy === "never" || (avatarPolicy === "ask" && !avatarRevealed));
+    const avatarControl = hiddenAvatar && avatarPolicy === "ask"
+      ? element("button", {
+          className: "kl-text-button kl-addon-profile-show-avatar",
+          type: "button",
+          text: "Show profile avatar",
+          onClick: () => {
+            if (snapshot.avatarUrl) {
+              this.#rememberRevealedAvatar(target.memberNumber, snapshot.avatarUrl);
+            }
+            this.#schedulePresenceRender(target.memberNumber);
+            void this.#renderAddonProfile();
+          },
+        })
+      : hiddenAvatar && avatarPolicy === "never"
+        ? element("span", {
+            className: "kl-addon-profile-avatar-note",
+            text: "Avatar hidden by Links only privacy setting",
+          })
+        : null;
+
+    const statusLine = element(
+      "div",
+      { className: "kl-addon-profile-status", title: presenceDescription(snapshot) },
+      presenceDot(snapshot.status),
+      element("strong", { text: presenceLabel(snapshot.status) }),
+      snapshot.statusMessage
+        ? element("span", { className: "kl-addon-profile-custom-status", text: snapshot.statusMessage })
+        : null,
+    );
+    statusLine.dataset.presenceDescription = "true";
+    const hero = element(
+      "section",
+      { className: "kl-addon-profile-hero" },
+      element("div", { className: "kl-addon-profile-banner" }),
+      avatarShell,
+      element(
+        "div",
+        { className: "kl-addon-profile-identity" },
+        element("h2", { text: shownName }),
+        conversation?.localAlias
+          ? element("p", { className: "kl-addon-profile-native-name", text: `Bondage Club name · ${nativeName}` })
+          : null,
+        element("p", { className: "kl-addon-profile-member", text: `Member #${target.memberNumber}` }),
+        publicBadges,
+        statusLine,
+        avatarControl,
+      ),
+    );
+
+    const facts = element(
+      "div",
+      { className: "kl-addon-profile-facts" },
+      this.#addonProfileFact("Current room", snapshot.roomName || (inRoom ? currentRoomName || "Current room" : "Unavailable")),
+      this.#addonProfileFact("KikiLink", snapshot.addonVersion ? `v${snapshot.addonVersion}` : "Detected"),
+      this.#addonProfileFact("Last seen", inRoom ? "Now" : notebook.lastSeenAt ? formatFullSeenTime(notebook.lastSeenAt) : "Not recorded"),
+    );
+
+    const privateSection = element(
+      "section",
+      { className: "kl-addon-profile-private" },
+      element(
+        "div",
+        { className: "kl-addon-profile-section-title" },
+        kikiIcon("lock"),
+        element("strong", { text: "Only visible to you" }),
+      ),
+      element("p", {
+        text: `Private note · ${notebook.note || "No private note saved"}`,
+      }),
+      element("p", {
+        text: `Private tags · ${notebook.tags.length > 0 ? notebook.tags.join(" · ") : "No private tags saved"}`,
+      }),
+      element("p", {
+        text: `Last recorded room · ${notebook.lastRoomName || "Not recorded"}`,
+      }),
+      element("p", {
+        text: `Encounter count · ${notebook.encounterCount ? notebook.encounterCount.toString() : "Not recorded"}`,
+      }),
+    );
+
+    const message = element("button", {
+      className: "kl-text-button kl-text-button--primary kl-addon-profile-action kl-addon-profile-action--primary",
+      type: "button",
+      text: "Message",
+      onClick: () => {
+        this.#addonProfileDialog.close();
+        this.#runPlayerAction(
+          () => this.openChat(target.memberNumber, nativeName),
+          "LinkChat could not be opened.",
+        );
+      },
+    });
+    const whisper = element("button", {
+      className: "kl-text-button kl-addon-profile-action",
+      type: "button",
+      text: "Whisper",
+      onClick: () => {
+        try {
+          this.adapter.startWhisper(target.memberNumber);
+          this.#addonProfileDialog.close();
+          this.close();
+        } catch (error) {
+          this.#toast(error instanceof Error ? error.message : "Unable to start Whisper", "error");
+        }
+      },
+    });
+    whisper.disabled = !inRoom;
+    const nativeProfile = element("button", {
+      className: "kl-text-button kl-addon-profile-action",
+      type: "button",
+      text: "Native profile",
+      onClick: () => {
+        try {
+          this.adapter.openProfile(target.memberNumber);
+          this.#addonProfileDialog.close();
+          this.close();
+        } catch (error) {
+          this.#toast(error instanceof Error ? error.message : "Unable to open profile", "error");
+        }
+      },
+    });
+    nativeProfile.disabled = !inRoom;
+    const favorite = element("button", {
+      className: "kl-text-button kl-addon-profile-action",
+      type: "button",
+      text: notebook.favorite ? "Unfavorite" : "Favorite",
+      onClick: () => {
+        this.roster.toggleFavorite(target.memberNumber, nativeName);
+        void this.#renderAddonProfile();
+        this.#renderRoster();
+      },
+    });
+    const note = element("button", {
+      className: "kl-text-button kl-addon-profile-action",
+      type: "button",
+      text: "Private note",
+      onClick: () => {
+        this.#addonProfileDialog.close();
+        this.#openRoster(target.memberNumber);
+      },
+    });
+
+    const card = element(
+      "article",
+      { className: "kl-addon-profile-card" },
+      hero,
+      facts,
+      privateSection,
+      element("div", { className: "kl-addon-profile-actions" }, message, whisper, nativeProfile, favorite, note),
+    );
+    card.dataset.profileStyle = style;
+    card.dataset.memberNumber = target.memberNumber.toString();
+    this.#addonProfileBody.replaceChildren(card);
+  }
+
+  #addonProfileFact(label: string, value: string): HTMLDivElement {
+    return element(
+      "div",
+      { className: "kl-addon-profile-fact" },
+      element("span", { text: label }),
+      element("strong", { text: value }),
+    );
+  }
+
   #openPresenceDialog(): void {
     const config = this.settings.get().linkPresence;
     this.#presenceEnabledToggle.checked = config.enabled;
     this.#presenceMessage.value = config.statusMessage;
     this.#presenceAvatarUrl.value = config.avatarUrl;
+    this.#presenceAvatarFrame.value = config.avatarFrame;
+    this.#presenceProfileStyle.value = config.profileStyle;
     this.#autoIdleInput.value = config.autoIdleMinutes.toString();
     this.#afkAutoReplyToggle.checked = config.afkAutoReply.enabled;
     this.#afkAutoReplyMessage.value = config.afkAutoReply.message;
@@ -3058,6 +3718,8 @@ export class LinkChatView {
       enabled: this.#presenceEnabledToggle.checked,
       statusMessage: this.#presenceMessage.value,
       avatarUrl,
+      avatarFrame: this.#presenceAvatarFrame.value as AvatarFrame,
+      profileStyle: this.#presenceProfileStyle.value as ProfileCardStyle,
       autoIdleMinutes: autoIdle,
       afkAutoReply: {
         enabled: this.#afkAutoReplyToggle.checked,
@@ -3151,7 +3813,7 @@ export class LinkChatView {
     );
     const galleryStorageChoices = ([
       ["device", "lock", "This device", "Private · stays until you delete it"],
-      ["catbox", "star", "Catbox", "Public link · no expiry"],
+      ["catbox", "star", "Catbox", "Public link · no automatic expiry"],
       ["litterbox", "status", "Litterbox", "Public link · expires automatically"],
     ] as const).map(([storage, icon, title, description]) => {
       const input = element("input") as HTMLInputElement;
@@ -3531,6 +4193,12 @@ export class LinkChatView {
     setupButton?.toggleAttribute("hidden", gallery || config !== null);
     this.#chooseImageFileButton.hidden = !gallery && config === null;
     this.#chooseImageFileButton.disabled = this.#imageUploadBusy;
+    for (const input of this.#galleryStorageOptions.querySelectorAll<HTMLInputElement>(
+      "input[type='radio']",
+    )) {
+      input.disabled = this.#imageUploadBusy;
+    }
+    this.#galleryRetentionSelect.disabled = this.#imageUploadBusy;
     this.#chooseImageFileButton.textContent = this.#preparedLocalImage
       ? "Choose another"
       : "Choose image";
@@ -3628,7 +4296,7 @@ export class LinkChatView {
             ? storage === "device"
               ? "Ready for private device storage"
               : storage === "catbox"
-                ? "Ready for Catbox without expiry"
+                ? "Ready for Catbox with no automatic expiry"
                 : `Ready for ${formatRetention(this.#galleryRetentionSelect.value as LitterboxUploadConfig["retention"])} Litterbox storage`
             : "Prepared locally",
         }),
@@ -3721,26 +4389,34 @@ export class LinkChatView {
         this.#renderLocalImageComposeState();
         return;
       }
+      const storage = this.#galleryFileStorage;
+      const litterboxConfig = storage === "litterbox"
+        ? normalizeLitterboxUploadConfig({ retention: this.#galleryRetentionSelect.value })
+        : null;
+      if (storage === "litterbox" && !litterboxConfig) {
+        this.#localImageError = "Choose a valid temporary image lifetime";
+        this.#renderLocalImageComposeState();
+        return;
+      }
       this.#imageUploadBusy = true;
       const token = ++this.#imageUploadToken;
       this.#localImageError = undefined;
       this.#renderLocalImageComposeState();
       try {
-        const storage = this.#galleryFileStorage;
         let remoteUrl: string | undefined;
         if (storage === "device") {
           await this.galleryStore.add({ blob: image.blob, width: image.width, height: image.height });
         } else if (storage === "catbox") {
           remoteUrl = await this.catboxImageUpload(image);
         } else {
-          const config = normalizeLitterboxUploadConfig({
-            retention: this.#galleryRetentionSelect.value,
-          });
-          if (!config) throw new Error("Choose a valid temporary image lifetime");
-          remoteUrl = await this.imageUploader.upload(image, config);
+          remoteUrl = await this.imageUploader.upload(image, litterboxConfig!);
         }
         if (token !== this.#imageUploadToken) return;
-        if (remoteUrl && !this.#saveGalleryImage(remoteUrl, Date.now(), false)) {
+        const savedAt = Date.now();
+        const expiresAt = litterboxConfig
+          ? savedAt + litterboxRetentionMs(litterboxConfig.retention)
+          : undefined;
+        if (remoteUrl && !this.#saveGalleryImage(remoteUrl, savedAt, false, expiresAt)) {
           throw new Error("The image host returned a link KikiLink could not save");
         }
         this.#imageUploadBusy = false;
@@ -3752,7 +4428,7 @@ export class LinkChatView {
             ? "Image saved permanently on this device. Nothing was uploaded."
             : storage === "catbox"
               ? "Image uploaded to Catbox and saved to Gallery without an automatic expiry."
-              : `Image uploaded to Litterbox and saved for ${formatRetention(this.#galleryRetentionSelect.value as LitterboxUploadConfig["retention"])}.`,
+              : `Image uploaded to Litterbox and saved for ${formatRetention(litterboxConfig!.retention)}.`,
         );
       } catch (error) {
         if (token !== this.#imageUploadToken) return;
@@ -3812,7 +4488,20 @@ export class LinkChatView {
     this.#finderQuery.focus();
 
     const token = ++this.#finderRenderToken;
-    const catalog = await this.#buildFinderCatalog();
+    let catalog: FinderResult[];
+    try {
+      catalog = await this.#buildFinderCatalog();
+    } catch {
+      if (token !== this.#finderRenderToken || !this.#finderDialog.open) return;
+      this.#finderResults.replaceChildren(
+        element("div", {
+          className: "kl-finder-empty kl-finder-error",
+          text: "KikiLink shortcuts could not be gathered right now. Try again shortly.",
+        }),
+      );
+      this.#finderStatus.textContent = "Shortcuts temporarily unavailable";
+      return;
+    }
     if (token !== this.#finderRenderToken || !this.#finderDialog.open) return;
     this.#finderCatalog = catalog;
     this.#renderFinderResults();
@@ -4000,23 +4689,27 @@ export class LinkChatView {
     }
 
     const conversationNumbers = new Set(conversations.map((conversation) => conversation.peerNumber));
-    for (const contact of this.adapter.getKnownContacts()) {
-      if (knownPeople.has(contact.memberNumber) || conversationNumbers.has(contact.memberNumber)) continue;
-      results.push({
-        id: `contact-${contact.memberNumber}`,
-        kind: "conversation",
-        icon: "chat",
-        category: "Contact",
-        title: contact.memberName,
-        detail: `Known contact · #${contact.memberNumber}`,
-        keywords: `${contact.memberNumber} contact friend beep new chat`,
-        priority: 90,
-        action: {
+    try {
+      for (const contact of this.adapter.getKnownContacts()) {
+        if (knownPeople.has(contact.memberNumber) || conversationNumbers.has(contact.memberNumber)) continue;
+        results.push({
+          id: `contact-${contact.memberNumber}`,
           kind: "conversation",
-          peerNumber: contact.memberNumber,
-          peerName: contact.memberName,
-        },
-      });
+          icon: "chat",
+          category: "Contact",
+          title: contact.memberName,
+          detail: `Known contact · #${contact.memberNumber}`,
+          keywords: `${contact.memberNumber} contact friend beep new chat`,
+          priority: 90,
+          action: {
+            kind: "conversation",
+            peerNumber: contact.memberNumber,
+            peerName: contact.memberName,
+          },
+        });
+      }
+    } catch {
+      // Finder destinations and stored conversations remain useful during native contact refreshes.
     }
 
     settings.linkActivities.customActivities.forEach((activity, index) => {
@@ -4064,26 +4757,40 @@ export class LinkChatView {
         (result) =>
           result.action.kind === "conversation" && result.action.peerNumber === directNumber,
       );
+      let ownMemberNumber = -1;
+      try {
+        ownMemberNumber = this.adapter.getOwnMemberNumber();
+      } catch {
+        // Direct member actions fail closed while the local account identity is guarded.
+      }
       if (
         /^#?\d+$/u.test(query) &&
         Number.isSafeInteger(directNumber) &&
-        directNumber >= 0 &&
-        directNumber !== this.adapter.getOwnMemberNumber() &&
+        directNumber > 0 &&
+        Number.isSafeInteger(ownMemberNumber) &&
+        ownMemberNumber > 0 &&
+        directNumber !== ownMemberNumber &&
         !hasDirectConversation
       ) {
+        let directName = `Member ${directNumber}`;
+        try {
+          directName = this.adapter.getMemberName(directNumber);
+        } catch {
+          // The member number is sufficient for a local LinkChat conversation.
+        }
         results.unshift({
           id: `direct-${directNumber}`,
           kind: "conversation",
           icon: "plus",
           category: "Action",
           title: `Start chat with #${directNumber}`,
-          detail: this.adapter.getMemberName(directNumber),
+          detail: directName,
           keywords: query,
           priority: 1000,
           action: {
             kind: "conversation",
             peerNumber: directNumber,
-            peerName: this.adapter.getMemberName(directNumber),
+            peerName: directName,
           },
         });
       }
@@ -4219,6 +4926,7 @@ export class LinkChatView {
 
   async #renderGallery(): Promise<void> {
     const token = ++this.#galleryRenderToken;
+    this.#cancelRemoteImageLoadsWithin(this.#galleryGrid);
     this.#releaseGalleryObjectUrls();
     this.#galleryGrid.setAttribute("aria-busy", "true");
     this.#galleryGrid.replaceChildren(
@@ -4226,21 +4934,53 @@ export class LinkChatView {
     );
     try {
       const settings = this.settings.get();
-      const [chatItems, localImages] = await Promise.all([
+      const [chatItems, deviceGalleryRead] = await Promise.all([
         this.service.listMedia(400),
-        this.galleryStore.list().catch(() => []),
+        this.galleryStore.list().then(
+          (images) => ({ ok: true as const, images }),
+          () => ({ ok: false as const, images: [] }),
+        ),
       ]);
       if (token !== this.#galleryRenderToken) return;
-      this.#deviceGalleryCount = localImages.length;
+      const localImages = deviceGalleryRead.images;
+      if (deviceGalleryRead.ok) this.#deviceGalleryCount = localImages.length;
+      const deviceGalleryError = deviceGalleryRead.ok
+        ? undefined
+        : element(
+            "div",
+            { className: "kl-gallery-empty kl-gallery-storage-error" },
+            element("strong", { text: "Device Gallery could not be read." }),
+            element("span", { text: "Refresh to try again; no local files were changed." }),
+          );
       const hidden = new Set(settings.linkChat.gallery.hiddenUrls);
+      const now = Date.now();
+      const expiredSavedUrls = settings.linkChat.gallery.saved
+        .filter((saved) => saved.expiresAt !== undefined && saved.expiresAt <= now)
+        .map((saved) => saved.url);
+      if (expiredSavedUrls.length > 0) {
+        const expired = new Set(expiredSavedUrls);
+        for (const url of expired) hidden.add(url);
+        this.settings.update((draft) => {
+          draft.linkChat.gallery.saved = draft.linkChat.gallery.saved.filter(
+            (saved) => !expired.has(saved.url),
+          );
+          draft.linkChat.gallery.hiddenUrls = [
+            ...expired,
+            ...draft.linkChat.gallery.hiddenUrls.filter((url) => !expired.has(url)),
+          ];
+        });
+      }
       const itemsByUrl = new Map<string, GalleryItem>();
       for (const saved of settings.linkChat.gallery.saved) {
-        if (hidden.has(saved.url)) continue;
+        if (hidden.has(saved.url) || (saved.expiresAt !== undefined && saved.expiresAt <= now)) {
+          continue;
+        }
         itemsByUrl.set(saved.url, {
           url: saved.url,
           provider: galleryMediaProvider(saved.url),
           sortAt: saved.addedAt,
           saved: true,
+          ...(saved.expiresAt === undefined ? {} : { expiresAt: saved.expiresAt }),
         });
       }
       for (const chat of chatItems) {
@@ -4274,6 +5014,10 @@ export class LinkChatView {
         : "Images from saved chats and anything you add directly will appear here. Choose private device storage, Catbox, or expiring Litterbox for local files.";
       this.#renderHomeStatus();
       if (items.length === 0) {
+        if (deviceGalleryError) {
+          this.#galleryGrid.replaceChildren(deviceGalleryError);
+          return;
+        }
         this.#galleryGrid.replaceChildren(
           element(
             "div",
@@ -4296,6 +5040,7 @@ export class LinkChatView {
         // Cross-realm game objects can be temporarily unavailable while BC changes screens.
       }
       this.#galleryGrid.replaceChildren(
+        ...(deviceGalleryError ? [deviceGalleryError] : []),
         ...items.map((item) => this.#galleryItem(item, roomAdmin)),
       );
     } catch (error) {
@@ -4320,7 +5065,10 @@ export class LinkChatView {
         className: "kl-text-button",
         type: "button",
         text: "Open chat",
-        onClick: () => void this.openChat(item.chat!.peerNumber, item.chat!.peerName),
+        onClick: () => this.#runPlayerAction(
+          () => this.openChat(item.chat!.peerNumber, item.chat!.peerName),
+          "LinkChat could not be opened.",
+        ),
       }));
     }
     if (roomAdmin) {
@@ -4331,7 +5079,10 @@ export class LinkChatView {
           text: item.localId ? "Share & use as background" : "Use as room background",
           onClick: () => item.localId
             ? void this.#shareLocalGalleryImage(item)
-            : this.#selectGalleryRoomBackground(item.url),
+            : this.#runPlayerAction(
+                () => this.#selectGalleryRoomBackground(item.url),
+                "Room Tools could not be opened.",
+              ),
         }),
       );
     }
@@ -4365,7 +5116,7 @@ export class LinkChatView {
             ? `${item.chat.direction === "outgoing" ? "Sent to" : "From"} ${item.chat.peerName} · ${formatMessageTime(item.chat.sentAt)}`
             : item.localId
               ? `Stored permanently on this device · ${formatMessageTime(item.sortAt)}`
-              : `Added to Gallery · ${formatMessageTime(item.sortAt)}`,
+              : `Added to Gallery · ${formatMessageTime(item.sortAt)}${item.expiresAt ? ` · ${formatGalleryExpiry(item.expiresAt)}` : ""}`,
         }),
       ),
       actions,
@@ -4376,7 +5127,12 @@ export class LinkChatView {
     return card;
   }
 
-  #saveGalleryImage(value: string, addedAt = Date.now(), render = true): boolean {
+  #saveGalleryImage(
+    value: string,
+    addedAt = Date.now(),
+    render = true,
+    expiresAt?: number,
+  ): boolean {
     const url = normalizeImageUrl(value);
     if (!url || url.length > 500) {
       this.#toast("Use a direct HTTPS image link ending in a supported image extension.", "error");
@@ -4387,7 +5143,7 @@ export class LinkChatView {
         (hiddenUrl) => hiddenUrl !== url,
       );
       draft.linkChat.gallery.saved = [
-        { url, addedAt },
+        { url, addedAt, ...(expiresAt === undefined ? {} : { expiresAt }) },
         ...draft.linkChat.gallery.saved.filter((saved) => saved.url !== url),
       ];
     });
@@ -4429,9 +5185,18 @@ export class LinkChatView {
     this.#toast("Image removed from this Gallery. Its chat message was left untouched.");
   }
 
-  #selectGalleryRoomBackground(url: string): void {
+  async #selectGalleryRoomBackground(url: string): Promise<void> {
+    const returnWorkspace = this.#workspaceView;
     this.#roomImageUrl.value = url;
-    void this.#openRoomTools(false);
+    try {
+      await this.#openRoomTools(false);
+    } catch (error) {
+      if (this.#mounted && this.#workspaceView === "room") {
+        this.#showWorkspace(returnWorkspace);
+      }
+      throw error;
+    }
+    if (!this.#mounted) return;
     this.#toast("Image selected. Review it, then apply the room media.");
   }
 
@@ -4456,7 +5221,7 @@ export class LinkChatView {
         height: stored.height,
         sourceBytes: stored.blob.size,
       }, config);
-      this.#selectGalleryRoomBackground(url);
+      await this.#selectGalleryRoomBackground(url);
     } catch (error) {
       this.#toast(error instanceof Error ? error.message : "The image could not be shared.", "error");
     }
@@ -4467,6 +5232,13 @@ export class LinkChatView {
       for (const url of this.#galleryObjectUrls) URL.revokeObjectURL(url);
     }
     this.#galleryObjectUrls.clear();
+  }
+
+  #invalidateGalleryRender(): void {
+    this.#galleryRenderToken += 1;
+    this.#cancelRemoteImageLoadsWithin(this.#galleryGrid);
+    this.#releaseGalleryObjectUrls();
+    this.#galleryGrid.setAttribute("aria-busy", "false");
   }
 
   #buildRoomPage(): void {
@@ -4659,8 +5431,8 @@ export class LinkChatView {
     if (!refresh) return;
     if (view === "current") void this.#renderRoomTools(true);
     else if (view === "lobbies") {
-      if (this.#lobbyRooms.length > 0) this.#renderLobbies();
-      else void this.#refreshLobbies();
+      this.#renderLobbies();
+      if (this.#lobbyRooms.length === 0) void this.#refreshLobbies();
     } else {
       this.#renderRoomPresets();
     }
@@ -4669,6 +5441,7 @@ export class LinkChatView {
   #buildLobbyPanel(): void {
     this.#lobbyQuery.type = "search";
     this.#lobbyQuery.placeholder = "Filter rooms or descriptions";
+    this.#lobbyQuery.setAttribute("aria-label", "Filter lobby rooms");
     this.#lobbyQuery.autocomplete = "off";
     this.#lobbyQuery.addEventListener("input", () => this.#renderLobbies());
     this.#lobbyQuery.addEventListener("keydown", (event) => {
@@ -4734,11 +5507,14 @@ export class LinkChatView {
       this.#renderLobbies();
     } catch (error) {
       if (token !== this.#lobbyRenderToken) return;
-      this.#lobbyStatus.textContent = error instanceof Error
+      const message = error instanceof Error
         ? error.message
         : "The room list could not be refreshed.";
+      this.#lobbyRooms = [];
+      this.#renderLobbies();
+      const hasCurrentRoom = this.#lobbyList.querySelector('[data-current="true"]') !== null;
+      this.#lobbyStatus.textContent = hasCurrentRoom ? `${message} · Your current room is still shown.` : message;
       this.#lobbyStatus.dataset.state = "error";
-      this.#lobbyList.replaceChildren();
     } finally {
       if (token === this.#lobbyRenderToken) this.#lobbyRefreshButton.disabled = false;
     }
@@ -4749,18 +5525,81 @@ export class LinkChatView {
     const favoriteKeys = new Set(
       this.settings.get().linkRoom.favoriteRoomNames.map(lobbyRoomNameKey),
     );
-    const rooms = this.#lobbyRooms
+    let currentRoomName = "";
+    let currentRoomKey = "";
+    try {
+      currentRoomName = (this.adapter.getCurrentRoomName() ?? "").trim();
+      currentRoomKey = lobbyRoomNameKey(currentRoomName);
+    } catch {
+      // Keep the directory usable while BC replaces its room globals.
+    }
+    let roomSource = this.#lobbyRooms.slice(0, 500);
+    try {
+      const currentRoom = typeof this.adapter.getCurrentLobbyRoom === "function"
+        ? this.adapter.getCurrentLobbyRoom()
+        : undefined;
+      if (currentRoom) {
+        const fallbackCurrentRoomKey = lobbyRoomNameKey(currentRoom.name);
+        if (!currentRoomKey) currentRoomKey = fallbackCurrentRoomKey;
+        if (
+          currentRoomKey &&
+          !roomSource.some((room) => lobbyRoomNameKey(room.name) === currentRoomKey)
+        ) {
+          roomSource = [currentRoom, ...roomSource];
+        }
+      }
+    } catch {
+      // The live directory still renders if BC swaps room data mid-frame.
+    }
+    if (
+      currentRoomKey &&
+      currentRoomName &&
+      !roomSource.some((room) => lobbyRoomNameKey(room.name) === currentRoomKey)
+    ) {
+      let memberCount = 1;
+      try {
+        memberCount = Math.max(1, this.adapter.getRoomCharacters().length + 1);
+      } catch {
+        // The name alone is enough to keep the current room visible during guarded refreshes.
+      }
+      roomSource = [{
+        name: currentRoomName,
+        description: "Live room details are temporarily unavailable.",
+        language: "",
+        memberCount,
+        memberLimit: memberCount,
+        canJoin: false,
+        locked: false,
+        privateRoom: false,
+        mapType: "",
+        friends: [],
+      }, ...roomSource];
+    }
+    const rooms = roomSource
       .map((room, index) => ({
         room,
         index,
         favorite: favoriteKeys.has(lobbyRoomNameKey(room.name)),
+        current: Boolean(currentRoomKey) && lobbyRoomNameKey(room.name) === currentRoomKey,
       }))
-      .filter(({ room }) =>
-        !filter || `${room.name}\n${room.description}\n${room.language}`.toLocaleLowerCase().includes(filter),
+      .filter(({ room, current }) =>
+        current || !filter || `${room.name}\n${room.description}\n${room.language}`.toLocaleLowerCase().includes(filter),
       )
       .sort((left, right) => {
-        const leftRank = left.favorite ? 2 : left.room.friends.length > 0 ? 1 : 0;
-        const rightRank = right.favorite ? 2 : right.room.friends.length > 0 ? 1 : 0;
+        const leftRank = left.current
+          ? 3
+          : left.favorite
+            ? 2
+            : left.room.friends.length > 0
+              ? 1
+              : 0;
+        const rightRank = right.current
+          ? 3
+          : right.favorite
+            ? 2
+            : right.room.friends.length > 0
+              ? 1
+              : 0;
         return rightRank - leftRank || left.index - right.index;
       });
     const friendRoomCount = rooms.filter(({ room }) => room.friends.length > 0).length;
@@ -4770,11 +5609,11 @@ export class LinkChatView {
       : `${rooms.length} rooms · ${favoriteRoomCount} favorite${favoriteRoomCount === 1 ? "" : "s"} · ${friendRoomCount} with friends`;
     this.#lobbyStatus.dataset.state = rooms.length > 0 ? "ready" : "empty";
     this.#lobbyList.replaceChildren(
-      ...rooms.map(({ room, favorite }) => this.#lobbyCard(room, favorite)),
+      ...rooms.map(({ room, favorite, current }) => this.#lobbyCard(room, favorite, current)),
     );
   }
 
-  #lobbyCard(room: BCLobbyRoom, isFavorite: boolean): HTMLElement {
+  #lobbyCard(room: BCLobbyRoom, isFavorite: boolean, isCurrent: boolean): HTMLElement {
     const friends = element("div", { className: "kl-lobby-friends" });
     if (room.friends.length > 0) {
       for (const friend of room.friends.slice(0, 5)) {
@@ -4793,13 +5632,15 @@ export class LinkChatView {
       room.locked ? "Locked" : "",
       room.privateRoom ? "Private" : "",
     ].filter(Boolean);
-    const join = element("button", {
-      className: "kl-text-button kl-lobby-join",
-      type: "button",
-      text: room.canJoin ? "Join" : "Unavailable",
-      onClick: () => this.#joinLobby(room),
-    });
-    join.disabled = !room.canJoin;
+    const join = isCurrent
+      ? element("span", { className: "kl-lobby-current", text: "Current room" })
+      : element("button", {
+          className: "kl-text-button kl-lobby-join",
+          type: "button",
+          text: this.#lobbyJoinBusy ? "Joining…" : room.canJoin ? "Join" : "Unavailable",
+          onClick: () => void this.#joinLobby(room),
+        });
+    if (join instanceof HTMLButtonElement) join.disabled = this.#lobbyJoinBusy || !room.canJoin;
     const favorite = element("button", {
       className: "kl-icon-button kl-lobby-favorite",
       type: "button",
@@ -4838,6 +5679,7 @@ export class LinkChatView {
     );
     card.dataset.hasFriends = String(room.friends.length > 0);
     card.dataset.favorite = String(isFavorite);
+    card.dataset.current = String(isCurrent);
     return card;
   }
 
@@ -4860,20 +5702,44 @@ export class LinkChatView {
     this.#toast(added ? `${roomName} added to favorite rooms.` : `${roomName} removed from favorite rooms.`);
   }
 
-  #joinLobby(room: BCLobbyRoom): void {
-    if (
-      this.adapter.isInChatRoom() &&
-      typeof confirm === "function" &&
-      !confirm(`Leave the current room and join “${room.name}”?`)
-    ) {
-      return;
-    }
+  async #joinLobby(room: BCLobbyRoom): Promise<void> {
+    if (this.#lobbyJoinBusy) return;
+    let wasInChatRoom = false;
+    let roomStateReadable = true;
     try {
-      this.adapter.joinRoom(room.name);
-      this.#toast(`Joining ${room.name}…`);
+      wasInChatRoom =
+        typeof this.adapter.isInChatRoom === "function" && this.adapter.isInChatRoom();
+    } catch {
+      // A guarded room object must never bypass confirmation and unexpectedly leave a room.
+      roomStateReadable = false;
+      wasInChatRoom = true;
+    }
+    if (wasInChatRoom) {
+      if (typeof confirm !== "function") {
+        this.#toast("KikiLink cannot safely confirm leaving the current room right now.", "error");
+        return;
+      }
+      const prompt = roomStateReadable
+        ? `Leave the current room and join “${room.name}”?`
+        : `KikiLink could not verify the current room state. Continue with Bondage Club's safe leave-and-join flow for “${room.name}”?`;
+      if (!confirm(prompt)) return;
+    }
+    this.#lobbyJoinBusy = true;
+    this.#renderLobbies();
+    try {
+      this.#toast(
+        wasInChatRoom
+          ? `Leaving safely, then joining ${room.name}…`
+          : `Joining ${room.name}…`,
+      );
+      await this.adapter.joinRoom(room.name);
+      this.#toast(`Joined ${room.name}.`);
       this.close();
     } catch (error) {
       this.#toast(error instanceof Error ? error.message : "Could not join this room.", "error");
+    } finally {
+      this.#lobbyJoinBusy = false;
+      if (this.#mounted) this.#renderLobbies();
     }
   }
 
@@ -6778,6 +7644,8 @@ export class LinkChatView {
         : `${greeting}.`;
 
     const conversations = providedConversations ?? await this.service.listConversations();
+    const groups = this.#groupChatService?.listGroups() ?? [];
+    const totalChats = conversations.length + groups.length;
     const onlineFriendCount =
       typeof this.adapter.getOnlineFriends === "function"
         ? this.adapter.getOnlineFriends().length
@@ -6785,26 +7653,47 @@ export class LinkChatView {
     const recent = [...conversations].sort(
       (left, right) => right.lastMessageAt - left.lastMessageAt,
     )[0];
+    const recentGroup = groups.reduce<GroupConversation | undefined>(
+      (latest, group) => !latest || group.lastMessageAt > latest.lastMessageAt ? group : latest,
+      undefined,
+    );
     if (this.#unreadCount > 0) {
-      this.#homeChatMetric.textContent = `${this.#unreadCount} unread · ${conversations.length} chats`;
+      this.#homeChatMetric.textContent = `${this.#unreadCount} unread · ${totalChats} chats`;
+    } else if (
+      recentGroup &&
+      recentGroup.lastMessageAt > 0 &&
+      (!recent || recentGroup.lastMessageAt > recent.lastMessageAt)
+    ) {
+      this.#homeChatMetric.textContent = `Last in ${recentGroup.title} · ${formatRelativeTime(recentGroup.lastMessageAt)}`;
     } else if (recent && recent.lastMessageAt > 0) {
       this.#homeChatMetric.textContent = `Last with ${conversationDisplayName(recent)} · ${formatRelativeTime(recent.lastMessageAt)}`;
-    } else if (conversations.length > 0) {
-      this.#homeChatMetric.textContent = `${conversations.length} saved ${conversations.length === 1 ? "chat" : "chats"}`;
+    } else if (totalChats > 0) {
+      this.#homeChatMetric.textContent = `${totalChats} saved ${totalChats === 1 ? "chat" : "chats"}`;
     } else if (onlineFriendCount > 0) {
       this.#homeChatMetric.textContent = `${onlineFriendCount} ${onlineFriendCount === 1 ? "friend" : "friends"} online`;
     } else {
       this.#homeChatMetric.textContent = "Start your first Beep chat";
     }
     this.#renderHomeStatus();
-    this.#renderHomeAction(conversations, recent);
+    this.#renderHomeAction(conversations, recent, groups);
   }
 
   #renderHomeAction(
     conversations: ConversationMeta[],
     recent: ConversationMeta | undefined,
+    groups: GroupConversation[] = [],
   ): void {
     const unread = conversations.find((conversation) => conversation.unread > 0);
+    const unreadGroup = groups.find((group) => group.unread > 0);
+    const directUnreadTotal = conversations.reduce(
+      (count, conversation) => count + conversation.unread,
+      0,
+    );
+    const groupUnreadTotal = groups.reduce((count, group) => count + group.unread, 0);
+    const recentGroup = groups.reduce<GroupConversation | undefined>(
+      (latest, group) => !latest || group.lastMessageAt > latest.lastMessageAt ? group : latest,
+      undefined,
+    );
     const settings = this.settings.get();
     const inRoom =
       typeof this.adapter.isInChatRoom === "function" && this.adapter.isInChatRoom();
@@ -6815,10 +7704,7 @@ export class LinkChatView {
 
     this.#homeActionButton.disabled = false;
     if (unread) {
-      const total = Math.max(
-        this.#unreadCount,
-        conversations.reduce((count, conversation) => count + conversation.unread, 0),
-      );
+      const total = directUnreadTotal;
       this.#homeAction = {
         kind: "chat",
         peerNumber: unread.peerNumber,
@@ -6827,13 +7713,26 @@ export class LinkChatView {
       this.#homeActionIcon.replaceChildren(kikiIcon("chat"));
       this.#homeActionTitle.textContent = `${total} unread ${total === 1 ? "Beep" : "Beeps"}`;
       this.#homeActionDescription.textContent =
-        total === unread.unread
+        groupUnreadTotal > 0
+          ? `Start with ${conversationDisplayName(unread)}; ${groupUnreadTotal} unread group ${groupUnreadTotal === 1 ? "message is" : "messages are"} also waiting.`
+          : total === unread.unread
           ? `Open the conversation with ${conversationDisplayName(unread)} and continue when you are ready.`
           : `Start with ${conversationDisplayName(unread)}, then work through the rest at your pace.`;
       this.#homeActionMeta.textContent =
-        total === unread.unread ? `From ${conversationDisplayName(unread)}` : "Across recent chats";
+        groupUnreadTotal > 0
+          ? `${total} direct · ${groupUnreadTotal} group`
+          : total === unread.unread
+            ? `From ${conversationDisplayName(unread)}`
+            : "Across direct chats";
       this.#homeActionButton.textContent = total === 1 ? "Read message" : "Read messages";
-    } else if (conversations.length === 0) {
+    } else if (unreadGroup) {
+      this.#homeAction = { kind: "group", groupId: unreadGroup.groupId };
+      this.#homeActionIcon.replaceChildren(kikiIcon("users"));
+      this.#homeActionTitle.textContent = `${unreadGroup.unread} unread in ${unreadGroup.title}`;
+      this.#homeActionDescription.textContent = "Open the group conversation and catch up with everyone.";
+      this.#homeActionMeta.textContent = `${unreadGroup.memberNumbers.length} members`;
+      this.#homeActionButton.textContent = "Open group";
+    } else if (conversations.length === 0 && groups.length === 0) {
       this.#homeAction = { kind: "new-chat" };
       this.#homeActionIcon.replaceChildren(kikiIcon("plus"));
       this.#homeActionTitle.textContent = "Start your first chat";
@@ -6849,6 +7748,13 @@ export class LinkChatView {
         "Open Players to Whisper, Beep, view a profile, or add a private note.";
       this.#homeActionMeta.textContent = `${this.#presentCount} ${this.#presentCount === 1 ? "person" : "people"} here now`;
       this.#homeActionButton.textContent = "View players";
+    } else if (recentGroup && (!recent || recentGroup.lastMessageAt > recent.lastMessageAt)) {
+      this.#homeAction = { kind: "group", groupId: recentGroup.groupId };
+      this.#homeActionIcon.replaceChildren(kikiIcon("users"));
+      this.#homeActionTitle.textContent = `Continue in ${recentGroup.title}`;
+      this.#homeActionDescription.textContent = "Pick up your most recent group conversation.";
+      this.#homeActionMeta.textContent = `${recentGroup.memberNumbers.length} members`;
+      this.#homeActionButton.textContent = "Open group";
     } else if (recent) {
       this.#homeAction = {
         kind: "chat",
@@ -7065,8 +7971,35 @@ export class LinkChatView {
       ) {
         this.#renderActivePresence();
       }
-      const ownMemberNumber = this.adapter.getOwnMemberNumber();
-      if (updateAll || members.includes(ownMemberNumber)) this.#renderHomeStatus();
+      let ownMemberNumber: number | undefined;
+      try {
+        const candidate = this.adapter.getOwnMemberNumber();
+        if (Number.isSafeInteger(candidate) && candidate > 0) ownMemberNumber = candidate;
+      } catch {
+        // Firefox may revoke the page-owned Player proxy between the event and this frame.
+      }
+      if (
+        ownMemberNumber !== undefined &&
+        (updateAll || members.includes(ownMemberNumber))
+      ) {
+        this.#renderHomeStatus();
+      }
+      if (
+        this.#addonProfileTarget &&
+        (updateAll || members.includes(this.#addonProfileTarget.memberNumber))
+      ) {
+        let signature = "";
+        try {
+          signature = profilePresenceSignature(
+            this.presence.get(this.#addonProfileTarget.memberNumber),
+          );
+        } catch {
+          // Cross-realm native state can disappear between the notification and this frame.
+        }
+        if (signature !== this.#addonProfilePresenceSignature) {
+          void this.#renderAddonProfile();
+        }
+      }
       if (updateAll) void this.#renderHome();
     });
   }
@@ -7089,9 +8022,17 @@ export class LinkChatView {
       if (description) description.title = presenceDescription(snapshot);
       const avatar = target.querySelector<HTMLElement>("[data-kikilink-avatar]");
       if (avatar) {
+        let avatarName = avatar.dataset.avatarName || `Member ${memberNumber}`;
+        if (!avatar.dataset.avatarName) {
+          try {
+            avatarName = this.adapter.getMemberName(memberNumber);
+          } catch {
+            // Keep the existing avatar usable while native character data is guarded.
+          }
+        }
         this.#renderAvatar(
           avatar,
-          avatar.dataset.avatarName || this.adapter.getMemberName(memberNumber),
+          avatarName,
           memberNumber,
         );
       }
@@ -7115,15 +8056,17 @@ export class LinkChatView {
         this.#renderAvatar(this.#chatAvatar, displayName, conversation.peerNumber);
       }
     }
-    const conversations = allConversations.filter((conversation) => {
-      if (!query) return true;
-      return (
-        conversationDisplayName(conversation).toLocaleLowerCase().includes(query) ||
-        conversation.peerName.toLocaleLowerCase().includes(query) ||
-        conversation.peerNumber.toString().includes(query) ||
-        conversation.lastMessage.toLocaleLowerCase().includes(query)
-      );
-    });
+    const conversations = allConversations
+      .filter((conversation) => {
+        if (!query) return true;
+        return (
+          conversationDisplayName(conversation).toLocaleLowerCase().includes(query) ||
+          conversation.peerName.toLocaleLowerCase().includes(query) ||
+          conversation.peerNumber.toString().includes(query) ||
+          conversation.lastMessage.toLocaleLowerCase().includes(query)
+        );
+      })
+      .slice(0, 200);
 
     if (conversations.length === 0) {
       this.#conversationList.replaceChildren(
@@ -7204,6 +8147,7 @@ export class LinkChatView {
   }
 
   async #selectConversation(peerNumber: number, peerName: string): Promise<void> {
+    if (this.#groupChatPanel?.activeGroupId) this.#groupChatPanel.closeActive();
     if (this.#activePeer !== undefined && this.#activePeer !== peerNumber) {
       this.#stopLocalTyping();
     }
@@ -7534,16 +8478,87 @@ export class LinkChatView {
         open,
       ),
     );
-    if (deviceLocal || this.settings.get().linkChat.imagePreviews === "always") {
-      this.#loadRemoteImage(preview, url);
+    const previewPolicy = this.settings.get().linkChat.imagePreviews;
+    if (deviceLocal) {
+      this.#loadTrustedLocalImage(preview, url);
+    } else if (previewPolicy === "always") {
+      this.#queueRemoteImage(preview, url);
     } else {
       preview.append(
         kikiIcon("image", "kl-image-placeholder-icon"),
         element("span", { className: "kl-image-placeholder-title", text: "Remote image" }),
         element("span", {
           className: "kl-image-placeholder-help",
-          text: "Load it only when you trust this host.",
+          text: previewPolicy === "ask"
+            ? "Load it only when you trust this host."
+            : "Preview disabled by your Links only setting.",
         }),
+      );
+      if (previewPolicy === "ask") {
+        preview.append(
+          element("button", {
+            className: "kl-text-button kl-image-load",
+            type: "button",
+            text: "Show image",
+            onClick: () => this.#loadRemoteImage(preview, url),
+          }),
+        );
+      }
+    }
+    return card;
+  }
+
+  async #loadRemoteImage(preview: HTMLElement, url: string): Promise<void> {
+    const token = this.#nextRemoteImageRender(preview);
+    await this.#performRemoteImageLoad(preview, url, token);
+  }
+
+  #startRemoteImageVisibilityObserver(): void {
+    if (typeof IntersectionObserver !== "function") return;
+    this.#remoteImageVisibilityObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const target = entry.target as HTMLElement;
+          const task = this.#remoteImageVisibilityTasks.get(target);
+          if (!task) continue;
+          this.#remoteImageVisibilityObserver?.unobserve(target);
+          this.#remoteImageVisibilityTasks.delete(target);
+          if (!this.#isLiveRemoteImageRender(target, task.token)) {
+            this.#cancelRemoteImageLoad(target);
+            continue;
+          }
+          target.dataset.state = "queued";
+          target.replaceChildren(
+            kikiIcon("image", "kl-image-placeholder-icon"),
+            element("span", { text: "Waiting to load safely…" }),
+          );
+          this.#remoteImageAutoLoadQueue.push(task);
+        }
+        this.#scheduleRemoteImageAutoDrain();
+      },
+      { rootMargin: "240px 0px", threshold: 0.01 },
+    );
+  }
+
+  #queueRemoteImage(preview: HTMLElement, url: string): void {
+    const token = this.#nextRemoteImageRender(preview);
+    const task = { target: preview, url, token };
+    if (this.#remoteImageVisibilityObserver) {
+      preview.dataset.state = "waiting";
+      preview.replaceChildren(
+        kikiIcon("image", "kl-image-placeholder-icon"),
+        element("span", { text: "Loads automatically when near view…" }),
+      );
+      this.#remoteImageVisibilityTasks.set(preview, task);
+      this.#remoteImageVisibilityObserver.observe(preview);
+      return;
+    }
+    if (this.#remoteImageFallbackTargets.size >= MAX_FALLBACK_AUTO_REMOTE_IMAGE_LOADS) {
+      preview.dataset.state = "paused";
+      preview.replaceChildren(
+        kikiIcon("image", "kl-image-placeholder-icon"),
+        element("span", { text: "Automatic preview paused in this browser." }),
         element("button", {
           className: "kl-text-button kl-image-load",
           type: "button",
@@ -7551,29 +8566,198 @@ export class LinkChatView {
           onClick: () => this.#loadRemoteImage(preview, url),
         }),
       );
+      return;
     }
-    return card;
+    this.#remoteImageFallbackTargets.add(preview);
+    preview.dataset.state = "queued";
+    preview.replaceChildren(
+      kikiIcon("image", "kl-image-placeholder-icon"),
+      element("span", { text: "Waiting to load safely…" }),
+    );
+    this.#remoteImageAutoLoadQueue.push(task);
+    this.#scheduleRemoteImageAutoDrain();
   }
 
-  #loadRemoteImage(preview: HTMLElement, url: string): void {
+  #scheduleRemoteImageAutoDrain(): void {
+    if (this.#remoteImageAutoDrainScheduled) return;
+    this.#remoteImageAutoDrainScheduled = true;
+    queueMicrotask(() => {
+      this.#remoteImageAutoDrainScheduled = false;
+      this.#drainRemoteImageAutoLoads();
+    });
+  }
+
+  #drainRemoteImageAutoLoads(): void {
+    if (!this.#mounted) return;
+    while (
+      this.#remoteImageAutoLoadsActive < MAX_AUTO_REMOTE_IMAGE_LOADS &&
+      this.#remoteImageAutoLoadQueue.length > 0
+    ) {
+      const task = this.#remoteImageAutoLoadQueue.shift();
+      if (!task || !this.#isLiveRemoteImageRender(task.target, task.token)) continue;
+      this.#remoteImageAutoLoadsActive += 1;
+      void this.#performRemoteImageLoad(task.target, task.url, task.token).finally(() => {
+        this.#remoteImageAutoLoadsActive = Math.max(0, this.#remoteImageAutoLoadsActive - 1);
+        this.#scheduleRemoteImageAutoDrain();
+      });
+    }
+  }
+
+  async #performRemoteImageLoad(
+    preview: HTMLElement,
+    url: string,
+    token: number,
+  ): Promise<void> {
+    const controller = this.#startRemoteImageLoad(preview);
+    preview.dataset.state = "loading";
+    preview.replaceChildren(
+      kikiIcon("image", "kl-image-placeholder-icon"),
+      element("span", { text: "Loading image safely…" }),
+    );
+    let localUrl: string;
+    try {
+      localUrl = await this.remoteImageLoader.load(url, controller.signal);
+    } catch {
+      if (controller.signal.aborted) return;
+      if (!this.#isLiveRemoteImageRender(preview, token)) return;
+      this.#showRemoteImageError(preview);
+      return;
+    } finally {
+      this.#releaseRemoteImageLoad(preview, controller);
+    }
+    if (!this.#isLiveRemoteImageRender(preview, token)) return;
     const image = document.createElement("img");
     image.alt = "Image shared in LinkChat";
     image.loading = "lazy";
     image.decoding = "async";
-    image.referrerPolicy = "no-referrer";
     image.addEventListener("load", () => {
+      if (!this.#isLiveRemoteImageRender(preview, token) || image.parentElement !== preview) {
+        return;
+      }
       preview.dataset.state = "loaded";
-    });
+    }, { once: true });
     image.addEventListener("error", () => {
-      preview.dataset.state = "error";
-      preview.replaceChildren(
-        element("span", { className: "kl-image-placeholder-icon", text: "!" }),
-        element("span", { text: "This image could not be loaded. You can still open the original link." }),
-      );
-    });
+      if (!this.#isLiveRemoteImageRender(preview, token) || image.parentElement !== preview) {
+        return;
+      }
+      this.#showRemoteImageError(preview);
+    }, { once: true });
+    preview.replaceChildren(image);
+    image.src = localUrl;
+  }
+
+  #loadTrustedLocalImage(preview: HTMLElement, url: string): void {
+    const token = this.#nextRemoteImageRender(preview);
+    const image = document.createElement("img");
+    image.alt = "Image stored on this device";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.addEventListener("load", () => {
+      if (this.#isLiveRemoteImageRender(preview, token)) preview.dataset.state = "loaded";
+    }, { once: true });
+    image.addEventListener("error", () => {
+      if (this.#isLiveRemoteImageRender(preview, token)) this.#showRemoteImageError(preview);
+    }, { once: true });
     preview.dataset.state = "loading";
     preview.replaceChildren(image);
     image.src = url;
+  }
+
+  #showRemoteImageError(preview: HTMLElement): void {
+    preview.dataset.state = "error";
+    preview.replaceChildren(
+      element("span", { className: "kl-image-placeholder-icon", text: "!" }),
+      element("span", {
+        text: "This image could not be loaded safely. You can still open the original link.",
+      }),
+    );
+  }
+
+  #nextRemoteImageRender(target: HTMLElement): number {
+    this.#cancelRemoteImageLoad(target);
+    this.#remoteImageTargets.add(target);
+    return this.#remoteImageRenderTokens.get(target) ?? 1;
+  }
+
+  #isCurrentRemoteImageRender(target: HTMLElement, token: number): boolean {
+    return this.#mounted && this.#remoteImageRenderTokens.get(target) === token;
+  }
+
+  #isLiveRemoteImageRender(target: HTMLElement, token: number): boolean {
+    return target.isConnected && this.#isCurrentRemoteImageRender(target, token);
+  }
+
+  #startRemoteImageLoad(target: HTMLElement): AbortController {
+    const controller = new AbortController();
+    this.#remoteImageAbortControllers.set(target, controller);
+    return controller;
+  }
+
+  #releaseRemoteImageLoad(target: HTMLElement, controller: AbortController): void {
+    if (this.#remoteImageAbortControllers.get(target) === controller) {
+      this.#remoteImageAbortControllers.delete(target);
+    }
+  }
+
+  #cancelRemoteImageLoad(target: HTMLElement): void {
+    this.#remoteImageVisibilityObserver?.unobserve(target);
+    this.#remoteImageVisibilityTasks.delete(target);
+    this.#remoteImageFallbackTargets.delete(target);
+    for (let index = this.#remoteImageAutoLoadQueue.length - 1; index >= 0; index -= 1) {
+      if (this.#remoteImageAutoLoadQueue[index]?.target === target) {
+        this.#remoteImageAutoLoadQueue.splice(index, 1);
+      }
+    }
+    const controller = this.#remoteImageAbortControllers.get(target);
+    if (controller) {
+      this.#remoteImageAbortControllers.delete(target);
+      controller.abort();
+    }
+    this.#remoteImageRenderTokens.set(
+      target,
+      (this.#remoteImageRenderTokens.get(target) ?? 0) + 1,
+    );
+    this.#remoteImageTargets.delete(target);
+  }
+
+  #cancelDetachedRemoteImageLoads(): void {
+    const targets = new Set<HTMLElement>([
+      ...this.#remoteImageTargets,
+      ...this.#remoteImageAbortControllers.keys(),
+      ...this.#remoteImageVisibilityTasks.keys(),
+      ...this.#remoteImageAutoLoadQueue.map((task) => task.target),
+    ]);
+    for (const target of targets) {
+      if (!target.isConnected) this.#cancelRemoteImageLoad(target);
+    }
+  }
+
+  #cancelAllRemoteImageLoads(): void {
+    const targets = new Set<HTMLElement>([
+      ...this.#remoteImageTargets,
+      ...this.#remoteImageAbortControllers.keys(),
+      ...this.#remoteImageVisibilityTasks.keys(),
+      ...this.#remoteImageAutoLoadQueue.map((task) => task.target),
+    ]);
+    for (const target of targets) {
+      this.#cancelRemoteImageLoad(target);
+    }
+    this.#remoteImageAutoLoadQueue.length = 0;
+    this.#remoteImageVisibilityTasks.clear();
+    this.#remoteImageFallbackTargets.clear();
+    this.#remoteImageTargets.clear();
+  }
+
+  #cancelRemoteImageLoadsWithin(root: HTMLElement): void {
+    const targets = new Set<HTMLElement>([
+      ...this.#remoteImageTargets,
+      ...this.#remoteImageAbortControllers.keys(),
+      ...this.#remoteImageVisibilityTasks.keys(),
+      ...this.#remoteImageAutoLoadQueue.map((task) => task.target),
+    ]);
+    for (const target of targets) {
+      if (root.contains(target)) this.#cancelRemoteImageLoad(target);
+    }
   }
 
   #replyToMessage(message: LinkMessage): void {
@@ -7618,7 +8802,7 @@ export class LinkChatView {
   }
 
   #bindProfileMenu(target: HTMLElement, profile: () => ProfileTarget | undefined): void {
-    if (!(target instanceof HTMLButtonElement)) {
+    if (!(target instanceof HTMLButtonElement) && target === this.#chatAvatar) {
       target.tabIndex = 0;
       target.setAttribute("role", "button");
     }
@@ -7633,7 +8817,13 @@ export class LinkChatView {
       if (!value) return;
       event.preventDefault();
       event.stopPropagation();
-      void this.#openProfileMenu(value.memberNumber, value.displayName, event.clientX, event.clientY);
+      void this.#openProfileMenu(
+        value.memberNumber,
+        value.displayName,
+        event.clientX,
+        event.clientY,
+        target,
+      );
     });
     target.addEventListener("keydown", (event) => {
       if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
@@ -7646,6 +8836,7 @@ export class LinkChatView {
         value.displayName,
         bounds.left + bounds.width / 2,
         bounds.top + Math.min(bounds.height, 44),
+        target,
       );
     });
 
@@ -7653,7 +8844,10 @@ export class LinkChatView {
     let startX = 0;
     let startY = 0;
     const cancel = (): void => {
-      if (timer !== undefined) clearTimeout(timer);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        this.#profileMenuLongPressTimers.delete(timer);
+      }
       timer = undefined;
     };
     target.addEventListener("pointerdown", (event) => {
@@ -7663,11 +8857,15 @@ export class LinkChatView {
       startX = event.clientX;
       startY = event.clientY;
       cancel();
-      timer = setTimeout(() => {
-        timer = undefined;
+      const pending = setTimeout(() => {
+        this.#profileMenuLongPressTimers.delete(pending);
+        if (timer === pending) timer = undefined;
+        if (!this.#mounted || this.#panel.hidden || !target.isConnected) return;
         this.#suppressProfileClickUntil.set(target, Date.now() + 700);
-        void this.#openProfileMenu(value.memberNumber, value.displayName, startX, startY);
+        void this.#openProfileMenu(value.memberNumber, value.displayName, startX, startY, target);
       }, 520);
+      timer = pending;
+      this.#profileMenuLongPressTimers.add(pending);
     });
     target.addEventListener("pointermove", (event) => {
       if (timer === undefined) return;
@@ -7691,16 +8889,50 @@ export class LinkChatView {
     displayName: string,
     x: number,
     y: number,
+    returnFocus?: HTMLElement,
   ): Promise<void> {
     const token = ++this.#profileMenuToken;
+    if (!this.#isProfileMenuOperationCurrent(token)) return;
+    try {
+      await this.#renderProfileMenuOperation(
+        memberNumber,
+        displayName,
+        x,
+        y,
+        returnFocus,
+        token,
+      );
+    } catch {
+      if (!this.#isProfileMenuOperationCurrent(token)) return;
+      this.#closeProfileMenu();
+      this.#toast("Player actions could not be loaded right now.", "error");
+    }
+  }
+
+  async #renderProfileMenuOperation(
+    memberNumber: number,
+    displayName: string,
+    x: number,
+    y: number,
+    returnFocus: HTMLElement | undefined,
+    token: number,
+  ): Promise<void> {
     this.presence.request(memberNumber);
-    const [conversation] = await Promise.all([this.service.getConversation(memberNumber)]);
-    if (token !== this.#profileMenuToken) return;
+    const conversation = await this.service.getConversation(memberNumber);
+    if (!this.#isProfileMenuOperationCurrent(token)) return;
     const nativeName = conversation?.peerName ?? displayName;
     const shownName = conversation ? conversationDisplayName(conversation) : displayName;
     const snapshot = this.presence.get(memberNumber);
     const rosterEntry = this.roster.get(memberNumber, nativeName);
-    const inRoom = this.adapter.isMemberInCurrentRoom(memberNumber);
+    let inRoom = false;
+    try {
+      inRoom = typeof this.adapter.isMemberInCurrentRoom === "function"
+        ? this.adapter.isMemberInCurrentRoom(memberNumber)
+        : false;
+    } catch {
+      // A transient native character proxy must not break the action menu.
+    }
+    const addonAvailable = this.presence.hasCompatiblePeer(memberNumber);
     const headerPresenceLabel = element("span", { text: presenceLabel(snapshot.status) });
     headerPresenceLabel.dataset.presenceLabel = "true";
     const headerPresence = element(
@@ -7740,9 +8972,19 @@ export class LinkChatView {
     const primary = element(
       "div",
       { className: "kl-profile-menu-group" },
-      this.#profileMenuAction("chat", "Message", "Open LinkChat", () => {
-        void this.openChat(memberNumber, nativeName);
-      }),
+      this.#profileMenuAction(
+        "profile",
+        "KikiLink Profile",
+        addonAvailable ? "Open addon profile card" : "KikiLink has not been detected for this player",
+        () => this.#openAddonProfile(memberNumber, shownName, returnFocus),
+        false,
+      ),
+      this.#profileMenuAction(
+        "chat",
+        "Message",
+        "Open LinkChat",
+        () => this.openChat(memberNumber, nativeName),
+      ),
       this.#profileMenuAction(
         "whisper",
         "Whisper",
@@ -7806,15 +9048,18 @@ export class LinkChatView {
             "pin",
             conversation.pinned ? "Unpin chat" : "Pin chat",
             "Organize your recent chats",
-            () => void this.#toggleConversationPin(memberNumber),
+            () => this.#toggleConversationPin(memberNumber),
             false,
             conversation.pinned,
           )
         : null,
       conversation
-        ? this.#profileMenuAction("unread", "Mark unread", "Keep this chat in your unread queue", () => {
-            void this.#markConversationUnread(memberNumber);
-          })
+        ? this.#profileMenuAction(
+            "unread",
+            "Mark unread",
+            "Keep this chat in your unread queue",
+            () => this.#markConversationUnread(memberNumber),
+          )
         : null,
       this.#profileMenuAction("id", "Copy member ID", `Copy ${memberNumber}`, () => {
         void this.#copyRosterMemberNumber(memberNumber);
@@ -7832,6 +9077,7 @@ export class LinkChatView {
           ),
         )
       : null;
+    if (!this.#isProfileMenuOperationCurrent(token)) return;
     this.#profileMenu.replaceChildren(header, primary, organize);
     this.#profileMenu.dataset.memberNumber = memberNumber.toString();
     if (remove) this.#profileMenu.append(remove);
@@ -7844,11 +9090,25 @@ export class LinkChatView {
     this.#profileMenu.querySelector<HTMLButtonElement>(".kl-profile-menu-action:not(:disabled)")?.focus();
   }
 
+  #isProfileMenuOperationCurrent(token: number): boolean {
+    return (
+      token === this.#profileMenuToken &&
+      this.#mounted &&
+      !this.#panel.hidden &&
+      this.#host.isConnected
+    );
+  }
+
+  #cancelProfileMenuLongPresses(): void {
+    for (const timer of this.#profileMenuLongPressTimers) clearTimeout(timer);
+    this.#profileMenuLongPressTimers.clear();
+  }
+
   #profileMenuAction(
     icon: KikiLinkIconName,
     label: string,
     help: string,
-    action: () => void,
+    action: () => void | Promise<void>,
     disabled = false,
     filled = false,
   ): HTMLButtonElement {
@@ -7867,13 +9127,34 @@ export class LinkChatView {
     button.disabled = disabled;
     button.addEventListener("click", () => {
       this.#closeProfileMenu();
-      action();
+      this.#runPlayerAction(action, "Player action could not be completed.");
     });
     return button;
   }
 
+  #runPlayerAction(action: () => void | Promise<void>, fallbackMessage: string): void {
+    try {
+      const pending = action();
+      if (pending) {
+        void pending.catch((error: unknown) =>
+          this.#reportPlayerActionError(error, fallbackMessage));
+      }
+    } catch (error) {
+      this.#reportPlayerActionError(error, fallbackMessage);
+    }
+  }
+
+  #reportPlayerActionError(error: unknown, fallbackMessage: string): void {
+    if (!this.#mounted) return;
+    this.#toast(
+      error instanceof Error && error.message.trim() ? error.message : fallbackMessage,
+      "error",
+    );
+  }
+
   #closeProfileMenu(): void {
     this.#profileMenuToken += 1;
+    this.#cancelProfileMenuLongPresses();
     this.#profileMenu.hidden = true;
     this.#profileMenu.replaceChildren();
   }
@@ -7902,25 +9183,59 @@ export class LinkChatView {
 
   async #submitNewChat(): Promise<void> {
     const query = this.#newChatQuery.value.trim();
+    if (!query) {
+      this.#toast("Choose a contact or enter a valid member number.", "error");
+      return;
+    }
     const memberNumber = Number(query.replace(/^#/u, ""));
-    if (!Number.isSafeInteger(memberNumber) || memberNumber < 0) {
-      const exactContact = this.adapter
-        .getKnownContacts()
-        .find((contact) => contact.memberName.toLocaleLowerCase() === query.toLocaleLowerCase());
+    if (!Number.isSafeInteger(memberNumber) || memberNumber <= 0) {
+      let exactContact: KnownContact | undefined;
+      try {
+        exactContact = this.adapter
+          .getKnownContacts()
+          .find((contact) => contact.memberName.toLocaleLowerCase() === query.toLocaleLowerCase());
+      } catch {
+        this.#toast("Bondage Club contacts could not be read right now. Try again shortly.", "error");
+        return;
+      }
       if (exactContact) {
         this.#newChatDialog.close();
-        await this.openChat(exactContact.memberNumber, exactContact.memberName);
+        try {
+          await this.openChat(exactContact.memberNumber, exactContact.memberName);
+        } catch (error) {
+          this.#reportPlayerActionError(error, "LinkChat could not be opened.");
+        }
         return;
       }
       this.#toast("Choose a contact or enter a valid member number.", "error");
       return;
     }
-    if (memberNumber === this.adapter.getOwnMemberNumber()) {
+    let ownMemberNumber = -1;
+    try {
+      ownMemberNumber = this.adapter.getOwnMemberNumber();
+    } catch {
+      // Treat an unreadable local identity as unavailable instead of risking a self-Beep.
+    }
+    if (!Number.isSafeInteger(ownMemberNumber) || ownMemberNumber <= 0) {
+      this.#toast("Your Bondage Club account could not be read right now. Try again shortly.", "error");
+      return;
+    }
+    if (memberNumber === ownMemberNumber) {
       this.#toast("You cannot Beep yourself.", "error");
       return;
     }
+    let memberName = `Member ${memberNumber}`;
+    try {
+      memberName = this.adapter.getMemberName(memberNumber);
+    } catch {
+      // A numeric member ID remains sufficient to open a local conversation.
+    }
     this.#newChatDialog.close();
-    await this.openChat(memberNumber, this.adapter.getMemberName(memberNumber));
+    try {
+      await this.openChat(memberNumber, memberName);
+    } catch (error) {
+      this.#reportPlayerActionError(error, "LinkChat could not be opened.");
+    }
   }
 
   #renderKnownContacts(): void {
@@ -7940,32 +9255,38 @@ export class LinkChatView {
       // Keep the dialog useful with the account contact list alone.
     }
     const filter = this.#newChatFilterSelect.value;
-    const contacts = this.adapter
-      .getKnownContacts()
-      .map((contact) => ({
-        ...contact,
-        inRoom: roomNumbers.has(contact.memberNumber),
-        online: onlineNumbers.has(contact.memberNumber) || roomNumbers.has(contact.memberNumber),
-      }))
-      .filter((contact) =>
-        (!query ||
-          contact.memberName.toLocaleLowerCase().includes(query) ||
-          contact.memberNumber.toString().includes(query)) &&
-        (filter !== "online" || contact.online) &&
-        (filter !== "room" || contact.inRoom),
-      )
-      .sort((left, right) => {
-        if (this.#newChatSortSelect.value === "online") {
-          const leftRank = left.inRoom ? 2 : left.online ? 1 : 0;
-          const rightRank = right.inRoom ? 2 : right.online ? 1 : 0;
-          if (leftRank !== rightRank) return rightRank - leftRank;
-        }
-        return left.memberName.localeCompare(right.memberName, undefined, {
-          numeric: true,
-          sensitivity: "base",
-        });
-      })
-      .slice(0, 40);
+    let contactsReadable = true;
+    let contacts: Array<KnownContact & { inRoom: boolean; online: boolean }> = [];
+    try {
+      contacts = this.adapter
+        .getKnownContacts()
+        .map((contact) => ({
+          ...contact,
+          inRoom: roomNumbers.has(contact.memberNumber),
+          online: onlineNumbers.has(contact.memberNumber) || roomNumbers.has(contact.memberNumber),
+        }))
+        .filter((contact) =>
+          (!query ||
+            contact.memberName.toLocaleLowerCase().includes(query) ||
+            contact.memberNumber.toString().includes(query)) &&
+          (filter !== "online" || contact.online) &&
+          (filter !== "room" || contact.inRoom),
+        )
+        .sort((left, right) => {
+          if (this.#newChatSortSelect.value === "online") {
+            const leftRank = left.inRoom ? 2 : left.online ? 1 : 0;
+            const rightRank = right.inRoom ? 2 : right.online ? 1 : 0;
+            if (leftRank !== rightRank) return rightRank - leftRank;
+          }
+          return left.memberName.localeCompare(right.memberName, undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
+        })
+        .slice(0, 40);
+    } catch {
+      contactsReadable = false;
+    }
 
     this.#newChatResults.replaceChildren();
     if (contacts.length === 0) {
@@ -7973,7 +9294,9 @@ export class LinkChatView {
         element("div", {
           className: "kl-contact-empty",
           text:
-            this.#connectionState === "ready"
+            !contactsReadable
+              ? "Bondage Club contacts could not be read right now. Try again shortly."
+              : this.#connectionState === "ready"
               ? filter === "online"
                 ? onlineSnapshotReady
                   ? "No matching contacts are online. You can still enter a member number."
@@ -8029,7 +9352,10 @@ export class LinkChatView {
       button.dataset.nativeState = nativeState;
       button.addEventListener("click", () => {
         this.#newChatDialog.close();
-        void this.openChat(contact.memberNumber, contact.memberName);
+        this.#runPlayerAction(
+          () => this.openChat(contact.memberNumber, contact.memberName),
+          "LinkChat could not be opened.",
+        );
       });
       this.#bindProfileMenu(button, () => ({
         memberNumber: contact.memberNumber,
@@ -8038,7 +9364,11 @@ export class LinkChatView {
       button.dataset.memberNumber = contact.memberNumber.toString();
       this.#newChatResults.append(button);
     }
-    this.presence.requestMany(contacts.map((contact) => contact.memberNumber));
+    try {
+      this.presence.requestMany(contacts.map((contact) => contact.memberNumber));
+    } catch {
+      // Native contacts remain usable if addon presence discovery is temporarily guarded.
+    }
   }
 
   #renderQuickActions(): void {
@@ -8707,11 +10037,62 @@ export class LinkChatView {
   }
 
   async #clearHistory(): Promise<void> {
-    if (!window.confirm("Clear all KikiLink Beep history and conversation drafts?")) return;
-    await this.service.clearHistory();
+    if (!window.confirm("Clear all KikiLink direct and group chats, messages, and drafts?")) return;
+    const [directResult, groupResult] = await Promise.allSettled([
+      this.service.clearHistory(),
+      this.#groupChatService?.clear() ?? Promise.resolve(true),
+    ]);
     this.#resetActiveConversation();
-    await this.refresh();
-    this.#toast("LinkChat history cleared.");
+    let refreshFailed = false;
+    try {
+      await this.refresh();
+    } catch (error) {
+      refreshFailed = true;
+      console.error("[KikiLink:link-chat] Chat list refresh after clear failed", error);
+    }
+
+    if (directResult.status === "rejected" || groupResult.status === "rejected") {
+      if (directResult.status === "rejected") {
+        console.error("[KikiLink:link-chat] Direct chat history clear failed", directResult.reason);
+      }
+      if (groupResult.status === "rejected") {
+        console.error("[KikiLink:group-chat] Group chat history clear failed", groupResult.reason);
+      }
+      this.#toast(
+        "KikiLink could not verify that all chat history was cleared. Please retry.",
+        "error",
+      );
+      return;
+    }
+    if (!directResult.value && !groupResult.value) {
+      this.#toast(
+        "Direct and group chats are cleared for this session, but durable browser storage did not retain the change. Saved chats may reappear after reload.",
+        "error",
+      );
+      return;
+    }
+    if (!groupResult.value) {
+      this.#toast(
+        "Group chats are cleared for this session, but browser storage did not retain the change. Saved groups may reappear; KikiLink will retry.",
+        "error",
+      );
+      return;
+    }
+    if (!directResult.value) {
+      this.#toast(
+        "Direct chats are cleared for this session, but durable browser storage did not retain the change. Saved chats may reappear after reload.",
+        "error",
+      );
+      return;
+    }
+    if (refreshFailed) {
+      this.#toast(
+        "Chat history was cleared, but the list could not refresh. Reopen KikiLink to reload it.",
+        "error",
+      );
+      return;
+    }
+    this.#toast("Direct and group chat history cleared.");
   }
 
   #resetActiveConversation(): void {
@@ -8726,7 +10107,7 @@ export class LinkChatView {
     this.#messages.replaceChildren();
     this.#attachImageButton.disabled = true;
     this.#chat.hidden = true;
-    this.#empty.hidden = false;
+    this.#empty.hidden = this.#groupChatPanel?.activeGroupId !== undefined;
     this.#panel.dataset.mobileView = "list";
   }
 
@@ -8804,7 +10185,7 @@ export class LinkChatView {
   }
 
   async #updateUnreadBadge(): Promise<void> {
-    const unread = await this.service.totalUnread();
+    const unread = await this.service.totalUnread() + (this.#groupChatService?.totalUnread() ?? 0);
     this.#unreadCount = unread;
     this.#badge.hidden = unread === 0;
     this.#badge.textContent = unread > 99 ? "99+" : unread.toString();
@@ -9078,40 +10459,107 @@ export class LinkChatView {
     memberNumber: number,
     explicitUrl?: string,
   ): void {
-    const allowedUrl = explicitUrl ?? this.presence.get(memberNumber).avatarUrl ?? "";
+    let snapshot: PresenceSnapshot;
+    try {
+      snapshot = this.presence.get(memberNumber);
+    } catch {
+      snapshot = { memberNumber, status: "unknown", source: "unknown", updatedAt: 0 };
+    }
+    let ownMember = false;
+    try {
+      ownMember = memberNumber === this.adapter.getOwnMemberNumber();
+    } catch {
+      // Treat guarded native identity as remote for privacy purposes.
+    }
+    const candidateUrl = normalizeImageUrl(explicitUrl ?? snapshot.avatarUrl ?? "") ?? "";
+    const policy = this.settings.get().linkChat.imagePreviews;
+    const allowedUrl =
+      explicitUrl !== undefined ||
+      ownMember ||
+      policy === "always" ||
+      (policy === "ask" && this.#revealedAvatarUrls.has(avatarRevealKey(memberNumber, candidateUrl)))
+        ? candidateUrl
+        : "";
+    const avatarFrame =
+      ownMember && explicitUrl !== undefined
+        ? this.#presenceAvatarFrame.value || this.settings.get().linkPresence.avatarFrame
+        : snapshot.avatarFrame ?? "none";
     if (
       target.dataset.avatarName === name &&
       target.dataset.avatarUrl === allowedUrl &&
+      target.dataset.avatarFrame === avatarFrame &&
       target.childNodes.length > 0
     ) {
       return;
     }
+    const token = this.#nextRemoteImageRender(target);
     target.dataset.kikilinkAvatar = "true";
     target.dataset.avatarName = name;
     target.dataset.avatarUrl = allowedUrl;
     target.dataset.avatarMemberNumber = memberNumber.toString();
-    target.removeAttribute("aria-label");
+    target.dataset.avatarFrame = avatarFrame;
+    if (target.getAttribute("role") === "button") {
+      target.setAttribute("aria-label", `Open KikiLink profile for ${name}`);
+    } else {
+      target.removeAttribute("aria-label");
+    }
     const fallback = (): void => {
-      if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
+      if (
+        !this.#isCurrentRemoteImageRender(target, token) ||
+        target.dataset.avatarName !== name ||
+        target.dataset.avatarUrl !== allowedUrl
+      ) {
+        return;
+      }
       target.replaceChildren(document.createTextNode(avatarText(name)));
       target.dataset.avatarState = "initials";
     };
     fallback();
     if (!allowedUrl) return;
 
-    const image = document.createElement("img");
-    image.alt = `${name} profile avatar`;
-    image.loading = "lazy";
-    image.decoding = "async";
-    image.referrerPolicy = "no-referrer";
-    image.addEventListener("load", () => {
-      if (target.dataset.avatarName !== name || target.dataset.avatarUrl !== allowedUrl) return;
-      target.dataset.avatarState = "image";
-    }, { once: true });
-    image.addEventListener("error", fallback, { once: true });
-    target.replaceChildren(image);
     target.dataset.avatarState = "loading";
-    image.src = allowedUrl;
+    const controller = this.#startRemoteImageLoad(target);
+    void this.remoteImageLoader.load(allowedUrl, controller.signal).then((localUrl) => {
+      if (
+        !this.#isLiveRemoteImageRender(target, token) ||
+        target.dataset.avatarName !== name ||
+        target.dataset.avatarUrl !== allowedUrl
+      ) {
+        return;
+      }
+      const image = document.createElement("img");
+      image.alt = `${name} profile avatar`;
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.addEventListener("load", () => {
+        if (
+          this.#isLiveRemoteImageRender(target, token) &&
+          image.parentElement === target
+        ) {
+          target.dataset.avatarState = "image";
+        }
+      }, { once: true });
+      image.addEventListener("error", () => {
+        if (target.isConnected) fallback();
+      }, { once: true });
+      target.replaceChildren(image);
+      image.src = localUrl;
+    }).catch(() => {
+      if (!controller.signal.aborted && target.isConnected) fallback();
+    }).finally(() => this.#releaseRemoteImageLoad(target, controller));
+  }
+
+  #rememberRevealedAvatar(memberNumber: number, url: string): void {
+    const normalized = normalizeImageUrl(url);
+    if (!normalized) return;
+    const key = avatarRevealKey(memberNumber, normalized);
+    this.#revealedAvatarUrls.delete(key);
+    this.#revealedAvatarUrls.add(key);
+    while (this.#revealedAvatarUrls.size > 200) {
+      const oldest = this.#revealedAvatarUrls.values().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.#revealedAvatarUrls.delete(oldest);
+    }
   }
 
   #renderOwnAvatarPreview(): void {
@@ -9122,6 +10570,7 @@ export class LinkChatView {
       this.adapter.getOwnMemberNumber(),
       url ?? "",
     );
+    this.#presenceAvatarPreview.dataset.avatarFrame = this.#presenceAvatarFrame.value || "none";
   }
 
   #toast(message: string, kind: "info" | "error" = "info"): void {
@@ -9473,6 +10922,19 @@ function presenceDescription(snapshot: PresenceSnapshot): string {
     : `${label} · ${source}`;
 }
 
+function profilePresenceSignature(snapshot: PresenceSnapshot): string {
+  return JSON.stringify([
+    snapshot.status,
+    snapshot.statusMessage ?? "",
+    snapshot.avatarUrl ?? "",
+    snapshot.avatarFrame ?? "none",
+    snapshot.profileStyle ?? "classic",
+    snapshot.addonVersion ?? "",
+    snapshot.roomName ?? "",
+    snapshot.source,
+  ]);
+}
+
 function messagePreview(content: string): string {
   const trimmed = content.trim();
   const image = parseMessageLinks(trimmed).find(
@@ -9497,6 +10959,10 @@ function messageGroupPosition(
 function avatarText(name: string): string {
   const trimmed = name.trim();
   return trimmed ? [...trimmed][0]?.toLocaleUpperCase() ?? "?" : "?";
+}
+
+function avatarRevealKey(memberNumber: number, url: string): string {
+  return `${memberNumber}:${url}`;
 }
 
 function formatConversationTime(timestamp: number): string {
@@ -9562,6 +11028,17 @@ function formatRetention(value: LitterboxUploadConfig["retention"]): string {
 
 function litterboxRetentionMs(value: LitterboxUploadConfig["retention"]): number {
   return Number.parseInt(value, 10) * 60 * 60 * 1_000;
+}
+
+function formatGalleryExpiry(expiresAt: number): string {
+  try {
+    return `Expires ${new Date(expiresAt).toLocaleString([], {
+      dateStyle: "medium",
+      timeStyle: "short",
+    })}`;
+  } catch {
+    return "Expiry unavailable";
+  }
 }
 
 function deviceRoomMusicFile(track: DeviceMusicTrack): File {

@@ -14,6 +14,7 @@ export type KikiLinkUploadField =
 
 export interface KikiLinkUploadRequestMessage {
   type: typeof KIKILINK_UPLOAD_REQUEST;
+  capability: string;
   id: string;
   endpoint: string;
   timeoutMs: number;

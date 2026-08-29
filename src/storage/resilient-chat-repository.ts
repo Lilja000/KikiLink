@@ -45,6 +45,30 @@ export class ResilientChatRepository implements ChatRepository {
     return this.#run((repository) => repository.clearAll());
   }
 
+  async clearAllDurably(): Promise<boolean> {
+    if (this.#usingFallback) {
+      await this.fallback.clearAll();
+      return false;
+    }
+
+    try {
+      if (this.primary.clearAllDurably) return await this.primary.clearAllDurably();
+      await this.primary.clearAll();
+      return true;
+    } catch (error) {
+      this.#useFallback(error);
+      await this.fallback.clearAll();
+      return false;
+    }
+  }
+
+  canSafelyCapturePortableSnapshot(): boolean {
+    return (
+      !this.#usingFallback &&
+      this.primary.canSafelyCapturePortableSnapshot?.() !== false
+    );
+  }
+
   close(): void {
     this.primary.close();
     this.fallback.close();
@@ -56,10 +80,15 @@ export class ResilientChatRepository implements ChatRepository {
     try {
       return await operation(this.primary);
     } catch (error) {
-      this.#usingFallback = true;
-      this.primary.close();
-      console.warn("[KikiLink:storage] IndexedDB unavailable; using session-only memory storage", error);
+      this.#useFallback(error);
       return operation(this.fallback);
     }
+  }
+
+  #useFallback(error: unknown): void {
+    if (this.#usingFallback) return;
+    this.#usingFallback = true;
+    this.primary.close();
+    console.warn("[KikiLink:storage] IndexedDB unavailable; using session-only memory storage", error);
   }
 }

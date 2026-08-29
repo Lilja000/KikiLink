@@ -20,6 +20,7 @@ import type { DeviceGalleryImage, GalleryStore } from "../src/storage/device-gal
 import type { DeviceMusicTrack, MusicStore } from "../src/storage/device-music-store";
 
 afterEach(() => {
+  vi.useRealTimers();
   document.body.replaceChildren();
   vi.unstubAllGlobals();
 });
@@ -179,6 +180,25 @@ describe("LinkChatView", () => {
     const updateRoomCustomization = vi.fn();
     const runRoomMemberAction = vi.fn();
     const applyRoomPreset = vi.fn();
+    let rejectRoomJoin: ((reason?: unknown) => void) | undefined;
+    const joinRoom = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      rejectRoomJoin = reject;
+    }));
+    const isInChatRoom = vi.fn(() => true);
+    let currentRoomName: string | undefined;
+    let currentLobbyRoomAvailable = true;
+    const currentLobbyRoom = {
+      name: "Moon Garden",
+      description: "The room currently open in Bondage Club",
+      language: "EN",
+      memberCount: 3,
+      memberLimit: 10,
+      canJoin: false,
+      locked: false,
+      privateRoom: false,
+      mapType: "Never" as const,
+      friends: [{ memberNumber: 456, memberName: "Sidney" }],
+    };
     const searchRooms = vi.fn(async () => [
       {
         name: "Friends Lounge",
@@ -261,11 +281,12 @@ describe("LinkChatView", () => {
       applyRoomPreset,
       getRoomSearchSpace: () => "X",
       searchRooms,
-      joinRoom: vi.fn(),
+      joinRoom,
       canSendBeep: () => true,
       isReady: () => true,
-      isInChatRoom: () => true,
-      getCurrentRoomName: () => "Moon Garden",
+      isInChatRoom,
+      getCurrentRoomName: () => currentRoomName,
+      getCurrentLobbyRoom: () => currentLobbyRoomAvailable ? currentLobbyRoom : undefined,
       sendBeep: vi.fn(),
     } as unknown as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());
@@ -282,7 +303,8 @@ describe("LinkChatView", () => {
       false,
     );
     const view = new LinkChatView(adapter, service, settings, "0.21.0");
-    vi.stubGlobal("confirm", vi.fn(() => true));
+    const confirmJoin = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirmJoin);
     view.mount();
     await view.open();
     const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
@@ -312,22 +334,102 @@ describe("LinkChatView", () => {
     await vi.waitFor(() => {
       expect(searchRooms).toHaveBeenCalledOnce();
       expect(searchRooms).toHaveBeenCalledWith("", "X");
-      expect(shadow?.querySelector(".kl-lobby-card")?.textContent).toContain("Friends Lounge");
-      expect(shadow?.querySelector(".kl-lobby-friend-avatar")?.getAttribute("title")).toContain("Reina");
+      expect(shadow?.querySelector(".kl-lobby-list")?.textContent).toContain("Friends Lounge");
+      const friendsCard = [...(shadow?.querySelectorAll<HTMLElement>(".kl-lobby-card") ?? [])]
+        .find((card) => card.textContent?.includes("Friends Lounge"));
+      expect(friendsCard?.querySelector(".kl-lobby-friend-avatar")?.getAttribute("title")).toContain("Reina");
       expect(shadow?.querySelector(".kl-lobby-list")?.textContent).toContain("Character view");
       expect(shadow?.querySelector(".kl-lobby-list")?.textContent).toContain("Map view");
       expect(shadow?.querySelector(".kl-lobby-list")?.textContent).not.toContain("Never");
     });
+    const currentCard = shadow?.querySelector<HTMLElement>('.kl-lobby-card[data-current="true"]');
+    expect(currentCard?.querySelector(".kl-lobby-name")?.textContent).toBe("Moon Garden");
+    expect(currentCard).toBe(shadow?.querySelector(".kl-lobby-card"));
+    expect(currentCard?.querySelector(".kl-lobby-current")?.textContent).toBe("Current room");
+    expect(currentCard?.querySelector(".kl-lobby-join")).toBeNull();
+    expect(currentCard?.textContent).not.toContain("Unavailable");
+    const lobbyStyles = shadow?.querySelector("style")?.textContent ?? "";
+    expect(lobbyStyles).toMatch(
+      /\.kl-lobby-card\[data-favorite="true"\]\s*\{[^}]*var\(--kl-gold\)/,
+    );
+    expect(lobbyStyles).toMatch(
+      /\.kl-lobby-card\[data-has-friends="true"\]\s*\{[^}]*var\(--kl-accent\)/,
+    );
+    const lobbyQuery = shadow?.querySelector<HTMLInputElement>(".kl-lobby-search");
+    if (!lobbyQuery) throw new Error("Missing lobby filter");
+    lobbyQuery.value = "does not match the current room";
+    lobbyQuery.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(shadow?.querySelectorAll(".kl-lobby-card")).toHaveLength(1);
+    expect(shadow?.querySelector(".kl-lobby-card")?.getAttribute("data-current")).toBe("true");
+    expect(shadow?.querySelector(".kl-lobby-card .kl-lobby-join")).toBeNull();
+    lobbyQuery.value = "";
+    lobbyQuery.dispatchEvent(new Event("input", { bubbles: true }));
     const goldenCard = [...(shadow?.querySelectorAll<HTMLElement>(".kl-lobby-card") ?? [])]
       .find((card) => card.textContent?.includes("Golden Den"));
     goldenCard?.querySelector<HTMLButtonElement>(".kl-lobby-favorite")?.click();
     expect(settings.get().linkRoom.favoriteRoomNames).toEqual(["Golden Den"]);
-    expect(shadow?.querySelector(".kl-lobby-name")?.textContent).toBe("Golden Den");
-    expect(shadow?.querySelector<HTMLElement>(".kl-lobby-card")?.dataset.favorite).toBe("true");
+    expect(shadow?.querySelector(".kl-lobby-name")?.textContent).toBe("Moon Garden");
+    const rerenderedGoldenCard = [...(shadow?.querySelectorAll<HTMLElement>(".kl-lobby-card") ?? [])]
+      .find((card) => card.textContent?.includes("Golden Den"));
+    expect(rerenderedGoldenCard?.dataset.favorite).toBe("true");
+    expect(rerenderedGoldenCard).toBe(shadow?.querySelectorAll(".kl-lobby-card")[1]);
+    const goldenJoin = rerenderedGoldenCard?.querySelector<HTMLButtonElement>(".kl-lobby-join");
+    goldenJoin?.click();
+    goldenJoin?.click();
+    expect(confirmJoin).toHaveBeenCalledOnce();
+    expect(joinRoom).toHaveBeenCalledOnce();
+    expect(joinRoom).toHaveBeenCalledWith("Golden Den");
+    expect(
+      [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-lobby-join") ?? [])]
+        .every((button) => button.disabled),
+    ).toBe(true);
+    rejectRoomJoin?.(new Error("That room became full"));
+    await vi.waitFor(() => {
+      const failedCard = [...(shadow?.querySelectorAll<HTMLElement>(".kl-lobby-card") ?? [])]
+        .find((card) => card.textContent?.includes("Golden Den"));
+      expect(failedCard?.querySelector<HTMLButtonElement>(".kl-lobby-join")?.disabled).toBe(false);
+      expect(shadow?.querySelector<HTMLElement>(".kl-room-page")?.hidden).toBe(false);
+    });
+    isInChatRoom.mockImplementationOnce(() => {
+      throw new Error("revoked native room observation");
+    });
+    const retryCard = [...(shadow?.querySelectorAll<HTMLElement>(".kl-lobby-card") ?? [])]
+      .find((card) => card.textContent?.includes("Golden Den"));
+    retryCard?.querySelector<HTMLButtonElement>(".kl-lobby-join")?.click();
+    expect(joinRoom).toHaveBeenCalledTimes(2);
+    expect(confirmJoin).toHaveBeenCalledTimes(2);
+    expect(confirmJoin).toHaveBeenLastCalledWith(
+      expect.stringContaining("could not verify the current room state"),
+    );
+    rejectRoomJoin?.(new Error("That room became full again"));
+    await vi.waitFor(() => {
+      const retriedCard = [...(shadow?.querySelectorAll<HTMLElement>(".kl-lobby-card") ?? [])]
+        .find((card) => card.textContent?.includes("Golden Den"));
+      expect(retriedCard?.querySelector<HTMLButtonElement>(".kl-lobby-join")?.disabled).toBe(false);
+    });
     const friendCard = [...(shadow?.querySelectorAll<HTMLElement>(".kl-lobby-card") ?? [])]
       .find((card) => card.textContent?.includes("Friends Lounge"));
     expect(friendCard?.dataset.hasFriends).toBe("true");
     expect(friendCard?.dataset.favorite).toBe("false");
+    searchRooms.mockImplementationOnce(async () => {
+      throw new Error("Room directory unavailable");
+    });
+    currentRoomName = "Moon Garden";
+    currentLobbyRoomAvailable = false;
+    lobbyQuery.value = "still no match";
+    shadow?.querySelector<HTMLButtonElement>(".kl-lobby-refresh")?.click();
+    await vi.waitFor(() => {
+      expect(searchRooms).toHaveBeenCalledTimes(2);
+      expect(shadow?.querySelector(".kl-room-directory-status")?.textContent).toContain(
+        "Your current room is still shown",
+      );
+      const fallbackCard = shadow?.querySelector<HTMLElement>(".kl-lobby-card");
+      expect(shadow?.querySelectorAll(".kl-lobby-card")).toHaveLength(1);
+      expect(fallbackCard?.dataset.current).toBe("true");
+      expect(fallbackCard?.querySelector(".kl-lobby-current")?.textContent).toBe("Current room");
+      expect(fallbackCard?.querySelector(".kl-lobby-join")).toBeNull();
+      expect(fallbackCard?.textContent).toContain("Live room details are temporarily unavailable");
+    });
     [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-room-subnav-button") ?? [])]
       .find((button) => button.textContent === "Presets")
       ?.click();
@@ -351,6 +453,38 @@ describe("LinkChatView", () => {
         "Use as room background",
       );
     });
+    const failedChatOpen = vi.spyOn(service, "getConversation").mockRejectedValueOnce(
+      new Error("Chat history is temporarily unavailable"),
+    );
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-actions button") ?? [])]
+      .find((button) => button.textContent === "Open chat")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-toast")?.textContent).toContain(
+        "Chat history is temporarily unavailable",
+      );
+    });
+    failedChatOpen.mockRestore();
+
+    const guardedRoomSnapshot = vi
+      .spyOn(adapter, "getRoomAdminSnapshot")
+      .mockImplementationOnce(() => {
+        throw new Error("Room details are temporarily guarded");
+      });
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-actions button") ?? [])]
+      .find((button) => button.textContent === "Use as room background")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-toast")?.textContent).toContain(
+        "Room details are temporarily guarded",
+      );
+    });
+    expect(
+      [...(shadow?.querySelectorAll(".kl-toast") ?? [])].some((toast) =>
+        toast.textContent?.includes("Image selected"),
+      ),
+    ).toBe(false);
+    guardedRoomSnapshot.mockRestore();
 
     roomAdmin = false;
     [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-header-actions button") ?? [])]
@@ -929,13 +1063,34 @@ describe("LinkChatView", () => {
       channel: "room",
       payload: JSON.stringify({
         t: "ps",
-        s: "online",
+        s: "dnd",
+        m: "In a scene",
         a: "https://i.imgur.com/reina.png",
+        f: "starlight",
+        c: "midnight",
         u: Date.now(),
-        v: "0.20.0",
+        v: "0.24.0",
       }),
     });
     const service = new ChatService(new MemoryChatRepository(), settings);
+    const people = new PeopleRepository(new MemoryKeyValueStorage());
+    people.put({
+      memberNumber: 123,
+      displayName: "Reina",
+      favorite: true,
+      note: "Met during a calm rope scene.",
+      tags: ["trusted", "rope"],
+      firstSeenAt: 50,
+      lastSeenAt: 75,
+      lastRoomName: "Rose Conservatory",
+      encounterCount: 4,
+    });
+    const roster = new LinkRosterService(adapter, people, settings);
+    const remoteImageLoader = {
+      load: vi.fn(async (url: string, _signal?: AbortSignal) =>
+        `blob:kikilink/${encodeURIComponent(url)}`),
+      destroy: vi.fn(),
+    };
     await service.capture(
       {
         direction: "incoming",
@@ -953,14 +1108,20 @@ describe("LinkChatView", () => {
       settings,
       "0.20.0",
       undefined,
-      undefined,
+      roster,
       presence,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      remoteImageLoader,
     );
     view.mount();
     await view.openChat(123, "Reina");
 
     const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
-    expect(shadow?.querySelector(".kl-chat-presence")?.textContent).toContain("Online");
+    expect(shadow?.querySelector(".kl-chat-presence")?.textContent).toContain("Do not disturb");
     expect(shadow?.querySelector(".kl-chat-room")?.textContent).toContain("Moon Garden");
     expect(shadow?.querySelector(".kl-image-load")?.textContent).toBe("Show image");
     expect(shadow?.querySelector(".kl-message-link")).toBeNull();
@@ -972,10 +1133,119 @@ describe("LinkChatView", () => {
       /\.kl-image-preview img \{[^}]*width: 100%;[^}]*height: auto;/,
     );
     const remoteAvatar = shadow?.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar");
-    expect(remoteAvatar?.querySelector<HTMLImageElement>("img")?.src).toBe(
+    expect(remoteAvatar?.querySelector<HTMLImageElement>("img")).toBeNull();
+    expect(remoteAvatar?.getAttribute("aria-label")).toBe("Open KikiLink profile for Reina");
+    const explicitProfileRefresh = vi.spyOn(presence, "request");
+    explicitProfileRefresh.mockClear();
+    remoteAvatar?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);
+      const profileCard = shadow?.querySelector<HTMLElement>(".kl-addon-profile-card");
+      expect(profileCard?.textContent).toContain("Reina");
+      expect(profileCard?.textContent).toContain("Moon Garden");
+      expect(profileCard?.textContent).toContain("Do not disturb");
+      expect(profileCard?.textContent).toContain("In a scene");
+      expect(profileCard?.textContent).toContain("v0.24.0");
+      expect(profileCard?.dataset.profileStyle).toBe("midnight");
+      expect(profileCard?.querySelector<HTMLElement>(".kl-addon-profile-avatar-shell")?.dataset.frame).toBe(
+        "starlight",
+      );
+      expect(profileCard?.querySelector(".kl-addon-profile-facts")?.textContent).not.toContain(
+        "Encounter",
+      );
+      const privateProfile = profileCard?.querySelector(".kl-addon-profile-private");
+      expect(privateProfile?.textContent).toContain("Only visible to you");
+      expect(privateProfile?.textContent).toContain(
+        "Private note · Met during a calm rope scene.",
+      );
+      expect(privateProfile?.textContent).toContain("Private tags · trusted · rope");
+      expect(privateProfile?.textContent).toContain("Last recorded room · Rose Conservatory");
+      expect(privateProfile?.textContent).toContain("Encounter count · 4");
+      expect(shadow?.querySelector(".kl-addon-profile-avatar img")).toBeNull();
+    });
+    expect(explicitProfileRefresh).toHaveBeenCalledWith(123, true);
+    explicitProfileRefresh.mockRestore();
+    shadow?.querySelector<HTMLButtonElement>(".kl-addon-profile-show-avatar")?.click();
+    await vi.waitFor(() => {
+      expect(
+        shadow?.querySelector<HTMLImageElement>(".kl-addon-profile-avatar img")?.src,
+      ).toContain("blob:kikilink/");
+    });
+    expect(remoteImageLoader.load).toHaveBeenCalledWith(
       "https://i.imgur.com/reina.png",
+      expect.any(AbortSignal),
     );
-    expect(remoteAvatar?.getAttribute("aria-label")).toBeNull();
+    const stableProfileCard = shadow?.querySelector(".kl-addon-profile-card");
+    presenceBus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "room",
+      payload: JSON.stringify({ t: "ty", a: 1 }),
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(shadow?.querySelector(".kl-addon-profile-card")).toBe(stableProfileCard);
+    shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.close();
+
+    shadow?.querySelector<HTMLElement>(".kl-chat-person")?.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+    );
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-profile-menu")?.textContent).toContain("KikiLink Profile");
+    });
+    const addonProfileAction = [...(
+      shadow?.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action") ?? []
+    )].find((button) => button.textContent?.includes("KikiLink Profile"));
+    if (!addonProfileAction) throw new Error("Missing KikiLink Profile action");
+    addonProfileAction.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);
+      expect(shadow?.querySelector(".kl-addon-profile-private")?.textContent).toContain(
+        "Private note · Met during a calm rope scene.",
+      );
+    });
+    shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.close();
+
+    presenceBus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "room",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://tracker.example/new-avatar.png",
+        u: Date.now(),
+        v: "0.24.0",
+      }),
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(remoteAvatar?.querySelector("img")).toBeNull();
+    expect(
+      remoteImageLoader.load.mock.calls.some(
+        ([url]) => url === "https://tracker.example/new-avatar.png",
+      ),
+    ).toBe(false);
+
+    let pendingProfileSignal: AbortSignal | undefined;
+    remoteImageLoader.load.mockImplementationOnce((_url: string, signal?: AbortSignal) => {
+      if (!signal) throw new Error("Missing profile avatar abort signal");
+      pendingProfileSignal = signal;
+      return new Promise<string>((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("cancelled", "AbortError")),
+          { once: true },
+        );
+      });
+    });
+    remoteAvatar?.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);
+      expect(shadow?.querySelector(".kl-addon-profile-show-avatar")).not.toBeNull();
+    });
+    shadow?.querySelector<HTMLButtonElement>(".kl-addon-profile-show-avatar")?.click();
+    await vi.waitFor(() => expect(pendingProfileSignal).toBeDefined());
+    expect(pendingProfileSignal?.aborted).toBe(false);
+    shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.close();
+    expect(pendingProfileSignal?.aborted).toBe(true);
+    expect(shadow?.querySelector(".kl-addon-profile-body")?.childElementCount).toBe(0);
 
     shadow?.querySelector<HTMLButtonElement>(".kl-attach-image")?.click();
     const imageInput = shadow?.querySelector<HTMLInputElement>(".kl-image-url");
@@ -1006,6 +1276,18 @@ describe("LinkChatView", () => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(remoteAvatar?.querySelector("img")).toBe(allowedAvatarImage);
 
+    const guardedOwnMember = vi.spyOn(adapter, "getOwnMemberNumber").mockImplementation(() => {
+      throw new Error("Permission denied to access object");
+    });
+    presenceBus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "room",
+      payload: JSON.stringify({ t: "ty", a: 0 }),
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Reina");
+    guardedOwnMember.mockRestore();
+
     shadow?.querySelector<HTMLButtonElement>(".kl-presence-trigger")?.click();
     shadow?.querySelector<HTMLButtonElement>('[data-status="dnd"]')?.click();
     expect(settings.get().linkPresence.status).toBe("dnd");
@@ -1032,9 +1314,11 @@ describe("LinkChatView", () => {
     }
     avatarUrl.value = "https://i.imgur.com/kiki.png";
     avatarUrl.dispatchEvent(new Event("input", { bubbles: true }));
-    expect(
-      shadow?.querySelector<HTMLImageElement>(".kl-profile-avatar-preview img")?.src,
-    ).toBe("https://i.imgur.com/kiki.png");
+    await vi.waitFor(() => {
+      expect(
+        shadow?.querySelector<HTMLImageElement>(".kl-profile-avatar-preview img")?.src,
+      ).toContain("blob:kikilink/");
+    });
     idleMinutes.value = "7";
     afkToggle.checked = true;
     afkToggle.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1048,8 +1332,676 @@ describe("LinkChatView", () => {
       afkAutoReply: { enabled: true, message: "Back later!" },
     });
 
+    settings.update((draft) => {
+      draft.linkChat.imagePreviews = "never";
+    });
+    view.close();
+    await view.openChat(123, "Reina");
+    expect(shadow?.querySelector(".kl-image-load")).toBeNull();
+    expect(shadow?.querySelector(".kl-image-preview")).toBeNull();
+    expect(shadow?.querySelector<HTMLAnchorElement>(".kl-message-link")?.href).toBe(
+      "https://cdn.example/picture.webp",
+    );
+
     view.destroy();
+    expect(remoteImageLoader.destroy).toHaveBeenCalledOnce();
     presence.stop();
+  });
+
+  it("cancels detached and destroyed remote-image targets", async () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => false,
+      getRoomCharacters: () => [],
+      getCurrentRoomName: () => undefined,
+      isInChatRoom: () => false,
+      refreshOnlineFriends: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendKikiLinkProtocol: vi.fn(() => "beep" as const),
+      broadcastKikiLinkProtocol: vi.fn(() => false),
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.linkChat.imagePreviews = "always";
+    });
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    await service.capture({
+      direction: "incoming",
+      peerNumber: 123,
+      peerName: "Reina",
+      content: "https://cdn.example/pending-image.png",
+      sentAt: 100,
+      includeRoom: false,
+    }, true);
+    const signals: AbortSignal[] = [];
+    const remoteImageLoader = {
+      load: vi.fn((_url: string, signal?: AbortSignal) => {
+        if (!signal) throw new Error("Missing per-target abort signal");
+        signals.push(signal);
+        return new Promise<string>((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("cancelled", "AbortError")),
+            { once: true },
+          );
+        });
+      }),
+      destroy: vi.fn(),
+    };
+    const view = new LinkChatView(
+      adapter,
+      service,
+      settings,
+      "0.24.0",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      remoteImageLoader,
+    );
+
+    view.mount();
+    await view.openChat(123, "Reina");
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    expect(shadow?.querySelector(".kl-conversation .kl-avatar")?.textContent).toBe("R");
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(false);
+
+    await view.openChat(123, "Reina");
+    await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+    expect(signals).toHaveLength(2);
+    expect(signals[1]?.aborted).toBe(false);
+
+    view.close();
+    expect(signals[1]?.aborted).toBe(true);
+    await view.openChat(123, "Reina");
+    expect(signals).toHaveLength(3);
+    expect(signals[2]?.aborted).toBe(false);
+
+    view.destroy();
+    expect(signals[2]?.aborted).toBe(true);
+    expect(remoteImageLoader.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("serializes more than 32 Always previews and cancels the hidden queue on close", async () => {
+    let visibilityCallback: IntersectionObserverCallback | undefined;
+    const observe = vi.fn();
+    const unobserve = vi.fn();
+    class TestIntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = "240px 0px";
+      readonly thresholds = [0.01];
+
+      constructor(callback: IntersectionObserverCallback) {
+        visibilityCallback = callback;
+      }
+
+      observe = observe;
+      unobserve = unobserve;
+      disconnect = vi.fn();
+      takeRecords = (): IntersectionObserverEntry[] => [];
+    }
+    vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => false,
+      isMemberInCurrentRoom: () => false,
+      getRoomCharacters: () => [],
+      getCurrentRoomName: () => undefined,
+      isInChatRoom: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.linkChat.imagePreviews = "always";
+      draft.linkChat.gallery.saved = Array.from({ length: 40 }, (_, index) => ({
+        url: `https://images.example/gallery-${index}.png`,
+        addedAt: Date.now() - index,
+      }));
+    });
+    const galleryStore: GalleryStore = {
+      list: vi.fn(async () => []),
+      get: vi.fn(async () => undefined),
+      add: vi.fn(async () => { throw new Error("not used"); }),
+      delete: vi.fn(async () => undefined),
+      close: vi.fn(),
+    };
+    const pending: Array<{
+      signal: AbortSignal;
+      resolve: (url: string) => void;
+    }> = [];
+    const remoteImageLoader = {
+      load: vi.fn((_url: string, signal?: AbortSignal) => {
+        if (!signal) throw new Error("Missing preview abort signal");
+        return new Promise<string>((resolve, reject) => {
+          pending.push({ signal, resolve });
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("cancelled", "AbortError")),
+            { once: true },
+          );
+        });
+      }),
+      destroy: vi.fn(),
+    };
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.24.0",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      galleryStore,
+      undefined,
+      remoteImageLoader,
+    );
+    view.mount();
+    await view.open();
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".kl-sidebar-gallery")?.click();
+
+    await vi.waitFor(() => {
+      expect(shadow?.querySelectorAll(".kl-gallery-item")).toHaveLength(40);
+      expect(observe).toHaveBeenCalledTimes(40);
+    });
+    expect(remoteImageLoader.load).not.toHaveBeenCalled();
+    expect(shadow?.querySelectorAll('.kl-image-preview[data-state="waiting"]')).toHaveLength(40);
+    const nearViewport = [...(shadow?.querySelectorAll<HTMLElement>(".kl-image-preview") ?? [])]
+      .slice(0, 6);
+    visibilityCallback?.(
+      nearViewport.map(
+        (target) => ({ target, isIntersecting: true }) as unknown as IntersectionObserverEntry,
+      ),
+      {} as IntersectionObserver,
+    );
+    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(4));
+    expect(shadow?.querySelectorAll('.kl-image-preview[data-state="loading"]')).toHaveLength(4);
+    expect(shadow?.querySelectorAll('.kl-image-preview[data-state="queued"]')).toHaveLength(2);
+    expect(shadow?.querySelectorAll('.kl-image-preview[data-state="waiting"]')).toHaveLength(34);
+
+    pending[0]?.resolve("blob:kikilink/first");
+    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(5));
+    view.close();
+    await vi.waitFor(() => {
+      expect(pending.slice(1).filter(({ signal }) => signal.aborted)).toHaveLength(4);
+    });
+    await Promise.resolve();
+    expect(remoteImageLoader.load).toHaveBeenCalledTimes(5);
+
+    view.destroy();
+    expect(remoteImageLoader.destroy).toHaveBeenCalledOnce();
+
+    vi.stubGlobal("IntersectionObserver", undefined);
+    const fallbackLoader = {
+      load: vi.fn(async (_url: string, _signal?: AbortSignal) => "blob:kikilink/fallback"),
+      destroy: vi.fn(),
+    };
+    const fallbackView = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.24.0",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      galleryStore,
+      undefined,
+      fallbackLoader,
+    );
+    fallbackView.mount();
+    await fallbackView.open();
+    const fallbackShadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    fallbackShadow?.querySelector<HTMLButtonElement>(".kl-sidebar-gallery")?.click();
+    await vi.waitFor(() => expect(fallbackLoader.load).toHaveBeenCalledTimes(12));
+    expect(
+      fallbackShadow?.querySelectorAll('.kl-image-preview[data-state="paused"]'),
+    ).toHaveLength(28);
+    fallbackView.destroy();
+    expect(fallbackLoader.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("invalidates a pending Gallery read on navigation and reports device-store failures", async () => {
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => false,
+      isMemberInCurrentRoom: () => false,
+      getRoomCharacters: () => [],
+      getCurrentRoomName: () => undefined,
+      isInChatRoom: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    let resolveDeviceRead: ((images: DeviceGalleryImage[]) => void) | undefined;
+    const pendingDeviceRead = new Promise<DeviceGalleryImage[]>((resolve) => {
+      resolveDeviceRead = resolve;
+    });
+    let resolveDestroyedRead: ((images: DeviceGalleryImage[]) => void) | undefined;
+    const destroyedDeviceRead = new Promise<DeviceGalleryImage[]>((resolve) => {
+      resolveDestroyedRead = resolve;
+    });
+    const galleryStore: GalleryStore = {
+      list: vi
+        .fn<GalleryStore["list"]>()
+        .mockImplementationOnce(() => pendingDeviceRead)
+        .mockRejectedValueOnce(new Error("IndexedDB became unavailable"))
+        .mockImplementationOnce(() => destroyedDeviceRead),
+      get: vi.fn(async () => undefined),
+      add: vi.fn(async () => { throw new Error("not used"); }),
+      delete: vi.fn(async () => undefined),
+      close: vi.fn(),
+    };
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:kikilink/late");
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.24.0",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      galleryStore,
+    );
+    view.mount();
+    await view.open();
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".kl-sidebar-gallery")?.click();
+    await vi.waitFor(() => expect(galleryStore.list).toHaveBeenCalledOnce());
+    shadow?.querySelector<HTMLButtonElement>('[data-target="home"]')?.click();
+    resolveDeviceRead?.([{
+      id: "late-device-image",
+      name: "KikiLink image",
+      mimeType: "image/webp",
+      width: 320,
+      height: 200,
+      createdAt: Date.now(),
+      blob: new Blob([Uint8Array.of(1)], { type: "image/webp" }),
+    }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(shadow?.querySelector<HTMLElement>(".kl-gallery-page")?.hidden).toBe(true);
+
+    shadow?.querySelector<HTMLButtonElement>(".kl-sidebar-gallery")?.click();
+    await vi.waitFor(() => {
+      expect(galleryStore.list).toHaveBeenCalledTimes(2);
+      expect(shadow?.querySelector(".kl-gallery-storage-error")?.textContent).toContain(
+        "Device Gallery could not be read",
+      );
+    });
+    expect(shadow?.querySelector(".kl-gallery-grid")?.textContent).not.toContain(
+      "Your Gallery is empty",
+    );
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-header-actions button") ?? [])]
+      .find((button) => button.textContent === "Refresh")
+      ?.click();
+    await vi.waitFor(() => expect(galleryStore.list).toHaveBeenCalledTimes(3));
+    view.destroy();
+    resolveDestroyedRead?.([{
+      id: "destroyed-device-image",
+      name: "KikiLink image",
+      mimeType: "image/webp",
+      width: 320,
+      height: 200,
+      createdAt: Date.now(),
+      blob: new Blob([Uint8Array.of(2)], { type: "image/webp" }),
+    }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(createObjectUrl).not.toHaveBeenCalled();
+  });
+
+  it("never reopens a delayed addon profile after the Link Deck is closed", async () => {
+    vi.useFakeTimers();
+    const adapter = {
+      getMemberName: () => "Unknown player",
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 321, memberName: "Unknown player" }],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => false,
+      isInChatRoom: () => false,
+      getCurrentRoomName: () => undefined,
+      refreshOnlineFriends: () => false,
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendKikiLinkProtocol: vi.fn(() => "beep" as const),
+      broadcastKikiLinkProtocol: vi.fn(() => false),
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const view = new LinkChatView(
+      adapter,
+      new ChatService(new MemoryChatRepository(), settings),
+      settings,
+      "0.24.0",
+    );
+    view.mount();
+    await view.openChat(321, "Unknown player");
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+
+    shadow?.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar")?.click();
+    expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);
+    expect(shadow?.querySelector(".kl-addon-profile-loading")?.textContent).toContain("Checking");
+
+    view.close();
+    await vi.advanceTimersByTimeAsync(1_700);
+
+    expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(false);
+    view.destroy();
+    vi.useRealTimers();
+  });
+
+  it("contains profile-menu presence and storage failures instead of leaking rejections", async () => {
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => "Reina",
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => false,
+      isInChatRoom: () => false,
+      getCurrentRoomName: () => undefined,
+      refreshOnlineFriends: () => false,
+      sendKikiLinkProtocol: vi.fn(() => "beep" as const),
+      broadcastKikiLinkProtocol: vi.fn(() => false),
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+      getRoomCharacters: () => [],
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    const presence = new LinkPresenceService(
+      adapter,
+      settings,
+      new EventBus<KikiLinkEvents>(),
+      "0.24.0",
+    );
+    const view = new LinkChatView(
+      adapter,
+      service,
+      settings,
+      "0.24.0",
+      undefined,
+      undefined,
+      presence,
+    );
+    view.mount();
+    await view.openChat(123, "Reina");
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    const target = shadow?.querySelector<HTMLElement>(".kl-chat-person");
+    if (!target) throw new Error("Missing profile-menu target");
+
+    const presenceRequest = vi.spyOn(presence, "request").mockImplementationOnce(() => {
+      throw new Error("revoked presence proxy");
+    });
+    target.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+    );
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector(".kl-toast")?.textContent).toContain(
+        "Player actions could not be loaded",
+      );
+      expect(shadow?.querySelector<HTMLElement>(".kl-profile-menu")?.hidden).toBe(true);
+    });
+    presenceRequest.mockRestore();
+
+    const conversationRead = vi.spyOn(service, "getConversation").mockRejectedValueOnce(
+      new Error("private storage unavailable"),
+    );
+    target.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+    );
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLElement>(".kl-profile-menu")?.hidden).toBe(true);
+      expect(shadow?.querySelector(".kl-toast")?.textContent).toContain(
+        "Player actions could not be loaded",
+      );
+    });
+
+    vi.spyOn(presence, "hasCompatiblePeer").mockReturnValue(true);
+    conversationRead.mockRejectedValueOnce(new Error("profile storage unavailable"));
+    const avatar = shadow?.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar");
+    if (!avatar) throw new Error("Missing addon-profile avatar target");
+    avatar.click();
+    expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);
+    expect(shadow?.querySelector(".kl-addon-profile-loading")?.textContent).toContain("Checking");
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(false);
+      expect(shadow?.querySelector(".kl-toast")?.textContent).toContain(
+        "This KikiLink profile could not be read right now",
+      );
+    });
+
+    avatar.click();
+    await vi.waitFor(() => {
+      expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);
+      expect(shadow?.querySelector(".kl-addon-profile-card")?.textContent).toContain("Reina");
+    });
+
+    const unhandled: unknown[] = [];
+    const captureUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", captureUnhandled);
+    try {
+      const openChat = vi.spyOn(view, "openChat");
+      openChat.mockRejectedValueOnce(new Error("profile message unavailable"));
+      shadow?.querySelector<HTMLButtonElement>(".kl-addon-profile-action--primary")?.click();
+      await vi.waitFor(() => {
+        expect(shadow?.querySelector(".kl-toast")?.getAttribute("role")).toBe("alert");
+        expect(shadow?.querySelector(".kl-toast")?.textContent).toContain(
+          "profile message unavailable",
+        );
+      });
+
+      target.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+      );
+      await vi.waitFor(() => {
+        expect(shadow?.querySelector<HTMLElement>(".kl-profile-menu")?.hidden).toBe(false);
+      });
+      openChat.mockRejectedValueOnce(new Error("context message unavailable"));
+      const contextMessage = [...(
+        shadow?.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action") ?? []
+      )].find((button) => button.querySelector(".kl-profile-menu-label")?.textContent === "Message");
+      if (!contextMessage) throw new Error("Missing context Message action");
+      contextMessage.click();
+      await vi.waitFor(() => {
+        expect(shadow?.querySelector(".kl-toast")?.textContent).toContain(
+          "context message unavailable",
+        );
+      });
+
+      vi.spyOn(service, "togglePinned").mockRejectedValueOnce(new Error("pin unavailable"));
+      target.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+      );
+      await vi.waitFor(() => {
+        expect(shadow?.querySelector<HTMLElement>(".kl-profile-menu")?.hidden).toBe(false);
+      });
+      const pin = [...(
+        shadow?.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action") ?? []
+      )].find((button) => button.querySelector(".kl-profile-menu-label")?.textContent === "Pin chat");
+      if (!pin) throw new Error("Missing context Pin chat action");
+      pin.click();
+      await vi.waitFor(() => {
+        expect(shadow?.querySelector(".kl-toast")?.textContent).toContain("pin unavailable");
+      });
+
+      vi.spyOn(service, "markUnread").mockRejectedValueOnce(new Error("mark unread unavailable"));
+      target.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+      );
+      await vi.waitFor(() => {
+        expect(shadow?.querySelector<HTMLElement>(".kl-profile-menu")?.hidden).toBe(false);
+      });
+      const markUnread = [...(
+        shadow?.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action") ?? []
+      )].find((button) => button.querySelector(".kl-profile-menu-label")?.textContent === "Mark unread");
+      if (!markUnread) throw new Error("Missing context Mark unread action");
+      markUnread.click();
+      await vi.waitFor(() => {
+        expect(shadow?.querySelector(".kl-toast")?.textContent).toContain(
+          "mark unread unavailable",
+        );
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", captureUnhandled);
+      view.destroy();
+    }
+  });
+
+  it("invalidates an in-flight profile menu when the Link Deck is destroyed", async () => {
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => "Reina",
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => false,
+      isInChatRoom: () => false,
+      getCurrentRoomName: () => undefined,
+      refreshOnlineFriends: () => false,
+      sendKikiLinkProtocol: vi.fn(() => "beep" as const),
+      broadcastKikiLinkProtocol: vi.fn(() => false),
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+      getRoomCharacters: () => [],
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    const view = new LinkChatView(adapter, service, settings, "0.24.0");
+    view.mount();
+    await view.openChat(123, "Reina");
+    const target = document
+      .querySelector<HTMLElement>("#kikilink-root")
+      ?.shadowRoot?.querySelector<HTMLElement>(".kl-chat-person");
+    if (!target) throw new Error("Missing profile-menu target");
+    let rejectRead: ((reason?: unknown) => void) | undefined;
+    vi.spyOn(service, "getConversation").mockImplementationOnce(
+      () => new Promise((_resolve, reject) => {
+        rejectRead = reject;
+      }),
+    );
+
+    target.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }),
+    );
+    await Promise.resolve();
+    view.destroy();
+    rejectRead?.(new Error("late storage rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector("#kikilink-root")).toBeNull();
+  });
+
+  it("cancels profile long-press work on close and account teardown", async () => {
+    vi.useFakeTimers();
+    const adapter = {
+      getMemberName: () => "Reina",
+      getMemberNickname: () => "Reina",
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => true,
+      isMemberInCurrentRoom: () => false,
+      isInChatRoom: () => false,
+      getCurrentRoomName: () => undefined,
+      refreshOnlineFriends: () => false,
+      sendKikiLinkProtocol: vi.fn(() => "beep" as const),
+      broadcastKikiLinkProtocol: vi.fn(() => false),
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+      getRoomCharacters: () => [],
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    const view = new LinkChatView(adapter, service, settings, "0.24.0");
+    view.mount();
+    await view.openChat(123, "Reina");
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    const target = shadow?.querySelector<HTMLElement>(".kl-chat-person");
+    if (!target) throw new Error("Missing profile-menu target");
+    const getConversation = vi.spyOn(service, "getConversation");
+    const touchStart = (): void => {
+      const event = new PointerEvent("pointerdown", {
+        bubbles: true,
+        button: 0,
+        clientX: 40,
+        clientY: 40,
+      });
+      Object.defineProperty(event, "pointerType", { value: "touch" });
+      target.dispatchEvent(event);
+    };
+
+    touchStart();
+    view.close();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(getConversation).not.toHaveBeenCalled();
+
+    await view.openChat(123, "Reina");
+    getConversation.mockClear();
+    touchStart();
+    view.destroy();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(getConversation).not.toHaveBeenCalled();
   });
 
   it("keeps a selected local image offline until Upload & send is clicked", async () => {
@@ -1241,6 +2193,9 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-image-dialog .kl-text-button--primary")?.textContent).toBe(
       "Upload to Catbox",
     );
+    expect(shadow?.querySelector(".kl-local-image-status")?.textContent).toContain(
+      "no automatic expiry",
+    );
     expect(shadow?.querySelector<HTMLElement>(".kl-gallery-retention-field")?.hidden).toBe(true);
     shadow?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")?.click();
     await vi.waitFor(() => {
@@ -1280,11 +2235,54 @@ describe("LinkChatView", () => {
     galleryRetention.value = "72h";
     galleryRetention.dispatchEvent(new Event("change", { bubbles: true }));
     expect(shadow?.querySelector<HTMLElement>(".kl-gallery-retention-field")?.hidden).toBe(false);
+    let resolveLitterboxUpload: ((url: string) => void) | undefined;
+    vi.mocked(imageUploader.upload).mockImplementationOnce(
+      () => new Promise<string>((resolve) => {
+        resolveLitterboxUpload = resolve;
+      }),
+    );
+    const uploadStartedAt = Date.now();
     shadow?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")?.click();
     await vi.waitFor(() => {
       expect(imageUploader.upload).toHaveBeenCalledWith(
         expect.objectContaining({ blob: preparedBlob }),
         { retention: "72h" },
+      );
+    });
+    expect(galleryRetention.disabled).toBe(true);
+    expect(
+      [...(shadow?.querySelectorAll<HTMLInputElement>(
+        'input[name="kikilink-gallery-storage"]',
+      ) ?? [])].every((input) => input.disabled),
+    ).toBe(true);
+    galleryRetention.value = "1h";
+    resolveLitterboxUpload?.("https://litter.catbox.moe/gallery-temporary.webp");
+    await vi.waitFor(() => {
+      const saved = settings.get().linkChat.gallery.saved.find(
+        ({ url }) => url === "https://litter.catbox.moe/gallery-temporary.webp",
+      );
+      expect(saved?.expiresAt).toBeGreaterThanOrEqual(uploadStartedAt + 72 * 60 * 60 * 1_000);
+      expect(saved?.expiresAt).toBeLessThanOrEqual(Date.now() + 72 * 60 * 60 * 1_000);
+      expect(shadow?.querySelector(".kl-gallery-grid")?.textContent).toContain("Expires");
+      expect(shadow?.querySelector(".kl-toast")?.textContent).toContain("3 days");
+    });
+    settings.update((draft) => {
+      const saved = draft.linkChat.gallery.saved.find(
+        ({ url }) => url === "https://litter.catbox.moe/gallery-temporary.webp",
+      );
+      if (!saved) throw new Error("Missing temporary Gallery entry");
+      saved.addedAt = Date.now() - 2_000;
+      saved.expiresAt = Date.now() - 1_000;
+    });
+    [...(shadow?.querySelectorAll<HTMLButtonElement>(".kl-gallery-header-actions button") ?? [])]
+      .find((button) => button.textContent === "Refresh")
+      ?.click();
+    await vi.waitFor(() => {
+      expect(settings.get().linkChat.gallery.saved).not.toContainEqual(
+        expect.objectContaining({ url: "https://litter.catbox.moe/gallery-temporary.webp" }),
+      );
+      expect(settings.get().linkChat.gallery.hiddenUrls).toContain(
+        "https://litter.catbox.moe/gallery-temporary.webp",
       );
     });
     expect(sendBeep).not.toHaveBeenCalled();
@@ -1792,6 +2790,11 @@ describe("LinkChatView", () => {
     const query = shadow?.querySelector<HTMLInputElement>(".kl-finder-query");
     await vi.waitFor(() => expect(shadow?.querySelector(".kl-finder-result")).not.toBeNull());
     if (!query) throw new Error("Missing LinkFinder query");
+    query.value = "#0";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(shadow?.querySelector(".kl-finder-result")?.textContent ?? "").not.toContain(
+      "Start chat with #0",
+    );
     query.value = "456";
     query.dispatchEvent(new Event("input", { bubbles: true }));
     const direct = shadow?.querySelector<HTMLButtonElement>('[data-finder-kind="conversation"]');
@@ -1839,16 +2842,17 @@ describe("LinkChatView", () => {
   });
 
   it("filters new chats by native availability and can sort contacts A–Z", () => {
+    const getKnownContacts = vi.fn(() => [
+      { memberNumber: 1, memberName: "Amy" },
+      { memberNumber: 2, memberName: "Zed" },
+      { memberNumber: 3, memberName: "Bea" },
+    ]);
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
       getOwnMemberNumber: () => 999,
       getOwnName: () => "Kiki",
-      getKnownContacts: () => [
-        { memberNumber: 1, memberName: "Amy" },
-        { memberNumber: 2, memberName: "Zed" },
-        { memberNumber: 3, memberName: "Bea" },
-      ],
+      getKnownContacts,
       getOnlineFriends: () => [{
         memberNumber: 2,
         memberName: "Zed",
@@ -1864,7 +2868,7 @@ describe("LinkChatView", () => {
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
       settings,
-      "0.23.0",
+      "0.24.0",
     );
     view.mount();
     const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
@@ -1892,6 +2896,32 @@ describe("LinkChatView", () => {
     sort.value = "alphabetical";
     sort.dispatchEvent(new Event("change", { bubbles: true }));
     expect(shadow?.querySelector(".kl-contact-name")?.textContent).toBe("Amy");
+
+    const dialog = shadow?.querySelector<HTMLDialogElement>(".kl-new-chat-dialog");
+    dialog?.close();
+    getKnownContacts.mockImplementationOnce(() => {
+      throw new Error("Permission denied to access object");
+    });
+    expect(() =>
+      shadow?.querySelector<HTMLButtonElement>('button[title="New Beep chat"]')?.click()
+    ).not.toThrow();
+    expect(dialog?.open).toBe(true);
+    expect(shadow?.querySelector(".kl-contact-empty")?.textContent).toContain(
+      "contacts could not be read",
+    );
+
+    const query = shadow?.querySelector<HTMLInputElement>(".kl-new-chat-query");
+    const open = [...(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .find((button) => button.textContent === "Open chat");
+    if (!query || !open) throw new Error("Missing guarded new-chat controls");
+    query.value = "";
+    open.click();
+    expect(dialog?.open).toBe(true);
+    expect(shadow?.querySelector(".kl-toast")?.textContent).toContain("valid member number");
+    query.value = "#0";
+    open.click();
+    expect(dialog?.open).toBe(true);
+    expect(shadow?.querySelector(".kl-chat-name")?.textContent).not.toBe("Member 0");
     view.destroy();
   });
 
@@ -1911,7 +2941,7 @@ describe("LinkChatView", () => {
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
       settings,
-      "0.23.0",
+      "0.24.0",
     );
     view.mount();
     await view.open();
@@ -1922,8 +2952,13 @@ describe("LinkChatView", () => {
     news?.click();
     expect(shadow?.querySelector<HTMLElement>(".kl-panel")?.dataset.workspace).toBe("news");
     expect(shadow?.querySelector<HTMLElement>(".kl-news-page")?.hidden).toBe(false);
-    expect(shadow?.querySelector('[data-version="0.23.0"]')?.textContent).toContain("Current");
-    expect(shadow?.querySelector(".kl-news-page")?.textContent).toContain("Favorite live room names");
+    const currentRelease = shadow?.querySelector<HTMLElement>('[data-version="0.24.0"]');
+    expect(currentRelease?.textContent).toContain("Current");
+    expect(currentRelease?.querySelector("time")?.getAttribute("datetime")).toBe("2026-08-29");
+    expect(currentRelease?.textContent).toContain("Group chats and addon profiles");
+    expect(currentRelease?.textContent).toContain(
+      "2–4 group-compatible KikiLink friends (3–5 people total)",
+    );
 
     const topbar = shadow?.querySelector<HTMLElement>(".kl-topbar");
     if (!topbar || !news) throw new Error("Missing top-bar controls");
@@ -1944,7 +2979,11 @@ describe("LinkChatView", () => {
     const blockedTargets = [
       news,
       shadow?.querySelector<HTMLElement>(".kl-presence-trigger"),
+      shadow?.querySelector<HTMLElement>(".kl-finder-trigger"),
       shadow?.querySelector<HTMLElement>(".kl-topbar-settings"),
+      shadow?.querySelector<HTMLElement>('[aria-label="Close KikiLink"]'),
+      shadow?.querySelector<HTMLElement>(".kl-local-clock"),
+      shadow?.querySelector<HTMLElement>(".kl-topbar-context"),
     ];
     blockedTargets.forEach((target, index) => {
       if (!target) throw new Error("Missing an interactive top-bar drag blocker");

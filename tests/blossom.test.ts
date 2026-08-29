@@ -133,6 +133,21 @@ describe("room Blossom character positioning", () => {
     expect(DEFAULT_ROOM_BADGE_POSITION).toEqual({ x: 0.84, y: 0.045 });
   });
 
+  it("stacks below Echo without overlap when character Zoom is not one", () => {
+    const frame = { x: 100, y: 20, zoom: 0.5 };
+    const echo = {
+      left: frame.x + 420 * frame.zoom,
+      top: frame.y + 5,
+      size: 35 * frame.zoom,
+    };
+
+    const blossom = resolveRoomBadgePosition(null, frame);
+
+    expect(blossom).toEqual({ left: 310, top: 42.5, size: 17.5 });
+    expect(blossom.left).toBe(echo.left);
+    expect(blossom.top).toBeGreaterThanOrEqual(echo.top + echo.size);
+  });
+
   it("draws through the native icon path and never leaves a normal-play DOM overlay", () => {
     const { badge, render, compatible, unregister } = fixture();
     const draw = vi.mocked(globalThis.DrawImageResize);

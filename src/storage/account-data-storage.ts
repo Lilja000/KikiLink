@@ -2,6 +2,7 @@ import {
   MemoryKeyValueStorage,
   SETTINGS_KEY,
   type KeyValueStorage,
+  type KeyValueStorageReadResult,
 } from "../core/settings";
 import type { ConversationMeta, LinkMessage } from "../core/types";
 import type { ChatRepository } from "./chat-repository";
@@ -9,9 +10,11 @@ import { PEOPLE_KEY } from "./people-repository";
 
 const CLOUD_EXTENSION_KEY = "KikiLink";
 const CLOUD_MIRROR_KEY = "kikilink:cloud-mirror:v1";
+const CHAT_DIRTY_KEY = "kikilink:chat-dirty:v1";
+const CHAT_CLEAR_MARKER_KEY = "kikilink:chat-cleared-at:v1";
 const CLOUD_FORMAT_PREFIX = "KIKILINK/1:";
 const JSON_FORMAT_PREFIX = "JSON:";
-const CLOUD_SYNC_DELAY_MS = 750;
+const CLOUD_SYNC_DELAY_MS = 5_000;
 const MAX_CLOUD_PAYLOAD_CHARS = 120_000;
 const MAX_CLOUD_CONVERSATIONS = 100;
 const MAX_CLOUD_MESSAGES = 600;
@@ -50,6 +53,18 @@ export class AccountKeyValueStorage implements KeyValueStorage {
     return this.backing.getItem(this.#key(key));
   }
 
+  getItemResult(key: string): KeyValueStorageReadResult {
+    const scopedKey = this.#key(key);
+    try {
+      return this.backing.getItemResult?.(scopedKey) ?? {
+        ok: true,
+        value: this.backing.getItem(scopedKey),
+      };
+    } catch {
+      return { ok: false };
+    }
+  }
+
   setItem(key: string, value: string): void {
     this.backing.setItem(this.#key(key), value);
   }
@@ -75,8 +90,11 @@ export class AccountDataStorage implements KeyValueStorage {
   #syncTimer: ReturnType<typeof setTimeout> | undefined;
   #flushChain = Promise.resolve();
   #generation = 0;
+  #chatSnapshotGeneration = 0;
   #chatDirty = false;
   #destroyed = false;
+  #destroyPromise: Promise<void> | undefined;
+  #unsafeChatSnapshotWarningShown = false;
 
   constructor(
     readonly memberNumber: number,
@@ -92,10 +110,17 @@ export class AccountDataStorage implements KeyValueStorage {
         owner: memberNumber,
         updatedAt: 0,
       };
+    const chatClearMarker = parseChatClearMarker(this.#readLocalItem(CHAT_CLEAR_MARKER_KEY));
+    const chatClearMarkerApplied =
+      chatClearMarker !== undefined && chatClearMarker >= this.#state.updatedAt;
+    if (chatClearMarkerApplied) {
+      this.#state.updatedAt = chatClearMarker;
+      this.#state.chats = { conversations: [], messages: [] };
+    }
 
     if (selected) {
-      this.#restorePortableKey(SETTINGS_KEY, selected.settings);
-      this.#restorePortableKey(PEOPLE_KEY, selected.people);
+      this.#restorePortableKey(SETTINGS_KEY, this.#state.settings);
+      this.#restorePortableKey(PEOPLE_KEY, this.#state.people);
       this.#persistMirror();
       if (selected === mirror && (!remote || mirror.updatedAt > remote.updatedAt)) {
         this.#markDirty();
@@ -108,14 +133,34 @@ export class AccountDataStorage implements KeyValueStorage {
         this.#markDirty();
       }
     }
+    if (chatClearMarkerApplied && (!remote || chatClearMarker > remote.updatedAt)) {
+      this.#markDirty();
+    }
+
+    // Unlike the debounce timer, this account-scoped marker survives a page reload. The local
+    // chat repository is attached immediately afterwards and can then recapture the rows that
+    // were already committed before the previous page disappeared.
+    this.#chatDirty = this.getItem(CHAT_DIRTY_KEY) === "1";
   }
 
   getItem(key: string): string | null {
+    const portable = this.#portableValue(key);
+    if (portable.matched) return portable.value;
+    return this.#readLocalItem(key);
+  }
+
+  #readLocalItem(key: string): string | null {
     try {
       return this.#local.getItem(key);
     } catch {
       return null;
     }
+  }
+
+  getItemResult(key: string): KeyValueStorageReadResult {
+    const portable = this.#portableValue(key);
+    if (portable.matched) return { ok: true, value: portable.value };
+    return this.#local.getItemResult(key);
   }
 
   setItem(key: string, value: string): void {
@@ -142,35 +187,88 @@ export class AccountDataStorage implements KeyValueStorage {
   async attachChatRepository(repository: ChatRepository): Promise<void> {
     this.#repository = repository;
     const chats = this.#state.chats;
-    if (!chats) return;
-
-    for (const message of chats.messages) await repository.addMessage(message);
-    for (const remoteConversation of chats.conversations) {
-      const localConversation = await repository.getConversation(remoteConversation.peerNumber);
-      if (!localConversation || remoteConversation.lastMessageAt >= localConversation.lastMessageAt) {
-        await repository.putConversation(remoteConversation);
+    if (chats) {
+      for (const message of chats.messages) await repository.addMessage(message);
+      for (const remoteConversation of chats.conversations) {
+        const localConversation = await repository.getConversation(remoteConversation.peerNumber);
+        if (!localConversation || remoteConversation.lastMessageAt >= localConversation.lastMessageAt) {
+          await repository.putConversation(remoteConversation);
+        }
       }
     }
+
+    if (this.#chatDirty) this.#markDirty();
   }
 
   markChatChanged(): void {
     if (this.#destroyed) return;
+    this.#chatSnapshotGeneration += 1;
     this.#chatDirty = true;
+    try {
+      this.#local.setItem(CHAT_DIRTY_KEY, "1");
+    } catch {
+      // The in-memory dirty flag still covers the current page when local storage is unavailable.
+    }
     this.#markDirty();
   }
 
-  flush(): Promise<void> {
-    this.#flushChain = this.#flushChain.then(() => this.#flushOnce());
-    return this.#flushChain;
+  /** Commits an explicit all-chat tombstone before a stale account mirror can be re-imported. */
+  async commitChatHistoryClear(): Promise<boolean> {
+    if (this.#destroyed) return false;
+    this.#chatSnapshotGeneration += 1;
+    this.#chatDirty = false;
+    this.#state.chats = { conversations: [], messages: [] };
+    this.#touch();
+    const markerPersisted = this.#writeVerifiedLocal(
+      CHAT_CLEAR_MARKER_KEY,
+      String(this.#state.updatedAt),
+    );
+    const mirrorPersisted = this.#persistMirror();
+    if (markerPersisted || mirrorPersisted) {
+      try {
+        this.#local.removeItem(CHAT_DIRTY_KEY);
+      } catch {
+        // A stale dirty marker only causes a safe recapture from the already-cleared repository.
+      }
+    }
+    this.#markDirty();
+    try {
+      await this.flush();
+    } catch {
+      // The verified local marker/mirror determines this method's durability result. Account sync
+      // remains queued and can recover independently without turning the UI callback into a throw.
+    }
+    return markerPersisted || mirrorPersisted;
   }
 
-  async destroy(): Promise<void> {
-    if (this.#destroyed) return;
-    await this.flush();
+  flush(): Promise<void> {
+    const pending = this.#flushChain.then(() => this.#flushOnce());
+    // Keep the public promise rejectable so explicit callers can react, while healing the
+    // private queue so one transient repository failure cannot poison every later flush.
+    this.#flushChain = pending.catch((error: unknown) => {
+      console.warn("[KikiLink:storage] Account sync failed; local account data is safe", error);
+    });
+    return pending;
+  }
+
+  destroy(): Promise<void> {
+    if (this.#destroyPromise) return this.#destroyPromise;
     this.#destroyed = true;
     if (this.#syncTimer !== undefined) clearTimeout(this.#syncTimer);
     this.#syncTimer = undefined;
-    this.#repository = undefined;
+    this.#destroyPromise = (async () => {
+      try {
+        await this.flush();
+      } catch {
+        // flush() already records the failure on its healed private queue. Teardown must still
+        // release the repository so a hot reload cannot retain a stale account instance.
+      } finally {
+        if (this.#syncTimer !== undefined) clearTimeout(this.#syncTimer);
+        this.#syncTimer = undefined;
+        this.#repository = undefined;
+      }
+    })();
+    return this.#destroyPromise;
   }
 
   #setPortableValue(key: "settings" | "people", raw: string): void {
@@ -210,7 +308,7 @@ export class AccountDataStorage implements KeyValueStorage {
   }
 
   #adoptLocalKey(key: string, field: "settings" | "people"): void {
-    const raw = this.getItem(key);
+    const raw = this.#readLocalItem(key);
     if (!raw) return;
     try {
       const parsed: unknown = JSON.parse(raw);
@@ -242,10 +340,43 @@ export class AccountDataStorage implements KeyValueStorage {
     const generation = this.#generation;
 
     if (this.#chatDirty && this.#repository) {
-      this.#state.chats = await capturePortableChats(this.#repository);
-      this.#chatDirty = false;
-      this.#touch();
-      this.#persistMirror();
+      if (!canSafelyCapturePortableSnapshot(this.#repository)) {
+        this.#warnUnsafeChatSnapshot();
+      } else {
+        let captured = false;
+        const chatSnapshotGeneration = this.#chatSnapshotGeneration;
+        this.#chatDirty = false;
+        try {
+          const chats = await capturePortableChats(this.#repository);
+          if (chatSnapshotGeneration === this.#chatSnapshotGeneration) {
+            this.#state.chats = chats;
+            captured = true;
+          } else {
+            // A mutation or explicit clear finished while this snapshot was reading. Never let
+            // the older rows overwrite it; the already-queued flush will capture current state.
+            this.#chatDirty = true;
+          }
+        } catch (error) {
+          // The attempted snapshot did not cover the dirty state. Retain it for the next flush.
+          this.#chatDirty = true;
+          if (!canSafelyCapturePortableSnapshot(this.#repository)) {
+            this.#warnUnsafeChatSnapshot();
+          } else {
+            throw error;
+          }
+        }
+        if (captured) {
+          this.#touch();
+          const mirrorPersisted = this.#persistMirror();
+          if (!this.#chatDirty && mirrorPersisted) {
+            try {
+              this.#local.removeItem(CHAT_DIRTY_KEY);
+            } catch {
+              // A stale marker only causes a safe extra recapture on the next page load.
+            }
+          }
+        }
+      }
     }
 
     if (!this.#isCurrentAccount()) return;
@@ -266,11 +397,37 @@ export class AccountDataStorage implements KeyValueStorage {
     }
   }
 
-  #persistMirror(): void {
+  #persistMirror(): boolean {
     try {
-      this.#local.setItem(CLOUD_MIRROR_KEY, JSON.stringify(this.#state));
+      return this.#writeVerifiedLocal(CLOUD_MIRROR_KEY, JSON.stringify(this.#state));
     } catch {
       // Account-local stores still retain their full data independently.
+      return false;
+    }
+  }
+
+  #writeVerifiedLocal(key: string, value: string): boolean {
+    try {
+      this.#local.setItem(key, value);
+      const retained = this.#local.getItemResult(key);
+      return retained.ok && retained.value === value;
+    } catch {
+      return false;
+    }
+  }
+
+  #portableValue(key: string): { matched: boolean; value: string | null } {
+    const value = key === SETTINGS_KEY
+      ? this.#state?.settings
+      : key === PEOPLE_KEY
+        ? this.#state?.people
+        : undefined;
+    if (key !== SETTINGS_KEY && key !== PEOPLE_KEY) return { matched: false, value: null };
+    if (value === undefined) return { matched: true, value: null };
+    try {
+      return { matched: true, value: JSON.stringify(value) };
+    } catch {
+      return { matched: true, value: null };
     }
   }
 
@@ -284,6 +441,14 @@ export class AccountDataStorage implements KeyValueStorage {
       typeof Player === "object" &&
       Player !== null &&
       Player.MemberNumber === this.memberNumber
+    );
+  }
+
+  #warnUnsafeChatSnapshot(): void {
+    if (this.#unsafeChatSnapshotWarningShown) return;
+    this.#unsafeChatSnapshotWarningShown = true;
+    console.warn(
+      "[KikiLink:storage] Session fallback is active; preserving the last portable chat snapshot",
     );
   }
 }
@@ -335,8 +500,19 @@ export class AccountSyncedChatRepository implements ChatRepository {
   }
 
   async clearAll(): Promise<void> {
-    await this.repository.clearAll();
-    this.account.markChatChanged();
+    await this.clearAllDurably();
+  }
+
+  async clearAllDurably(): Promise<boolean> {
+    const repositoryDurable = this.repository.clearAllDurably
+      ? await this.repository.clearAllDurably()
+      : await this.repository.clearAll().then(() => true);
+    const accountDurable = await this.account.commitChatHistoryClear();
+    return repositoryDurable && accountDurable;
+  }
+
+  canSafelyCapturePortableSnapshot(): boolean {
+    return this.repository.canSafelyCapturePortableSnapshot?.() !== false;
   }
 
   close(): void {
@@ -350,6 +526,9 @@ export function accountChatDatabaseName(memberNumber: number): string {
 }
 
 async function capturePortableChats(repository: ChatRepository): Promise<PortableChatState> {
+  if (!canSafelyCapturePortableSnapshot(repository)) {
+    throw new Error("KikiLink portable chat snapshot source is incomplete");
+  }
   const conversations = (await repository.listConversations()).slice(0, MAX_CLOUD_CONVERSATIONS);
   const messages: LinkMessage[] = [];
   for (const conversation of conversations) {
@@ -361,6 +540,9 @@ async function capturePortableChats(repository: ChatRepository): Promise<Portabl
     );
   }
   messages.sort((left, right) => right.sentAt - left.sentAt);
+  if (!canSafelyCapturePortableSnapshot(repository)) {
+    throw new Error("KikiLink portable chat snapshot source changed during capture");
+  }
   return {
     conversations: conversations.map((conversation) => structuredClone(conversation)),
     messages: messages
@@ -368,6 +550,10 @@ async function capturePortableChats(repository: ChatRepository): Promise<Portabl
       .sort((left, right) => left.sentAt - right.sentAt)
       .map((message) => structuredClone(message)),
   };
+}
+
+function canSafelyCapturePortableSnapshot(repository: ChatRepository): boolean {
+  return repository.canSafelyCapturePortableSnapshot?.() !== false;
 }
 
 function newestState(
@@ -547,6 +733,12 @@ function validMemberNumber(value: unknown): value is number {
 
 function validTime(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function parseChatClearMarker(value: string | null): number | undefined {
+  if (!value || !/^\d+$/u.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function integerInRange(value: unknown, min: number, max: number, fallback: number): number {

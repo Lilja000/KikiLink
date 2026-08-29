@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.24.0 - 2026-08-29
+
+- Added separate addon group chats for 3–5 total members, including the creator. A new group is
+  confirmed before invitations are sent, and its sorted membership cannot be changed: create a new
+  group when the participant list needs to change.
+- Kept group invitations inside an explicit trust boundary. An incoming group is accepted only from
+  a known BC friend, must include both sender and recipient, and cannot rewrite an existing group's
+  creator or membership. Merely sharing a room grants no trust, while blocked, ghosted, or unreadable
+  relationship state is rejected for inbound invitations.
+- Added a strict version-1 group protocol over individual KikiLink packets. Exact packet shapes,
+  canonical member lists, duplicate message IDs, bounded remote times, unsafe control or bidi text,
+  unpaired surrogates, and unauthorized senders are validated before storage. Each JSON payload is at
+  most 700 characters and every group message is capped at 257 characters, including worst-case JSON
+  escaping.
+- Made group send feedback honest and bounded: each remote member receives an individual addon
+  packet, per-recipient local BC handoff failures are reported, and a message is not added to local
+  history when every send fails. There are no delivery receipts. Account-scoped browser storage
+  retains at most 30 groups, 500 messages per group, 3,000 group messages overall, and 60
+  removed-group tombstones.
+- Coalesced high-frequency group messages, reads, pins, and drafts into a bounded 300 ms local-storage
+  write. Destructive actions, page hiding, and module teardown flush explicitly; failed writes keep a
+  dirty in-memory copy, show a storage warning, and report recovery. Replay storage now contains only
+  IDs of evicted or pruned messages instead of duplicating every visible message ID.
+- Made group storage fail closed on unreadable, malformed, or unsupported saved state: no mutation can
+  overwrite the original bytes, a recovered valid snapshot is restored before work resumes, and an
+  explicit clear reports whether the empty state was durably retained instead of showing false success.
+  Removing one group likewise reports a session-only result if its durable write fails.
+- Kept the current room first in Lobbies even when it is not returned by the room directory, a search
+  does not match it, or a refresh fails. Its Join action is replaced by a non-interactive
+  `Current room` badge.
+- Completed lobby navigation with Bondage Club's native room flow. KikiLink now checks whether the
+  current room may be left, requests one native leave, waits for the old room state to clear, performs
+  one native join, and closes the panel only after BC reports the requested room. Repeated clicks share
+  the same in-flight operation instead of starting competing transitions.
+- Added KikiLink profile cards from compatible avatars and player context menus. Cards separate
+  voluntary addon profile details from Bondage Club-observable facts and clearly label the private
+  note, tags, last recorded room, and encounter count as visible only to the local user. Optional Blossom,
+  Rose, and Starlight avatar frames and Garden or Midnight card styles add decoration without changing
+  player identity. Explicit profile opens request a fresh voluntary profile under a short cooldown,
+  closing the card cancels its unfinished avatar, and turning Presence off immediately drops cached
+  remote profile fields so reciprocal privacy does not depend on cache age.
+- Applied the existing image-preview privacy choice to profile avatars: `Ask before loading` grants
+  only the exact member-and-normalized-URL pair for the current session, so a replacement URL asks
+  again; `Always show` loads automatically, and `Links only` never requests it. The loader omits
+  credentials and referrer data, rejects redirects and local/reserved addresses, validates the HTTPS
+  response, supported image MIME, and 5 MiB bound,
+  then gives the image element only a local blob URL. At most four remote images fetch at once, no
+  more than 32 may be active or queued, and the complete wait is limited to 15 seconds. Closing or
+  replacing an avatar cancels its unused request. Initials and decorations remain available.
+- Hardened remote images and the privileged Catbox/Litterbox bridge. Remote fetches now refuse every
+  redirect and reject localhost plus private, loopback, link-local, and reserved IP literals before
+  sending a request. Each userscript load gives its page runtime an unguessable 256-bit upload
+  capability, validates exact window/origin metadata, and enforces two concurrent uploads plus a
+  rolling 12-request/160-MiB budget per 10 minutes with a bounded cooldown and teardown cleanup.
+- Made the all-chat Gallery truly lazy: automatic remote previews wait for the viewport and run at
+  most four at once; browsers without `IntersectionObserver` load only a bounded first set and leave
+  the remainder manual. Navigation, close, and teardown now invalidate delayed reads, cancel unused
+  requests, and release object URLs. Device-storage errors are visible, Litterbox expiry is retained,
+  labeled, range-checked, and pruned, and upload choices cannot change halfway through a request.
+- Hardened storage and live BC integration. Account-sync writes are batched more conservatively,
+  transient mirror failures keep pending local data available for a later retry, IndexedDB closes on
+  version changes and late blocked opens, and guarded or malformed cross-realm socket/profile values
+  are contained instead of breaking the addon. Presence packets now sanitize hostile control and bidi
+  text, stay within the same 700-character transport bound, and prune stale request state.
+- Made direct-chat clearing durability-aware across IndexedDB, its session fallback, and the bounded
+  account mirror. A verified account-scoped clear marker prevents an older cloud snapshot or an
+  already-running snapshot from resurrecting chats on reload; the UI warns instead of claiming success
+  when only the current session was cleared. A newer valid cloud settings/notebook snapshot also remains
+  the in-memory source of truth when browser storage temporarily refuses its restoration write.
+- Left the proven Blossom integration unchanged: KikiLink still owns exactly one
+  `ChatRoomDrawCharacterStatusIcons` ModSDK hook and does not wrap the outer character overlay or loop.
+
 ## 0.23.0 - 2026-08-27
 
 - Added a dedicated `News` tab immediately beside the KikiLink brand. It presents a curated,
@@ -30,7 +102,7 @@
 
 - Moved the default Blossom from the clipped right edge into a stacked slot directly below Echo's
   clothing-skirt icon: both use `CharX + 420×Zoom`; Echo stays at `CharY + 5` and Blossom now uses
-  `CharY + 45`. Existing positions saved through the placement control remain unchanged.
+  `CharY + 45×Zoom`. Existing positions saved through the placement control remain unchanged.
 - Separated addon detection from optional Presence profile sharing. A small capability-only packet
   now confirms KikiLink even when status sharing is disabled, so the Blossom appears for every
   confirmed KikiLink user and never for players who did not answer the KikiLink protocol.
