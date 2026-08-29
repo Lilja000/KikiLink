@@ -9,6 +9,18 @@ export interface KikiLinkNewsRelease {
 /** A compact, curated changelog for the in-addon News page. */
 export const KIKILINK_NEWS: readonly KikiLinkNewsRelease[] = [
   {
+    version: "0.28.1",
+    date: "2026-08-29",
+    title: "Quiet updates, clearer actions",
+    summary: "Update discovery stays local, chat actions read naturally, and Custom Activities are easier to recognize and edit on desktop.",
+    highlights: [
+      "Keep update discovery inside Home: KikiLink no longer sends addon-authored update Beeps to other players, while the bounded local check and Update button remain.",
+      "Read matched *action* spans in italics across direct and group chats without changing unmatched text or the guarded link, image, and Reply paths.",
+      "Recognize native Custom Activity cards through an 18 px desktop Blossom marker while mobile keeps its compact 12 px size.",
+      "Scroll the keyboard-accessible desktop character map to reach lower body slots; the established mobile creator layout remains unchanged.",
+    ],
+  },
+  {
     version: "0.28.0",
     date: "2026-08-29",
     title: "Smoother groups, visible profiles",
@@ -19,7 +31,6 @@ export const KIKILINK_NEWS: readonly KikiLinkNewsRelease[] = [
       "See profile avatars, banners, and group art by default under a dedicated Players preference while chat-message previews keep their separate privacy setting.",
       "Add a short optional bio to your KikiProfile; it travels only in a negotiated, targeted profile request and is sanitized, bounded, and cached like other saved details.",
       "Find an official Update button on Home only when a newer strict release is available through one bounded check with no polling.",
-      "Let a few confirmed online BC friends on older compatible versions receive one heavily deduplicated, rate-limited private update Beep—never strangers or a broadcast.",
     ],
   },
   {

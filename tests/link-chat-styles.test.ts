@@ -83,4 +83,23 @@ describe("LinkChat visual safeguards", () => {
     expect(excerpt).toMatch(/overflow:\s*hidden/u);
     expect(excerpt).toMatch(/text-overflow:\s*ellipsis/u);
   });
+
+  it("keeps the full body-slot canvas reachable through a focused touch-friendly scroller", () => {
+    const stage = declaration(".kl-custom-character-stage");
+    const canvas = declaration(".kl-custom-character-canvas");
+
+    expect(stage).toMatch(/place-items:\s*start center/u);
+    expect(stage).toMatch(/overflow-y:\s*auto/u);
+    expect(stage).toMatch(/overscroll-behavior-y:\s*contain/u);
+    expect(stage).toMatch(/touch-action:\s*pan-y/u);
+    expect(canvas).toMatch(/width:\s*min\(100%, 250px\)/u);
+    expect(canvas).toMatch(/height:\s*auto/u);
+    expect(canvas).not.toMatch(/height:\s*min\(100%, 390px\)/u);
+    expect(LINK_CHAT_STYLES).toMatch(
+      /@media \(max-width: 720px\)[\s\S]*?\.kl-custom-character-stage\s*\{[^}]*overflow-y:\s*hidden/u,
+    );
+    expect(LINK_CHAT_STYLES).toMatch(
+      /@media \(max-width: 720px\)[\s\S]*?\.kl-custom-character-canvas\s*\{[^}]*width:\s*auto;[^}]*height:\s*min\(100%, 390px\)/u,
+    );
+  });
 });

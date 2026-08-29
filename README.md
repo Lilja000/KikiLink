@@ -11,11 +11,11 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.28.0` runs all Bondage Club and ModSDK integration in the page realm without reading
+Version `0.28.1` runs all Bondage Club and ModSDK integration in the page realm without reading
 `unsafeWindow`. Only structured upload fields cross into the DOM-only userscript sandbox for the narrowly
-granted Catbox/Litterbox request. This release repairs Catbox uploads across isolated userscript realms,
-makes group chat density and Reply behavior match direct chat, shows profile art by default under its own
-privacy preference, adds a short on-demand profile bio, and surfaces bounded official update notices.
+granted Catbox/Litterbox request. This patch keeps update discovery local to the bounded Home check,
+formats matched action spans in direct and group chat, enlarges the desktop Custom Activity Blossom,
+and makes the desktop character/body-slot map scrollable without changing its mobile behavior.
 It does not change the proven
 Blossom integration: the flower still joins the same BC-native status-icon boundary as Echo and WCE
 exactly once and sits directly below Echo's clothing icon, clear of the chat edge. It is
@@ -152,9 +152,6 @@ so they can follow that same account to another device.
   700 UTF-8 bytes for managed), including worst-case escaping; managed state uses monotonic revisions
   and a fresh epoch whenever membership changes
 - Native recent Beeps imported from the current game session without duplicates
-- A heavily deduplicated release notice may send one ordinary private Beep to a confirmed reachable BC
-  friend on an older compatible KikiLink version; it never broadcasts to rooms or strangers and is
-  limited to one attempt per minute and three per addon session
 - Persistent message history in a separate local database for each BC account
 - A bounded mirror of up to 600 recent messages follows the same BC account to another device
 - Search by player name, member number, or message text
@@ -180,6 +177,8 @@ so they can follow that same account to another device.
   filename and embedded metadata, convert to WebP, and resize the longest edge to at most 2560 px
 - Choosing a file never starts a network request; only the explicit `Upload & send` action uploads it
 - Compact `Reply` and `Copy` icons beside messages, with plain-text quotes compatible with native Beeps
+- Matched `*action*` spans render as italics in direct and group chats without treating unmatched
+  markers as formatting or weakening the existing safe link, image-preview, and Reply parsing
 - Private local nicknames for chats that never change outgoing content or another player's view
 - Remove one conversation from KikiLink recents and local history without unfriending the player
   or changing Bondage Club's native Beep log; a genuinely new message brings the chat back
@@ -273,8 +272,9 @@ so they can follow that same account to another device.
 
 - A dedicated Custom Activities destination, visible by default and optional in Settings
 - An intentionally empty starting library: KikiLink does not make choices for the player
-- A focused creator that renders the current character and keeps the selected body slot in one
-  compact row; `Show all` expands the complete tap-friendly selection grid only when needed
+- A focused creator that renders the current character and keeps the selected body slot in one compact
+  row; its keyboard-accessible desktop character map scrolls to every lower body slot, while `Show all`
+  expands the complete tap-friendly selection grid only when needed
 - A canonical set of 33 unique vanilla Bondage Club activity pictures, without LSCG assets,
   item-action icons, or visual duplicates
 - Mobile layouts keep the character, expandable two-column slot grid, horizontally scrolling
@@ -287,7 +287,8 @@ so they can follow that same account to another device.
   on the selected body slot even if the game rebuilds that registry
 - Labels, selected pictures, and clicks are repaired directly on the native activity card, so
   Custom Activities still work when page-function hooks are isolated or replaced
-- Every native custom-activity button carries KikiLink's 12 px cartoon Blossom marker in its upper-left corner
+- Every native custom-activity button carries KikiLink's cartoon Blossom marker in its upper-left corner:
+  18 px on desktop for clearer recognition and the existing 12 px on mobile
 - Other players receive one ordinary finished action sentence, including players without KikiLink
 - Compatible KikiLink recipients validate sender, target, body group, amount, and nonce before handing
   optional arousal to Bondage Club's own preference-aware activity system

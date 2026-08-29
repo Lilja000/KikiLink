@@ -577,8 +577,8 @@ describe("published userscript runtime", () => {
       priority: 10,
     });
     expect(pageWindow.KikiLink).toBe(api);
-    expect(api.getVersion()).toBe("0.28.0");
-    expect(version?.textContent).toBe("0.28.0");
+    expect(api.getVersion()).toBe("0.28.1");
+    expect(version?.textContent).toBe("0.28.1");
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);
@@ -604,8 +604,8 @@ describe("published userscript runtime", () => {
       true,
     );
     expect(grid.querySelector(`[data-activity^="${CUSTOM_ACTIVITY_PREFIX}"]`)).not.toBeNull();
-    expect(activityMark?.style.width).toBe("12px");
-    expect(activityMark?.style.height).toBe("12px");
+    expect(activityMark?.style.width).toBe("18px");
+    expect(activityMark?.style.height).toBe("18px");
     expect(activityMark?.style.left).toBe("0px");
     expect(activityMark?.style.top).toBe("0px");
 

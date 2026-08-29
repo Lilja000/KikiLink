@@ -125,11 +125,9 @@ describe("LinkPresenceService", () => {
     });
     expect(service.get(123).profileFromCache).toBeUndefined();
     expect(service.hasCompatiblePeer(123)).toBe(true);
-    expect(service.getCompatiblePeerVersion(123)).toBe("0.11.0");
     expect(service.hasGroupChatPeer(123)).toBe(false);
     expect(service.hasGroupManagedPeer(123)).toBe(false);
     expect(service.hasCompatiblePeer(123, Date.now() + 5 * 60_000 + 1)).toBe(false);
-    expect(service.getCompatiblePeerVersion(123, Date.now() + 5 * 60_000 + 1)).toBeUndefined();
     service.stop();
   });
 

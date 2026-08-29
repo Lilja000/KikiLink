@@ -196,7 +196,7 @@ export class CustomActivitiesView {
     const canvas = element("canvas", {
       className: "kl-custom-character-canvas",
       ariaLabel: "Your character body slots",
-      tabIndex: 0,
+      tabIndex: -1,
     }) as HTMLCanvasElement;
     const canvasFallback = element("div", {
       className: "kl-custom-character-fallback",
@@ -514,6 +514,18 @@ export class CustomActivitiesView {
       advanced,
     );
 
+    const characterStage = element(
+      "div",
+      {
+        className: "kl-custom-character-stage",
+        ariaLabel:
+          "Scrollable character body map. Scroll for lower slots or use Show all for keyboard selection.",
+        tabIndex: 0,
+      },
+      canvas,
+      canvasFallback,
+    );
+    characterStage.setAttribute("role", "region");
     const characterPane = element(
       "aside",
       { className: "kl-custom-character-pane" },
@@ -523,7 +535,7 @@ export class CustomActivitiesView {
         text: "Tap your character or open the compact picker to change it.",
       }),
       slotPicker,
-      element("div", { className: "kl-custom-character-stage" }, canvas, canvasFallback),
+      characterStage,
       slotSelect,
       element("div", {
         className: "kl-custom-slot-note",

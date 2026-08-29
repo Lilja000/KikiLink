@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.28.1 - 2026-08-29
+
+- Removed addon-authored update Beeps and their peer-notice service entirely. KikiLink no longer sends
+  another player an update message; the bounded local Home version check and its explicit Update button
+  remain available without polling.
+- Rendered matched `*action*` spans as italics in direct and group chat while keeping unmatched markers
+  literal and preserving the existing safe text, link, image-preview, and Reply parsing boundaries.
+- Increased the Custom Activity Blossom marker to 18 px on desktop so it remains recognizable, while
+  preserving the existing 12 px marker on mobile.
+- Made the desktop Custom Activity character/body-slot map a keyboard-accessible vertical scroll region,
+  so lower slots remain selectable without enlarging the creator; the existing mobile layout is unchanged.
+- Added regression coverage for quiet local-only updates, safe action formatting, responsive Blossom
+  sizing, and desktop body-slot scrolling.
+
 ## 0.28.0 - 2026-08-29
 
 - Fixed the Catbox upload bridge for isolated userscript realms. Some Tampermonkey/Violentmonkey

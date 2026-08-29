@@ -17,6 +17,9 @@ const NATIVE_AROUSAL_FALLBACK_MARKER = "KikiLinkArousalFallback";
 const MAX_SEEN_NONCES = 120;
 const REGISTRY_MONITOR_INTERVAL_MS = 500;
 const SAFE_ASSET_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
+const NATIVE_ACTIVITY_MARK_MOBILE_SIZE_PX = 12;
+const NATIVE_ACTIVITY_MARK_DESKTOP_SIZE_PX = 18;
+const MOBILE_VIEWPORT_MAX_WIDTH_PX = 720;
 /**
  * Canonical, byte-distinct activity pictures shipped by Bondage Club itself.
  *
@@ -510,6 +513,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   decorateButton(button: HTMLButtonElement, itemActivity: BCItemActivity): void {
     if (!this.#runtimeActivities.has(itemActivity?.Activity?.Name)) return;
     if (button.querySelector("[data-kikilink-activity-mark]")) return;
+    const markSize = `${nativeActivityMarkSize(globalThis.innerWidth)}px`;
     const mark = document.createElement("img");
     mark.src = BLOSSOM_ICON_DATA_URL;
     mark.alt = "KikiLink custom activity";
@@ -519,8 +523,8 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       position: "absolute",
       top: "0px",
       left: "0px",
-      width: "12px",
-      height: "12px",
+      width: markSize,
+      height: markSize,
       opacity: "0.96",
       pointerEvents: "none",
       filter: "drop-shadow(0 1px 3px rgba(0,0,0,.75))",
@@ -534,8 +538,8 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       ["left", "0px"],
       ["right", "auto"],
       ["bottom", "auto"],
-      ["width", "12px"],
-      ["height", "12px"],
+      ["width", markSize],
+      ["height", markSize],
     ] as const) {
       mark.style.setProperty(property, value, "important");
     }
@@ -752,6 +756,12 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       removeActivitiesFromRegistry(this.#registeredActivities, this.#registeredOrdering);
     }
   }
+}
+
+function nativeActivityMarkSize(viewportWidth: number): number {
+  return Number.isFinite(viewportWidth) && viewportWidth <= MOBILE_VIEWPORT_MAX_WIDTH_PX
+    ? NATIVE_ACTIVITY_MARK_MOBILE_SIZE_PX
+    : NATIVE_ACTIVITY_MARK_DESKTOP_SIZE_PX;
 }
 
 export function activityImageUrl(image: string): string {

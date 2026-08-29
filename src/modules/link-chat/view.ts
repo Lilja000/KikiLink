@@ -81,6 +81,7 @@ import {
   parseInlineReplyContext,
   stripInlineReplyDraft,
 } from "./message-reply";
+import { appendActionFormattedText } from "./message-actions";
 import {
   RemoteImageLoader,
   type RemoteImageLease,
@@ -10387,15 +10388,8 @@ export class LinkChatView {
       body.append(context);
       body.dataset.hasReply = "true";
     }
-    let cursor = 0;
-    for (const link of links) {
-      if (link.start > cursor) {
-        body.append(document.createTextNode(visibleContent.slice(cursor, link.start)));
-      }
-      if (link.image && previewsEnabled) {
-        cursor = link.end;
-        continue;
-      }
+    appendActionFormattedText(body, visibleContent, links, (link) => {
+      if (link.image && previewsEnabled) return undefined;
       const anchor = element("a", {
         className: "kl-message-link",
         text: visibleContent.slice(link.start, link.end),
@@ -10404,12 +10398,8 @@ export class LinkChatView {
       anchor.target = "_blank";
       anchor.rel = "noopener noreferrer nofollow";
       anchor.referrerPolicy = "no-referrer";
-      body.append(anchor);
-      cursor = link.end;
-    }
-    if (cursor < visibleContent.length) {
-      body.append(document.createTextNode(visibleContent.slice(cursor)));
-    }
+      return anchor;
+    });
 
     if (imageUrls.length === 0 || !previewsEnabled) return body;
     if (!body.textContent?.trim()) {

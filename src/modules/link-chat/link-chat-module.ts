@@ -10,7 +10,6 @@ import { AfkAutoReplyService } from "./afk-auto-reply-service";
 import { GroupChatService } from "./group-chat-service";
 import { MemoryKeyValueStorage } from "../../core/settings";
 import { ProfileCacheRepository } from "../../storage/profile-cache-repository";
-import { ReleaseNoticeService } from "./release-notice-service";
 
 export class LinkChatModule implements KikiLinkModule {
   readonly id = "link-chat";
@@ -22,7 +21,6 @@ export class LinkChatModule implements KikiLinkModule {
   #roster: LinkRosterService | undefined;
   #presence: LinkPresenceService | undefined;
   #afkAutoReply: AfkAutoReplyService | undefined;
-  #releaseNotices: ReleaseNoticeService | undefined;
   #groups: GroupChatService | undefined;
   #view: LinkChatView | undefined;
   #rosterTimer: ReturnType<typeof setInterval> | undefined;
@@ -51,12 +49,6 @@ export class LinkChatModule implements KikiLinkModule {
       context.memberNumber,
     );
     this.#presence.start();
-    this.#releaseNotices = new ReleaseNoticeService(
-      context.adapter,
-      this.#presence,
-      accountStorage,
-      context.version,
-    );
     this.#afkAutoReply = new AfkAutoReplyService(context.adapter, {
       getStatus: () => this.#presence?.getOwnStatus() ?? "online",
       getConfig: () => context.settings.get().linkPresence.afkAutoReply,
@@ -105,10 +97,7 @@ export class LinkChatModule implements KikiLinkModule {
       }),
       context.bus.on("beep:received", (event) => void this.#capture(event)),
       context.bus.on("beep:sent", (event) => void this.#capture(event)),
-      context.bus.on("bc:protocol", (event) => {
-        void this.#captureGroupProtocol(event);
-        this.#maybeAnnounceRelease(event.senderNumber);
-      }),
+      context.bus.on("bc:protocol", (event) => void this.#captureGroupProtocol(event)),
       context.bus.on("link-reactions:notification", (event) =>
         this.#view?.onNotification(event),
       ),
@@ -138,7 +127,6 @@ export class LinkChatModule implements KikiLinkModule {
     this.#activities = undefined;
     this.#presence?.stop();
     this.#presence = undefined;
-    this.#releaseNotices = undefined;
     this.#afkAutoReply?.reset();
     this.#afkAutoReply = undefined;
     this.#service = undefined;
@@ -191,11 +179,6 @@ export class LinkChatModule implements KikiLinkModule {
     } catch (error) {
       this.#logger.error("Failed to capture a KikiLink group packet", error);
     }
-  }
-
-  #maybeAnnounceRelease(memberNumber: number): void {
-    const event = this.#releaseNotices?.maybeNotify(memberNumber);
-    if (event) void this.#capture(event);
   }
 
   #syncRoster(): void {

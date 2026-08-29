@@ -686,23 +686,6 @@ export class LinkPresenceService {
     return lastSeenAt !== undefined && now - lastSeenAt <= REMOTE_STATUS_TTL_MS;
   }
 
-  /**
-   * Returns only a version learned from a live protocol packet, never the public-profile cache.
-   * Callers must not use `get(memberNumber).addonVersion` for compatibility-sensitive actions:
-   * that display snapshot may deliberately include an older account-local cached profile.
-   */
-  getCompatiblePeerVersion(memberNumber: number, now = Date.now()): string | undefined {
-    if (
-      !isPositiveMemberNumber(memberNumber) ||
-      memberNumber === this.#authenticatedOwnMemberNumber ||
-      this.#rejectPeerForRelationship(memberNumber) ||
-      !this.hasCompatiblePeer(memberNumber, now)
-    ) {
-      return undefined;
-    }
-    return this.#remoteVersions.get(memberNumber);
-  }
-
   /** Group packets are opt-in so older KikiLink versions are never offered as group members. */
   hasGroupChatPeer(memberNumber: number, now = Date.now()): boolean {
     if (!this.#hasAuthenticatedIdentity()) return false;

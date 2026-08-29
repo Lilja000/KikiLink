@@ -176,13 +176,13 @@ describe("LinkChatView", () => {
     expect(messageRow?.querySelector('[aria-label="Reply to message"] svg')).not.toBeNull();
     messageRow?.querySelector<HTMLButtonElement>('[aria-label="Reply to message"]')?.click();
     expect(composer.value).toBe("> Reply to Kiki: Hello from KikiLink\n");
-    composer.value += "Acknowledged";
+    composer.value += "*Acknowledged*";
     composer.dispatchEvent(new Event("input", { bubbles: true }));
     shadow?.querySelector<HTMLButtonElement>(".kl-send")?.click();
     await vi.waitFor(() => expect(sendBeep).toHaveBeenCalledTimes(2));
     expect(sendBeep).toHaveBeenLastCalledWith(
       123,
-      "> Reply to Kiki: Hello from KikiLink\nAcknowledged",
+      "> Reply to Kiki: Hello from KikiLink\n*Acknowledged*",
       false,
     );
     await vi.waitFor(() => {
@@ -194,9 +194,9 @@ describe("LinkChatView", () => {
       expect(replyRow?.querySelector(".kl-message-content")?.textContent).not.toContain(
         "> Reply to",
       );
-      expect(replyRow?.querySelector(".kl-message-content")?.lastChild?.textContent).toBe(
-        "Acknowledged",
-      );
+      const action = replyRow?.querySelector("em.kl-message-action-text");
+      expect(action?.textContent).toBe("*Acknowledged*");
+      expect(action?.closest(".kl-message-content")?.lastChild).toBe(action);
     });
     expect(shadow?.querySelector(".kl-conversation-preview")?.textContent).toContain(
       "Acknowledged",
@@ -204,6 +204,23 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-conversation-preview")?.textContent).not.toContain(
       "Reply to",
     );
+    composer.value = "*shares https://example.com/page * https://cdn.example/picture.png";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    shadow?.querySelector<HTMLButtonElement>(".kl-send")?.click();
+    await vi.waitFor(() => expect(sendBeep).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => {
+      expect(
+        shadow?.querySelector<HTMLElement>(".kl-message-row:last-child")
+          ?.querySelector("em.kl-message-action-text")?.textContent,
+      ).toBe("*shares https://example.com/page *");
+    });
+    const richActionRow = shadow?.querySelector<HTMLElement>(".kl-message-row:last-child");
+    const richAction = richActionRow?.querySelector("em.kl-message-action-text");
+    expect(richAction?.textContent).toBe("*shares https://example.com/page *");
+    expect(richAction?.querySelector<HTMLAnchorElement>(".kl-message-link")?.href).toBe(
+      "https://example.com/page",
+    );
+    expect(richActionRow?.querySelector(".kl-image-card")).not.toBeNull();
     expect(shadow?.querySelector(".kl-sidebar-heading span")?.textContent).toBe("Chats");
 
     shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
@@ -373,7 +390,7 @@ describe("LinkChatView", () => {
         v: 1,
         g: created.group.groupId,
         i: "gmsg_00000002",
-        c: "A message from Mina",
+        c: "A message from Mina: *waves*",
         u: 1_100,
       }),
     });
@@ -474,6 +491,10 @@ describe("LinkChatView", () => {
     expect(messageAvatar.closest(".kl-group-message")?.textContent).toContain(
       "A message from Mina",
     );
+    expect(
+      messageAvatar.closest(".kl-group-message")
+        ?.querySelector("em.kl-message-action-text")?.textContent,
+    ).toBe("*waves*");
     messageAvatar.click();
     await vi.waitFor(() => {
       expect(shadow.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);

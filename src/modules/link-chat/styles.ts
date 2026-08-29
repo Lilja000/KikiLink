@@ -2442,23 +2442,29 @@ button { color: inherit; }
   position: relative;
   min-height: 0;
   display: grid;
-  place-items: center;
-  overflow: hidden;
+  place-items: start center;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   border: 1px solid var(--kl-border);
   border-radius: 14px;
   background:
     radial-gradient(ellipse at 50% 42%, color-mix(in srgb, var(--kl-gold), transparent 93%), transparent 62%),
     var(--kl-input-bg);
+  scrollbar-color: var(--kl-border-strong) transparent;
+  scrollbar-width: thin;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 .kl-custom-character-canvas {
-  width: auto;
-  height: min(100%, 390px);
+  width: min(100%, 250px);
+  height: auto;
   max-width: 100%;
   display: block;
   cursor: crosshair;
-  touch-action: manipulation;
+  touch-action: pan-y;
 }
-.kl-custom-character-canvas:focus-visible { outline: 2px solid var(--kl-accent); outline-offset: -2px; }
+.kl-custom-character-stage:focus-visible { outline: 2px solid var(--kl-accent); outline-offset: -2px; }
 .kl-custom-character-fallback {
   position: absolute;
   inset: auto 16px 16px;
@@ -2664,6 +2670,16 @@ button { color: inherit; }
     grid-template-rows: auto auto auto 380px auto;
     margin-bottom: 12px;
     overflow: visible;
+  }
+  .kl-custom-character-stage {
+    place-items: center;
+    overflow-y: hidden;
+    touch-action: manipulation;
+  }
+  .kl-custom-character-canvas {
+    width: auto;
+    height: min(100%, 390px);
+    touch-action: manipulation;
   }
   .kl-custom-slot-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3883,6 +3899,7 @@ select:focus-visible {
 .kl-image-file-privacy-icon .kl-icon { width: 16px; height: 16px; }
 .kl-local-image-thumbnail { width: 54px; height: 54px; flex: 0 0 auto; object-fit: cover; border-radius: 10px; background: #09090a; }
 .kl-message-content { line-height: 1.48; white-space: pre-wrap; }
+.kl-message-action-text { font-style: italic; }
 .kl-message-link { color: #efc56c; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor, transparent 48%); text-underline-offset: 2px; }
 .kl-message-row[data-direction="outgoing"] .kl-message-link { color: var(--kl-accent-foreground); }
 .kl-message-media { display: grid; gap: 7px; margin-top: 8px; }

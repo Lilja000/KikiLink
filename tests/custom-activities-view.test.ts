@@ -72,9 +72,15 @@ describe("CustomActivitiesView", () => {
 
     const picker = root.querySelector<HTMLDetailsElement>(".kl-custom-slot-picker");
     const currentSlot = root.querySelector<HTMLElement>(".kl-custom-slot-current");
+    const characterStage = root.querySelector<HTMLElement>(".kl-custom-character-stage");
+    const characterCanvas = root.querySelector<HTMLCanvasElement>(".kl-custom-character-canvas");
     expect(picker?.open).toBe(false);
     expect(currentSlot?.textContent).toBe("Arms");
     expect(root.querySelectorAll(".kl-custom-slot-choice")).toHaveLength(0);
+    expect(characterStage?.getAttribute("role")).toBe("region");
+    expect(characterStage?.tabIndex).toBe(0);
+    expect(characterStage?.getAttribute("aria-label")).toContain("Scroll for lower slots");
+    expect(characterCanvas?.tabIndex).toBe(-1);
 
     if (!picker) throw new Error("Missing compact body slot picker");
     picker.open = true;

@@ -13,6 +13,7 @@ import {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   for (const key of [
     "ActivityFemale3DCG",
     "ActivityFemale3DCGOrdering",
@@ -287,11 +288,25 @@ describe("native Custom Activities", () => {
     expect(blossom?.src).toContain("data:image/svg+xml");
     expect(blossom?.style.top).toBe("0px");
     expect(blossom?.style.left).toBe("0px");
-    expect(blossom?.style.width).toBe("12px");
-    expect(blossom?.style.height).toBe("12px");
+    expect(blossom?.style.width).toBe("18px");
+    expect(blossom?.style.height).toBe("18px");
     expect(blossom?.style.right).toBe("auto");
     expect(blossom?.style.bottom).toBe("auto");
     expect(blossom?.style.getPropertyPriority("left")).toBe("important");
+    expect(blossom?.style.getPropertyPriority("width")).toBe("important");
+    expect(blossom?.style.getPropertyPriority("height")).toBe("important");
+
+    vi.stubGlobal("innerWidth", 480);
+    const mobileButton = document.createElement("button");
+    service.decorateButton(mobileButton, {
+      Activity: custom as BCActivity,
+      Group: "ItemArms",
+    });
+    const mobileBlossom = mobileButton.querySelector<HTMLImageElement>(
+      "[data-kikilink-activity-mark]",
+    );
+    expect(mobileBlossom?.style.width).toBe("12px");
+    expect(mobileBlossom?.style.height).toBe("12px");
 
     service.stop();
     expect(globalThis.ActivityFemale3DCG.map((activity) => activity.Name)).toEqual(["Caress"]);
