@@ -7,6 +7,7 @@ import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import type { KikiLinkEvents } from "../src/core/types";
 import {
   LinkPresenceService,
+  serializeProfileBioPacket,
   serializeProfileDetailsPacket,
   serializePresencePacket,
 } from "../src/modules/link-presence/link-presence-service";
@@ -124,9 +125,11 @@ describe("LinkPresenceService", () => {
     });
     expect(service.get(123).profileFromCache).toBeUndefined();
     expect(service.hasCompatiblePeer(123)).toBe(true);
+    expect(service.getCompatiblePeerVersion(123)).toBe("0.11.0");
     expect(service.hasGroupChatPeer(123)).toBe(false);
     expect(service.hasGroupManagedPeer(123)).toBe(false);
     expect(service.hasCompatiblePeer(123, Date.now() + 5 * 60_000 + 1)).toBe(false);
+    expect(service.getCompatiblePeerVersion(123, Date.now() + 5 * 60_000 + 1)).toBeUndefined();
     service.stop();
   });
 
@@ -966,6 +969,89 @@ describe("LinkPresenceService", () => {
     service.stop();
   });
 
+  it("negotiates a bounded public bio without changing legacy profile-detail packets", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-29T12:00:00Z"));
+    const { bus, service, settings, sendKikiLinkProtocol } = setup();
+    settings.update((draft) => {
+      draft.linkPresence.bio = "  Tea, stories, and quiet rooms.  ";
+      draft.linkPresence.bannerUrl = "https://files.catbox.moe/kiki-banner.webp";
+    });
+    service.start();
+    sendKikiLinkProtocol.mockClear();
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pq", i: "legacy-profile", p: 1, e: 1 }),
+    });
+    const legacyPackets = sendKikiLinkProtocol.mock.calls
+      .filter(([target]) => target === 123)
+      .map(([, payload]) => JSON.parse(payload) as Record<string, unknown>);
+    expect(legacyPackets.some((packet) => packet.t === "pf")).toBe(true);
+    expect(legacyPackets.some((packet) => packet.t === "pb")).toBe(false);
+
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pq", i: "bio-profile", p: 1, e: 1, d: 1 }),
+    });
+    const modernPackets = sendKikiLinkProtocol.mock.calls
+      .filter(([target]) => target === 456)
+      .map(([, payload]) => JSON.parse(payload) as Record<string, unknown>);
+    expect(modernPackets.filter((packet) => packet.t === "pb")).toEqual([{
+      t: "pb",
+      i: "bio-profile",
+      b: "Tea, stories, and quiet rooms.",
+    }]);
+    expect(modernPackets.some((packet) => packet.t === "pf")).toBe(true);
+
+    sendKikiLinkProtocol.mockClear();
+    expect(service.request(456, true, true)).toBe(true);
+    const query = JSON.parse(sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}") as {
+      i: string;
+      d?: number;
+    };
+    expect(query.d).toBe(1);
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pb", i: query.i, b: "Remote bio" }),
+    });
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "pf",
+        i: query.i,
+        h: "https://files.catbox.moe/remote-banner.webp",
+      }),
+    });
+    expect(service.get(456)).toMatchObject({
+      bio: "Remote bio",
+      bannerUrl: "https://files.catbox.moe/remote-banner.webp",
+    });
+
+    vi.advanceTimersByTime(2_001);
+    expect(service.request(456, true, true)).toBe(true);
+    const clearQuery = JSON.parse(sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}") as {
+      i: string;
+    };
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pb", i: clearQuery.i }),
+    });
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pf", i: clearQuery.i }),
+    });
+    expect(service.get(456).bio).toBeUndefined();
+    expect(service.get(456).bannerUrl).toBeUndefined();
+    service.stop();
+  });
+
   it("never sends or accepts profile details while Presence is disabled", () => {
     const { bus, service, settings, sendKikiLinkProtocol } = setup();
     settings.update((draft) => {
@@ -1071,6 +1157,20 @@ describe("LinkPresenceService", () => {
       x: "red; background:url(https://tracker.example/x.png)",
       y: "#abcdef",
     })).toThrow("Invalid profile gradient color");
+  });
+
+  it("serializes profile bios within the protocol ceiling and strips unsafe text", () => {
+    const payload = serializeProfileBioPacket({
+      t: "pb",
+      i: "profile-bio-1",
+      b: `${"🌸".repeat(200)}\u202e`,
+    });
+    const packet = JSON.parse(payload) as { b: string };
+    expect([...packet.b]).toHaveLength(160);
+    expect(packet.b).not.toContain("\u202e");
+    expect(new TextEncoder().encode(payload).byteLength).toBeLessThanOrEqual(700);
+    expect(() => serializeProfileBioPacket({ t: "pb", i: "bad id", b: "bio" }))
+      .toThrow("Invalid profile-bio request ID");
   });
 
   it("fails closed when the controller account does not match the readable page identity", () => {

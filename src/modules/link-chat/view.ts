@@ -30,6 +30,10 @@ import type {
 } from "../../core/types";
 import { MemoryKeyValueStorage, type SettingsStore } from "../../core/settings";
 import { EventBus } from "../../core/event-bus";
+import {
+  checkForKikiLinkUpdate,
+  KIKILINK_USERSCRIPT_INSTALL_URL,
+} from "../../core/version-update-checker";
 import { element } from "../../utils/dom";
 import { LinkActivitiesService } from "../link-activities/link-activities-service";
 import { CustomActivitiesView } from "../link-activities/custom-activities-view";
@@ -72,6 +76,11 @@ import {
 } from "../link-reactions/notification-sounds";
 import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
+import {
+  formatInlineReplyPrefix,
+  parseInlineReplyContext,
+  stripInlineReplyDraft,
+} from "./message-reply";
 import {
   RemoteImageLoader,
   type RemoteImageLease,
@@ -329,6 +338,8 @@ export class LinkChatView {
     type: "button",
     title: "Change your KikiLink status",
   });
+  readonly #homeUpdate = element("aside", { className: "kl-home-update" });
+  readonly #homeUpdateVersion = element("strong", { className: "kl-home-update-title" });
   readonly #homeChatMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeRosterMetric = element("span", { className: "kl-feature-card-metric" });
   readonly #homeActivitiesMetric = element("span", { className: "kl-feature-card-metric" });
@@ -533,6 +544,9 @@ export class LinkChatView {
   readonly #enterToSendToggle = element("input") as HTMLInputElement;
   readonly #typingIndicatorsToggle = element("input") as HTMLInputElement;
   readonly #imagePreviewSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #profileImagePreviewSelect = element("select", {
+    className: "kl-select",
+  }) as HTMLSelectElement;
   readonly #imageUploadsToggle = element("input") as HTMLInputElement;
   readonly #imageUploadRetentionSelect = element("select", {
     className: "kl-select",
@@ -655,6 +669,9 @@ export class LinkChatView {
   readonly #presenceOptions = element("div", { className: "kl-presence-options" });
   readonly #presenceEnabledToggle = element("input") as HTMLInputElement;
   readonly #presenceMessage = element("input", { className: "kl-search kl-presence-message" }) as HTMLInputElement;
+  readonly #presenceBio = element("textarea", {
+    className: "kl-profile-bio-input",
+  }) as HTMLTextAreaElement;
   readonly #autoIdleInput = element("input", { className: "kl-number-input" }) as HTMLInputElement;
   readonly #presenceAvatarUrl = element("input", {
     className: "kl-search kl-presence-avatar-url",
@@ -806,6 +823,7 @@ export class LinkChatView {
   #unreadCount = 0;
   #notebookDirty = false;
   #mounted = false;
+  #updateCheckToken = 0;
   #connectionState: BCConnectionState = "connecting";
   #homeAction: HomeAction = { kind: "new-chat" };
   #finderCatalog: FinderResult[] = [];
@@ -1202,6 +1220,7 @@ export class LinkChatView {
 
   destroy(): void {
     this.#mounted = false;
+    this.#updateCheckToken += 1;
     this.#directSelectionIntent += 1;
     this.#invalidateGalleryRender();
     this.#addonProfileOpenToken += 1;
@@ -2025,7 +2044,37 @@ export class LinkChatView {
         "Account-private by design · data belongs to this BC MemberNumber; presence is shared only with compatible KikiLink users.",
       ),
     );
-    this.#home.append(hero, sectionHeading, cards, privacy);
+    const updateLink = element("a", {
+      className: "kl-text-button kl-text-button--primary kl-home-update-button",
+      text: "Update KikiLink",
+    });
+    updateLink.href = KIKILINK_USERSCRIPT_INSTALL_URL;
+    updateLink.target = "_blank";
+    updateLink.rel = "noopener noreferrer";
+    this.#homeUpdate.hidden = true;
+    this.#homeUpdate.setAttribute("aria-live", "polite");
+    this.#homeUpdate.replaceChildren(
+      kikiIcon("refresh", "kl-home-update-icon"),
+      element(
+        "div",
+        { className: "kl-home-update-copy" },
+        this.#homeUpdateVersion,
+        element("span", {
+          text: "Install the official userscript, then reload Bondage Club.",
+        }),
+      ),
+      updateLink,
+    );
+    this.#home.append(hero, this.#homeUpdate, sectionHeading, cards, privacy);
+    void this.#checkForAvailableUpdate();
+  }
+
+  async #checkForAvailableUpdate(): Promise<void> {
+    const token = ++this.#updateCheckToken;
+    const latestVersion = await checkForKikiLinkUpdate(this.version);
+    if (!this.#mounted || token !== this.#updateCheckToken || !latestVersion) return;
+    this.#homeUpdateVersion.textContent = `KikiLink ${latestVersion} is available`;
+    this.#homeUpdate.hidden = false;
   }
 
   #homeStatus(label: string, value: HTMLElement): HTMLDivElement {
@@ -2491,9 +2540,21 @@ export class LinkChatView {
     );
     this.#imagePreviewSelect.setAttribute("aria-label", "Remote image previews");
     const imagePreviews = this.#settingRow(
-      "Image previews",
-      "Controls chat images and KikiLink profile avatars. Ask keeps initials or a placeholder until you explicitly show the image.",
+      "Chat image previews",
+      "Controls remote images inside direct and group messages. Ask keeps a placeholder until you explicitly load the image.",
       this.#imagePreviewSelect,
+    );
+
+    this.#profileImagePreviewSelect.replaceChildren(
+      selectOption("always", "Always show"),
+      selectOption("ask", "Ask before loading"),
+      selectOption("never", "Links only"),
+    );
+    this.#profileImagePreviewSelect.setAttribute("aria-label", "Profile image previews");
+    const profileImagePreviews = this.#settingRow(
+      "Profile avatars & banners",
+      "Always show is the KikiLink default. Ask restores the Show avatar and Show banner controls; Links only never loads remote profile art.",
+      this.#profileImagePreviewSelect,
     );
 
     this.#imageUploadsToggle.type = "checkbox";
@@ -2726,6 +2787,7 @@ export class LinkChatView {
       "Control what the player workspace remembers for this BC account.",
       rosterEnabled,
       rosterTracking,
+      profileImagePreviews,
       rosterRetention,
       notebookTools,
       clearPeople,
@@ -3428,6 +3490,11 @@ export class LinkChatView {
     this.#presenceMessage.maxLength = 80;
     this.#presenceMessage.placeholder = "Optional: roleplaying, busy, open to chat…";
     this.#presenceMessage.autocomplete = "off";
+    this.#presenceBio.maxLength = 160;
+    this.#presenceBio.rows = 3;
+    this.#presenceBio.placeholder = "A little about you…";
+    this.#presenceBio.autocomplete = "off";
+    this.#presenceBio.setAttribute("aria-label", "Public KikiLink profile bio");
     this.#autoIdleInput.type = "number";
     this.#autoIdleInput.min = "0";
     this.#autoIdleInput.max = "120";
@@ -3543,6 +3610,16 @@ export class LinkChatView {
         { className: "kl-presence-field" },
         element("span", { className: "kl-presence-field-label", text: "Status note" }),
         this.#presenceMessage,
+      ),
+      element(
+        "label",
+        { className: "kl-presence-field" },
+        element("span", { className: "kl-presence-field-label", text: "Bio" }),
+        this.#presenceBio,
+        element("span", {
+          className: "kl-custom-field-help",
+          text: "Up to 160 characters. Shared only when another compatible user opens your KikiProfile.",
+        }),
       ),
       element(
         "section",
@@ -4034,7 +4111,7 @@ export class LinkChatView {
       );
     }
 
-    const avatarPolicy = this.settings.get().linkChat.imagePreviews;
+    const avatarPolicy = this.settings.get().linkPresence.profileImagePreviews;
     const avatarRevealed = Boolean(
       snapshot.avatarUrl &&
       this.#revealedAvatarUrls.has(avatarRevealKey(target.memberNumber, snapshot.avatarUrl)),
@@ -4132,6 +4209,14 @@ export class LinkChatView {
       ),
       this.#addonProfileFact("Last seen", inRoom ? "Now" : notebook.lastSeenAt ? formatFullSeenTime(notebook.lastSeenAt) : "Not recorded"),
     );
+    const bioSection = snapshot.bio
+      ? element(
+          "section",
+          { className: "kl-addon-profile-bio" },
+          element("span", { className: "kl-addon-profile-bio-label", text: "BIO" }),
+          element("p", { text: snapshot.bio }),
+        )
+      : null;
 
     const privateSection = element(
       "section",
@@ -4222,6 +4307,7 @@ export class LinkChatView {
       "article",
       { className: "kl-addon-profile-card" },
       hero,
+      bioSection,
       facts,
       privateSection,
       element("div", { className: "kl-addon-profile-actions" }, message, whisper, nativeProfile, favorite, note),
@@ -4273,6 +4359,7 @@ export class LinkChatView {
     const config = this.settings.get().linkPresence;
     this.#presenceEnabledToggle.checked = config.enabled;
     this.#presenceMessage.value = config.statusMessage;
+    this.#presenceBio.value = config.bio;
     this.#presenceAvatarUrl.value = config.avatarUrl;
     this.#presenceAvatarFrame.value = config.avatarFrame;
     this.#presenceProfileStyle.value = config.profileStyle;
@@ -4311,6 +4398,7 @@ export class LinkChatView {
       option.disabled = !enabled;
     }
     this.#presenceMessage.disabled = !enabled;
+    this.#presenceBio.disabled = !enabled;
     this.#presenceBannerUrl.disabled = this.#profileBannerUploadBusy;
     this.#presenceBannerUploadButton.textContent = this.#profileBannerUploadBusy
       ? this.#profileBannerUploadController?.signal.aborted
@@ -4392,6 +4480,7 @@ export class LinkChatView {
     this.presence.setOwnProfile({
       enabled: this.#presenceEnabledToggle.checked,
       statusMessage: this.#presenceMessage.value,
+      bio: this.#presenceBio.value,
       avatarUrl,
       avatarFrame: this.#presenceAvatarFrame.value as AvatarFrame,
       profileStyle: this.#presenceProfileStyle.value as ProfileCardStyle,
@@ -9850,7 +9939,7 @@ export class LinkChatView {
   ): boolean {
     if (!normalizedAvatar) return false;
     if (group.creatorNumber === ownMemberNumber) return true;
-    const policy = this.settings.get().linkChat.imagePreviews;
+    const policy = this.settings.get().linkPresence.profileImagePreviews;
     return policy === "always" || (
       policy === "ask" &&
       this.#revealedAvatarUrls.has(avatarRevealKey(group.creatorNumber, normalizedAvatar))
@@ -9859,7 +9948,12 @@ export class LinkChatView {
 
   #canRevealGroupAvatar(group: GroupConversation): boolean {
     const normalizedAvatar = normalizeImageUrl(group.avatarUrl) ?? "";
-    if (!normalizedAvatar || this.settings.get().linkChat.imagePreviews !== "ask") return false;
+    if (
+      !normalizedAvatar ||
+      this.settings.get().linkPresence.profileImagePreviews !== "ask"
+    ) {
+      return false;
+    }
     let ownMemberNumber: number;
     try {
       ownMemberNumber = this.adapter.getOwnMemberNumber();
@@ -10267,18 +10361,45 @@ export class LinkChatView {
     content: string,
     className = "kl-message-content",
   ): HTMLElement {
-    const links = parseMessageLinks(content);
+    const reply = parseInlineReplyContext(content);
+    const visibleContent = reply?.content ?? content;
+    const links = parseMessageLinks(visibleContent);
     const previewsEnabled = this.settings.get().linkChat.imagePreviews !== "never";
     const imageUrls = [...new Set(links.filter((link) => link.image).map((link) => link.url))].slice(0, 2);
     const body = element("div", { className });
+    if (reply) {
+      const context = element(
+        "div",
+        {
+          className: "kl-message-reply",
+          ariaLabel: `Reply to ${reply.author}: ${reply.excerpt}`,
+        },
+        kikiIcon("reply", "kl-message-reply-icon"),
+        element(
+          "span",
+          { className: "kl-message-reply-copy" },
+          element("strong", { className: "kl-message-reply-author", text: reply.author }),
+          element("span", { className: "kl-message-reply-excerpt", text: reply.excerpt }),
+        ),
+      );
+      context.title = `${reply.author}: ${reply.excerpt}`;
+      context.setAttribute("role", "note");
+      body.append(context);
+      body.dataset.hasReply = "true";
+    }
     let cursor = 0;
     for (const link of links) {
-      if (link.start > cursor) body.append(document.createTextNode(content.slice(cursor, link.start)));
+      if (link.start > cursor) {
+        body.append(document.createTextNode(visibleContent.slice(cursor, link.start)));
+      }
       if (link.image && previewsEnabled) {
         cursor = link.end;
         continue;
       }
-      const anchor = element("a", { className: "kl-message-link", text: content.slice(link.start, link.end) });
+      const anchor = element("a", {
+        className: "kl-message-link",
+        text: visibleContent.slice(link.start, link.end),
+      });
       anchor.href = link.url;
       anchor.target = "_blank";
       anchor.rel = "noopener noreferrer nofollow";
@@ -10286,7 +10407,9 @@ export class LinkChatView {
       body.append(anchor);
       cursor = link.end;
     }
-    if (cursor < content.length) body.append(document.createTextNode(content.slice(cursor)));
+    if (cursor < visibleContent.length) {
+      body.append(document.createTextNode(visibleContent.slice(cursor)));
+    }
 
     if (imageUrls.length === 0 || !previewsEnabled) return body;
     if (!body.textContent?.trim()) {
@@ -10936,14 +11059,13 @@ export class LinkChatView {
 
   #replyToMessage(message: LinkMessage): void {
     const author = message.direction === "incoming" ? this.#activeNativeName : this.adapter.getOwnName();
-    const excerpt = message.content.replace(/\s+/gu, " ").trim().slice(0, 180) || "Beep";
-    const quote = `> ${author}: ${excerpt}\n`;
-    const separator = this.#composer.value && !this.#composer.value.endsWith("\n") ? "\n" : "";
-    if (this.#composer.value.length + separator.length + quote.length > 1000) {
+    const quote = formatInlineReplyPrefix(author, message.content);
+    const draft = stripInlineReplyDraft(this.#composer.value);
+    if (draft.length + quote.length > 1000) {
       this.#toast("That reply would exceed the 1000 character Beep limit.", "error");
       return;
     }
-    this.#composer.value += `${separator}${quote}`;
+    this.#composer.value = `${quote}${draft}`;
     this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
     this.#composer.focus();
     this.#composer.setSelectionRange(this.#composer.value.length, this.#composer.value.length);
@@ -11930,6 +12052,7 @@ export class LinkChatView {
     this.#enterToSendToggle.checked = settings.linkChat.enterToSend;
     this.#typingIndicatorsToggle.checked = settings.linkChat.typingIndicators;
     this.#imagePreviewSelect.value = settings.linkChat.imagePreviews;
+    this.#profileImagePreviewSelect.value = settings.linkPresence.profileImagePreviews;
     this.#imageUploadsToggle.checked = settings.linkChat.imageUploads.enabled;
     this.#imageUploadRetentionSelect.value = settings.linkChat.imageUploads.retention;
     this.#renderImageUploadSettingsOptions();
@@ -12147,6 +12270,11 @@ export class LinkChatView {
         this.#imagePreviewSelect.value === "always" || this.#imagePreviewSelect.value === "never"
           ? this.#imagePreviewSelect.value
           : "ask";
+      draft.linkPresence.profileImagePreviews =
+        this.#profileImagePreviewSelect.value === "ask" ||
+        this.#profileImagePreviewSelect.value === "never"
+          ? this.#profileImagePreviewSelect.value
+          : "always";
       draft.linkChat.imageUploads = {
         enabled: this.#imageUploadsToggle.checked,
         retention:
@@ -12678,7 +12806,7 @@ export class LinkChatView {
       // Treat guarded native identity as remote for privacy purposes.
     }
     const candidateUrl = normalizeImageUrl(explicitUrl ?? snapshot.avatarUrl ?? "") ?? "";
-    const policy = this.settings.get().linkChat.imagePreviews;
+    const policy = this.settings.get().linkPresence.profileImagePreviews;
     const allowedUrl =
       explicitUrl !== undefined ||
       ownMember ||
@@ -12829,7 +12957,7 @@ export class LinkChatView {
       // A guarded native identity must not accidentally bypass the remote-image preference.
     }
     const candidateUrl = normalizeImageUrl(requestedUrl) ?? "";
-    const policy = this.settings.get().linkChat.imagePreviews;
+    const policy = this.settings.get().linkPresence.profileImagePreviews;
     const allowedUrl =
       explicit ||
       ownMember ||
@@ -13330,6 +13458,7 @@ function profilePresenceSignature(snapshot: PresenceSnapshot): string {
     snapshot.avatarFrame ?? "none",
     snapshot.profileStyle ?? "classic",
     snapshot.bannerUrl ?? "",
+    snapshot.bio ?? "",
     snapshot.profileOutlineColor ?? "",
     snapshot.profileGradient?.enabled ?? false,
     snapshot.profileGradient?.primary ?? "",
@@ -13343,11 +13472,12 @@ function profilePresenceSignature(snapshot: PresenceSnapshot): string {
 }
 
 function messagePreview(content: string): string {
-  const trimmed = content.trim();
+  const visibleContent = parseInlineReplyContext(content)?.content ?? content;
+  const trimmed = visibleContent.trim();
   const image = parseMessageLinks(trimmed).find(
     (link) => link.image && link.start === 0 && link.end === trimmed.length,
   );
-  return image ? "Image" : content;
+  return image ? "Image" : visibleContent;
 }
 
 function messageGroupPosition(

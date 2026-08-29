@@ -11,11 +11,11 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.27.0` runs all Bondage Club and ModSDK integration in the page realm without reading
+Version `0.28.0` runs all Bondage Club and ModSDK integration in the page realm without reading
 `unsafeWindow`. Only structured upload fields cross into the DOM-only userscript sandbox for the narrowly
-granted Catbox/Litterbox request. This release adds creator-managed groups with mutable membership,
-group identity controls, image messages, and a compact accessible action menu; it also fixes the Catbox
-banner transport, profile/contact layout edges, and several chat rendering, upload, and concurrency races.
+granted Catbox/Litterbox request. This release repairs Catbox uploads across isolated userscript realms,
+makes group chat density and Reply behavior match direct chat, shows profile art by default under its own
+privacy preference, adds a short on-demand profile bio, and surfaces bounded official update notices.
 It does not change the proven
 Blossom integration: the flower still joins the same BC-native status-icon boundary as Echo and WCE
 exactly once and sits directly below Echo's clothing icon, clear of the chat edge. It is
@@ -31,6 +31,8 @@ lower-left corner.
 - The floating emblem opens a clear feature home instead of dropping straight into chat
 - Guided Home surfaces one useful next step: read unread Beeps, begin a first chat, view
   the current room, or continue the most recent conversation
+- Home performs one small, bounded official version check and shows an Update button only when a newer
+  strict release exists; it never polls in the background
 - Action-first cards use familiar names and visible verbs for Chat, Players, Custom Activities,
   Gallery, and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
@@ -68,12 +70,13 @@ lower-left corner.
 - Presence dots and KikiLink status labels in player lists and detail cards
 - Visible player lists discover compatible KikiLink Presence through a quiet rate-limited queue that
   targets only current-room players or reachable online BC friends
-- Profile avatars use the same explicit `Ask first`, `Always show`, or `Links only` privacy choice;
-  initials and decorative frames remain available without requesting the remote image
+- Profile avatars and banners default to `Always show` under their own Players preference. `Ask first`
+  restores per-image reveal controls, while `Links only` keeps initials and decorative frames without
+  requesting remote art; chat-message previews remain a separate preference
 - Account-derived Friend, Owner, Sub, Lover, Whitelist, Blacklist, and Ghosted badges
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - KikiLink profile cards opened from compatible avatars or player action menus, with name, presence,
-  custom status, observable room, addon version, and relationship badges in one compact view
+  custom status, optional short bio, observable room, addon version, and relationship badges in one compact view
 - Up to 200 last-shared public profile records stay in a 90-day account-local LRU cache. Saved cards
   open immediately with a visible `SAVED PROFILE` label, or `SAVED DETAILS` when current status is live,
   and revalidate on an explicit open; live status and room, private notebook fields, relationships,
@@ -83,8 +86,7 @@ lower-left corner.
   2 MiB, and uploaded through an explicitly labeled action to long-lived public Catbox storage;
   progress is visible, slow connections get up to 180 seconds, and Cancel or dialog close aborts the
   real upload request
-- Remote profile banners follow the same `Ask first`, `Always show`, or `Links only` privacy choice
-  and guarded image loader as avatars
+- Remote profile banners follow the same dedicated profile-art choice and guarded image loader as avatars
 - Optional Sakura blossoms, Scarlet rose ring, Violet starlight, Golden laurel, Poison thorns,
   Silver moon orbit, or Jade ribbons avatar decorations; Classic, Garden, or Midnight profile styles;
   a strict custom HEX outline; and an optional contrast-aware two-color profile gradient
@@ -128,8 +130,10 @@ so they can follow that same account to another device.
   slightly larger author avatars and a keyed transcript avoid unnecessary replacement while names update
 - Group composers accept the same direct HTTPS image links and explicit privacy-prepared local uploads as
   direct chats. Group images use the existing protected preview policy and also appear in the lazy Gallery
-- Custom group avatars follow the same `Ask first`, `Always show`, or `Links only` image policy. Under
-  `Ask first`, `Show group avatar` in the group menu reveals only that exact creator-and-URL for the session
+- Custom group avatars follow the dedicated profile-art policy and therefore show by default. Under
+  `Ask first`, `Show group avatar` reveals only that exact creator-and-URL for the session
+- Group composition uses the same compact one-row auto-growing input and image/send controls as direct
+  chat, while Reply displays a small sender/excerpt context instead of duplicating quote text
 - Group drafts, removal, and honest per-recipient local BC handoff feedback; the protocol does not
   claim delivery receipts
 - Incoming group invitations auto-accept only from known BC friends; sharing a room alone never lets
@@ -148,6 +152,9 @@ so they can follow that same account to another device.
   700 UTF-8 bytes for managed), including worst-case escaping; managed state uses monotonic revisions
   and a fresh epoch whenever membership changes
 - Native recent Beeps imported from the current game session without duplicates
+- A heavily deduplicated release notice may send one ordinary private Beep to a confirmed reachable BC
+  friend on an older compatible KikiLink version; it never broadcasts to rooms or strangers and is
+  limited to one attempt per minute and three per addon session
 - Persistent message history in a separate local database for each BC account
 - A bounded mirror of up to 600 recent messages follows the same BC account to another device
 - Search by player name, member number, or message text

@@ -13,6 +13,7 @@ const MAX_STORED_CACHE_CHARS = 512_000;
 const ACCESS_PERSIST_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_PROFILE_IMAGE_URL_LENGTH = 500;
 const MAX_DISPLAY_NAME_LENGTH = 80;
+const MAX_PROFILE_BIO_LENGTH = 160;
 const MAX_PROFILE_REVISION_LENGTH = 64;
 const MAX_ADDON_VERSION_LENGTH = 24;
 
@@ -37,9 +38,10 @@ export interface CachedPublicProfileRecord {
   avatarFrame?: AvatarFrame;
   profileStyle?: ProfileCardStyle;
   bannerUrl?: string;
+  bio?: string;
   profileOutlineColor?: string;
   profileGradient?: ProfileGradient;
-  /** Receipt time of banner/outline/gradient. Basic PS heartbeats must never renew this age. */
+  /** Receipt time of banner/bio/outline/gradient. Basic PS heartbeats must never renew this age. */
   richSyncedAt?: number;
   profileRevision?: string;
   addonVersion?: string;
@@ -349,6 +351,7 @@ function sanitizePublicProfileFields(value: unknown): CachedPublicProfileInput |
     `Member ${value.memberNumber}`;
   const avatarUrl = sanitizeDirectImageUrl(value.avatarUrl);
   const bannerUrl = sanitizeDirectImageUrl(value.bannerUrl);
+  const bio = cleanPublicText(value.bio, MAX_PROFILE_BIO_LENGTH);
   const avatarFrame = sanitizeAvatarFrame(value.avatarFrame);
   const profileStyle = sanitizeProfileStyle(value.profileStyle);
   const profileOutlineColor = sanitizeColor(value.profileOutlineColor);
@@ -363,6 +366,7 @@ function sanitizePublicProfileFields(value: unknown): CachedPublicProfileInput |
     ...(avatarFrame ? { avatarFrame } : {}),
     ...(profileStyle ? { profileStyle } : {}),
     ...(bannerUrl ? { bannerUrl } : {}),
+    ...(bio ? { bio } : {}),
     ...(profileOutlineColor ? { profileOutlineColor } : {}),
     ...(profileGradient ? { profileGradient } : {}),
     ...(profileRevision ? { profileRevision } : {}),
@@ -460,19 +464,20 @@ function cleanPublicText(value: unknown, maxLength: number): string {
 function hasRichProfileFields(
   record: Pick<
     CachedPublicProfileRecord,
-    "bannerUrl" | "profileOutlineColor" | "profileGradient"
+    "bannerUrl" | "bio" | "profileOutlineColor" | "profileGradient"
   >,
 ): boolean {
-  return Boolean(record.bannerUrl || record.profileOutlineColor || record.profileGradient);
+  return Boolean(record.bannerUrl || record.bio || record.profileOutlineColor || record.profileGradient);
 }
 
 function clearRichProfileFields(
   record: Pick<
     CachedPublicProfileRecord,
-    "bannerUrl" | "profileOutlineColor" | "profileGradient" | "richSyncedAt"
+    "bannerUrl" | "bio" | "profileOutlineColor" | "profileGradient" | "richSyncedAt"
   >,
 ): void {
   delete record.bannerUrl;
+  delete record.bio;
   delete record.profileOutlineColor;
   delete record.profileGradient;
   delete record.richSyncedAt;

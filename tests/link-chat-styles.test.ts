@@ -40,4 +40,47 @@ describe("LinkChat visual safeguards", () => {
     expect(declaration(".kl-group-contact-item")).toMatch(/border:\s*1px solid/u);
     expect(LINK_CHAT_STYLES).toContain('.kl-group-contact-item[data-selected="true"]');
   });
+
+  it("anchors confirmation avatars to one fixed cell instead of accumulating offsets", () => {
+    const profile = declaration(".kl-group-confirm-profile");
+    const avatar = declaration(".kl-group-confirm-profile .kl-group-member-avatar");
+
+    expect(profile).toMatch(/position:\s*relative/u);
+    expect(profile).toMatch(/width:\s*40px/u);
+    expect(profile).toMatch(/min-width:\s*40px/u);
+    expect(profile).toMatch(/height:\s*40px/u);
+    expect(profile).toMatch(/min-height:\s*40px !important/u);
+    expect(avatar).toMatch(/position:\s*absolute/u);
+    expect(avatar).toMatch(/inset:\s*2px/u);
+    expect(avatar).toMatch(/margin:\s*0/u);
+    expect(avatar).toMatch(/transform:\s*none/u);
+  });
+
+  it("keeps group messages within the ordinary direct-chat bubble footprint", () => {
+    const message = declaration(".kl-group-message");
+
+    expect(message).toMatch(/width:\s*fit-content/u);
+    expect(message).toMatch(/max-width:\s*min\(72%, 540px\)/u);
+    expect(message).toMatch(/grid-template-columns:\s*30px minmax\(0, 1fr\)/u);
+    expect(LINK_CHAT_STYLES).toMatch(
+      /@media \(max-width: 720px\)[\s\S]*?\.kl-group-message\s*\{[^}]*max-width:\s*88%/u,
+    );
+  });
+
+  it("does not reserve an empty status row below the compact group composer", () => {
+    expect(declaration(".kl-group-feedback")).toMatch(/min-height:\s*0/u);
+    expect(declaration(".kl-group-feedback:empty")).toMatch(/display:\s*none/u);
+  });
+
+  it("renders Reply as a compact single-line context rather than a second message", () => {
+    const reply = declaration(".kl-message-reply");
+    const excerpt = declaration(".kl-message-reply-excerpt");
+
+    expect(reply).toMatch(/grid-template-columns:\s*14px minmax\(0, 1fr\)/u);
+    expect(reply).toMatch(/border-bottom:\s*1px solid/u);
+    expect(reply).toMatch(/font-size:\s*var\(--kl-type-xs\)/u);
+    expect(reply).toMatch(/white-space:\s*nowrap/u);
+    expect(excerpt).toMatch(/overflow:\s*hidden/u);
+    expect(excerpt).toMatch(/text-overflow:\s*ellipsis/u);
+  });
 });

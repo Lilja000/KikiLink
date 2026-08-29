@@ -6,8 +6,9 @@ messages. It does not add a KikiLink media server or require an image-host accou
 ## Provider choice
 
 Temporary chat images and room media use Litterbox's anonymous API with a selected lifetime of
-1, 12, 24, or 72 hours. Playlist music uses Catbox's account-unlinked file-upload form without a
-`userhash` instead. Catbox's
+1, 12, 24, or 72 hours. Profile banners, managed-group avatars, explicitly selected Catbox Gallery
+items, and playlist music use Catbox's account-unlinked file-upload form without a `userhash`
+instead. Persistent profile/group art never falls back to Litterbox. Catbox's
 current FAQ says anonymous files are removed after two years without a download; account-associated
 files are permanent. KikiLink does not request or send a Catbox account token, so Music describes
 its uploads as long-lived rather than guaranteed permanent.
@@ -46,7 +47,7 @@ persistent profile avatar should use a separately managed durable HTTPS link.
 The userscript sandbox keeps `GM_xmlhttpRequest`; Bondage Club and the KikiLink page runtime do not
 receive that privilege. Each page load creates a cryptographically random 256-bit capability and
 passes it only into the injected runtime's lexical scope. Upload requests must carry that capability,
-come from the same top-level window and exact HTTPS origin, use one of the two fixed provider
+arrive at the top-level window with the exact HTTPS origin, use one of the two fixed provider
 endpoints, and pass the bounded multipart schema before the sandbox starts a request. The capability
 is never stored in the DOM marker or a window property. Accepted/progress/final bridge replies echo
 it intentionally so the page runtime can authenticate and correlate the exact exchange.
@@ -59,9 +60,14 @@ one-minute cooldown. Final navigation aborts active transports and clears this s
 freeze retains the same capability and listener so restored uploads continue to work.
 
 The page-side request carries a unique ID and supports authenticated accepted, progress, response,
-and cancel messages. A marker alone is not treated as proof of a live host: if the sandbox does not
-acknowledge the exact request and capability within three seconds, KikiLink fails with a
-reload/permission hint. Cancel, dialog close, timeout, navigation, and host teardown abort the
+and cancel messages. Some userscript managers intentionally report a null or realm-specific
+`MessageEvent.source` across their isolated-world boundary, so KikiLink does not mistake that browser
+detail for an invalid same-page request. Exact HTTPS origin plus the per-load capability, request ID,
+message type, and bounded schema remain mandatory in both directions; a wrong origin or capability is
+rejected. A marker alone is not treated as proof of a live host: if the sandbox does not acknowledge
+the exact request and capability within three seconds, KikiLink asks for a reload and retry without
+directing the user through a separate provider-permission setup. Cancel, dialog close, timeout,
+navigation, and host teardown abort the
 underlying `GM_xmlhttpRequest`, remove listeners and timers once, and release the active-upload slot
 even if a userscript manager omits its normal timeout callback. Upload screens may show
 byte/percentage progress when the provider reports a total. KikiLink never falls back to a normal
@@ -136,11 +142,12 @@ decide whether to try a new upload.
 - Uploads can fail because of provider availability or policy, browser content-security policy, or
   connectivity. A successful URL is kept in the link field if Beep sending fails, so it is not lost.
 
-Remote chat previews and profile avatars follow the same privacy preference. The default is
-`Ask before loading`: chat media stays behind a button and profile avatars stay as initials until
-`Show profile avatar` is chosen for that exact member-and-normalized-URL pair in the browser session;
-changing the advertised URL asks again. `Always show` loads both automatically; `Links only` loads
-neither. Image requests use anonymous CORS, omit credentials and referrer data, refuse redirects,
+Remote chat previews and profile art use separate privacy preferences. Chat media keeps its existing
+`Ask before loading` default. Profile avatars, profile banners, and managed-group avatars default to
+`Always show`; the user can restore `Ask before loading`, where `Show profile avatar/banner` reveals
+only that exact member-and-normalized-URL pair for the browser session and a changed URL asks again.
+`Links only` makes no remote image request for that category. Image requests use anonymous CORS,
+omit credentials and referrer data, refuse redirects,
 reject local/private/reserved IP literals, and require the MIME type to agree with a validated
 JPG/PNG/GIF/WebP signature. Before exposing a local blob URL, the loader enforces 5 MiB, 4096 pixels
 per axis, 8 megapixels per static canvas, and bounded animation frame, aggregate-pixel, and declared

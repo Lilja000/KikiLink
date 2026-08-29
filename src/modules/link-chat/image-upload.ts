@@ -1094,7 +1094,7 @@ async function uploadMultipartOnce(
     return uploadMultipartWithGmRequest(endpoint, form, timeoutMs, onProgress, signal);
   }
   throw new Error(
-    "KikiLink upload bridge is unavailable. Reload Bondage Club and check the Catbox/Litterbox permission in your userscript manager.",
+    "KikiLink's local upload service is unavailable on this page. Reload Bondage Club and try again.",
   );
 }
 

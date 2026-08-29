@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 describe("userscript upload host", () => {
-  it("requires its per-load capability and exact top-level source and origin", () => {
+  it("requires its per-load capability and exact origin across isolated-world sources", () => {
     const request = vi.fn((details: KikiLinkGmXhrDetails) => {
       details.onload({ status: 200, responseText: "https://files.catbox.moe/test.webp" });
       return { abort: vi.fn() };
@@ -40,12 +40,13 @@ describe("userscript upload host", () => {
     installHost();
 
     dispatchRequest(uploadRequest("wrong-origin"), "https://evil.example", window);
-    dispatchRequest(uploadRequest("wrong-source"), window.location.origin, null);
     dispatchRequest(
       uploadRequest("wrong-cap", new Blob(["x"]), "c".repeat(64)),
       window.location.origin,
-      window,
+      null,
     );
+    expect(request).not.toHaveBeenCalled();
+
     const guardedEvent = new MessageEvent("message", {
       data: uploadRequest("guarded-source"),
       origin: window.location.origin,
@@ -56,10 +57,10 @@ describe("userscript upload host", () => {
       },
     });
     expect(() => window.dispatchEvent(guardedEvent)).not.toThrow();
-    expect(request).not.toHaveBeenCalled();
-
-    dispatchRequest(uploadRequest("accepted"), window.location.origin, window);
     expect(request).toHaveBeenCalledOnce();
+
+    dispatchRequest(uploadRequest("null-source"), window.location.origin, null);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("uses GM XHR for Catbox while Litterbox retains credential-omitting fetch mode", async () => {
@@ -172,23 +173,22 @@ describe("userscript upload host", () => {
     expect(request).toHaveBeenCalledOnce();
   });
 
-  it("accepts cancellation only from the exact source, origin, and capability", async () => {
+  it("accepts cancellation from an isolated world only with exact origin and capability", async () => {
     const abort = vi.fn();
     const request = vi.fn((_details: KikiLinkGmXhrDetails) => ({ abort }));
     vi.stubGlobal("GM_xmlhttpRequest", request);
     installHost();
 
     dispatchRequest(uploadRequest("active-cancel"), window.location.origin, window);
-    dispatchCancel("active-cancel", "c".repeat(64), window.location.origin, window);
+    dispatchCancel("active-cancel", "c".repeat(64), window.location.origin, null);
     dispatchCancel("active-cancel", CAPABILITY, "https://evil.example", window);
-    dispatchCancel("active-cancel", CAPABILITY, window.location.origin, null);
     expect(abort).not.toHaveBeenCalled();
 
-    dispatchCancel("active-cancel", CAPABILITY, window.location.origin, window);
+    dispatchCancel("active-cancel", CAPABILITY, window.location.origin, null);
     await Promise.resolve();
     expect(abort).toHaveBeenCalledOnce();
 
-    dispatchRequest(uploadRequest("after-cancel"), window.location.origin, window);
+    dispatchRequest(uploadRequest("after-cancel"), window.location.origin, null);
     expect(request).toHaveBeenCalledTimes(2);
   });
 

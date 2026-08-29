@@ -19,7 +19,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 26,
+  schemaVersion: 27,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -65,6 +65,8 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     enabled: true,
     status: "online",
     statusMessage: "",
+    bio: "",
+    profileImagePreviews: "always",
     avatarUrl: "",
     bannerUrl: "",
     avatarFrame: "none",
@@ -227,7 +229,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 26,
+    schemaVersion: 27,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -305,6 +307,15 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         typeof linkPresence.statusMessage === "string"
           ? cleanBoundedText(linkPresence.statusMessage, 80)
           : DEFAULT_SETTINGS.linkPresence.statusMessage,
+      bio:
+        typeof linkPresence.bio === "string"
+          ? cleanBoundedPublicBio(linkPresence.bio)
+          : DEFAULT_SETTINGS.linkPresence.bio,
+      profileImagePreviews:
+        linkPresence.profileImagePreviews === "ask" ||
+        linkPresence.profileImagePreviews === "never"
+          ? linkPresence.profileImagePreviews
+          : DEFAULT_SETTINGS.linkPresence.profileImagePreviews,
       avatarUrl: sanitizeAvatarUrl(linkPresence.avatarUrl),
       bannerUrl: sanitizeAvatarUrl(linkPresence.bannerUrl),
       avatarFrame:
@@ -705,6 +716,14 @@ function cleanBoundedText(value: unknown, maxLength: number): string {
         .trim()
         .slice(0, maxLength)
     : "";
+}
+
+function cleanBoundedPublicBio(value: string): string {
+  const cleaned = value
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return [...cleaned].slice(0, 160).join("");
 }
 
 function finiteTimestamp(value: unknown): number {

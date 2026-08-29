@@ -45,9 +45,9 @@ startup. Remote chats merge into the local account database rather than clearing
 The public-profile cache is deliberately not part of this Bondage Club account mirror. It remains a
 device-local convenience containing at most 200 profiles for 90 days, with least-recently-used pruning.
 Only public presentation data can enter it: the BC-known display name; voluntarily shared avatar
-URL/frame, card style, banner, outline, gradient, and addon version; plus local receipt/access times. Current status,
+URL/frame, card style, banner, short bio, outline, gradient, and addon version; plus local receipt/access times. Current status,
 current room, private notebook data, relationship state, protocol bookkeeping, and fetched image blobs
-are excluded. Banner, outline, and gradient carry their own receipt time and expire independently;
+are excluded. Banner, bio, outline, and gradient carry their own receipt time and expire independently;
 basic presence packets cannot renew their age. A peer's explicit profile-withdrawal packet removes
 that peer's saved record.
 

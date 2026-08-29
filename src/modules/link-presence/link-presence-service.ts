@@ -33,6 +33,7 @@ const PROFILE_RESPONSE_COOLDOWN_MS = 2_000;
 const TYPING_REFRESH_MS = 1_800;
 const TYPING_TTL_MS = 5_500;
 const MAX_PROTOCOL_PAYLOAD = 700;
+const MAX_PROFILE_BIO_LENGTH = 160;
 const UNCHANGED_PROFILE_CACHE_REFRESH_MS = 15 * 60_000;
 const GROUP_CAPABILITY_VERSION = 3 as const;
 
@@ -41,7 +42,7 @@ type GroupCapabilityVersion = 1 | 2 | typeof GROUP_CAPABILITY_VERSION;
 type PresenceListener = (memberNumber?: number) => void;
 
 type PresencePacket =
-  | { t: "pq"; i: string; b?: 1; p?: 1; e?: 1 }
+  | { t: "pq"; i: string; b?: 1; p?: 1; e?: 1; d?: 1 }
   | { t: "pc"; v: string; g?: GroupCapabilityVersion }
   | {
       t: "ps";
@@ -56,6 +57,7 @@ type PresencePacket =
       g?: GroupCapabilityVersion;
     }
   | { t: "pf"; i: string; h?: string; o?: string; x?: string; y?: string }
+  | { t: "pb"; i: string; b?: string }
   | { t: "ty"; a: 0 | 1 };
 
 interface RemotePresence {
@@ -71,6 +73,7 @@ interface RemotePresence {
 
 interface RemoteProfileDetails {
   bannerUrl?: string;
+  bio?: string;
   profileOutlineColor?: string;
   profileGradient?: ProfileGradient;
   receivedAt: number;
@@ -79,11 +82,15 @@ interface RemoteProfileDetails {
 interface PendingProfileRequest {
   id: string;
   requestedAt: number;
+  expectsBio: boolean;
+  detailsReceived?: boolean;
+  bioReceived?: boolean;
 }
 
 export interface OwnProfilePreferences {
   enabled: boolean;
   statusMessage: string;
+  bio?: string;
   avatarUrl: string;
   bannerUrl: string;
   avatarFrame?: AvatarFrame;
@@ -306,6 +313,10 @@ export class LinkPresenceService {
     return this.#hasAuthenticatedIdentity() ? this.settings.get().linkPresence.bannerUrl : "";
   }
 
+  getOwnBio(): string {
+    return this.#hasAuthenticatedIdentity() ? this.settings.get().linkPresence.bio : "";
+  }
+
   getOwnProfileOutlineColor(): string {
     return this.#hasAuthenticatedIdentity()
       ? this.settings.get().linkPresence.profileOutlineColor
@@ -371,6 +382,7 @@ export class LinkPresenceService {
     const next = this.settings.update((draft) => {
       draft.linkPresence.enabled = profile.enabled;
       draft.linkPresence.statusMessage = profile.statusMessage;
+      if (profile.bio !== undefined) draft.linkPresence.bio = profile.bio;
       draft.linkPresence.avatarUrl = profile.avatarUrl;
       draft.linkPresence.bannerUrl = profile.bannerUrl;
       if (profile.avatarFrame) draft.linkPresence.avatarFrame = profile.avatarFrame;
@@ -427,6 +439,7 @@ export class LinkPresenceService {
         source: "kikilink",
         updatedAt: now,
         ...(config.statusMessage ? { statusMessage: config.statusMessage } : {}),
+        ...(config.bio ? { bio: config.bio } : {}),
         ...(config.avatarUrl ? { avatarUrl: config.avatarUrl } : {}),
         ...(config.bannerUrl ? { bannerUrl: config.bannerUrl } : {}),
         avatarFrame: config.avatarFrame,
@@ -597,14 +610,18 @@ export class LinkPresenceService {
     const packet: PresencePacket = {
       t: "pq",
       i: requestId,
-      ...(requestProfile ? { p: 1, e: 1 } : {}),
+      ...(requestProfile ? { p: 1, e: 1, d: 1 } : {}),
     };
     this.#lastRequestAt.set(memberNumber, now);
     if (force && !requestProfile) this.#lastForcedRequestAt.set(memberNumber, now);
     if (requestProfile) {
       this.#lastProfileRequestAt.set(memberNumber, now);
       // Register before transport: virtual/test adapters may synchronously deliver the reply.
-      this.#pendingProfileRequests.set(memberNumber, { id: requestId, requestedAt: now });
+      this.#pendingProfileRequests.set(memberNumber, {
+        id: requestId,
+        requestedAt: now,
+        expectsBio: true,
+      });
     }
     if (!this.#hasAuthenticatedIdentity()) {
       if (requestProfile && this.#pendingProfileRequests.get(memberNumber)?.id === requestId) {
@@ -667,6 +684,23 @@ export class LinkPresenceService {
     if (memberNumber === this.#authenticatedOwnMemberNumber) return true;
     const lastSeenAt = this.#compatiblePeers.get(memberNumber);
     return lastSeenAt !== undefined && now - lastSeenAt <= REMOTE_STATUS_TTL_MS;
+  }
+
+  /**
+   * Returns only a version learned from a live protocol packet, never the public-profile cache.
+   * Callers must not use `get(memberNumber).addonVersion` for compatibility-sensitive actions:
+   * that display snapshot may deliberately include an older account-local cached profile.
+   */
+  getCompatiblePeerVersion(memberNumber: number, now = Date.now()): string | undefined {
+    if (
+      !isPositiveMemberNumber(memberNumber) ||
+      memberNumber === this.#authenticatedOwnMemberNumber ||
+      this.#rejectPeerForRelationship(memberNumber) ||
+      !this.hasCompatiblePeer(memberNumber, now)
+    ) {
+      return undefined;
+    }
+    return this.#remoteVersions.get(memberNumber);
   }
 
   /** Group packets are opt-in so older KikiLink versions are never offered as group members. */
@@ -800,7 +834,12 @@ export class LinkPresenceService {
           receivedAt - lastProfileResponseAt >= PROFILE_RESPONSE_COOLDOWN_MS)
       ) {
         this.#lastProfileResponseAt.set(senderNumber, receivedAt);
-        this.#sendProfileDetails(senderNumber, packet.i, packet.e === 1);
+        this.#sendProfileDetails(
+          senderNumber,
+          packet.i,
+          packet.e === 1,
+          packet.d === 1,
+        );
       }
       return;
     }
@@ -827,10 +866,16 @@ export class LinkPresenceService {
         if (!wasCompatible) this.#notify(senderNumber);
         return;
       }
-      this.#pendingProfileRequests.delete(senderNumber);
-      // A valid empty details packet deliberately clears previously advertised optional fields.
+      pending.detailsReceived = true;
+      if (!pending.expectsBio || pending.bioReceived) {
+        this.#pendingProfileRequests.delete(senderNumber);
+      }
+      // A valid empty details packet deliberately clears previously advertised visual fields.
+      // A bio packet can arrive immediately before or after this packet on the same BC route.
+      const existing = this.#remoteProfileDetails.get(senderNumber);
       this.#remoteProfileDetails.set(senderNumber, {
         ...(packet.h ? { bannerUrl: packet.h } : {}),
+        ...(pending.bioReceived && existing?.bio ? { bio: existing.bio } : {}),
         ...(packet.o ? { profileOutlineColor: packet.o } : {}),
         ...(packet.x && packet.y
           ? {
@@ -841,6 +886,38 @@ export class LinkPresenceService {
               },
             }
           : {}),
+        receivedAt,
+      });
+      this.#cacheRemoteProfile(senderNumber, receivedAt, true);
+      this.#notify(senderNumber);
+      return;
+    }
+    if (packet.t === "pb") {
+      if (!this.settings.get().linkPresence.enabled) {
+        this.#pendingProfileRequests.delete(senderNumber);
+        if (!wasCompatible) this.#notify(senderNumber);
+        return;
+      }
+      const pending = this.#pendingProfileRequests.get(senderNumber);
+      if (
+        !pending ||
+        !pending.expectsBio ||
+        pending.id !== packet.i ||
+        receivedAt - pending.requestedAt > REMOTE_STATUS_TTL_MS
+      ) {
+        if (!wasCompatible) this.#notify(senderNumber);
+        return;
+      }
+      pending.bioReceived = true;
+      if (pending.detailsReceived) this.#pendingProfileRequests.delete(senderNumber);
+      const existing = this.#remoteProfileDetails.get(senderNumber);
+      this.#remoteProfileDetails.set(senderNumber, {
+        ...(existing?.bannerUrl ? { bannerUrl: existing.bannerUrl } : {}),
+        ...(packet.b ? { bio: packet.b } : {}),
+        ...(existing?.profileOutlineColor
+          ? { profileOutlineColor: existing.profileOutlineColor }
+          : {}),
+        ...(existing?.profileGradient ? { profileGradient: existing.profileGradient } : {}),
         receivedAt,
       });
       this.#cacheRemoteProfile(senderNumber, receivedAt, true);
@@ -977,6 +1054,13 @@ export class LinkPresenceService {
           : {}
         : previous?.bannerUrl
           ? { bannerUrl: previous.bannerUrl }
+          : {}),
+      ...(details
+        ? details.bio
+          ? { bio: details.bio }
+          : {}
+        : previous?.bio
+          ? { bio: previous.bio }
           : {}),
       ...(details
         ? details.profileOutlineColor
@@ -1127,7 +1211,12 @@ export class LinkPresenceService {
     }
   }
 
-  #sendProfileDetails(target: number, requestId: string, supportsExtendedProfile: boolean): void {
+  #sendProfileDetails(
+    target: number,
+    requestId: string,
+    supportsExtendedProfile: boolean,
+    supportsBio: boolean,
+  ): void {
     if (!this.#hasAuthenticatedIdentity()) return;
     const config = this.settings.get().linkPresence;
     const packet: Extract<PresencePacket, { t: "pf" }> = {
@@ -1144,6 +1233,16 @@ export class LinkPresenceService {
     };
     try {
       if (!this.#hasAuthenticatedIdentity()) return;
+      if (supportsBio) {
+        this.adapter.sendKikiLinkProtocol(
+          target,
+          serializeProfileBioPacket({
+            t: "pb",
+            i: requestId,
+            ...(config.bio ? { b: config.bio } : {}),
+          }),
+        );
+      }
       this.adapter.sendKikiLinkProtocol(target, serializeProfileDetailsPacket(packet));
     } catch {
       // Profile details are best-effort and are never broadcast or retried automatically.
@@ -1409,6 +1508,7 @@ function cachedPublicProfileFields(
     ...(!richOnly && cached.avatarFrame ? { avatarFrame: cached.avatarFrame } : {}),
     ...(!richOnly && cached.profileStyle ? { profileStyle: cached.profileStyle } : {}),
     ...(cached.bannerUrl ? { bannerUrl: cached.bannerUrl } : {}),
+    ...(cached.bio ? { bio: cached.bio } : {}),
     ...(cached.profileOutlineColor
       ? { profileOutlineColor: cached.profileOutlineColor }
       : {}),
@@ -1441,6 +1541,7 @@ function cachedBasicProfileFields(
 function liveProfileDetailFields(details: RemoteProfileDetails): Partial<PresenceSnapshot> {
   return {
     ...(details.bannerUrl ? { bannerUrl: details.bannerUrl } : {}),
+    ...(details.bio ? { bio: details.bio } : {}),
     ...(details.profileOutlineColor
       ? { profileOutlineColor: details.profileOutlineColor }
       : {}),
@@ -1461,13 +1562,13 @@ function nonRemotePublicProfileFields(
 
 function hasCachedRichProfile(cached: CachedPublicProfileRecord): boolean {
   return Boolean(
-    cached.bannerUrl || cached.profileOutlineColor || cached.profileGradient,
+    cached.bannerUrl || cached.bio || cached.profileOutlineColor || cached.profileGradient,
   );
 }
 
 function hasRemoteProfileDetails(details: RemoteProfileDetails): boolean {
   return Boolean(
-    details.bannerUrl || details.profileOutlineColor || details.profileGradient,
+    details.bannerUrl || details.bio || details.profileOutlineColor || details.profileGradient,
   );
 }
 
@@ -1481,6 +1582,7 @@ function cachedPublicProfileMatches(
     input.avatarFrame === cached.avatarFrame &&
     input.profileStyle === cached.profileStyle &&
     input.bannerUrl === cached.bannerUrl &&
+    input.bio === cached.bio &&
     input.profileOutlineColor === cached.profileOutlineColor &&
     input.richSyncedAt === cached.richSyncedAt &&
     input.profileRevision === cached.profileRevision &&
@@ -1513,6 +1615,7 @@ function parsePresencePacket(payload: string): PresencePacket | null {
       ...("b" in value && value.b === 1 ? { b: 1 } : {}),
       ...("p" in value && value.p === 1 ? { p: 1 } : {}),
       ...("e" in value && value.e === 1 ? { e: 1 } : {}),
+      ...("d" in value && value.d === 1 ? { d: 1 } : {}),
     };
   }
   if (value.t === "ty") {
@@ -1563,6 +1666,22 @@ function parsePresencePacket(payload: string): PresencePacket | null {
       ...(primary && secondary ? { x: primary, y: secondary } : {}),
     };
   }
+  if (value.t === "pb") {
+    if (
+      !hasExactKeys(value, ["t", "i", "b"]) ||
+      !("i" in value) ||
+      !isRequestId(value.i)
+    ) {
+      return null;
+    }
+    const bio = "b" in value ? sanitizeProfileBio(value.b) : "";
+    if ("b" in value && !bio) return null;
+    return {
+      t: "pb",
+      i: value.i,
+      ...(bio ? { b: bio } : {}),
+    };
+  }
   if (
     value.t !== "ps" ||
     !("s" in value) ||
@@ -1604,6 +1723,15 @@ const UNSAFE_PRESENCE_TEXT = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202
 
 function sanitizePresenceText(value: string, maxLength: number): string {
   return value.replace(UNSAFE_PRESENCE_TEXT, " ").replace(/\s+/gu, " ").trim().slice(0, maxLength);
+}
+
+function sanitizeProfileBio(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const cleaned = value
+    .replace(UNSAFE_PRESENCE_TEXT, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return [...cleaned].slice(0, MAX_PROFILE_BIO_LENGTH).join("");
 }
 
 export function serializePresencePacket(packet: Extract<PresencePacket, { t: "ps" }>): string {
@@ -1665,6 +1793,23 @@ export function serializeProfileDetailsPacket(
     if (utf8ByteLength(payload) <= MAX_PROTOCOL_PAYLOAD) return payload;
     for (const key of optional) delete bounded[key];
     payload = JSON.stringify(bounded);
+  }
+  return payload;
+}
+
+export function serializeProfileBioPacket(
+  packet: Extract<PresencePacket, { t: "pb" }>,
+): string {
+  if (!isRequestId(packet.i)) throw new Error("Invalid profile-bio request ID");
+  const bio = packet.b === undefined ? "" : sanitizeProfileBio(packet.b);
+  if (packet.b !== undefined && !bio) throw new Error("Invalid profile bio");
+  const payload = JSON.stringify({
+    t: "pb",
+    i: packet.i,
+    ...(bio ? { b: bio } : {}),
+  } satisfies Extract<PresencePacket, { t: "pb" }>);
+  if (utf8ByteLength(payload) > MAX_PROTOCOL_PAYLOAD) {
+    throw new Error("Profile bio exceeds the protocol limit");
   }
   return payload;
 }

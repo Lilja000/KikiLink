@@ -98,7 +98,7 @@ export async function uploadMultipartViaUserscriptBridge(
       if (!pending) return;
       postCancel(id, pending.capability);
       pending.reject(new Error(
-        "KikiLink upload bridge did not accept the request. Reload Bondage Club and check the Catbox/Litterbox permission in your userscript manager.",
+        "KikiLink's local upload service did not answer. Reload Bondage Club and try again.",
       ));
     }, Math.min(UPLOAD_ACCEPT_TIMEOUT_MS, timeoutMs));
     const pending: PendingUpload = {
@@ -146,7 +146,7 @@ function installResponseListener(): void {
   if (listening) return;
   listening = true;
   window.addEventListener("message", (event: MessageEvent<unknown>) => {
-    if (!isSameWindowMessage(event)) return;
+    if (!isSameOriginMessage(event)) return;
     const data = event.data;
     if (!data || typeof data !== "object") return;
     const source = data as IncomingUploadMessage;
@@ -215,9 +215,12 @@ function postCancel(id: string, capability: string): void {
   }
 }
 
-function isSameWindowMessage(event: MessageEvent<unknown>): boolean {
+function isSameOriginMessage(event: MessageEvent<unknown>): boolean {
   try {
-    return event.source === window && event.origin === window.location.origin;
+    // Extension isolated worlds may deliberately expose postMessage's source as null or as a
+    // different WindowProxy wrapper. The per-load capability and request ID authenticate the
+    // response; retaining exact origin validation still rejects messages from other origins.
+    return event.origin === window.location.origin;
   } catch {
     return false;
   }

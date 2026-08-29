@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.28.0 - 2026-08-29
+
+- Fixed the Catbox upload bridge for isolated userscript realms. Some Tampermonkey/Violentmonkey
+  configurations expose a same-page `MessageEvent` with a null or realm-specific `source`; KikiLink
+  now authenticates the exact HTTPS origin, 256-bit per-load capability, request ID, and bounded schema
+  without rejecting that valid transport shape. Wrong origins/capabilities still fail closed, and the
+  page no longer asks users to change a Catbox/Litterbox permission when the installed bridge is present.
+- Kept durable profile banners and managed-group avatars exclusively on public Catbox. Both reuse the
+  same metadata-removing WebP preparation and authenticated privileged transport as an explicitly
+  selected Catbox Gallery upload. Temporary chat and room-media uploads remain clearly expiring
+  Litterbox actions; no upload POST is automatically retried after an ambiguous failure.
+- Repaired the Confirm Group Chat layout so every avatar occupies one fixed slot instead of drifting
+  down and right through nested margins. Group participant/author avatars are slightly larger, while
+  the group marker stays above the avatar edge like a status dot.
+- Matched the group composer and message density to direct chat: one-row auto-growing input, compact
+  image/send controls, smaller bubbles and feedback, and more transcript space. Reply now renders a
+  bounded inline context card with sender and excerpt rather than displaying a duplicated wire quote;
+  selecting a new reply replaces the previous pending context.
+- Split remote profile art from chat-message preview privacy under settings schema 27. Profile avatars,
+  banners, and managed-group art now default to `Always show`, as expected for identity UI. Players may
+  restore `Ask before loading` or `Links only` in Settings; message and Gallery previews retain their
+  independent existing preference and default.
+- Added an optional 160-character KikiProfile bio. Unsafe control and directional characters are
+  stripped, the value is sent only after an explicit compatible profile lookup through a separately
+  negotiated `pb` packet, and older exact-key `pf` peers remain compatible. An empty negotiated reply
+  clears stale bio; the bounded device-local public-profile cache ages it with other rich details.
+- Added a one-shot Home update check against KikiLink's official raw `package.json`. It runs only on
+  production Bondage Club hosts, omits credentials and referrer data, rejects redirects, enforces strict
+  SemVer, a four-second deadline, an 8 KiB response cap, bounded stream reads, and no retry or polling.
+  Home exposes the fixed official userscript link only when the result is genuinely newer.
+- Added scarce addon-authored release notices for compatible older peers. An ordinary private Beep is
+  eligible only for a confirmed native BC friend with a live version and reachable route, is persisted
+  per account/recipient/release before sending, and is capped at one attempt per minute and three per
+  addon session. Unknown state, strangers, cached versions, storage failure, and malformed versions all
+  suppress the notice; there is no broadcast, background queue, acknowledgement, or automatic retry.
+- Added regression coverage for isolated-world upload events, Catbox routing, fixed confirmation
+  geometry, compact group composition, Reply parsing/rendering, separate profile-media defaults, bio
+  negotiation and cache expiry, official update bounds, and release-notice authorization/rate limits.
+
 ## 0.27.0 - 2026-08-29
 
 - Added creator-managed group chats behind the newly negotiated `g: 3` capability. The creator is

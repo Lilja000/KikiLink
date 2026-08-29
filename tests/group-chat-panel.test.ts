@@ -368,6 +368,17 @@ describe("GroupChatPanel group creation", () => {
     expect(harness.panel.newGroupDialog.querySelectorAll(".kl-group-confirm-profile"))
       .toHaveLength(2);
     expect(harness.panel.newGroupDialog.querySelector("button button")).toBeNull();
+    for (const confirmationProfile of harness.panel.newGroupDialog.querySelectorAll(
+      ".kl-group-confirm-profile",
+    )) {
+      expect(confirmationProfile.children).toHaveLength(2);
+      expect(confirmationProfile.firstElementChild?.classList.contains(
+        "kl-group-member-avatar",
+      )).toBe(true);
+      expect(confirmationProfile.lastElementChild?.classList.contains(
+        "kl-group-member-presence",
+      )).toBe(true);
+    }
     expect(harness.avatarRenders).toHaveBeenCalledWith(
       expect.any(HTMLElement),
       expect.objectContaining({ memberNumber: 20, memberName: "Reina" }),
@@ -438,6 +449,34 @@ describe("GroupChatPanel group creation", () => {
 });
 
 describe("GroupChatPanel conversation pane", () => {
+  it("uses the ordinary Beep composer geometry and keeps every control in one compact row", async () => {
+    const harness = setup();
+    const creation = await harness.service.createGroup([20, 30], "Compact Crew");
+    await harness.panel.activate(creation.group.groupId);
+
+    const composerArea = required<HTMLElement>(
+      harness.panel.chatPane,
+      ".kl-group-composer-area",
+    );
+    const composerRow = required<HTMLElement>(composerArea, ".kl-group-composer-row");
+    const composer = required<HTMLTextAreaElement>(composerRow, ".kl-group-composer");
+    const attach = required<HTMLButtonElement>(composerRow, ".kl-group-composer-attach");
+    const send = required<HTMLButtonElement>(composerRow, ".kl-group-send");
+    const counter = required<HTMLElement>(composerArea, ".kl-group-composer-counter");
+
+    expect(composerArea.tagName).toBe("FOOTER");
+    expect(composerArea.classList.contains("kl-composer")).toBe(true);
+    expect(composerRow.classList.contains("kl-composer-row")).toBe(true);
+    expect([...composerRow.children]).toEqual([attach, composer, send]);
+    expect(composer.classList.contains("kl-composer-input")).toBe(true);
+    expect(composer.getAttribute("rows")).toBe("1");
+    expect(composer.getAttribute("aria-label")).toBe("Message the group");
+    expect(attach.classList.contains("kl-attach-image")).toBe(true);
+    expect(send.classList.contains("kl-send")).toBe(true);
+    expect(send.querySelector(".kl-send-label")?.textContent).toBe("Send");
+    expect(counter.parentElement?.classList.contains("kl-composer-options")).toBe(true);
+  });
+
   it("notifies the host before waiting for mark-read persistence", async () => {
     const harness = setup();
     const creation = await harness.service.createGroup([20, 30], "Atomic pane switch");

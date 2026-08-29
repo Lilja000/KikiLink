@@ -283,11 +283,12 @@ export class GroupChatPanel {
 
     const composerLabel = node("label", "kl-group-composer-label", "Message the group");
     this.#composer = document.createElement("textarea");
-    this.#composer.className = "kl-group-composer";
+    this.#composer.className = "kl-composer-input kl-group-composer";
     this.#composer.id = uniqueDomId("kl-group-composer");
     this.#composer.maxLength = GROUP_MESSAGE_MAX_CONTENT;
-    this.#composer.rows = 3;
+    this.#composer.rows = 1;
     this.#composer.placeholder = "Write a group message…";
+    this.#composer.setAttribute("aria-label", "Message the group");
     composerLabel.htmlFor = this.#composer.id;
     this.#composer.addEventListener("input", () => this.#onComposerInput());
     this.#composer.addEventListener("keydown", (event) => {
@@ -300,28 +301,31 @@ export class GroupChatPanel {
     });
     this.#counter = node(
       "span",
-      "kl-group-composer-counter",
+      "kl-counter kl-group-composer-counter",
       `0/${GROUP_MESSAGE_MAX_CONTENT}`,
     );
     this.#counter.setAttribute("aria-live", "polite");
-    this.#sendButton = button("kl-group-send", "Send", "Send group message");
+    this.#sendButton = button(
+      "kl-text-button kl-text-button--primary kl-send kl-group-send",
+      "",
+      "Send group message",
+    );
+    this.#sendButton.append(kikiIcon("send"), node("span", "kl-send-label", "Send"));
     this.#sendButton.disabled = true;
     this.#sendButton.addEventListener("click", () => void this.#sendActiveMessage());
     this.#attachImageButton = button(
-      "kl-group-composer-attach",
+      "kl-icon-button kl-attach-image kl-group-composer-attach",
       "",
       "Attach an image to this group",
     );
     this.#attachImageButton.title = "Attach image";
     this.#attachImageButton.append(kikiIcon("image"));
     this.#attachImageButton.addEventListener("click", () => void this.#attachImage());
-    const composerRow = node("div", "kl-group-composer-row");
-    composerRow.append(this.#attachImageButton, this.#composer);
-    const composerActions = node("div", "kl-group-composer-actions");
-    composerActions.append(this.#counter, this.#sendButton);
-    const composerFooter = node("div", "kl-group-composer-footer");
-    composerFooter.append(composerActions);
-    const composerArea = node("div", "kl-group-composer-area");
+    const composerRow = node("div", "kl-composer-row kl-group-composer-row");
+    composerRow.append(this.#attachImageButton, this.#composer, this.#sendButton);
+    const composerFooter = node("div", "kl-composer-options kl-group-composer-footer");
+    composerFooter.append(this.#counter);
+    const composerArea = node("footer", "kl-composer kl-group-composer-area");
     composerArea.append(composerLabel, composerRow, composerFooter);
 
     this.#paneFeedback = node("p", "kl-group-feedback");
@@ -1767,6 +1771,7 @@ export class GroupChatPanel {
   }
 
   #updateComposerControls(): void {
+    this.#resizeComposer();
     const length = this.#composer.value.length;
     const maxContent = this.#currentGroupId
       ? this.#messageMaxContent(this.#currentGroupId)
@@ -1778,6 +1783,11 @@ export class GroupChatPanel {
     this.#composer.disabled = this.#sending || !this.#currentGroupId;
     this.#attachImageButton.disabled =
       this.#sending || !this.#currentGroupId || !this.options.onAttachImage;
+  }
+
+  #resizeComposer(): void {
+    this.#composer.style.height = "auto";
+    this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 120)}px`;
   }
 
   #messageMaxContent(groupId: string): number {

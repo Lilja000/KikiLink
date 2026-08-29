@@ -5,7 +5,8 @@ KikiLink 0.12 added ephemeral typing state, and 0.20 added an optional direct av
 KikiLink 0.24 extends the voluntary profile with an avatar frame, a profile-card style, and the
 remote addon's version. KikiLink 0.25 adds an on-demand profile banner and strict hexadecimal card
 outline without putting either field in room broadcasts. KikiLink 0.26 adds an optional two-color
-profile gradient to the same on-demand details exchange. It deliberately keeps Bondage
+profile gradient to the same on-demand details exchange. KikiLink 0.28 adds a separately negotiated
+short bio without changing the older exact-key details packet. It deliberately keeps Bondage
 Club-observable facts separate from profile details a player chooses to share.
 
 ## Presence sources
@@ -34,15 +35,19 @@ last recorded room, and encounter history are never added to a presence packet.
 - Explicitly opening a compatible KikiLink profile sets `p: 1` on its targeted query. The peer may
   answer with its ordinary presence plus one separate `pf` packet containing the current banner and
   outline. A 0.26 requester also sets `e: 1` to negotiate extended details; only then may the response
-  include the two gradient endpoints. This keeps the exact-key 0.25 `pf` parser compatible: an older
+  include the two gradient endpoints. A 0.28 requester sets `d: 1`; a supporting responder then sends
+  the optional short bio in its own correlated `pb` packet before the legacy-compatible `pf`. This
+  keeps the exact-key 0.25 `pf` parser compatible: an older
   requester never receives unknown gradient keys, while an older responder safely ignores `e` and
-  returns the original details shape. Ordinary discovery never requests these heavier details.
+  `d` and returns the original details shape. Ordinary discovery never requests these heavier details.
   Profile-detail request and
   response cooldowns are independent from ordinary discovery, so opening a profile immediately
   after a roster query still works without permitting repeated clicks to create an unbounded burst.
 - A `pf` response echoes the request ID and is accepted only for the matching outstanding explicit
   lookup. An exact-key empty `pf` response clears previously cached banner, outline, and gradient
-  values.
+  values. A `pb` response is accepted only for the same live request when `d: 1` was sent; an empty
+  exact-key response clears a stale bio. Either response order is handled, while a pre-0.28 peer that
+  sends only `pf` remains usable and the unmatched bookkeeping simply expires.
 - Requests are throttled per member, responses are rate-limited, remote state expires, and stale
   request/response bookkeeping is pruned.
 - Quiet list discovery is fail-closed to routes Bondage Club can currently reach: the same room or an
@@ -54,15 +59,16 @@ last recorded room, and encounter history are never added to a presence packet.
 - Typing starts are point-to-point, throttled while input continues, stopped on pause, blur, send,
   conversation change, or close, and expire automatically if a stop packet is lost.
 
-Packets use a compact JSON envelope carried under the adapter's `KIKILINK/1 ` marker. Five packet
+Packets use a compact JSON envelope carried under the adapter's `KIKILINK/1 ` marker. Six packet
 shapes are recognized:
 
 | Type | Required fields | Optional fields | Purpose |
 | --- | --- | --- | --- |
-| `pq` | `t`, request `i` | broadcast hint `b`, explicit profile-details request `p`, extended-details capability `e` | Ask a compatible peer to identify itself and, if enabled, share presence. |
+| `pq` | `t`, request `i` | broadcast hint `b`, explicit profile-details request `p`, extended-details capability `e`, bio capability `d` | Ask a compatible peer to identify itself and, if enabled, share presence. |
 | `pc` | `t`, addon version `v` | group support `g` | Confirm KikiLink capability without sharing a profile. |
 | `ps` | `t`, status `s`, time `u`, version `v` | request `i`, note `m`, avatar `a`, frame `f`, style `c`, group support `g` | Share voluntary presence/profile state. |
 | `pf` | `t`, echoed request `i` | banner `h`, outline `o`, gradient primary `x` and secondary `y` | Return on-demand profile details to one explicit requester; omitted details deliberately clear stale values. Gradient colors are accepted only as a complete pair. |
+| `pb` | `t`, echoed request `i` | short bio `b` | Return a negotiated on-demand bio without adding an unknown key to the legacy `pf` shape; omission deliberately clears stale bio. |
 | `ty` | `t`, active flag `a` | none | Start or stop an ephemeral typing indicator. |
 
 The decoration values are intentionally closed sets: `f` is `none`, `blossom`, `rose`, `starlight`,
@@ -86,8 +92,10 @@ in that order until the packet fits. A `pf` packet accepts only the exact `t`, `
 keys plus the negotiated `x` and `y` pair; its direct HTTPS banner is at most 500 characters, so a
 valid packet remains below the same ceiling. If optional fields ever exceed the ceiling, the
 serializer drops both gradient colors together rather than exposing a partial theme. Remote packet
-text also removes control characters and Unicode directional controls,
-collapses whitespace, and applies its field limit before display.
+text also removes control characters and Unicode directional controls. The separate exact-key `pb`
+packet limits its cleaned single-line bio to 160 Unicode code points and the same 700-byte ceiling;
+it is never appended to `ps` room presence. All displayed text collapses whitespace and applies its
+field limit before display.
 
 Packets cannot invoke UI actions, edit settings, access notes, or run arbitrary code. Malformed
 JSON, unsupported values, invalid member identity from the transport, and oversized payloads are
@@ -113,20 +121,20 @@ character-loop hook.
   can cross the new account. A temporarily guarded or revoked Player wrapper fails silent without
   changing the pin, so the same account can recover after a Firefox cross-realm transition.
 - Turning Presence off first publishes an Offline state without optional profile fields, then stops
-  publishing or replying with `ps` profile state. It never sends or accepts `pf` details while
+  publishing or replying with `ps` profile state. It never sends or accepts `pf`/`pb` details while
   disabled and immediately hides live and saved remote voluntary profile fields from that Presence
   instance. Capability-only discovery remains active as described above.
 - `Appear Offline` changes KikiLink presence only. Bondage Club may still expose the player's native
   online state to friends.
 - Status notes are limited to 80 characters. Avatar and banner URLs are limited to 500 characters
   and must pass the same direct HTTPS image validation as chat previews. Avatar state follows normal
-  presence exchange; a banner is sent only to the member who explicitly opened the profile.
+  presence exchange; a banner or bio is sent only to the member who explicitly opened the profile.
 - Remote avatars and banners load without credentials or referrer data. The loader refuses redirects and
   local/private/reserved IP literals, then validates the HTTPS response URL, supported image MIME,
   and a 5 MiB limit before exposing only a local blob URL to the image element. It permits at most
   four active fetches and 32 active-plus-queued requests, applies a 15-second deadline across queueing
-  and transfer, and cancels work when its last consumer closes or replaces the image. `Always show`
-  loads automatically; `Ask before loading` keeps initials or the built-in banner until the user
+  and transfer, and cancels work when its last consumer closes or replaces the image. Profile art has
+  a dedicated preference and defaults to `Always show`; `Ask before loading` keeps initials or the built-in banner until the user
   reveals that exact member-and-normalized-URL pair for the session, and a changed URL asks again;
   `Links only` never requests it. Frames, card styles, and outline colors contain no remote image URL
   and can render without loading remote pixels. The two optional gradient colors follow the same
@@ -145,5 +153,5 @@ character-loop hook.
   combined only with cached optional visuals, the narrower `SAVED DETAILS` label keeps that distinction
   explicit. Cached fields never manufacture live status. An owner withdrawal deletes that owner's
   record, while an explicit open attempts a fresh targeted lookup when Bondage Club can route it.
-  Banner, outline, and gradient keep a separate details-receipt timestamp: ordinary `ps` heartbeats
+  Banner, bio, outline, and gradient keep a separate details-receipt timestamp: ordinary `ps` heartbeats
   may refresh basic profile fields but cannot renew the 90-day lifetime of old rich visuals.

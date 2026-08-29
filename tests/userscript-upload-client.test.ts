@@ -73,7 +73,7 @@ describe("userscript upload client", () => {
     const error = await errorPromise;
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain("did not accept the request");
+    expect((error as Error).message).toContain("local upload service did not answer");
     expect(messages.filter((message) => message.type === KIKILINK_UPLOAD_CANCEL)).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(40_000);
     expect(messages.filter((message) => message.type === KIKILINK_UPLOAD_CANCEL)).toHaveLength(1);
@@ -120,7 +120,7 @@ describe("userscript upload client", () => {
         type: KIKILINK_UPLOAD_ACCEPTED,
         capability: CAPABILITY,
         id: outgoing.id,
-      });
+      }, window.location.origin, null);
       dispatchHostMessage({
         type: KIKILINK_UPLOAD_RESPONSE,
         capability: CAPABILITY,
@@ -128,7 +128,7 @@ describe("userscript upload client", () => {
         ok: true,
         status: 200,
         body: "https://files.catbox.moe/banner.webp",
-      });
+      }, window.location.origin, null);
     });
     const controller = new AbortController();
 
@@ -161,14 +161,14 @@ describe("userscript upload client", () => {
         type: KIKILINK_UPLOAD_ACCEPTED,
         capability: wrongCapability,
         id: outgoing.id,
-      });
+      }, window.location.origin, null);
       dispatchHostMessage({
         type: "kikilink:upload-progress:v1",
         capability: wrongCapability,
         id: outgoing.id,
         loaded: 1,
         total: 2,
-      });
+      }, window.location.origin, null);
       dispatchHostMessage({
         type: KIKILINK_UPLOAD_RESPONSE,
         capability: wrongCapability,
@@ -176,19 +176,24 @@ describe("userscript upload client", () => {
         ok: true,
         status: 200,
         body: "https://files.catbox.moe/forged.webp",
-      });
+      }, window.location.origin, null);
       dispatchHostMessage({
         type: KIKILINK_UPLOAD_ACCEPTED,
         capability: CAPABILITY,
         id: outgoing.id,
-      });
+      }, "https://evil.example", null);
+      dispatchHostMessage({
+        type: KIKILINK_UPLOAD_ACCEPTED,
+        capability: CAPABILITY,
+        id: outgoing.id,
+      }, window.location.origin, null);
       dispatchHostMessage({
         type: "kikilink:upload-progress:v1",
         capability: CAPABILITY,
         id: outgoing.id,
         loaded: 2,
         total: 2,
-      });
+      }, window.location.origin, null);
       dispatchHostMessage({
         type: KIKILINK_UPLOAD_RESPONSE,
         capability: CAPABILITY,
@@ -196,7 +201,7 @@ describe("userscript upload client", () => {
         ok: true,
         status: 200,
         body: "https://files.catbox.moe/real.webp",
-      });
+      }, window.location.origin, null);
     });
 
     await expect(uploadMultipartViaUserscriptBridge(
@@ -214,11 +219,15 @@ describe("userscript upload client", () => {
   });
 });
 
-function dispatchHostMessage(data: Record<string, unknown>): void {
+function dispatchHostMessage(
+  data: Record<string, unknown>,
+  origin = window.location.origin,
+  source: MessageEventSource | null = window,
+): void {
   window.dispatchEvent(new MessageEvent("message", {
     data,
-    origin: window.location.origin,
-    source: window,
+    origin,
+    source,
   }));
 }
 

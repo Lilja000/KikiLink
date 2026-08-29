@@ -37,6 +37,8 @@ describe("SettingsStore", () => {
       draft.linkReactions.sounds.volume = 42;
       draft.linkReactions.sounds.chat = "custom:soft-bell";
       draft.linkPresence.bannerUrl = "https://files.catbox.moe/profile-banner.webp";
+      draft.linkPresence.bio = "Tea, stories, and quiet rooms.";
+      draft.linkPresence.profileImagePreviews = "ask";
       draft.linkPresence.profileOutlineColor = "#A1B2C3";
       draft.linkPresence.profileGradient = {
         enabled: true,
@@ -63,6 +65,8 @@ describe("SettingsStore", () => {
     });
     expect(second.get().linkPresence).toMatchObject({
       bannerUrl: "https://files.catbox.moe/profile-banner.webp",
+      bio: "Tea, stories, and quiet rooms.",
+      profileImagePreviews: "ask",
       profileOutlineColor: "#a1b2c3",
       profileGradient: {
         enabled: true,
@@ -156,7 +160,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(26);
+    expect(settings.schemaVersion).toBe(27);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -280,7 +284,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(26);
+    expect(settings.schemaVersion).toBe(27);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -304,7 +308,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(26);
+    expect(settings.schemaVersion).toBe(27);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -343,6 +347,8 @@ describe("SettingsStore", () => {
       enabled: true,
       status: "dnd",
       statusMessage: "In a scene",
+      bio: "",
+      profileImagePreviews: "always",
       avatarUrl: "",
       bannerUrl: "",
       avatarFrame: "none",
@@ -354,12 +360,33 @@ describe("SettingsStore", () => {
     });
   });
 
+  it("defaults profile art to visible while bounding public bio and privacy overrides", () => {
+    const defaults = sanitizeSettings({ schemaVersion: 26, linkPresence: {} });
+    expect(defaults.linkPresence.profileImagePreviews).toBe("always");
+
+    const customized = sanitizeSettings({
+      schemaVersion: 27,
+      linkPresence: {
+        profileImagePreviews: "ask",
+        bio: `  ${"🌸".repeat(200)}\u202e  `,
+      },
+    });
+    expect(customized.linkPresence.profileImagePreviews).toBe("ask");
+    expect([...customized.linkPresence.bio]).toHaveLength(160);
+    expect(customized.linkPresence.bio).not.toContain("\u202e");
+
+    expect(sanitizeSettings({
+      schemaVersion: 27,
+      linkPresence: { profileImagePreviews: "remote-css" },
+    }).linkPresence.profileImagePreviews).toBe("always");
+  });
+
   it("migrates profile decoration details into schema 26 and accepts only safe values", () => {
     const legacy = sanitizeSettings({
       schemaVersion: 23,
       linkPresence: { status: "dnd" },
     });
-    expect(legacy.schemaVersion).toBe(26);
+    expect(legacy.schemaVersion).toBe(27);
     expect(legacy.linkPresence).toMatchObject({
       avatarFrame: "none",
       profileStyle: "classic",
@@ -464,7 +491,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(26);
+    expect(settings.schemaVersion).toBe(27);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -640,7 +667,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(26);
+    expect(settings.schemaVersion).toBe(27);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -768,7 +795,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(26);
+    expect(settings.schemaVersion).toBe(27);
     expect(settings.linkRoom.favoriteRoomNames).toEqual(["Moon Garden", "Golden Hall"]);
     expect(settings.linkRoom.presets[0]).toMatchObject({
       id: "moon_room",

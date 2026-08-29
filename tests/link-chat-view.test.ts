@@ -83,6 +83,14 @@ describe("LinkChatView", () => {
     expect(blossomSettings?.textContent).toContain("Normal gameplay cannot move it");
     expect(shadow?.querySelector('select[aria-label="Room Blossom position"]')).toBeNull();
     expect(shadow?.querySelector(".kl-room-badge-advanced")).toBeNull();
+    expect(
+      shadow?.querySelector<HTMLSelectElement>('select[aria-label="Profile image previews"]')
+        ?.value,
+    ).toBe("always");
+    expect(shadow?.querySelector<HTMLElement>(".kl-home-update")?.hidden).toBe(true);
+    expect(shadow?.querySelector<HTMLAnchorElement>(".kl-home-update-button")?.href).toBe(
+      "https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js",
+    );
     expect(blossomSettings?.textContent).not.toMatch(/WCE|BCX|Before addon|Between WCE/i);
     const moveFlower = [...(blossomSettings?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .find((button) => button.textContent.includes("Move flower"));
@@ -166,6 +174,36 @@ describe("LinkChatView", () => {
     expect(messageRow?.querySelector(".kl-message-side-actions")).not.toBeNull();
     expect(messageRow?.querySelector(".kl-message-bubble .kl-message-action")).toBeNull();
     expect(messageRow?.querySelector('[aria-label="Reply to message"] svg')).not.toBeNull();
+    messageRow?.querySelector<HTMLButtonElement>('[aria-label="Reply to message"]')?.click();
+    expect(composer.value).toBe("> Reply to Kiki: Hello from KikiLink\n");
+    composer.value += "Acknowledged";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    shadow?.querySelector<HTMLButtonElement>(".kl-send")?.click();
+    await vi.waitFor(() => expect(sendBeep).toHaveBeenCalledTimes(2));
+    expect(sendBeep).toHaveBeenLastCalledWith(
+      123,
+      "> Reply to Kiki: Hello from KikiLink\nAcknowledged",
+      false,
+    );
+    await vi.waitFor(() => {
+      const replyRow = shadow?.querySelector<HTMLElement>(".kl-message-row:last-child");
+      expect(replyRow?.querySelector(".kl-message-reply-author")?.textContent).toBe("Kiki");
+      expect(replyRow?.querySelector(".kl-message-reply-excerpt")?.textContent).toBe(
+        "Hello from KikiLink",
+      );
+      expect(replyRow?.querySelector(".kl-message-content")?.textContent).not.toContain(
+        "> Reply to",
+      );
+      expect(replyRow?.querySelector(".kl-message-content")?.lastChild?.textContent).toBe(
+        "Acknowledged",
+      );
+    });
+    expect(shadow?.querySelector(".kl-conversation-preview")?.textContent).toContain(
+      "Acknowledged",
+    );
+    expect(shadow?.querySelector(".kl-conversation-preview")?.textContent).not.toContain(
+      "Reply to",
+    );
     expect(shadow?.querySelector(".kl-sidebar-heading span")?.textContent).toBe("Chats");
 
     shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
@@ -2388,6 +2426,9 @@ describe("LinkChatView", () => {
       sendBeep: vi.fn(),
     } as unknown as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.linkPresence.profileImagePreviews = "ask";
+    });
     const presenceBus = new EventBus<KikiLinkEvents>();
     const presence = new LinkPresenceService(adapter, settings, presenceBus, "0.25.0");
     presence.start();
@@ -2414,6 +2455,15 @@ describe("LinkChatView", () => {
       throw new Error("Missing initial profile-details request id");
     }
     const remoteBannerUrl = "https://cdn.example/reina-banner.webp";
+    presenceBus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "pb",
+        i: initialProfileRequest.i,
+        b: "Tea, stories, and quiet rooms.",
+      }),
+    });
     presenceBus.emit("bc:protocol", {
       senderNumber: 123,
       channel: "beep",
@@ -2453,6 +2503,7 @@ describe("LinkChatView", () => {
     shadow.querySelector<HTMLButtonElement>(".kl-presence-trigger")?.click();
     const frameSelect = shadow.querySelector<HTMLSelectElement>(".kl-profile-frame-select");
     const bannerUrl = shadow.querySelector<HTMLInputElement>(".kl-presence-banner-url");
+    const bio = shadow.querySelector<HTMLTextAreaElement>(".kl-profile-bio-input");
     const bannerUpload = [...shadow.querySelectorAll<HTMLButtonElement>(
       ".kl-profile-banner-actions button",
     )].find((button) => button.textContent === "Upload banner");
@@ -2471,6 +2522,7 @@ describe("LinkChatView", () => {
     if (
       !frameSelect ||
       !bannerUrl ||
+      !bio ||
       !bannerUpload ||
       !bannerRemove ||
       !bannerFile ||
@@ -2494,6 +2546,7 @@ describe("LinkChatView", () => {
       "1200 × 400 px (3:1)",
     );
     expect(bannerUrl.type).toBe("url");
+    expect(bio.maxLength).toBe(160);
     expect(bannerUrl.getAttribute("aria-label")).toBe("Direct profile banner URL");
     expect(bannerFile.hidden).toBe(true);
     expect(bannerFile.accept).toContain("image/webp");
@@ -2513,11 +2566,13 @@ describe("LinkChatView", () => {
     outlineEnabled.dispatchEvent(new Event("change", { bubbles: true }));
     expect(outlineColor.disabled).toBe(false);
     bannerUrl.value = "https://files.catbox.moe/kiki-banner.webp";
+    bio.value = "Sakura tea and quiet rooms.";
     outlineColor.value = "#445566";
     shadow.querySelector<HTMLButtonElement>(".kl-presence-dialog .kl-text-button--primary")
       ?.click();
     expect(settings.get().linkPresence).toMatchObject({
       bannerUrl: "https://files.catbox.moe/kiki-banner.webp",
+      bio: "Sakura tea and quiet rooms.",
       profileOutlineColor: "#445566",
     });
 
@@ -2547,6 +2602,9 @@ describe("LinkChatView", () => {
     expect(initialCard.style.item(0)).toBe("--kl-profile-outline");
     expect(initialCard.style.getPropertyValue("--kl-profile-outline")).toBe("#12ab34");
     expect(initialCard.style.cssText).not.toMatch(/url\(|background|position|display/iu);
+    expect(initialCard.querySelector(".kl-addon-profile-bio")?.textContent).toContain(
+      "Tea, stories, and quiet rooms.",
+    );
     expect(initialCard.querySelector(".kl-addon-profile-banner img")).toBeNull();
     expect(initialCard.querySelector(".kl-addon-profile-show-avatar")).not.toBeNull();
     expect(initialCard.querySelector(".kl-addon-profile-show-banner")).not.toBeNull();
@@ -2856,6 +2914,9 @@ describe("LinkChatView", () => {
       sendBeep,
     } as unknown as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.linkPresence.profileImagePreviews = "ask";
+    });
     const presenceBus = new EventBus<KikiLinkEvents>();
     const presence = new LinkPresenceService(adapter, settings, presenceBus, "0.20.0");
     presence.start();

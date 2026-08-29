@@ -9,6 +9,20 @@ export interface KikiLinkNewsRelease {
 /** A compact, curated changelog for the in-addon News page. */
 export const KIKILINK_NEWS: readonly KikiLinkNewsRelease[] = [
   {
+    version: "0.28.0",
+    date: "2026-08-29",
+    title: "Smoother groups, visible profiles",
+    summary: "Group conversations now feel like direct chats, profile art is visible by default, and updates are easier to discover without adding background polling.",
+    highlights: [
+      "Upload profile banners and managed-group avatars to public Catbox again: the authenticated bridge now works across isolated userscript realms without a separate permission ritual.",
+      "Use a compact direct-chat-sized group composer, aligned confirmation avatars, larger group identities, and a real inline Reply context instead of duplicated quote text.",
+      "See profile avatars, banners, and group art by default under a dedicated Players preference while chat-message previews keep their separate privacy setting.",
+      "Add a short optional bio to your KikiProfile; it travels only in a negotiated, targeted profile request and is sanitized, bounded, and cached like other saved details.",
+      "Find an official Update button on Home only when a newer strict release is available through one bounded check with no polling.",
+      "Let a few confirmed online BC friends on older compatible versions receive one heavily deduplicated, rate-limited private update Beep—never strangers or a broadcast.",
+    ],
+  },
+  {
     version: "0.27.0",
     date: "2026-08-29",
     title: "Groups you can truly manage",

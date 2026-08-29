@@ -342,7 +342,7 @@ describe("local image uploads", () => {
     vi.stubGlobal("fetch", pageFetch);
 
     await expect(uploadPreparedImageToCatbox(preparedImage())).rejects.toThrow(
-      "KikiLink upload bridge is unavailable",
+      "KikiLink's local upload service is unavailable",
     );
     expect(pageFetch).not.toHaveBeenCalled();
   });

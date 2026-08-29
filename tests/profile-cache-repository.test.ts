@@ -47,6 +47,7 @@ describe("ProfileCacheRepository", () => {
         avatarFrame: "ribbon",
         profileStyle: "garden",
         bannerUrl: "https://cdn.example/banner.png?size=wide",
+        bio: "  Tea, stories, and quiet rooms.  ",
         profileOutlineColor: "#A1B2C3",
         profileGradient: { enabled: true, primary: "#D71932", secondary: "#112233" },
         profileRevision: "revision_25-A",
@@ -66,6 +67,7 @@ describe("ProfileCacheRepository", () => {
       avatarFrame: "ribbon",
       profileStyle: "garden",
       bannerUrl: "https://cdn.example/banner.png?size=wide",
+      bio: "Tea, stories, and quiet rooms.",
       profileOutlineColor: "#a1b2c3",
       profileGradient: { enabled: true, primary: "#d71932", secondary: "#112233" },
       richSyncedAt: now,
@@ -97,6 +99,7 @@ describe("ProfileCacheRepository", () => {
       avatarFrame: "remote-css",
       profileStyle: "external-theme",
       bannerUrl: "[img]https://example.com/banner.webp[/img]",
+      bio: "\u202e".repeat(200),
       profileOutlineColor: "red; background: url(evil)",
       profileGradient: {
         enabled: true,
@@ -207,6 +210,7 @@ describe("ProfileCacheRepository", () => {
     repository.upsert(profile(123, {
       avatarUrl: "https://cdn.example/avatar-old.png",
       bannerUrl: "https://cdn.example/banner.png",
+      bio: "A cached public bio",
       profileOutlineColor: "#123456",
       profileGradient: { enabled: true, primary: "#abcdef", secondary: "#654321" },
     }), firstDetailsAt);
@@ -215,6 +219,7 @@ describe("ProfileCacheRepository", () => {
     repository.upsert(profile(123, {
       avatarUrl: "https://cdn.example/avatar-new.png",
       bannerUrl: "https://cdn.example/banner.png",
+      bio: "A cached public bio",
       profileOutlineColor: "#123456",
       profileGradient: { enabled: true, primary: "#abcdef", secondary: "#654321" },
       richSyncedAt: firstDetailsAt,
@@ -224,6 +229,7 @@ describe("ProfileCacheRepository", () => {
     expect(refreshed).toMatchObject({
       avatarUrl: "https://cdn.example/avatar-new.png",
       bannerUrl: "https://cdn.example/banner.png",
+      bio: "A cached public bio",
       syncedAt: basicRefreshAt,
       richSyncedAt: firstDetailsAt,
     });
@@ -237,6 +243,7 @@ describe("ProfileCacheRepository", () => {
       syncedAt: basicRefreshAt,
     });
     expect(afterRichExpiry).not.toHaveProperty("bannerUrl");
+    expect(afterRichExpiry).not.toHaveProperty("bio");
     expect(afterRichExpiry).not.toHaveProperty("profileOutlineColor");
     expect(afterRichExpiry).not.toHaveProperty("profileGradient");
     expect(afterRichExpiry).not.toHaveProperty("richSyncedAt");

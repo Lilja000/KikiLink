@@ -39,7 +39,7 @@ export function installUserscriptUploadHost(capability: string): () => void {
   let disposed = false;
   ensureReadyMarker();
   const handleMessage = (event: MessageEvent<unknown>): void => {
-    if (disposed || !isSameWindowMessage(event)) return;
+    if (disposed || !isSameOriginMessage(event)) return;
     const cancelId = validateCancel(event.data, capability);
     if (cancelId) {
       activeRequests.get(cancelId)?.();
@@ -93,9 +93,12 @@ export function installUserscriptUploadHost(capability: string): () => void {
   };
 }
 
-function isSameWindowMessage(event: MessageEvent<unknown>): boolean {
+function isSameOriginMessage(event: MessageEvent<unknown>): boolean {
   try {
-    return event.source === window && event.origin === window.location.origin;
+    // Tampermonkey's isolated world may deliberately expose postMessage's source as null or as a
+    // different WindowProxy wrapper. Exact origin plus the unguessable per-load capability still
+    // authenticates requests without depending on cross-realm wrapper identity.
+    return event.origin === window.location.origin;
   } catch {
     return false;
   }

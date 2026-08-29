@@ -121,6 +121,7 @@ export interface PresenceSnapshot {
   statusMessage?: string;
   avatarUrl?: string;
   bannerUrl?: string;
+  bio?: string;
   roomName?: string;
   avatarFrame?: AvatarFrame;
   profileStyle?: ProfileCardStyle;
@@ -283,7 +284,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 26;
+  schemaVersion: 27;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -326,6 +327,8 @@ export interface KikiLinkSettings {
     enabled: boolean;
     status: PresenceStatus;
     statusMessage: string;
+    bio: string;
+    profileImagePreviews: ImagePreviewPreference;
     avatarUrl: string;
     bannerUrl: string;
     avatarFrame: AvatarFrame;
