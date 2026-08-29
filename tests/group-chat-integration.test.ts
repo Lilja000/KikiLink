@@ -83,7 +83,7 @@ function clearHistoryButton(shadow: ShadowRoot): HTMLButtonElement {
 }
 
 describe("group chat integration", () => {
-  it("keeps groups separate from direct Beeps and switches panes without mixing state", async () => {
+  it("unifies group navigation while keeping group and direct transport state separate", async () => {
     const names = new Map([
       [10, "Kiki"],
       [20, "Reina"],
@@ -123,10 +123,11 @@ describe("group chat integration", () => {
     const created = await groups.createGroup([20, 30], "Garden crew");
     const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
     await vi.waitFor(() => {
-      expect(shadow?.querySelector(".kl-group-sidebar")?.textContent).toContain("Garden crew");
+      expect(shadow?.querySelector(".kl-conversations")?.textContent).toContain("Garden crew");
+      expect(shadow?.querySelector(".kl-group-conversation")?.textContent).toContain("GROUP");
     });
     expect(shadow?.querySelector(".kl-conversations")).not.toBeNull();
-    expect(shadow?.querySelector(".kl-group-list")).not.toBeNull();
+    expect(shadow?.querySelector(".kl-group-sidebar")).toBeNull();
 
     await view.openChat(20, "Reina");
     expect(view.isActiveConversation(20)).toBe(true);
@@ -187,7 +188,7 @@ describe("group chat integration", () => {
       expect(groups.listGroups()).toEqual([]);
       expect(await directChats.listConversations()).toEqual([]);
     });
-    expect(shadow?.querySelector(".kl-group-list-item")).toBeNull();
+    expect(shadow?.querySelector(".kl-group-conversation")).toBeNull();
 
     view.destroy();
   });

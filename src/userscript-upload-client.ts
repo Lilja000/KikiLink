@@ -2,6 +2,7 @@ import type { UploadProgress } from "./modules/link-chat/image-upload";
 import {
   KIKILINK_ALLOWED_UPLOAD_ENDPOINTS,
   KIKILINK_UPLOAD_BRIDGE_MARKER_ID,
+  KIKILINK_UPLOAD_CANCEL,
   KIKILINK_UPLOAD_PROGRESS,
   KIKILINK_UPLOAD_REQUEST,
   KIKILINK_UPLOAD_RESPONSE,
@@ -23,6 +24,9 @@ interface PendingUpload {
   reject(error: Error): void;
   onProgress?: (progress: UploadProgress) => void;
   timer: ReturnType<typeof setTimeout>;
+  capability: string;
+  signal?: AbortSignal;
+  abortListener?: () => void;
 }
 
 interface IncomingUploadMessage {
@@ -48,6 +52,7 @@ export async function uploadMultipartViaUserscriptBridge(
   form: FormData,
   timeoutMs: number,
   onProgress?: (progress: UploadProgress) => void,
+  signal?: AbortSignal,
 ): Promise<UserscriptMultipartResponse | null> {
   const capability = uploadCapability();
   if (
@@ -57,6 +62,7 @@ export async function uploadMultipartViaUserscriptBridge(
   ) {
     return null;
   }
+  if (signal?.aborted) throw new Error("The upload was cancelled");
 
   installResponseListener();
   const fields: KikiLinkUploadField[] = [];
@@ -77,26 +83,47 @@ export async function uploadMultipartViaUserscriptBridge(
   const id = uploadId();
   return new Promise<UserscriptMultipartResponse>((resolve, reject) => {
     const timer = setTimeout(() => {
-      pendingUploads.delete(id);
-      reject(new Error("The upload timed out"));
+      const pending = takePendingUpload(id);
+      if (!pending) return;
+      postCancel(id, pending.capability);
+      pending.reject(new Error("The upload timed out"));
     }, timeoutMs + 2_000);
-    pendingUploads.set(id, {
+    const pending: PendingUpload = {
       resolve,
       reject,
       ...(onProgress ? { onProgress } : {}),
       timer,
-    });
-    window.postMessage(
-      {
-        type: KIKILINK_UPLOAD_REQUEST,
-        capability,
-        id,
-        endpoint,
-        timeoutMs,
-        fields,
-      },
-      window.location.origin,
-    );
+      capability,
+      ...(signal ? { signal } : {}),
+    };
+    if (signal) {
+      pending.abortListener = () => {
+        const active = takePendingUpload(id);
+        if (!active) return;
+        postCancel(id, active.capability);
+        active.reject(new Error("The upload was cancelled"));
+      };
+      signal.addEventListener("abort", pending.abortListener, { once: true });
+    }
+    pendingUploads.set(id, pending);
+    try {
+      window.postMessage(
+        {
+          type: KIKILINK_UPLOAD_REQUEST,
+          capability,
+          id,
+          endpoint,
+          timeoutMs,
+          fields,
+        },
+        window.location.origin,
+      );
+    } catch (error) {
+      const active = takePendingUpload(id);
+      active?.reject(error instanceof Error
+        ? error
+        : new Error("The upload bridge could not send this file"));
+    }
   });
 }
 
@@ -125,18 +152,40 @@ function installResponseListener(): void {
     }
     if (source.type !== KIKILINK_UPLOAD_RESPONSE) return;
 
-    pendingUploads.delete(source.id);
-    clearTimeout(pending.timer);
+    const completed = takePendingUpload(source.id);
+    if (!completed) return;
     if (typeof source.error === "string" && source.error) {
-      pending.reject(new Error(source.error));
+      completed.reject(new Error(source.error));
       return;
     }
-    pending.resolve({
+    completed.resolve({
       ok: source.ok === true,
       status: Number.isInteger(source.status) ? Number(source.status) : 0,
       body: typeof source.body === "string" ? source.body : "",
     });
   });
+}
+
+function takePendingUpload(id: string): PendingUpload | undefined {
+  const pending = pendingUploads.get(id);
+  if (!pending) return undefined;
+  pendingUploads.delete(id);
+  clearTimeout(pending.timer);
+  if (pending.signal && pending.abortListener) {
+    pending.signal.removeEventListener("abort", pending.abortListener);
+  }
+  return pending;
+}
+
+function postCancel(id: string, capability: string): void {
+  try {
+    window.postMessage(
+      { type: KIKILINK_UPLOAD_CANCEL, capability, id },
+      window.location.origin,
+    );
+  } catch {
+    // The local Promise is still settled and cleaned even if the page is already tearing down.
+  }
 }
 
 function isSameWindowMessage(event: MessageEvent<unknown>): boolean {

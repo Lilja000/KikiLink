@@ -1,5 +1,6 @@
-import type { BeepEvent, ConversationMeta, LinkMessage } from "../../core/types";
+import { cleanBeepMessageContent } from "../../bc/message-content";
 import type { SettingsStore } from "../../core/settings";
+import type { BeepEvent, ConversationMeta, LinkMessage } from "../../core/types";
 import type { ChatRepository } from "../../storage/chat-repository";
 import { sortConversations } from "../../storage/memory-chat-repository";
 import { createId } from "../../utils/id";
@@ -27,21 +28,28 @@ export class ChatService {
   ) {}
 
   async capture(event: BeepEvent, activeConversation: boolean): Promise<LinkMessage> {
+    const canonicalEvent = canonicalizeBeepEvent(event);
     const message: LinkMessage = {
-      ...event,
+      ...canonicalEvent,
       id: createId("beep"),
-      read: event.direction === "outgoing" || activeConversation,
+      read: canonicalEvent.direction === "outgoing" || activeConversation,
     };
-    const previous = await this.#getStoredConversation(event.peerNumber);
+    const previous = await this.#getStoredConversation(canonicalEvent.peerNumber);
     const conversation: ConversationMeta = {
-      peerNumber: event.peerNumber,
-      peerName: preferredPeerName(previous?.peerName, event.peerName, event.peerNumber),
+      peerNumber: canonicalEvent.peerNumber,
+      peerName: preferredPeerName(
+        previous?.peerName,
+        canonicalEvent.peerName,
+        canonicalEvent.peerNumber,
+      ),
       ...(previous?.localAlias ? { localAlias: previous.localAlias } : {}),
-      lastMessage: event.content,
-      lastMessageAt: event.sentAt,
-      lastDirection: event.direction,
+      lastMessage: canonicalEvent.content,
+      lastMessageAt: canonicalEvent.sentAt,
+      lastDirection: canonicalEvent.direction,
       unread:
-        event.direction === "incoming" && !activeConversation ? (previous?.unread ?? 0) + 1 : 0,
+        canonicalEvent.direction === "incoming" && !activeConversation
+          ? (previous?.unread ?? 0) + 1
+          : 0,
       pinned: previous?.pinned ?? false,
       draft: previous?.draft ?? "",
     };
@@ -50,33 +58,37 @@ export class ChatService {
     if (config.saveHistory) {
       await this.repository.addMessage(message);
       await this.repository.putConversation(conversation);
-      await this.repository.trimConversation(event.peerNumber, config.maxMessagesPerConversation);
+      await this.repository.trimConversation(
+        canonicalEvent.peerNumber,
+        config.maxMessagesPerConversation,
+      );
     } else {
-      const messages = this.#ephemeralMessages.get(event.peerNumber) ?? [];
+      const messages = this.#ephemeralMessages.get(canonicalEvent.peerNumber) ?? [];
       messages.push(message);
       this.#ephemeralMessages.set(
-        event.peerNumber,
+        canonicalEvent.peerNumber,
         messages.slice(-config.maxMessagesPerConversation),
       );
-      this.#ephemeralConversations.set(event.peerNumber, conversation);
+      this.#ephemeralConversations.set(canonicalEvent.peerNumber, conversation);
     }
 
     return message;
   }
 
   async captureRecent(event: BeepEvent): Promise<boolean> {
-    const stored = await this.#getStoredConversation(event.peerNumber);
-    if (stored?.hiddenAt !== undefined && event.sentAt <= stored.hiddenAt) return false;
-    const messages = await this.getMessages(event.peerNumber, 500);
+    const canonicalEvent = canonicalizeBeepEvent(event);
+    const stored = await this.#getStoredConversation(canonicalEvent.peerNumber);
+    if (stored?.hiddenAt !== undefined && canonicalEvent.sentAt <= stored.hiddenAt) return false;
+    const messages = await this.getMessages(canonicalEvent.peerNumber, 500);
     const duplicate = messages.some(
       (message) =>
-        message.direction === event.direction &&
-        message.content === event.content &&
-        message.roomName === event.roomName &&
-        Math.abs(message.sentAt - event.sentAt) <= 2000,
+        message.direction === canonicalEvent.direction &&
+        message.content === canonicalEvent.content &&
+        message.roomName === canonicalEvent.roomName &&
+        Math.abs(message.sentAt - canonicalEvent.sentAt) <= 2000,
     );
     if (duplicate) return false;
-    await this.capture(event, true);
+    await this.capture(canonicalEvent, true);
     return true;
   }
 
@@ -105,14 +117,29 @@ export class ChatService {
 
   async #getStoredConversation(peerNumber: number): Promise<ConversationMeta | undefined> {
     const ephemeral = this.#ephemeralConversations.get(peerNumber);
-    return ephemeral ? structuredClone(ephemeral) : this.repository.getConversation(peerNumber);
+    if (ephemeral) {
+      const canonical = canonicalizeConversationPreview(ephemeral);
+      if (canonical !== ephemeral) this.#ephemeralConversations.set(peerNumber, canonical);
+      return structuredClone(canonical);
+    }
+    const persisted = await this.repository.getConversation(peerNumber);
+    return persisted ? this.#repairConversationPreview(persisted) : undefined;
   }
 
   async listConversations(): Promise<ConversationMeta[]> {
     const persisted = await this.repository.listConversations();
-    const merged = new Map(persisted.map((conversation) => [conversation.peerNumber, conversation]));
+    const canonicalPersisted = await Promise.all(
+      persisted.map((conversation) => this.#repairConversationPreview(conversation)),
+    );
+    const merged = new Map(
+      canonicalPersisted.map((conversation) => [conversation.peerNumber, conversation]),
+    );
     for (const conversation of this.#ephemeralConversations.values()) {
-      merged.set(conversation.peerNumber, structuredClone(conversation));
+      const canonical = canonicalizeConversationPreview(conversation);
+      if (canonical !== conversation) {
+        this.#ephemeralConversations.set(conversation.peerNumber, canonical);
+      }
+      merged.set(canonical.peerNumber, structuredClone(canonical));
     }
     return [...merged.values()]
       .filter((conversation) => conversation.hiddenAt === undefined)
@@ -122,7 +149,14 @@ export class ChatService {
   async getMessages(peerNumber: number, limit = 300): Promise<LinkMessage[]> {
     const persisted = await this.repository.getMessages(peerNumber, limit);
     const ephemeral = this.#ephemeralMessages.get(peerNumber) ?? [];
-    return [...persisted, ...ephemeral]
+    const canonicalPersisted = await Promise.all(
+      persisted.map((message) => this.#repairStoredMessage(message)),
+    );
+    const canonicalEphemeral = ephemeral.map(canonicalizeStoredMessage);
+    if (canonicalEphemeral.some((message, index) => message !== ephemeral[index])) {
+      this.#ephemeralMessages.set(peerNumber, canonicalEphemeral);
+    }
+    return [...canonicalPersisted, ...canonicalEphemeral]
       .sort((left, right) => left.sentAt - right.sentAt)
       .slice(-limit);
   }
@@ -258,6 +292,31 @@ export class ChatService {
       this.#ephemeralConversations.set(conversation.peerNumber, structuredClone(conversation));
     }
   }
+
+  async #repairConversationPreview(conversation: ConversationMeta): Promise<ConversationMeta> {
+    const canonical = canonicalizeConversationPreview(conversation);
+    if (canonical === conversation) return conversation;
+    try {
+      await this.repository.putConversation(canonical);
+    } catch {
+      // Rendering old history must not fail merely because a best-effort metadata repair could
+      // not be committed. The cleaned preview is still returned for this session.
+    }
+    return canonical;
+  }
+
+  async #repairStoredMessage(message: LinkMessage): Promise<LinkMessage> {
+    const canonical = canonicalizeStoredMessage(message);
+    if (canonical === message) return message;
+    try {
+      // Chat repositories use message ids as put keys, so this replaces the legacy row rather
+      // than adding a duplicate. Account-synced wrappers also mark the cleaned snapshot dirty.
+      await this.repository.addMessage(canonical);
+    } catch {
+      // A read remains useful even when a best-effort legacy-row repair cannot be committed.
+    }
+    return canonical;
+  }
 }
 
 export function conversationDisplayName(conversation: ConversationMeta): string {
@@ -279,6 +338,23 @@ function preferredPeerName(
 function normalizeLocalAlias(value: string): string | undefined {
   const alias = value.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 40);
   return alias || undefined;
+}
+
+function canonicalizeBeepEvent(event: BeepEvent): BeepEvent {
+  const content = cleanBeepMessageContent(event.content);
+  return content === event.content ? event : { ...event, content };
+}
+
+function canonicalizeConversationPreview(conversation: ConversationMeta): ConversationMeta {
+  const lastMessage = cleanBeepMessageContent(conversation.lastMessage);
+  return lastMessage === conversation.lastMessage
+    ? conversation
+    : { ...conversation, lastMessage };
+}
+
+function canonicalizeStoredMessage(message: LinkMessage): LinkMessage {
+  const content = cleanBeepMessageContent(message.content);
+  return content === message.content ? message : { ...message, content };
 }
 
 export function galleryMediaProvider(value: string): ChatMediaItem["provider"] {

@@ -1717,7 +1717,8 @@ describe("BCAdapter", () => {
       MemberNumber: 123,
       MemberName: "AccountReina",
       BeepType: null,
-      Message: 'Only once\n\n\uf124{"messageType":"Message","messageColor":"#ffffff"}',
+      Message:
+        'Only once\n\n\uf124{"messageType":"Message","messageColor":"#ffffff"}\u2063LikoMAT:en\u2063',
     };
     globalThis.ServerAccountBeep?.(duplicatePayload);
     globalThis.FriendListBeepLog.push({
@@ -1729,6 +1730,9 @@ describe("BCAdapter", () => {
     });
     vi.advanceTimersByTime(1_001);
     expect(incoming).toHaveBeenCalledTimes(2);
+    expect(incoming).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "Only once" }),
+    );
 
     adapter.stop();
     vi.useRealTimers();

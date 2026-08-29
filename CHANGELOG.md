@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.26.0 - 2026-08-29
+
+- Rebuilt Chat navigation as one chronological, searchable list for direct and group conversations.
+  Groups keep their separate transport and history, but now use participant-avatar stacks, an explicit
+  `GROUP` badge, member-aware previews, pins, times, and unread counts in the same place users already
+  look for chats. Gallery, New group, and New Beep actions now share one spaced toolbar instead of
+  colliding with a separate Groups block.
+- Removed the accidental mini scrollbar from group headers. Participant avatars now wrap within the
+  header instead of creating a tiny nested scrolling strip, including on narrow layouts.
+- Fixed corrupted direct-chat text from WCE/LikoMAT interop. KikiLink now removes only the exact,
+  trailing validated WCE metadata envelope and anchored LikoMAT language trailer, applies the same
+  canonical text to live and recent-log deduplication, and lazily cleans existing messages and
+  conversation previews without touching malformed or user-authored near matches.
+- Made profile banner uploads cancellable end to end. Presence shows upload progress and elapsed time,
+  its upload button becomes Cancel, closing the dialog aborts the actual privileged request, and both
+  page and userscript layers clean pending listeners, timers, and active slots exactly once. A host
+  watchdog now releases stuck Tampermonkey requests even when provider callbacks never arrive, while
+  missing bridge permission fails immediately with a useful reload/permission message. Profile-banner
+  uploads now get a slow-connection-safe 180-second window instead of the generic 60-second image limit.
+- Added an optional two-color profile-card gradient under settings schema 26. Both endpoints are strict
+  `#RRGGBB` values, render with contrast-aware text, and travel only in the negotiated, explicitly
+  requested profile-details packet. Older 0.25 peers keep receiving the original exact-key shape.
+- Recolored and renamed the existing avatar decorations instead of adding more near-duplicates:
+  Sakura blossoms, Scarlet rose ring, Violet starlight, Golden laurel, Poison thorns, Silver moon
+  orbit, and Jade ribbons now have deliberately distinct palettes while retaining their stable IDs.
+- Added a bounded account-local cache for voluntarily shared public profile fields. Up to 200 records
+  remain for 90 days with LRU pruning and strict URL/enum/color validation. Saved cards open
+  immediately, distinguish a wholly `SAVED PROFILE` from `SAVED DETAILS` beside live status, and refresh
+  through a targeted lookup when the player is reachable; live status and room, private notes,
+  relationships, and fetched image blobs are never persisted in this cache. Banner, outline, and
+  gradient age only when those rich details are actually received, so ordinary presence heartbeats
+  cannot keep removed visuals alive indefinitely.
+- Limited quiet background discovery to players who are actually reachable through the current room
+  or Bondage Club's online-friend route. Explicit profile opens remain point-to-point and cooldown
+  bounded; a newly online friend gets one deduplicated discovery attempt, without a fixed global
+  profile poll or repeated scans of offline profiles.
+- Made avatars in Room and both Players list/detail surfaces real keyboard-focusable profile buttons,
+  while keeping the notebook row as a separate action instead of nesting interactive controls.
+- Gave long profile names a two-line clamp, safe word wrapping, a title tooltip, and a right inset so
+  names no longer sit against or escape the profile card edge on desktop or mobile.
+
 ## 0.25.0 - 2026-08-29
 
 - Promoted group chats into a prominent, searchable section of LinkChat. The section now exposes an

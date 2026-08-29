@@ -1,6 +1,7 @@
 import {
   KIKILINK_ALLOWED_UPLOAD_ENDPOINTS,
   KIKILINK_UPLOAD_BRIDGE_MARKER_ID,
+  KIKILINK_UPLOAD_CANCEL,
   KIKILINK_UPLOAD_PROGRESS,
   KIKILINK_UPLOAD_REQUEST,
   KIKILINK_UPLOAD_RESPONSE,
@@ -37,6 +38,11 @@ export function installUserscriptUploadHost(capability: string): () => void {
   ensureReadyMarker();
   const handleMessage = (event: MessageEvent<unknown>): void => {
     if (disposed || !isSameWindowMessage(event)) return;
+    const cancelId = validateCancel(event.data, capability);
+    if (cancelId) {
+      activeRequests.get(cancelId)?.();
+      return;
+    }
     const request = validateRequest(event.data, capability);
     if (!request) return;
     if (activeUploads.has(request.id)) {
@@ -95,12 +101,35 @@ function runUpload(
 ): Promise<void> {
   return new Promise((resolve) => {
     let settled = false;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let transport: { abort(): void } | undefined;
+    let abortReason: "cancelled" | "timeout" | undefined;
     const settle = (send: () => void): void => {
       if (settled) return;
       settled = true;
+      if (watchdog !== undefined) clearTimeout(watchdog);
       activeRequests.delete(request.id);
-      if (canRespond()) send();
-      resolve();
+      try {
+        if (canRespond()) send();
+      } catch {
+        // A page can begin tearing down between canRespond() and postMessage(). The privileged
+        // transport is already settled, so always release the slot even when the response cannot
+        // be delivered.
+      } finally {
+        resolve();
+      }
+    };
+    const abort = (reason: "cancelled" | "timeout"): void => {
+      if (settled) return;
+      abortReason = reason;
+      try {
+        transport?.abort();
+      } finally {
+        settle(() => postError(
+          request.id,
+          reason === "timeout" ? "The upload timed out" : "The upload was cancelled",
+        ));
+      }
     };
     try {
       const form = new FormData();
@@ -117,7 +146,7 @@ function runUpload(
           );
         }
       }
-      const transport = GM_xmlhttpRequest({
+      transport = GM_xmlhttpRequest({
         method: "POST",
         url: request.endpoint,
         data: form,
@@ -151,26 +180,39 @@ function runUpload(
         }),
         onerror: (response) => settle(() => postError(
           request.id,
-          response.status
-            ? `Upload network request failed with HTTP ${response.status}`
-            : "The upload host could not be reached",
+          abortReason === "timeout"
+            ? "The upload timed out"
+            : abortReason === "cancelled"
+              ? "The upload was cancelled"
+              : response.status
+                ? `Upload network request failed with HTTP ${response.status}`
+                : "The upload host could not be reached",
         )),
-        onabort: () => settle(() => postError(request.id, "The upload was cancelled")),
+        onabort: () => settle(() => postError(
+          request.id,
+          abortReason === "timeout" ? "The upload timed out" : "The upload was cancelled",
+        )),
         ontimeout: () => settle(() => postError(request.id, "The upload timed out")),
       });
       if (!settled) {
-        activeRequests.set(request.id, () => {
-          try {
-            transport.abort();
-          } finally {
-            settle(() => undefined);
-          }
-        });
+        activeRequests.set(request.id, () => abort("cancelled"));
+        watchdog = setTimeout(() => abort("timeout"), request.timeoutMs);
       }
     } catch {
       settle(() => postError(request.id, "The upload bridge could not prepare this file"));
     }
   });
+}
+
+function validateCancel(value: unknown, capability: string): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  return source.type === KIKILINK_UPLOAD_CANCEL &&
+      source.capability === capability &&
+      typeof source.id === "string" &&
+      ID_PATTERN.test(source.id)
+    ? source.id
+    : null;
 }
 
 function validateRequest(

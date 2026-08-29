@@ -11,11 +11,12 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.25.0` runs all Bondage Club and ModSDK integration in the page realm without reading
+Version `0.26.0` runs all Bondage Club and ModSDK integration in the page realm without reading
 `unsafeWindow`. Only structured upload fields cross into the DOM-only userscript sandbox for the narrowly
-granted Catbox/Litterbox request. This release makes group chats prominent and searchable, adds a bounded
-online-only creator relay for otherwise unreachable members, and expands addon profiles with public
-privacy-prepared banners, strict color outlines, and more decorations. It does not change the proven
+granted Catbox/Litterbox request. This release unifies direct and group navigation, fixes WCE/LikoMAT
+message envelopes, makes profile-banner uploads genuinely cancellable, adds negotiated two-color profile
+gradients, and keeps a bounded account-local copy of voluntarily shared public profiles for honest
+saved-card fallback. It does not change the proven
 Blossom integration: the flower still joins the same BC-native status-icon boundary as Echo and WCE
 exactly once and sits directly below Echo's clothing icon, clear of the chat edge. It is
 shown only for the authenticated character and protocol-confirmed KikiLink peers, independently of
@@ -65,20 +66,30 @@ lower-left corner.
 
 - Live list of everyone else in the current chat room, using character nicknames first
 - Presence dots and KikiLink status labels in player lists and detail cards
-- Visible player lists discover compatible KikiLink Presence through a quiet rate-limited queue
+- Visible player lists discover compatible KikiLink Presence through a quiet rate-limited queue that
+  targets only current-room players or reachable online BC friends
 - Profile avatars use the same explicit `Ask first`, `Always show`, or `Links only` privacy choice;
   initials and decorative frames remain available without requesting the remote image
 - Account-derived Friend, Owner, Sub, Lover, Whitelist, Blacklist, and Ghosted badges
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - KikiLink profile cards opened from compatible avatars or player action menus, with name, presence,
   custom status, observable room, addon version, and relationship badges in one compact view
+- Up to 200 last-shared public profile records stay in a 90-day account-local LRU cache. Saved cards
+  open immediately with a visible `SAVED PROFILE` label, or `SAVED DETAILS` when current status is live,
+  and revalidate on an explicit open; live status and room, private notebook fields, relationships,
+  and fetched image blobs are never cached. Banner/outline/gradient age is updated only by an actual
+  profile-details reply, not by an unrelated presence heartbeat
 - Public profile banners can be prepared locally as an exact 1200×400 metadata-free WebP, capped at
-  2 MiB, and uploaded through an explicitly labeled action to long-lived public Catbox storage
+  2 MiB, and uploaded through an explicitly labeled action to long-lived public Catbox storage;
+  progress is visible, slow connections get up to 180 seconds, and Cancel or dialog close aborts the
+  real upload request
 - Remote profile banners follow the same `Ask first`, `Always show`, or `Links only` privacy choice
   and guarded image loader as avatars
-- Optional Blossom, Rose, Starlight, Golden laurel, Crimson thorns, Moonlit orbit, or Silk ribbons
-  avatar decorations, Classic, Garden, or Midnight profile styles, and a strict custom HEX outline
-- Clickable avatars expose a pointer cursor, and the presence dot stays above every decoration
+- Optional Sakura blossoms, Scarlet rose ring, Violet starlight, Golden laurel, Poison thorns,
+  Silver moon orbit, or Jade ribbons avatar decorations; Classic, Garden, or Midnight profile styles;
+  a strict custom HEX outline; and an optional contrast-aware two-color profile gradient
+- Room and Players list/detail avatars are keyboard-focusable KikiLink profile buttons, clickable
+  avatars expose a pointer cursor, and the presence dot stays above every decoration
 - A clearly separated `Only visible to you` section for the private note, tags, last recorded room,
   and encounter count
 - Private notes and searchable tags for individual players
@@ -97,8 +108,10 @@ so they can follow that same account to another device.
 ## LinkChat
 
 - Conversation list instead of one isolated Beep at a time
-- A prominent, independently searchable Groups section for separate 3–5-member addon conversations
-- Aggregate group unread, participant-avatar stacks, member-aware previews, pins, and per-group unread
+- One chronological, searchable conversation list for direct Beeps and separate 3–5-member addon
+  groups; group rows use participant-avatar stacks and an explicit `GROUP` badge
+- Group and direct transports/history remain isolated while sharing familiar previews, pins, times,
+  unread counts, Gallery access, and new-chat actions
 - Choose 2–4 known BC friends that recently advertised relay-capable group support and confirm the complete
   participant list before invitations are sent; version-1 membership is fixed, so changing
   participants means starting a new group
@@ -160,7 +173,8 @@ so they can follow that same account to another device.
 - Immediate outgoing-message display independent of the compatibility hook
 - Reliable live incoming-message capture across Bondage Club's null and empty normal Beep types
 - Strict removal of the known trailing `{"messageType":"Message","messageColor":"#ffffff"}`
-  compatibility envelope without stripping ordinary JSON-like user text
+  compatibility envelope and anchored LikoMAT language trailer, including lazy cleanup of saved
+  previews/history, without stripping malformed or ordinary JSON-like user text
 - Smooth bounded rendering: 120 recent messages at once, incremental live append, stable image-card
   geometry, and on-demand older history
 - Stable scrolling without viewport-triggered message paint; older history is prepended without replacing
@@ -187,6 +201,7 @@ so they can follow that same account to another device.
 - Applying a preset requires current room-admin rights and always preserves the current user as an admin;
   passwords and large map layouts are deliberately excluded
 - Explicit native Kick, Promote/Demote, and room Whitelist/Unwhitelist actions; Kick asks for confirmation
+- Every player avatar in Room opens that member's KikiLink profile as a separate accessible action
 - Local image preparation and temporary Litterbox sharing can fill the room background field;
   renamed MP3/MP4 room audio up to 20 MB can fill the music field
 - A device-local Music track has a `Share & use as room music` action that creates and reuses a

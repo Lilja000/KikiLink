@@ -8,6 +8,8 @@ piece of state. It does not use a shared browser-wide KikiLink identity.
 - localStorage keys use the prefix `kikilink:account:<MemberNumber>:`;
 - chat history uses the IndexedDB database `kikilink-account-<MemberNumber>`;
 - LinkRoster receives the same account-scoped storage as Settings;
+- the bounded public-profile cache uses the same account-prefixed local storage and is never visible
+  to a different signed-in MemberNumber;
 - logout stops modules, hooks, intervals, and repositories and removes the KikiLink host; and
 - an in-page account change completes that teardown before mounting the next account.
 
@@ -40,9 +42,19 @@ The mirror carries its owner MemberNumber and is rejected if it does not match t
 A same-device mirror and the server copy carry update timestamps; the newer valid copy wins at
 startup. Remote chats merge into the local account database rather than clearing newer local data.
 
+The public-profile cache is deliberately not part of this Bondage Club account mirror. It remains a
+device-local convenience containing at most 200 profiles for 90 days, with least-recently-used pruning.
+Only public presentation data can enter it: the BC-known display name; voluntarily shared avatar
+URL/frame, card style, banner, outline, gradient, and addon version; plus local receipt/access times. Current status,
+current room, private notebook data, relationship state, protocol bookkeeping, and fetched image blobs
+are excluded. Banner, outline, and gradient carry their own receipt time and expire independently;
+basic presence packets cannot renew their age. A peer's explicit profile-withdrawal packet removes
+that peer's saved record.
+
 ## Scope and privacy
 
 KikiLink operates no account or sync server. The portable copy uses the Bondage Club account data
 already returned with `Player.ExtensionSettings`. Image uploads and direct avatar/image URLs retain
 their separate behavior documented in `LOCAL_IMAGE_UPLOADS.md`; their remote files are not embedded
-in the KikiLink account snapshot.
+in the KikiLink account snapshot. A saved public profile or saved-details subset is labeled as such in
+the UI and is never used as proof that someone is currently online or in a particular room.

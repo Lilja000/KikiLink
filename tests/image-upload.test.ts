@@ -187,6 +187,72 @@ describe("local image uploads", () => {
     expect(uploaded.type).toBe("image/webp");
   });
 
+  it("reports Catbox image progress through the privileged request path", async () => {
+    const progress = vi.fn();
+    let requestDetails: KikiLinkGmXhrDetails | undefined;
+    globalThis.GM_xmlhttpRequest = vi.fn((details: KikiLinkGmXhrDetails) => {
+      requestDetails = details;
+      queueMicrotask(() => {
+        details.onprogress?.({ loaded: 2, total: 4, lengthComputable: true });
+        details.onload({
+          status: 200,
+          responseText: "https://files.catbox.moe/banner_progress.webp",
+        });
+      });
+      return { abort: vi.fn() };
+    });
+
+    await expect(uploadPreparedImageToCatbox(preparedImage(), undefined, progress)).resolves.toBe(
+      "https://files.catbox.moe/banner_progress.webp",
+    );
+    expect(progress).toHaveBeenCalledWith({ loaded: 2, total: 4, percent: 50 });
+    expect(requestDetails?.timeout).toBe(180_000);
+  });
+
+  it("cancels an injected fetch upload without retrying it", async () => {
+    const controller = new AbortController();
+    const request = vi.fn<typeof fetch>((_endpoint, options) =>
+      new Promise<Response>((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("cancelled", "AbortError")),
+          { once: true },
+        );
+      }));
+
+    const upload = uploadPreparedImageToCatbox(
+      preparedImage(),
+      request,
+      undefined,
+      controller.signal,
+    );
+    controller.abort();
+
+    await expect(upload).rejects.toThrow("The upload was cancelled");
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry an ambiguous network failure", async () => {
+    const request = vi.fn<typeof fetch>(async () => {
+      throw new TypeError("network failed");
+    });
+
+    await expect(uploadPreparedImageToCatbox(preparedImage(), request)).rejects.toThrow(
+      "blocked by the browser network policy",
+    );
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("fails clearly when the production upload bridge is unavailable", async () => {
+    const pageFetch = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", pageFetch);
+
+    await expect(uploadPreparedImageToCatbox(preparedImage())).rejects.toThrow(
+      "KikiLink upload bridge is unavailable",
+    );
+    expect(pageFetch).not.toHaveBeenCalled();
+  });
+
   it("retries one temporary Litterbox 500 response and succeeds without exposing HTML", async () => {
     let attempts = 0;
     const request = vi.fn<typeof fetch>(async () => {
@@ -450,6 +516,15 @@ describe("local image uploads", () => {
 
 function bytes(...values: number[]): ArrayBuffer {
   return Uint8Array.from(values).buffer;
+}
+
+function preparedImage(): PreparedLocalImage {
+  return {
+    blob: new Blob([bytes(1, 2, 3)], { type: "image/webp" }),
+    width: PROFILE_BANNER_WIDTH,
+    height: PROFILE_BANNER_HEIGHT,
+    sourceBytes: 1234,
+  };
 }
 
 function pngFile(name = "banner.png"): File {

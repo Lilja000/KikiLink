@@ -10,23 +10,36 @@ import {
   serializeProfileDetailsPacket,
   serializePresencePacket,
 } from "../src/modules/link-presence/link-presence-service";
+import {
+  MAX_CACHED_PUBLIC_PROFILE_RICH_AGE_MS,
+  PUBLIC_PROFILE_CACHE_KEY,
+  ProfileCacheRepository,
+} from "../src/storage/profile-cache-repository";
 
-function setup(options: { inRoom?: boolean; getOwnMemberNumber?: () => number } = {}) {
+function setup(options: {
+  inRoom?: boolean;
+  getOwnMemberNumber?: () => number;
+  getOnlineFriendNumbers?: () => number[];
+  expectedOwnMemberNumber?: number;
+  storage?: MemoryKeyValueStorage;
+} = {}) {
   const inRoom = options.inRoom === true;
+  const storage = options.storage ?? new MemoryKeyValueStorage();
   const getOwnMemberNumber = options.getOwnMemberNumber ?? (() => 999);
   const sendKikiLinkProtocol = vi.fn((_memberNumber: number, _payload: string) => "beep" as const);
   const broadcastKikiLinkProtocol = vi.fn((_payload: string) => false);
   const adapter = {
     getOwnMemberNumber,
+    getMemberName: (memberNumber: number) => memberNumber === 123 ? "Reina" : `Member ${memberNumber}`,
     refreshOnlineFriends: vi.fn(() => true),
-    getOnlineFriends: () => [
-      {
-        memberNumber: 123,
-        memberName: "Reina",
+    getOnlineFriends: () => (options.getOnlineFriendNumbers?.() ?? [123]).map(
+      (memberNumber) => ({
+        memberNumber,
+        memberName: memberNumber === 123 ? "Reina" : `Member ${memberNumber}`,
         roomName: "Moon Garden",
         privateRoom: false,
-      },
-    ],
+      }),
+    ),
     hasOnlineFriendSnapshot: () => true,
     isKnownFriend: (memberNumber: number) => memberNumber === 123 || memberNumber === 456,
     isMemberInCurrentRoom: () => inRoom,
@@ -35,9 +48,16 @@ function setup(options: { inRoom?: boolean; getOwnMemberNumber?: () => number } 
     sendKikiLinkProtocol,
     broadcastKikiLinkProtocol,
   } as unknown as BCAdapter;
-  const settings = new SettingsStore(new MemoryKeyValueStorage());
+  const settings = new SettingsStore(storage);
   const bus = new EventBus<KikiLinkEvents>();
-  const service = new LinkPresenceService(adapter, settings, bus, "0.11.0");
+  const service = new LinkPresenceService(
+    adapter,
+    settings,
+    bus,
+    "0.11.0",
+    new ProfileCacheRepository(storage),
+    options.expectedOwnMemberNumber,
+  );
   return {
     adapter,
     settings,
@@ -96,6 +116,7 @@ describe("LinkPresenceService", () => {
       statusMessage: "In a scene",
       avatarUrl: "https://i.imgur.com/reina.png",
     });
+    expect(service.get(123).profileFromCache).toBeUndefined();
     expect(service.hasCompatiblePeer(123)).toBe(true);
     expect(service.hasGroupChatPeer(123)).toBe(false);
     expect(service.hasCompatiblePeer(123, Date.now() + 5 * 60_000 + 1)).toBe(false);
@@ -142,6 +163,188 @@ describe("LinkPresenceService", () => {
       payload: JSON.stringify({ ...remoteProfile, u: Date.now() + 1 }),
     });
     expect(service.get(123).statusMessage).toBe("Private scene");
+    service.stop();
+  });
+
+  it("shows bounded saved public profiles after live presence expires without claiming live status", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-29T12:00:00Z"));
+    const storage = new MemoryKeyValueStorage();
+    const first = setup({ storage });
+    first.service.start();
+
+    first.bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://files.catbox.moe/saved-avatar.webp",
+        f: "rose",
+        c: "garden",
+        u: Date.now(),
+        v: "0.26.0",
+      }),
+    });
+    expect(first.service.request(456, true, true)).toBe(true);
+    const profileQuery = JSON.parse(
+      first.sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
+    ) as Record<string, unknown>;
+    first.bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "pf",
+        i: profileQuery.i,
+        h: "https://files.catbox.moe/saved-banner.webp",
+        o: "#a11234",
+        x: "#112233",
+        y: "#445566",
+      }),
+    });
+    first.service.stop();
+
+    vi.advanceTimersByTime(6 * 60_000);
+    const second = setup({ storage });
+    expect(second.service.hasCachedProfile(456)).toBe(true);
+    expect(second.service.get(456)).toMatchObject({
+      status: "offline",
+      source: "friend-list",
+      avatarUrl: "https://files.catbox.moe/saved-avatar.webp",
+      avatarFrame: "rose",
+      profileStyle: "garden",
+      bannerUrl: "https://files.catbox.moe/saved-banner.webp",
+      profileOutlineColor: "#a11234",
+      profileGradient: { enabled: true, primary: "#112233", secondary: "#445566" },
+      addonVersion: "0.26.0",
+      profileFromCache: true,
+      profileSyncedAt: new Date("2026-08-29T12:00:00Z").getTime(),
+    });
+  });
+
+  it("throttles persistence for identical presence heartbeats but saves profile changes immediately", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-29T12:00:00Z"));
+    const storage = new MemoryKeyValueStorage();
+    const setItem = vi.spyOn(storage, "setItem");
+    const { bus, service } = setup({ storage });
+    service.start();
+    setItem.mockClear();
+
+    const publish = (avatarUrl = "https://files.catbox.moe/reina.webp") => {
+      bus.emit("bc:protocol", {
+        senderNumber: 123,
+        channel: "beep",
+        payload: JSON.stringify({
+          t: "ps",
+          s: "online",
+          a: avatarUrl,
+          f: "rose",
+          c: "garden",
+          u: Date.now(),
+          v: "0.26.0",
+        }),
+      });
+    };
+    const cacheWriteCount = () => setItem.mock.calls.filter(
+      ([key]) => key === PUBLIC_PROFILE_CACHE_KEY,
+    ).length;
+
+    publish();
+    expect(cacheWriteCount()).toBe(1);
+    for (let heartbeat = 1; heartbeat < 30; heartbeat += 1) {
+      vi.advanceTimersByTime(30_000);
+      publish();
+    }
+    expect(cacheWriteCount()).toBe(1);
+
+    vi.advanceTimersByTime(30_000);
+    publish();
+    expect(cacheWriteCount()).toBe(2);
+
+    publish("https://files.catbox.moe/reina-new.webp");
+    expect(cacheWriteCount()).toBe(3);
+    service.stop();
+  });
+
+  it("removes a saved public profile when its owner sends a profile withdrawal", () => {
+    const storage = new MemoryKeyValueStorage();
+    const { bus, service } = setup({ storage });
+    service.start();
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://files.catbox.moe/reina.webp",
+        u: Date.now(),
+        v: "0.26.0",
+      }),
+    });
+    expect(service.hasCachedProfile(123)).toBe(true);
+
+    service.setEnabled(false);
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "offline",
+        u: Date.now() + 1,
+        v: "0.26.0",
+      }),
+    });
+    service.setEnabled(true);
+    expect(service.hasCachedProfile(123)).toBe(false);
+    expect(service.get(123).avatarUrl).toBeUndefined();
+    service.stop();
+  });
+
+  it("does not let a delayed profile-details response resurrect a withdrawn profile", () => {
+    const storage = new MemoryKeyValueStorage();
+    const { bus, service, sendKikiLinkProtocol } = setup({ storage });
+    service.start();
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://files.catbox.moe/reina.webp",
+        u: Date.now(),
+        v: "0.26.0",
+      }),
+    });
+    expect(service.request(123, true, true)).toBe(true);
+    const request = JSON.parse(
+      sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
+    ) as Record<string, unknown>;
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "offline",
+        u: Date.now() + 1,
+        v: "0.26.0",
+      }),
+    });
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "pf",
+        i: request.i,
+        h: "https://files.catbox.moe/must-stay-withdrawn.webp",
+        o: "#123456",
+      }),
+    });
+
+    expect(service.hasCachedProfile(123)).toBe(false);
+    expect(service.get(123).bannerUrl).toBeUndefined();
+    expect(service.get(123).profileOutlineColor).toBeUndefined();
     service.stop();
   });
 
@@ -289,7 +492,7 @@ describe("LinkPresenceService", () => {
     const explicitQuery = JSON.parse(
       sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
     ) as Record<string, unknown>;
-    expect(explicitQuery).toMatchObject({ t: "pq", p: 1 });
+    expect(explicitQuery).toMatchObject({ t: "pq", p: 1, e: 1 });
     expect(typeof explicitQuery.i).toBe("string");
 
     bus.emit("bc:protocol", {
@@ -315,6 +518,18 @@ describe("LinkPresenceService", () => {
     });
     expect(service.get(456).bannerUrl).toBeUndefined();
     expect(service.get(456).profileOutlineColor).toBeUndefined();
+    expect(service.get(456).profileGradient).toBeUndefined();
+
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "pf",
+        i: explicitQuery.i,
+        x: "#112233",
+      }),
+    });
+    expect(service.get(456).profileGradient).toBeUndefined();
 
     bus.emit("bc:protocol", {
       senderNumber: 456,
@@ -324,11 +539,18 @@ describe("LinkPresenceService", () => {
         i: explicitQuery.i,
         h: "https://files.catbox.moe/reina-banner.webp",
         o: "#C53A71",
+        x: "#8A1538",
+        y: "#2A9D8F",
       }),
     });
     expect(service.get(456)).toMatchObject({
       bannerUrl: "https://files.catbox.moe/reina-banner.webp",
       profileOutlineColor: "#c53a71",
+      profileGradient: {
+        enabled: true,
+        primary: "#8a1538",
+        secondary: "#2a9d8f",
+      },
     });
 
     vi.advanceTimersByTime(2_001);
@@ -343,6 +565,7 @@ describe("LinkPresenceService", () => {
     });
     expect(service.get(456).bannerUrl).toBeUndefined();
     expect(service.get(456).profileOutlineColor).toBeUndefined();
+    expect(service.get(456).profileGradient).toBeUndefined();
     service.stop();
   });
 
@@ -360,6 +583,8 @@ describe("LinkPresenceService", () => {
             i: packet.i,
             h: "https://files.catbox.moe/synchronous.webp",
             o: "#123456",
+            x: "#8A1538",
+            y: "#2A9D8F",
           }),
         });
       }
@@ -395,7 +620,145 @@ describe("LinkPresenceService", () => {
     expect(service.get(123)).toMatchObject({
       bannerUrl: "https://files.catbox.moe/synchronous.webp",
       profileOutlineColor: "#123456",
+      profileGradient: {
+        enabled: true,
+        primary: "#8a1538",
+        secondary: "#2a9d8f",
+      },
     });
+    service.stop();
+  });
+
+  it("persists and shows a correlated profile-details reply before any presence snapshot", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-29T12:00:00Z"));
+    const storage = new MemoryKeyValueStorage();
+    const first = setup({ storage });
+    first.service.start();
+
+    expect(first.service.request(456, true, true)).toBe(true);
+    const query = JSON.parse(
+      first.sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
+    ) as Record<string, unknown>;
+    first.bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "pf",
+        i: query.i,
+        h: "https://files.catbox.moe/pf-before-ps.webp",
+        o: "#123456",
+        x: "#8a1538",
+        y: "#2a9d8f",
+      }),
+    });
+
+    expect(first.service.get(456)).toMatchObject({
+      status: "offline",
+      source: "friend-list",
+      bannerUrl: "https://files.catbox.moe/pf-before-ps.webp",
+      profileOutlineColor: "#123456",
+      profileGradient: {
+        enabled: true,
+        primary: "#8a1538",
+        secondary: "#2a9d8f",
+      },
+    });
+    expect(new ProfileCacheRepository(storage).peek(456)).toMatchObject({
+      bannerUrl: "https://files.catbox.moe/pf-before-ps.webp",
+      richSyncedAt: Date.now(),
+    });
+    first.service.stop();
+
+    const restored = setup({ storage });
+    expect(restored.service.get(456)).toMatchObject({
+      status: "offline",
+      source: "friend-list",
+      bannerUrl: "https://files.catbox.moe/pf-before-ps.webp",
+      profileOutlineColor: "#123456",
+      profileFromCache: true,
+      profileSyncedAt: Date.now(),
+    });
+  });
+
+  it("does not renew saved rich-detail age when only basic presence is refreshed", () => {
+    vi.useFakeTimers();
+    const detailsAt = new Date("2026-01-01T00:00:00Z").getTime();
+    vi.setSystemTime(detailsAt);
+    const storage = new MemoryKeyValueStorage();
+    const { bus, service, sendKikiLinkProtocol } = setup({ storage });
+    service.start();
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://files.catbox.moe/avatar-one.webp",
+        u: Date.now(),
+        v: "0.26.0",
+      }),
+    });
+    expect(service.request(123, true, true)).toBe(true);
+    const query = JSON.parse(
+      sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
+    ) as Record<string, unknown>;
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "pf",
+        i: query.i,
+        h: "https://files.catbox.moe/old-rich-banner.webp",
+        o: "#123456",
+      }),
+    });
+
+    const basicRefreshAt = detailsAt + 30 * 24 * 60 * 60_000;
+    vi.setSystemTime(basicRefreshAt);
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://files.catbox.moe/avatar-two.webp",
+        u: Date.now(),
+        v: "0.26.1",
+      }),
+    });
+    expect(new ProfileCacheRepository(storage).peek(123)).toMatchObject({
+      avatarUrl: "https://files.catbox.moe/avatar-two.webp",
+      bannerUrl: "https://files.catbox.moe/old-rich-banner.webp",
+      syncedAt: basicRefreshAt,
+      richSyncedAt: detailsAt,
+    });
+    expect(service.get(123)).toMatchObject({
+      source: "kikilink",
+      bannerUrl: "https://files.catbox.moe/old-rich-banner.webp",
+      profileFromCache: true,
+      profileSyncedAt: detailsAt,
+    });
+
+    vi.setSystemTime(detailsAt + MAX_CACHED_PUBLIC_PROFILE_RICH_AGE_MS + 1);
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://files.catbox.moe/avatar-three.webp",
+        u: Date.now(),
+        v: "0.26.2",
+      }),
+    });
+    const expired = new ProfileCacheRepository(storage).peek(123);
+    expect(expired?.avatarUrl).toBe("https://files.catbox.moe/avatar-three.webp");
+    expect(expired).not.toHaveProperty("bannerUrl");
+    expect(expired).not.toHaveProperty("profileOutlineColor");
+    expect(expired).not.toHaveProperty("richSyncedAt");
+    expect(service.get(123).bannerUrl).toBeUndefined();
     service.stop();
   });
 
@@ -404,6 +767,11 @@ describe("LinkPresenceService", () => {
     settings.update((draft) => {
       draft.linkPresence.bannerUrl = "https://files.catbox.moe/kiki-banner.webp";
       draft.linkPresence.profileOutlineColor = "#d71932";
+      draft.linkPresence.profileGradient = {
+        enabled: true,
+        primary: "#8a1538",
+        secondary: "#2a9d8f",
+      };
     });
     service.start();
     sendKikiLinkProtocol.mockClear();
@@ -432,6 +800,23 @@ describe("LinkPresenceService", () => {
       h: "https://files.catbox.moe/kiki-banner.webp",
       o: "#d71932",
     });
+
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pq", i: "extended-profile", p: 1, e: 1 }),
+    });
+    const extendedDetails = JSON.parse(
+      sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
+    ) as Record<string, unknown>;
+    expect(extendedDetails).toEqual({
+      t: "pf",
+      i: "extended-profile",
+      h: "https://files.catbox.moe/kiki-banner.webp",
+      o: "#d71932",
+      x: "#8a1538",
+      y: "#2a9d8f",
+    });
     expect(broadcastKikiLinkProtocol).not.toHaveBeenCalled();
     service.stop();
   });
@@ -442,6 +827,11 @@ describe("LinkPresenceService", () => {
       draft.linkPresence.enabled = false;
       draft.linkPresence.bannerUrl = "https://files.catbox.moe/private-banner.webp";
       draft.linkPresence.profileOutlineColor = "#112233";
+      draft.linkPresence.profileGradient = {
+        enabled: true,
+        primary: "#8a1538",
+        secondary: "#2a9d8f",
+      };
     });
     service.start();
     sendKikiLinkProtocol.mockClear();
@@ -449,11 +839,19 @@ describe("LinkPresenceService", () => {
     bus.emit("bc:protocol", {
       senderNumber: 123,
       channel: "beep",
-      payload: JSON.stringify({ t: "pq", i: "private-request", p: 1 }),
+      payload: JSON.stringify({ t: "pq", i: "private-request", p: 1, e: 1 }),
     });
     const payloads = sendKikiLinkProtocol.mock.calls.map(([, payload]) => payload);
     expect(payloads.some((payload) => payload.includes('"t":"pc"'))).toBe(true);
     expect(payloads.some((payload) => payload.includes('"t":"pf"'))).toBe(false);
+
+    expect(service.request(123, true, true)).toBe(true);
+    const disabledQuery = JSON.parse(
+      sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
+    ) as Record<string, unknown>;
+    expect(disabledQuery).toMatchObject({ t: "pq" });
+    expect(disabledQuery).not.toHaveProperty("p");
+    expect(disabledQuery).not.toHaveProperty("e");
 
     bus.emit("bc:protocol", {
       senderNumber: 123,
@@ -462,6 +860,23 @@ describe("LinkPresenceService", () => {
         t: "pf",
         i: "private-request",
         h: "https://files.catbox.moe/remote-banner.webp",
+        o: "#abcdef",
+        x: "#8a1538",
+        y: "#2a9d8f",
+      }),
+    });
+    expect(service.get(123).bannerUrl).toBeUndefined();
+    expect(service.get(123).profileOutlineColor).toBeUndefined();
+    expect(service.get(123).profileGradient).toBeUndefined();
+
+    service.setEnabled(true);
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "pf",
+        i: disabledQuery.i,
+        h: "https://files.catbox.moe/still-private.webp",
         o: "#abcdef",
       }),
     });
@@ -478,6 +893,8 @@ describe("LinkPresenceService", () => {
       i: "profile-details-1",
       h: banner,
       o: "#A1B2C3",
+      x: "#8A1538",
+      y: "#2A9D8F",
     });
     expect(new TextEncoder().encode(payload).byteLength).toBeLessThanOrEqual(700);
     expect(JSON.parse(payload)).toEqual({
@@ -485,6 +902,8 @@ describe("LinkPresenceService", () => {
       i: "profile-details-1",
       h: banner,
       o: "#a1b2c3",
+      x: "#8a1538",
+      y: "#2a9d8f",
     });
     expect(() => serializeProfileDetailsPacket({
       t: "pf",
@@ -496,6 +915,63 @@ describe("LinkPresenceService", () => {
       i: "profile-details-3",
       o: "red; background: url(https://tracker.example/x.png)",
     })).toThrow("Invalid profile outline color");
+    expect(() => serializeProfileDetailsPacket({
+      t: "pf",
+      i: "profile-details-4",
+      x: "#123456",
+    })).toThrow("must be sent together");
+    expect(() => serializeProfileDetailsPacket({
+      t: "pf",
+      i: "profile-details-5",
+      x: "red; background:url(https://tracker.example/x.png)",
+      y: "#abcdef",
+    })).toThrow("Invalid profile gradient color");
+  });
+
+  it("fails closed when the controller account does not match the readable page identity", () => {
+    const storage = new MemoryKeyValueStorage();
+    new ProfileCacheRepository(storage).upsert({
+      memberNumber: 303,
+      displayName: "Account 101 profile",
+      avatarUrl: "https://files.catbox.moe/account-101.webp",
+    });
+    const {
+      bus,
+      service,
+      sendKikiLinkProtocol,
+      broadcastKikiLinkProtocol,
+    } = setup({
+      storage,
+      getOwnMemberNumber: () => 202,
+      expectedOwnMemberNumber: 101,
+    });
+
+    service.start();
+    expect(service.hasCachedProfile(303)).toBe(false);
+    expect(service.get(303)).toEqual({
+      memberNumber: 303,
+      status: "unknown",
+      source: "unknown",
+      updatedAt: 0,
+    });
+    expect(service.request(303, true, true)).toBe(false);
+    bus.emit("bc:protocol", {
+      senderNumber: 303,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://files.catbox.moe/account-202.webp",
+        u: Date.now(),
+        v: "0.26.0",
+      }),
+    });
+    expect(sendKikiLinkProtocol).not.toHaveBeenCalled();
+    expect(broadcastKikiLinkProtocol).not.toHaveBeenCalled();
+    expect(new ProfileCacheRepository(storage).get(303)?.avatarUrl).toBe(
+      "https://files.catbox.moe/account-101.webp",
+    );
+    service.stop();
   });
 
   it("irreversibly invalidates the old instance on an authenticated account switch", () => {
@@ -550,7 +1026,7 @@ describe("LinkPresenceService", () => {
 
     sendKikiLinkProtocol.mockClear();
     broadcastKikiLinkProtocol.mockClear();
-    expect(service.requestMany([321, 654])).toBe(2);
+    expect(service.requestMany([123, 321])).toBe(1);
     expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(1);
 
     ownMemberNumber = 1_000;
@@ -579,6 +1055,7 @@ describe("LinkPresenceService", () => {
     expect(service.getOwnAvatarUrl()).toBe("");
     expect(service.getOwnBannerUrl()).toBe("");
     expect(service.getOwnProfileOutlineColor()).toBe("");
+    expect(service.getOwnProfileGradient()).toBeUndefined();
 
     // Even restoring the old number cannot revive an instance that observed a valid switch.
     ownMemberNumber = 999;
@@ -1012,6 +1489,11 @@ describe("LinkPresenceService", () => {
       avatarFrame: "blossom" as const,
       profileStyle: "garden" as const,
       profileOutlineColor: "",
+      profileGradient: {
+        enabled: true,
+        primary: "#8a1538",
+        secondary: "#2a9d8f",
+      },
       autoIdleMinutes: 10,
       afkAutoReply: { enabled: false, message: "Back later!" },
       privateTags: ["secret-sub"],
@@ -1027,6 +1509,11 @@ describe("LinkPresenceService", () => {
     ) as Record<string, unknown>;
 
     expect(Object.keys(packet).sort()).toEqual(["a", "c", "f", "g", "m", "s", "t", "u", "v"]);
+    expect(service.getOwnProfileGradient()).toEqual({
+      enabled: true,
+      primary: "#8a1538",
+      secondary: "#2a9d8f",
+    });
     expect(JSON.stringify(packet)).not.toMatch(
       /secret-sub|do-not-share-this-note|private-alias|private-room-name|lover/u,
     );
@@ -1088,26 +1575,99 @@ describe("LinkPresenceService", () => {
     service.stop();
   });
 
-  it("discovers visible players through a deduplicated, rate-limited queue", () => {
+  it("discovers only route-reachable visible players with a long background backoff", () => {
     vi.useFakeTimers();
     const { service, sendKikiLinkProtocol } = setup();
 
-    expect(service.requestMany([123, 456, 123, 999, -1, Number.NaN])).toBe(2);
+    expect(service.requestMany([123, 456, 123, 999, 0, -1, Number.NaN])).toBe(1);
     expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(1);
     expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
       123,
       expect.stringContaining('"t":"pq"'),
     );
 
-    vi.advanceTimersByTime(139);
-    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(1);
+    expect(service.request(0, true, true)).toBe(false);
+    expect(service.setTyping(0, true)).toBe(false);
+    expect(service.request(123, true, true)).toBe(true);
     expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(2);
+
+    vi.advanceTimersByTime(20_001);
+    expect(service.requestMany([123, 456])).toBe(0);
+    vi.advanceTimersByTime(15 * 60_000 - 20_000);
+    expect(service.requestMany([123])).toBe(1);
+    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(3);
+    service.stop();
+  });
+
+  it("discovers a newly online friend once and deduplicates repeated snapshots", () => {
+    vi.useFakeTimers();
+    const startedAt = new Date("2026-08-29T12:00:00Z").getTime();
+    vi.setSystemTime(startedAt);
+    let onlineFriendNumbers: number[] = [];
+    const { bus, service, sendKikiLinkProtocol } = setup({
+      getOnlineFriendNumbers: () => onlineFriendNumbers,
+    });
+    service.start();
+    sendKikiLinkProtocol.mockClear();
+    const emitOnlineFriends = () => {
+      bus.emit("bc:online-friends", {
+        friends: onlineFriendNumbers.map((memberNumber) => ({
+          memberNumber,
+          memberName: `Member ${memberNumber}`,
+          roomName: "Moon Garden",
+          privateRoom: false,
+        })),
+        receivedAt: Date.now(),
+      });
+    };
+
+    onlineFriendNumbers = [123];
+    emitOnlineFriends();
+    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(1);
     expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
-      456,
+      123,
       expect.stringContaining('"t":"pq"'),
     );
-    expect(service.requestMany([123, 456])).toBe(0);
+
+    emitOnlineFriends();
+    vi.setSystemTime(startedAt + 16 * 60_000);
+    emitOnlineFriends();
+    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(1);
+
+    onlineFriendNumbers = [];
+    emitOnlineFriends();
+    onlineFriendNumbers = [123];
+    emitOnlineFriends();
+    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(2);
+    service.stop();
+  });
+
+  it("rechecks route and compatibility before draining a queued background query", () => {
+    vi.useFakeTimers();
+    let onlineFriendNumbers = [123, 456, 321];
+    const { bus, service, sendKikiLinkProtocol } = setup({
+      getOnlineFriendNumbers: () => onlineFriendNumbers,
+    });
+    service.start();
+    sendKikiLinkProtocol.mockClear();
+
+    expect(service.requestMany([123, 456, 321])).toBe(3);
+    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(1);
+    expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
+      123,
+      expect.stringContaining('"t":"pq"'),
+    );
+
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pc", v: "0.26.0", g: 2 }),
+    });
+    onlineFriendNumbers = [123, 456];
+    vi.advanceTimersByTime(140);
+
+    expect(service.hasCompatiblePeer(456)).toBe(true);
+    expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(1);
     service.stop();
   });
 });

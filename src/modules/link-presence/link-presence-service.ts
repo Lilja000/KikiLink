@@ -7,8 +7,14 @@ import type {
   PresenceSnapshot,
   PresenceStatus,
   ProfileCardStyle,
+  ProfileGradient,
 } from "../../core/types";
 import { createId } from "../../utils/id";
+import type {
+  CachedPublicProfileInput,
+  CachedPublicProfileRecord,
+} from "../../storage/profile-cache-repository";
+import type { ProfileCacheRepository } from "../../storage/profile-cache-repository";
 import { normalizeImageUrl } from "../link-chat/media";
 
 const NATIVE_REFRESH_MS = 30_000;
@@ -17,19 +23,22 @@ const STATUS_CHECK_MS = 15_000;
 const REMOTE_STATUS_TTL_MS = 5 * 60_000;
 const RECENT_PACKET_ONLINE_MS = 90_000;
 const REQUEST_COOLDOWN_MS = 20_000;
+const BACKGROUND_REQUEST_COOLDOWN_MS = 15 * 60_000;
 const FORCED_REQUEST_COOLDOWN_MS = 2_000;
 const REQUEST_QUEUE_INTERVAL_MS = 140;
 const MAX_QUEUED_REQUESTS = 60;
+const MAX_TRACKED_ONLINE_FRIENDS = 500;
 const RESPONSE_COOLDOWN_MS = 5_000;
 const PROFILE_RESPONSE_COOLDOWN_MS = 2_000;
 const TYPING_REFRESH_MS = 1_800;
 const TYPING_TTL_MS = 5_500;
 const MAX_PROTOCOL_PAYLOAD = 700;
+const UNCHANGED_PROFILE_CACHE_REFRESH_MS = 15 * 60_000;
 
 type PresenceListener = (memberNumber?: number) => void;
 
 type PresencePacket =
-  | { t: "pq"; i: string; b?: 1; p?: 1 }
+  | { t: "pq"; i: string; b?: 1; p?: 1; e?: 1 }
   | { t: "pc"; v: string; g?: 1 | 2 }
   | {
       t: "ps";
@@ -43,7 +52,7 @@ type PresencePacket =
       v: string;
       g?: 1 | 2;
     }
-  | { t: "pf"; i: string; h?: string; o?: string }
+  | { t: "pf"; i: string; h?: string; o?: string; x?: string; y?: string }
   | { t: "ty"; a: 0 | 1 };
 
 interface RemotePresence {
@@ -60,6 +69,7 @@ interface RemotePresence {
 interface RemoteProfileDetails {
   bannerUrl?: string;
   profileOutlineColor?: string;
+  profileGradient?: ProfileGradient;
   receivedAt: number;
 }
 
@@ -76,6 +86,7 @@ export interface OwnProfilePreferences {
   avatarFrame?: AvatarFrame;
   profileStyle?: ProfileCardStyle;
   profileOutlineColor: string;
+  profileGradient?: ProfileGradient;
   autoIdleMinutes: number;
   afkAutoReply: {
     enabled: boolean;
@@ -98,6 +109,7 @@ export class LinkPresenceService {
   readonly #pendingProfileRequests = new Map<number, PendingProfileRequest>();
   readonly #requestQueue: number[] = [];
   readonly #queuedRequests = new Set<number>();
+  readonly #reachableOnlineFriends = new Set<number>();
   readonly #localTyping = new Map<number, { active: true; sentAt: number }>();
   readonly #remoteTypingUntil = new Map<number, number>();
   readonly #typingExpiryTimers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -142,10 +154,25 @@ export class LinkPresenceService {
     private readonly settings: SettingsStore,
     private readonly bus: EventBus<KikiLinkEvents>,
     private readonly version: string,
+    private readonly profileCache?: ProfileCacheRepository,
+    expectedOwnMemberNumber?: number,
   ) {
-    this.#authenticatedOwnMemberNumber = this.#readCurrentMemberNumber();
-    // Without a trusted account identity there is no safe settings owner to recover later.
-    this.#identityInvalidated = this.#authenticatedOwnMemberNumber === undefined;
+    const currentMemberNumber = this.#readCurrentMemberNumber();
+    const expectedProvided = expectedOwnMemberNumber !== undefined;
+    const expectedMemberNumber = isPositiveMemberNumber(expectedOwnMemberNumber)
+      ? expectedOwnMemberNumber
+      : undefined;
+    this.#authenticatedOwnMemberNumber = expectedProvided
+      ? expectedMemberNumber
+      : currentMemberNumber;
+    // The account-scoped stores belong to the controller's expected identity. A readable mismatch
+    // must fail closed before this instance can read or write them; an unreadable page wrapper may
+    // still recover later for the same pinned account.
+    this.#identityInvalidated =
+      this.#authenticatedOwnMemberNumber === undefined ||
+      (expectedProvided &&
+        currentMemberNumber !== undefined &&
+        currentMemberNumber !== expectedMemberNumber);
   }
 
   start(): void {
@@ -162,8 +189,26 @@ export class LinkPresenceService {
     this.#lastEffectiveStatus = identityReadable ? this.#configuredOwnStatus() : "offline";
     this.#unsubscribers.push(
       this.bus.on("bc:protocol", (event) => this.#receive(event.senderNumber, event.payload)),
-      this.bus.on("bc:online-friends", () => {
-        if (this.#hasAuthenticatedIdentity()) this.#notify();
+      this.bus.on("bc:online-friends", ({ friends }) => {
+        if (!this.#hasAuthenticatedIdentity()) return;
+        const reachableNow = new Set<number>();
+        const newlyReachable: number[] = [];
+        for (const friend of friends.slice(0, MAX_TRACKED_ONLINE_FRIENDS)) {
+          const memberNumber = friend.memberNumber;
+          if (
+            !isPositiveMemberNumber(memberNumber) ||
+            memberNumber === this.#authenticatedOwnMemberNumber ||
+            reachableNow.has(memberNumber)
+          ) {
+            continue;
+          }
+          reachableNow.add(memberNumber);
+          if (!this.#reachableOnlineFriends.has(memberNumber)) newlyReachable.push(memberNumber);
+        }
+        this.#reachableOnlineFriends.clear();
+        for (const memberNumber of reachableNow) this.#reachableOnlineFriends.add(memberNumber);
+        this.requestMany(newlyReachable);
+        this.#notify();
       }),
       this.bus.on("bc:ready", () => {
         this.#refreshNativeFriends();
@@ -196,6 +241,7 @@ export class LinkPresenceService {
     this.#requestTimer = undefined;
     this.#requestQueue.splice(0);
     this.#queuedRequests.clear();
+    this.#reachableOnlineFriends.clear();
     if (!this.#started) return;
     for (const memberNumber of this.#localTyping.keys()) {
       this.setTyping(memberNumber, false, true);
@@ -260,6 +306,19 @@ export class LinkPresenceService {
       : "";
   }
 
+  getOwnProfileGradient(): ProfileGradient | undefined {
+    if (!this.#hasAuthenticatedIdentity()) return undefined;
+    const gradient = this.settings.get().linkPresence.profileGradient;
+    return gradient.enabled ? gradient : undefined;
+  }
+
+  hasCachedProfile(memberNumber: number, now = Date.now()): boolean {
+    if (!this.#hasAuthenticatedIdentity() || !this.settings.get().linkPresence.enabled) {
+      return false;
+    }
+    return this.#cachedProfile(memberNumber, now) !== undefined;
+  }
+
   setOwnStatus(status: PresenceStatus): void {
     if (!this.#hasAuthenticatedIdentity()) return;
     this.settings.update((draft) => {
@@ -287,7 +346,10 @@ export class LinkPresenceService {
     } else if (enabled) {
       this.#syncRoom(true);
     }
-    this.#notify(clearedRemoteProfiles ? undefined : this.#ownMemberNumber());
+    // Cached-only cards also need a full rerender so voluntary fields disappear immediately.
+    this.#notify(previous && !enabled || clearedRemoteProfiles
+      ? undefined
+      : this.#ownMemberNumber());
   }
 
   setOwnProfile(profile: OwnProfilePreferences): void {
@@ -301,6 +363,7 @@ export class LinkPresenceService {
       if (profile.avatarFrame) draft.linkPresence.avatarFrame = profile.avatarFrame;
       if (profile.profileStyle) draft.linkPresence.profileStyle = profile.profileStyle;
       draft.linkPresence.profileOutlineColor = profile.profileOutlineColor;
+      if (profile.profileGradient) draft.linkPresence.profileGradient = profile.profileGradient;
       draft.linkPresence.autoIdleMinutes = profile.autoIdleMinutes;
       draft.linkPresence.afkAutoReply = profile.afkAutoReply;
     }).linkPresence;
@@ -316,7 +379,9 @@ export class LinkPresenceService {
       if (previousEnabled) this.#publishOwnPresence();
       else this.#syncRoom(true);
     }
-    this.#notify(clearedRemoteProfiles ? undefined : this.#ownMemberNumber());
+    this.#notify(previousEnabled && !next.enabled || clearedRemoteProfiles
+      ? undefined
+      : this.#ownMemberNumber());
   }
 
   setOwnStatusMessage(statusMessage: string): void {
@@ -356,10 +421,16 @@ export class LinkPresenceService {
         ...(config.profileOutlineColor
           ? { profileOutlineColor: config.profileOutlineColor }
           : {}),
+        ...(config.profileGradient.enabled
+          ? { profileGradient: config.profileGradient }
+          : {}),
         addonVersion: this.version,
       };
     }
 
+    const cached = this.settings.get().linkPresence.enabled
+      ? this.#cachedProfile(memberNumber, now)
+      : undefined;
     const remote = this.#remote.get(memberNumber);
     const remoteProfileDetails = this.#remoteProfileDetails.get(memberNumber);
     let inRoom = false;
@@ -400,11 +471,17 @@ export class LinkPresenceService {
       // Treat a denied online-friend object as unavailable instead of rejecting a UI handler.
     }
     const observableRoomName = onlineFriendRoomName ?? currentRoomName;
+    const liveProfileDetails = remoteProfileDetails &&
+      now - remoteProfileDetails.receivedAt <= REMOTE_STATUS_TTL_MS
+      ? remoteProfileDetails
+      : undefined;
     if (
       remote &&
       now - remote.receivedAt <= REMOTE_STATUS_TTL_MS &&
       (remote.status === "offline" || inRoom || onlineFriendPresent || now - remote.receivedAt <= RECENT_PACKET_ONLINE_MS)
     ) {
+      const cachedDetailsUsed =
+        !liveProfileDetails && cached && hasCachedRichProfile(cached);
       return {
         memberNumber,
         status: remote.status,
@@ -414,39 +491,37 @@ export class LinkPresenceService {
         ...(remote.avatarUrl ? { avatarUrl: remote.avatarUrl } : {}),
         ...(remote.avatarFrame ? { avatarFrame: remote.avatarFrame } : {}),
         ...(remote.profileStyle ? { profileStyle: remote.profileStyle } : {}),
-        ...(remoteProfileDetails && now - remoteProfileDetails.receivedAt <= REMOTE_STATUS_TTL_MS
-          ? {
-              ...(remoteProfileDetails.bannerUrl
-                ? { bannerUrl: remoteProfileDetails.bannerUrl }
-                : {}),
-              ...(remoteProfileDetails.profileOutlineColor
-                ? { profileOutlineColor: remoteProfileDetails.profileOutlineColor }
-                : {}),
-            }
-          : {}),
+        ...(liveProfileDetails
+          ? liveProfileDetailFields(liveProfileDetails)
+          : cachedPublicProfileFields(cached, true)),
         ...(remote.addonVersion ? { addonVersion: remote.addonVersion } : {}),
         ...(observableRoomName ? { roomName: observableRoomName } : {}),
+        ...(cachedDetailsUsed
+          ? { profileFromCache: true, profileSyncedAt: cached.richSyncedAt }
+          : {}),
       };
     }
     if (inRoom) {
-      const addonVersion = this.#remoteVersions.get(memberNumber);
+      const addonVersion = this.#remoteVersions.get(memberNumber) ?? cached?.addonVersion;
       return {
         memberNumber,
         status: "online",
         source: "room",
         updatedAt: now,
         ...(currentRoomName ? { roomName: currentRoomName } : {}),
+        ...nonRemotePublicProfileFields(cached, liveProfileDetails),
         ...(addonVersion ? { addonVersion } : {}),
       };
     }
     if (onlineFriendPresent) {
-      const addonVersion = this.#remoteVersions.get(memberNumber);
+      const addonVersion = this.#remoteVersions.get(memberNumber) ?? cached?.addonVersion;
       return {
         memberNumber,
         status: "online",
         source: "friend-list",
         updatedAt: now,
         ...(onlineFriendRoomName ? { roomName: onlineFriendRoomName } : {}),
+        ...nonRemotePublicProfileFields(cached, liveProfileDetails),
         ...(addonVersion ? { addonVersion } : {}),
       };
     }
@@ -461,27 +536,41 @@ export class LinkPresenceService {
       // Native friend lists may be guarded during account/screen transitions.
     }
     if (knownOfflineFriend) {
-      return { memberNumber, status: "offline", source: "friend-list", updatedAt: now };
+      return {
+        memberNumber,
+        status: "offline",
+        source: "friend-list",
+        updatedAt: now,
+        ...nonRemotePublicProfileFields(cached, liveProfileDetails),
+      };
     }
-    return { memberNumber, status: "unknown", source: "unknown", updatedAt: 0 };
+    return {
+      memberNumber,
+      status: "unknown",
+      source: "unknown",
+      updatedAt: 0,
+      ...nonRemotePublicProfileFields(cached, liveProfileDetails),
+    };
   }
 
   request(memberNumber: number, force = false, includeProfile = false): boolean {
     if (
       !this.#hasAuthenticatedIdentity() ||
       !Number.isSafeInteger(memberNumber) ||
-      memberNumber < 0 ||
+      memberNumber <= 0 ||
       memberNumber === this.#authenticatedOwnMemberNumber
     ) {
       return false;
     }
+    const requestProfile = includeProfile && this.settings.get().linkPresence.enabled;
+    if (includeProfile && !requestProfile) this.#pendingProfileRequests.delete(memberNumber);
     const now = Date.now();
-    const previousRequestAt = includeProfile
+    const previousRequestAt = requestProfile
       ? this.#lastProfileRequestAt.get(memberNumber)
       : force
         ? this.#lastForcedRequestAt.get(memberNumber)
         : this.#lastRequestAt.get(memberNumber);
-    const cooldownMs = includeProfile || force
+    const cooldownMs = requestProfile || force
       ? FORCED_REQUEST_COOLDOWN_MS
       : REQUEST_COOLDOWN_MS;
     if (previousRequestAt !== undefined && now - previousRequestAt < cooldownMs) {
@@ -491,17 +580,17 @@ export class LinkPresenceService {
     const packet: PresencePacket = {
       t: "pq",
       i: requestId,
-      ...(includeProfile ? { p: 1 } : {}),
+      ...(requestProfile ? { p: 1, e: 1 } : {}),
     };
     this.#lastRequestAt.set(memberNumber, now);
-    if (force && !includeProfile) this.#lastForcedRequestAt.set(memberNumber, now);
-    if (includeProfile) {
+    if (force && !requestProfile) this.#lastForcedRequestAt.set(memberNumber, now);
+    if (requestProfile) {
       this.#lastProfileRequestAt.set(memberNumber, now);
       // Register before transport: virtual/test adapters may synchronously deliver the reply.
       this.#pendingProfileRequests.set(memberNumber, { id: requestId, requestedAt: now });
     }
     if (!this.#hasAuthenticatedIdentity()) {
-      if (includeProfile && this.#pendingProfileRequests.get(memberNumber)?.id === requestId) {
+      if (requestProfile && this.#pendingProfileRequests.get(memberNumber)?.id === requestId) {
         this.#pendingProfileRequests.delete(memberNumber);
       }
       return false;
@@ -511,7 +600,7 @@ export class LinkPresenceService {
       return true;
     } catch {
       // A transient BC or cross-realm failure must not turn every UI render into another send.
-      if (includeProfile && this.#pendingProfileRequests.get(memberNumber)?.id === requestId) {
+      if (requestProfile && this.#pendingProfileRequests.get(memberNumber)?.id === requestId) {
         this.#pendingProfileRequests.delete(memberNumber);
       }
       return false;
@@ -531,11 +620,13 @@ export class LinkPresenceService {
       if (
         this.#requestQueue.length >= MAX_QUEUED_REQUESTS ||
         !Number.isSafeInteger(memberNumber) ||
-        memberNumber < 0 ||
+        memberNumber <= 0 ||
         memberNumber === ownMemberNumber ||
         this.hasCompatiblePeer(memberNumber, now) ||
         this.#queuedRequests.has(memberNumber) ||
-        now - (this.#lastRequestAt.get(memberNumber) ?? 0) < REQUEST_COOLDOWN_MS
+        now - (this.#lastRequestAt.get(memberNumber) ?? 0) <
+          BACKGROUND_REQUEST_COOLDOWN_MS ||
+        !this.#isBackgroundRouteReachable(memberNumber)
       ) {
         continue;
       }
@@ -581,7 +672,7 @@ export class LinkPresenceService {
     if (
       !this.#hasAuthenticatedIdentity() ||
       !Number.isSafeInteger(memberNumber) ||
-      memberNumber < 0 ||
+      memberNumber <= 0 ||
       memberNumber === this.#authenticatedOwnMemberNumber
     ) {
       return false;
@@ -616,10 +707,24 @@ export class LinkPresenceService {
       }
       return;
     }
-    const memberNumber = this.#requestQueue.shift();
-    if (memberNumber === undefined) return;
-    this.#queuedRequests.delete(memberNumber);
-    this.request(memberNumber);
+    let sent = false;
+    while (this.#requestQueue.length > 0 && !sent) {
+      const memberNumber = this.#requestQueue.shift();
+      if (memberNumber === undefined) break;
+      this.#queuedRequests.delete(memberNumber);
+      const now = Date.now();
+      if (
+        !isPositiveMemberNumber(memberNumber) ||
+        memberNumber === this.#authenticatedOwnMemberNumber ||
+        this.hasCompatiblePeer(memberNumber, now) ||
+        now - (this.#lastRequestAt.get(memberNumber) ?? 0) <
+          BACKGROUND_REQUEST_COOLDOWN_MS ||
+        !this.#isBackgroundRouteReachable(memberNumber)
+      ) {
+        continue;
+      }
+      sent = this.request(memberNumber);
+    }
     if (this.#requestQueue.length > 0) {
       this.#requestTimer = setTimeout(
         () => this.#drainRequestQueue(),
@@ -631,6 +736,7 @@ export class LinkPresenceService {
   #receive(senderNumber: number, payload: string): void {
     if (
       !this.#hasAuthenticatedIdentity() ||
+      !isPositiveMemberNumber(senderNumber) ||
       senderNumber === this.#authenticatedOwnMemberNumber
     ) {
       return;
@@ -664,7 +770,7 @@ export class LinkPresenceService {
           receivedAt - lastProfileResponseAt >= PROFILE_RESPONSE_COOLDOWN_MS)
       ) {
         this.#lastProfileResponseAt.set(senderNumber, receivedAt);
-        this.#sendProfileDetails(senderNumber, packet.i);
+        this.#sendProfileDetails(senderNumber, packet.i, packet.e === 1);
       }
       return;
     }
@@ -678,6 +784,7 @@ export class LinkPresenceService {
     }
     if (packet.t === "pf") {
       if (!this.settings.get().linkPresence.enabled) {
+        this.#pendingProfileRequests.delete(senderNumber);
         if (!wasCompatible) this.#notify(senderNumber);
         return;
       }
@@ -695,8 +802,18 @@ export class LinkPresenceService {
       this.#remoteProfileDetails.set(senderNumber, {
         ...(packet.h ? { bannerUrl: packet.h } : {}),
         ...(packet.o ? { profileOutlineColor: packet.o } : {}),
+        ...(packet.x && packet.y
+          ? {
+              profileGradient: {
+                enabled: true,
+                primary: packet.x,
+                secondary: packet.y,
+              },
+            }
+          : {}),
         receivedAt,
       });
+      this.#cacheRemoteProfile(senderNumber, receivedAt, true);
       this.#notify(senderNumber);
       return;
     }
@@ -704,9 +821,17 @@ export class LinkPresenceService {
       this.#groupCompatiblePeers.set(senderNumber, { seenAt: receivedAt, version: packet.g });
     }
     this.#remoteVersions.set(senderNumber, packet.v);
+    const withdrawsProfile =
+      packet.s === "offline" &&
+      packet.m === undefined &&
+      packet.a === undefined &&
+      packet.f === undefined &&
+      packet.c === undefined;
+    if (withdrawsProfile) this.#pendingProfileRequests.delete(senderNumber);
     // Capability and profile sharing are deliberately separate. A valid packet proves the addon
     // is installed (and enables Blossom), while disabled Presence still withholds remote profiles.
     if (!this.settings.get().linkPresence.enabled) {
+      if (withdrawsProfile) this.profileCache?.remove(senderNumber);
       if (!wasCompatible) this.#notify(senderNumber);
       return;
     }
@@ -721,14 +846,11 @@ export class LinkPresenceService {
       receivedAt,
       remoteUpdatedAt: Math.abs(packet.u - receivedAt) <= 24 * 60 * 60_000 ? packet.u : receivedAt,
     });
-    if (
-      packet.s === "offline" &&
-      packet.m === undefined &&
-      packet.a === undefined &&
-      packet.f === undefined &&
-      packet.c === undefined
-    ) {
+    if (withdrawsProfile) {
       this.#remoteProfileDetails.delete(senderNumber);
+      this.profileCache?.remove(senderNumber);
+    } else {
+      this.#cacheRemoteProfile(senderNumber, receivedAt);
     }
     this.#notify(senderNumber);
   }
@@ -770,6 +892,123 @@ export class LinkPresenceService {
     return changed;
   }
 
+  #cachedProfile(
+    memberNumber: number,
+    now = Date.now(),
+  ): CachedPublicProfileRecord | undefined {
+    try {
+      return this.profileCache?.get(memberNumber, now);
+    } catch {
+      return undefined;
+    }
+  }
+
+  #cacheRemoteProfile(memberNumber: number, now: number, forceRefresh = false): void {
+    if (!this.profileCache) return;
+    const remote = this.#remote.get(memberNumber);
+    const details = this.#remoteProfileDetails.get(memberNumber);
+    let previous: CachedPublicProfileRecord | undefined;
+    try {
+      previous = this.profileCache.peek(memberNumber, now);
+    } catch {
+      // The live packet remains useful when the optional local cache is unavailable.
+    }
+    if (!remote && !previous && !details) return;
+    let displayName = previous?.displayName ?? `Member ${memberNumber}`;
+    try {
+      displayName = sanitizePresenceText(this.adapter.getMemberName(memberNumber), 80) || displayName;
+    } catch {
+      // A cached/fallback name is sufficient while BC replaces guarded character wrappers.
+    }
+    const addonVersion = remote?.addonVersion ??
+      this.#remoteVersions.get(memberNumber) ??
+      previous?.addonVersion;
+    const input: CachedPublicProfileInput = {
+      memberNumber,
+      displayName,
+      ...(remote?.avatarUrl
+        ? { avatarUrl: remote.avatarUrl }
+        : !remote && previous?.avatarUrl
+          ? { avatarUrl: previous.avatarUrl }
+          : {}),
+      ...(remote?.avatarFrame
+        ? { avatarFrame: remote.avatarFrame }
+        : !remote && previous?.avatarFrame
+          ? { avatarFrame: previous.avatarFrame }
+          : {}),
+      ...(remote?.profileStyle
+        ? { profileStyle: remote.profileStyle }
+        : !remote && previous?.profileStyle
+          ? { profileStyle: previous.profileStyle }
+          : {}),
+      ...(details
+        ? details.bannerUrl
+          ? { bannerUrl: details.bannerUrl }
+          : {}
+        : previous?.bannerUrl
+          ? { bannerUrl: previous.bannerUrl }
+          : {}),
+      ...(details
+        ? details.profileOutlineColor
+          ? { profileOutlineColor: details.profileOutlineColor }
+          : {}
+        : previous?.profileOutlineColor
+          ? { profileOutlineColor: previous.profileOutlineColor }
+          : {}),
+      ...(details
+        ? details.profileGradient
+          ? { profileGradient: details.profileGradient }
+          : {}
+        : previous?.profileGradient
+          ? { profileGradient: previous.profileGradient }
+          : {}),
+      ...(details
+        ? hasRemoteProfileDetails(details)
+          ? { richSyncedAt: details.receivedAt }
+          : {}
+        : previous?.richSyncedAt !== undefined
+          ? { richSyncedAt: previous.richSyncedAt }
+          : {}),
+      ...(previous?.profileRevision ? { profileRevision: previous.profileRevision } : {}),
+      ...(addonVersion ? { addonVersion } : {}),
+    };
+    if (
+      !forceRefresh &&
+      previous &&
+      cachedPublicProfileMatches(input, previous) &&
+      now - previous.syncedAt < UNCHANGED_PROFILE_CACHE_REFRESH_MS
+    ) {
+      return;
+    }
+    try {
+      this.profileCache.upsert(input, now);
+    } catch {
+      // An unavailable local store must not interrupt presence transport or UI updates.
+    }
+  }
+
+  #isBackgroundRouteReachable(memberNumber: number): boolean {
+    try {
+      if (
+        typeof this.adapter.isMemberInCurrentRoom === "function" &&
+        this.adapter.isMemberInCurrentRoom(memberNumber)
+      ) {
+        return true;
+      }
+    } catch {
+      // Try the native online-friend route below.
+    }
+    try {
+      if (typeof this.adapter.getOnlineFriend === "function") {
+        return this.adapter.getOnlineFriend(memberNumber)?.memberNumber === memberNumber;
+      }
+      return typeof this.adapter.getOnlineFriends === "function" &&
+        this.adapter.getOnlineFriends().some((friend) => friend.memberNumber === memberNumber);
+    } catch {
+      return false;
+    }
+  }
+
   #sendPresence(target: number, requestId?: string): void {
     if (!this.#hasAuthenticatedIdentity()) return;
     const config = this.settings.get().linkPresence;
@@ -793,7 +1032,7 @@ export class LinkPresenceService {
     }
   }
 
-  #sendProfileDetails(target: number, requestId: string): void {
+  #sendProfileDetails(target: number, requestId: string, supportsExtendedProfile: boolean): void {
     if (!this.#hasAuthenticatedIdentity()) return;
     const config = this.settings.get().linkPresence;
     const packet: Extract<PresencePacket, { t: "pf" }> = {
@@ -801,6 +1040,12 @@ export class LinkPresenceService {
       i: requestId,
       ...(config.bannerUrl ? { h: config.bannerUrl } : {}),
       ...(config.profileOutlineColor ? { o: config.profileOutlineColor } : {}),
+      ...(supportsExtendedProfile && config.profileGradient.enabled
+        ? {
+            x: config.profileGradient.primary,
+            y: config.profileGradient.secondary,
+          }
+        : {}),
     };
     try {
       if (!this.#hasAuthenticatedIdentity()) return;
@@ -913,7 +1158,9 @@ export class LinkPresenceService {
       this.#groupCompatiblePeers.delete(memberNumber);
     }
     for (const [memberNumber, requestedAt] of this.#lastRequestAt) {
-      if (now - requestedAt > REMOTE_STATUS_TTL_MS) this.#lastRequestAt.delete(memberNumber);
+      if (now - requestedAt > BACKGROUND_REQUEST_COOLDOWN_MS) {
+        this.#lastRequestAt.delete(memberNumber);
+      }
     }
     for (const [memberNumber, requestedAt] of this.#lastForcedRequestAt) {
       if (now - requestedAt > REMOTE_STATUS_TTL_MS) this.#lastForcedRequestAt.delete(memberNumber);
@@ -933,6 +1180,11 @@ export class LinkPresenceService {
       if (now - pending.requestedAt > REMOTE_STATUS_TTL_MS) {
         this.#pendingProfileRequests.delete(memberNumber);
       }
+    }
+    try {
+      this.profileCache?.prune(now);
+    } catch {
+      // The cache is an optional optimization and never owns live presence state.
     }
     for (const memberNumber of changed) this.#notify(memberNumber);
   }
@@ -992,6 +1244,7 @@ export class LinkPresenceService {
     this.#statusTimer = undefined;
     this.#requestQueue.splice(0);
     this.#queuedRequests.clear();
+    this.#reachableOnlineFriends.clear();
 
     for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
     if (typeof window !== "undefined") {
@@ -1042,6 +1295,98 @@ export class LinkPresenceService {
   }
 }
 
+function cachedPublicProfileFields(
+  cached: CachedPublicProfileRecord | undefined,
+  richOnly = false,
+): Partial<PresenceSnapshot> {
+  if (!cached || (richOnly && !hasCachedRichProfile(cached))) return {};
+  const profileSyncedAt = richOnly ? cached.richSyncedAt : cached.syncedAt;
+  return {
+    ...(!richOnly && cached.avatarUrl ? { avatarUrl: cached.avatarUrl } : {}),
+    ...(!richOnly && cached.avatarFrame ? { avatarFrame: cached.avatarFrame } : {}),
+    ...(!richOnly && cached.profileStyle ? { profileStyle: cached.profileStyle } : {}),
+    ...(cached.bannerUrl ? { bannerUrl: cached.bannerUrl } : {}),
+    ...(cached.profileOutlineColor
+      ? { profileOutlineColor: cached.profileOutlineColor }
+      : {}),
+    ...(cached.profileGradient ? { profileGradient: cached.profileGradient } : {}),
+    ...(!richOnly && cached.addonVersion ? { addonVersion: cached.addonVersion } : {}),
+    profileFromCache: true,
+    ...(profileSyncedAt !== undefined ? { profileSyncedAt } : {}),
+  };
+}
+
+function cachedBasicProfileFields(
+  cached: CachedPublicProfileRecord | undefined,
+): Partial<PresenceSnapshot> {
+  if (
+    !cached ||
+    !(cached.avatarUrl || cached.avatarFrame || cached.profileStyle || cached.addonVersion)
+  ) {
+    return {};
+  }
+  return {
+    ...(cached.avatarUrl ? { avatarUrl: cached.avatarUrl } : {}),
+    ...(cached.avatarFrame ? { avatarFrame: cached.avatarFrame } : {}),
+    ...(cached.profileStyle ? { profileStyle: cached.profileStyle } : {}),
+    ...(cached.addonVersion ? { addonVersion: cached.addonVersion } : {}),
+    profileFromCache: true,
+    profileSyncedAt: cached.syncedAt,
+  };
+}
+
+function liveProfileDetailFields(details: RemoteProfileDetails): Partial<PresenceSnapshot> {
+  return {
+    ...(details.bannerUrl ? { bannerUrl: details.bannerUrl } : {}),
+    ...(details.profileOutlineColor
+      ? { profileOutlineColor: details.profileOutlineColor }
+      : {}),
+    ...(details.profileGradient ? { profileGradient: details.profileGradient } : {}),
+  };
+}
+
+function nonRemotePublicProfileFields(
+  cached: CachedPublicProfileRecord | undefined,
+  liveDetails: RemoteProfileDetails | undefined,
+): Partial<PresenceSnapshot> {
+  if (!liveDetails) return cachedPublicProfileFields(cached);
+  return {
+    ...cachedBasicProfileFields(cached),
+    ...liveProfileDetailFields(liveDetails),
+  };
+}
+
+function hasCachedRichProfile(cached: CachedPublicProfileRecord): boolean {
+  return Boolean(
+    cached.bannerUrl || cached.profileOutlineColor || cached.profileGradient,
+  );
+}
+
+function hasRemoteProfileDetails(details: RemoteProfileDetails): boolean {
+  return Boolean(
+    details.bannerUrl || details.profileOutlineColor || details.profileGradient,
+  );
+}
+
+function cachedPublicProfileMatches(
+  input: CachedPublicProfileInput,
+  cached: CachedPublicProfileRecord,
+): boolean {
+  return input.memberNumber === cached.memberNumber &&
+    input.displayName === cached.displayName &&
+    input.avatarUrl === cached.avatarUrl &&
+    input.avatarFrame === cached.avatarFrame &&
+    input.profileStyle === cached.profileStyle &&
+    input.bannerUrl === cached.bannerUrl &&
+    input.profileOutlineColor === cached.profileOutlineColor &&
+    input.richSyncedAt === cached.richSyncedAt &&
+    input.profileRevision === cached.profileRevision &&
+    input.addonVersion === cached.addonVersion &&
+    input.profileGradient?.enabled === cached.profileGradient?.enabled &&
+    input.profileGradient?.primary === cached.profileGradient?.primary &&
+    input.profileGradient?.secondary === cached.profileGradient?.secondary;
+}
+
 function parsePresencePacket(payload: string): PresencePacket | null {
   // JSON is ASCII-heavy, so character length is a cheap lower bound for UTF-8 byte length.
   // Reject obviously oversized packets before asking TextEncoder to allocate for hostile input.
@@ -1064,6 +1409,7 @@ function parsePresencePacket(payload: string): PresencePacket | null {
       i: value.i,
       ...("b" in value && value.b === 1 ? { b: 1 } : {}),
       ...("p" in value && value.p === 1 ? { p: 1 } : {}),
+      ...("e" in value && value.e === 1 ? { e: 1 } : {}),
     };
   }
   if (value.t === "ty") {
@@ -1089,18 +1435,29 @@ function parsePresencePacket(payload: string): PresencePacket | null {
       : null;
   }
   if (value.t === "pf") {
-    if (!hasExactKeys(value, ["t", "i", "h", "o"]) || !("i" in value) || !isRequestId(value.i)) {
+    if (
+      !hasExactKeys(value, ["t", "i", "h", "o", "x", "y"]) ||
+      !("i" in value) ||
+      !isRequestId(value.i)
+    ) {
       return null;
     }
     const banner = "h" in value ? sanitizeDirectProfileImageUrl(value.h) : "";
     if ("h" in value && !banner) return null;
-    const outline = "o" in value ? sanitizeProfileOutlineColor(value.o) : "";
+    const outline = "o" in value ? sanitizeProfileColor(value.o) : "";
     if ("o" in value && !outline) return null;
+    const hasPrimary = "x" in value;
+    const hasSecondary = "y" in value;
+    if (hasPrimary !== hasSecondary) return null;
+    const primary = "x" in value ? sanitizeProfileColor(value.x) : "";
+    const secondary = "y" in value ? sanitizeProfileColor(value.y) : "";
+    if ((hasPrimary && !primary) || (hasSecondary && !secondary)) return null;
     return {
       t: "pf",
       i: value.i,
       ...(banner ? { h: banner } : {}),
       ...(outline ? { o: outline } : {}),
+      ...(primary && secondary ? { x: primary, y: secondary } : {}),
     };
   }
   if (
@@ -1183,18 +1540,27 @@ export function serializeProfileDetailsPacket(
   if (!isRequestId(packet.i)) throw new Error("Invalid profile-details request ID");
   const banner = packet.h === undefined ? "" : sanitizeDirectProfileImageUrl(packet.h);
   if (packet.h !== undefined && !banner) throw new Error("Invalid profile banner URL");
-  const outline = packet.o === undefined ? "" : sanitizeProfileOutlineColor(packet.o);
+  const outline = packet.o === undefined ? "" : sanitizeProfileColor(packet.o);
   if (packet.o !== undefined && !outline) throw new Error("Invalid profile outline color");
+  const hasPrimary = packet.x !== undefined;
+  const hasSecondary = packet.y !== undefined;
+  if (hasPrimary !== hasSecondary) throw new Error("Profile gradient colors must be sent together");
+  const primary = hasPrimary ? sanitizeProfileColor(packet.x) : "";
+  const secondary = hasSecondary ? sanitizeProfileColor(packet.y) : "";
+  if ((hasPrimary && !primary) || (hasSecondary && !secondary)) {
+    throw new Error("Invalid profile gradient color");
+  }
   const bounded: Extract<PresencePacket, { t: "pf" }> = {
     t: "pf",
     i: packet.i,
     ...(banner ? { h: banner } : {}),
     ...(outline ? { o: outline } : {}),
+    ...(primary && secondary ? { x: primary, y: secondary } : {}),
   };
   let payload = JSON.stringify(bounded);
-  for (const optional of ["h", "o"] as const) {
+  for (const optional of [["h"], ["x", "y"], ["o"]] as const) {
     if (utf8ByteLength(payload) <= MAX_PROTOCOL_PAYLOAD) return payload;
-    delete bounded[optional];
+    for (const key of optional) delete bounded[key];
     payload = JSON.stringify(bounded);
   }
   return payload;
@@ -1219,6 +1585,10 @@ function isPresenceStatus(value: unknown): value is PresenceStatus {
   return value === "online" || value === "idle" || value === "dnd" || value === "offline";
 }
 
+function isPositiveMemberNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 function sanitizeDirectProfileImageUrl(value: unknown): string {
   if (typeof value !== "string") return "";
   const candidate = value.trim();
@@ -1233,7 +1603,7 @@ function sanitizeDirectProfileImageUrl(value: unknown): string {
   return normalized && normalized === parsed.href && normalized.length <= 500 ? normalized : "";
 }
 
-function sanitizeProfileOutlineColor(value: unknown): string {
+function sanitizeProfileColor(value: unknown): string {
   return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value)
     ? value.toLowerCase()
     : "";

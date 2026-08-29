@@ -64,6 +64,8 @@ export interface GroupChatPanelOptions {
   ) => void;
   /** Keeps the group composer consistent with the direct-chat Enter preference. */
   getEnterToSend?: () => boolean;
+  /** Lets a host provide one unified direct/group list without rendering the legacy sidebar. */
+  renderSidebar?: boolean;
 }
 
 export interface GroupChatPanelNodes {
@@ -406,6 +408,7 @@ export class GroupChatPanel {
   }
 
   #renderSidebar(): void {
+    if (this.options.renderSidebar === false) return;
     const allGroups = this.service.listGroups();
     const aggregateUnread = allGroups.reduce((total, group) => total + group.unread, 0);
     this.sidebarSection.dataset.groupCount = String(allGroups.length);

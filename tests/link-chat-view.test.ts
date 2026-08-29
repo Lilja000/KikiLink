@@ -20,6 +20,7 @@ import { LinkRosterService } from "../src/modules/link-roster/link-roster-servic
 import { LinkPresenceService } from "../src/modules/link-presence/link-presence-service";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 import { PeopleRepository } from "../src/storage/people-repository";
+import { ProfileCacheRepository } from "../src/storage/profile-cache-repository";
 import type { DeviceGalleryImage, GalleryStore } from "../src/storage/device-gallery-store";
 import type { DeviceMusicTrack, MusicStore } from "../src/storage/device-music-store";
 
@@ -163,7 +164,7 @@ describe("LinkChatView", () => {
     expect(messageRow?.querySelector(".kl-message-side-actions")).not.toBeNull();
     expect(messageRow?.querySelector(".kl-message-bubble .kl-message-action")).toBeNull();
     expect(messageRow?.querySelector('[aria-label="Reply to message"] svg')).not.toBeNull();
-    expect(shadow?.querySelector(".kl-sidebar-heading span")?.textContent).toBe("Direct chats");
+    expect(shadow?.querySelector(".kl-sidebar-heading span")?.textContent).toBe("Chats");
 
     shadow?.querySelector<HTMLButtonElement>('button[title="KikiLink settings"]')?.click();
     const themeSelect = shadow?.querySelector<HTMLSelectElement>('[data-setting="theme"]');
@@ -191,7 +192,7 @@ describe("LinkChatView", () => {
     expect(document.querySelector("#kikilink-root")).toBeNull();
   });
 
-  it("keeps groups ahead of Direct chats, shares search, and opens exact profiles from group avatars", async () => {
+  it("unifies group and direct chats with clear group identity, shared search, and exact profile targets", async () => {
     const names = new Map<number, string>([
       [10, "Kiki"],
       [20, "Reina"],
@@ -279,41 +280,55 @@ describe("LinkChatView", () => {
 
     const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
     if (!shadow) throw new Error("Missing KikiLink shadow root");
-    const groupSection = shadow.querySelector<HTMLElement>(".kl-group-sidebar");
-    const directHeading = shadow.querySelector<HTMLElement>(".kl-sidebar-heading");
-    if (!groupSection || !directHeading) throw new Error("Missing separated chat sections");
-    expect(groupSection.textContent).toContain("Moon Garden Circle");
-    expect(directHeading.textContent).toContain("Direct chats");
-    expect(
-      groupSection.compareDocumentPosition(directHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    const chatList = shadow.querySelector<HTMLElement>(".kl-conversations");
+    const heading = shadow.querySelector<HTMLElement>(".kl-sidebar-heading");
+    if (!chatList || !heading) throw new Error("Missing unified chat list");
+    expect(heading.textContent).toContain("Chats");
+    expect(chatList.textContent).toContain("Moon Garden Circle");
+    expect(chatList.textContent).toContain("Solitary Echo");
+    const firstChat = chatList.querySelector<HTMLElement>(".kl-conversation");
+    expect(firstChat?.classList.contains("kl-group-conversation")).toBe(true);
+    expect(firstChat?.textContent).toContain("GROUP");
+    const groupAvatar = firstChat?.querySelector<HTMLElement>(
+      ".kl-group-conversation-avatar",
+    );
+    expect(groupAvatar?.dataset.avatarCount).toBe("2");
+    expect(groupAvatar?.querySelectorAll(".kl-group-conversation-avatar-item")).toHaveLength(2);
+    const unifiedStyles = shadow.querySelector("style")?.textContent ?? "";
+    expect(unifiedStyles).toMatch(
+      /\.kl-group-conversation-avatar\[data-avatar-count="2"\] \.kl-group-conversation-avatar-item\s*\{[^}]*grid-row: 1 \/ -1;/,
+    );
+    expect(unifiedStyles).toContain(
+      ':host([data-density="super-compact"]) .kl-group-conversation-avatar { width: 36px; height: 36px;',
+    );
+    expect(unifiedStyles).toMatch(
+      /\.kl-finder-result\s*\{[^}]*grid-template-columns: 42px minmax\(0, 1fr\) auto;[^}]*cursor: pointer;/,
+    );
+    expect(unifiedStyles).toMatch(
+      /\.kl-roster-entry\s*\{[^}]*grid-template-columns: 42px minmax\(0, 1fr\);[^}]*cursor: default;/,
+    );
 
     const sharedSearch = shadow.querySelector<HTMLInputElement>(".kl-search-wrap > .kl-search");
     if (!sharedSearch) throw new Error("Missing shared direct/group search");
     sharedSearch.value = "Moon Garden";
     sharedSearch.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.waitFor(() => {
-      expect(shadow.querySelector(".kl-group-list-item")?.textContent).toContain(
+      expect(shadow.querySelector(".kl-group-conversation")?.textContent).toContain(
         "Moon Garden Circle",
       );
-      expect(shadow.querySelector(".kl-conversations")?.textContent).toContain(
-        "No matching chats.",
-      );
+      expect(chatList.querySelector('.kl-conversation[data-member-number="40"]')).toBeNull();
     });
 
     sharedSearch.value = "Solitary Echo";
     sharedSearch.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.waitFor(() => {
-      expect(shadow.querySelector(".kl-group-list-item")).toBeNull();
-      expect(shadow.querySelector(".kl-group-list-empty")?.textContent).toContain(
-        "No group chats match this search.",
-      );
+      expect(shadow.querySelector(".kl-group-conversation")).toBeNull();
       expect(shadow.querySelector(".kl-conversation")?.textContent).toContain("Solitary Echo");
     });
 
     sharedSearch.value = "";
     sharedSearch.dispatchEvent(new Event("input", { bubbles: true }));
-    await vi.waitFor(() => expect(shadow.querySelector(".kl-group-list-item")).not.toBeNull());
+    await vi.waitFor(() => expect(shadow.querySelector(".kl-group-conversation")).not.toBeNull());
     shadow.querySelector<HTMLButtonElement>(
       `[data-group-id="${created.group.groupId}"]`,
     )?.click();
@@ -406,6 +421,107 @@ describe("LinkChatView", () => {
     view.destroy();
     presence.stop();
     await groups.destroy();
+  });
+
+  it("opens a saved public profile immediately and labels it as a non-live snapshot", async () => {
+    const storage = new MemoryKeyValueStorage();
+    const settings = new SettingsStore(storage);
+    settings.update((draft) => {
+      draft.linkChat.imagePreviews = "never";
+    });
+    const cache = new ProfileCacheRepository(storage);
+    cache.upsert({
+      memberNumber: 123,
+      displayName: "Reina",
+      avatarUrl: "https://files.catbox.moe/reina-avatar.webp",
+      avatarFrame: "rose",
+      profileStyle: "garden",
+      bannerUrl: "https://files.catbox.moe/reina-banner.webp",
+      profileOutlineColor: "#a11234",
+      profileGradient: { enabled: true, primary: "#8a1538", secondary: "#2a9d8f" },
+      addonVersion: "0.26.0",
+    }, Date.now() - 1_000);
+    const sendKikiLinkProtocol = vi.fn(
+      (_memberNumber: number, _payload: string) => "beep" as const,
+    );
+    const adapter = {
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getMemberName: () => "Reina",
+      getMemberNickname: () => undefined,
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      getOnlineFriends: () => [],
+      hasOnlineFriendSnapshot: () => true,
+      isKnownFriend: () => false,
+      isMemberInCurrentRoom: () => false,
+      isInChatRoom: () => false,
+      getCurrentRoomName: () => undefined,
+      getPlayerRelationships: () => [],
+      refreshOnlineFriends: vi.fn(() => false),
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendKikiLinkProtocol,
+      broadcastKikiLinkProtocol: vi.fn(() => false),
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const bus = new EventBus<KikiLinkEvents>();
+    const presence = new LinkPresenceService(adapter, settings, bus, "0.26.0", cache);
+    presence.start();
+    const chats = new ChatService(new MemoryChatRepository(), settings);
+    await chats.ensureConversation(123, "Reina");
+    const view = new LinkChatView(
+      adapter,
+      chats,
+      settings,
+      "0.26.0",
+      undefined,
+      undefined,
+      presence,
+    );
+    view.mount();
+    await view.openChat(123, "Reina");
+
+    const shadow = document.querySelector<HTMLElement>("#kikilink-root")?.shadowRoot;
+    shadow?.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar")?.click();
+    await vi.waitFor(() => {
+      const card = shadow?.querySelector<HTMLElement>(".kl-addon-profile-card");
+      expect(card?.textContent).toContain("SAVED PROFILE");
+      expect(card?.textContent).toContain("Saved ·");
+      expect(card?.textContent).toContain("Status unavailable");
+      expect(card?.dataset.customGradient).toBe("true");
+      expect(card?.dataset.profileStyle).toBe("garden");
+      expect(card?.querySelector<HTMLElement>(".kl-addon-profile-avatar-shell")?.dataset.frame)
+        .toBe("rose");
+    });
+    expect(
+      sendKikiLinkProtocol.mock.calls
+        .map(([, payload]) => JSON.parse(payload) as Record<string, unknown>)
+        .some((packet) => packet.t === "pq" && packet.p === 1),
+    ).toBe(true);
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://files.catbox.moe/reina-avatar.webp",
+        f: "rose",
+        c: "garden",
+        u: Date.now(),
+        v: "0.26.1",
+      }),
+    });
+    await vi.waitFor(() => {
+      const card = shadow?.querySelector<HTMLElement>(".kl-addon-profile-card");
+      expect(card?.textContent).toContain("SAVED DETAILS");
+      expect(card?.textContent).not.toContain("SAVED PROFILE");
+      expect(card?.textContent).toContain("Live v0.26.1 · details saved");
+      expect(card?.textContent).toContain("Online");
+    });
+
+    view.destroy();
+    presence.stop();
   });
 
   it("keeps a newer group activation authoritative across pending direct-chat awaits", async () => {
@@ -537,7 +653,7 @@ describe("LinkChatView", () => {
     await groups.destroy();
   });
 
-  it("cancels only discarded group-panel avatar loads when replacing the service before mount", async () => {
+  it("avoids detached group-sidebar avatar work and cancels unified-list loads on teardown", async () => {
     const names = new Map<number, string>([
       [10, "Kiki"],
       [20, "Reina"],
@@ -628,17 +744,16 @@ describe("LinkChatView", () => {
     );
 
     view.attachGroupChatService(firstGroups);
-    const discardedLoads = loads.filter(({ url }) => /avatar-(20|30)\.webp$/u.test(url));
-    expect(discardedLoads).toHaveLength(2);
-    expect(discardedLoads.every(({ signal }) => !signal.aborted)).toBe(true);
+    expect(loads).toHaveLength(0);
 
     view.attachGroupChatService(secondGroups);
-    expect(discardedLoads.every(({ signal }) => signal.aborted)).toBe(true);
-    const retainedLoads = loads.filter(({ url }) => /avatar-(40|50)\.webp$/u.test(url));
-    expect(retainedLoads).toHaveLength(2);
-    expect(retainedLoads.every(({ signal }) => !signal.aborted)).toBe(true);
+    expect(loads).toHaveLength(0);
 
     view.mount();
+    await vi.waitFor(() => {
+      expect(loads.filter(({ url }) => /avatar-(40|50)\.webp$/u.test(url))).toHaveLength(2);
+    });
+    const retainedLoads = loads.filter(({ url }) => /avatar-(40|50)\.webp$/u.test(url));
     expect(retainedLoads.every(({ signal }) => !signal.aborted)).toBe(true);
     view.destroy();
     expect(retainedLoads.every(({ signal }) => signal.aborted)).toBe(true);
@@ -789,6 +904,12 @@ describe("LinkChatView", () => {
         "room administrator",
       );
     });
+    const roomAvatar = shadow?.querySelector<HTMLButtonElement>(".kl-room-player-avatar-button");
+    expect(roomAvatar?.type).toBe("button");
+    expect(roomAvatar?.getAttribute("aria-label")).toBe("Open KikiLink profile for Reina");
+    roomAvatar?.click();
+    expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);
+    shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.close();
     const imageUrl = shadow?.querySelector<HTMLInputElement>(".kl-room-media input[type=url]");
     if (!imageUrl) throw new Error("Missing room background control");
     imageUrl.value = "https://litter.catbox.moe/new.webp";
@@ -1753,7 +1874,7 @@ describe("LinkChatView", () => {
     presence.stop();
   });
 
-  it("keeps Presence and the Link Deck open during a public profile-banner upload", async () => {
+  it("cancels a closed profile-banner upload without clearing a newer upload timer", async () => {
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
@@ -1783,10 +1904,20 @@ describe("LinkChatView", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
       callback(new Blob([Uint8Array.of(1, 2, 3)], { type: "image/webp" }));
     });
-    let resolveUpload: ((url: string) => void) | undefined;
-    const catboxImageUpload = vi.fn(() => new Promise<string>((resolve) => {
-      resolveUpload = resolve;
+    const pendingUploads: Array<{
+      signal: AbortSignal | undefined;
+      resolve(url: string): void;
+      reject(error: Error): void;
+    }> = [];
+    const catboxImageUpload = vi.fn((
+      _image: unknown,
+      _onProgress: unknown,
+      signal?: AbortSignal,
+    ) => new Promise<string>((resolve, reject) => {
+      pendingUploads.push({ signal, resolve, reject });
     }));
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
     const remoteImageLoader = {
       load: vi.fn(async (url: string) => `blob:kikilink/${encodeURIComponent(url)}`),
       destroy: vi.fn(),
@@ -1818,10 +1949,7 @@ describe("LinkChatView", () => {
     const headerClose = dialog?.querySelector<HTMLButtonElement>(
       ".kl-dialog-header .kl-icon-button",
     );
-    const footerClose = [...(dialog?.querySelectorAll<HTMLButtonElement>(
-      ".kl-dialog-actions button",
-    ) ?? [])].find((button) => button.textContent === "Close");
-    if (!dialog?.open || !fileInput || !headerClose || !footerClose) {
+    if (!dialog?.open || !fileInput || !headerClose) {
       throw new Error("Missing Presence banner-upload controls");
     }
     const banner = new File(
@@ -1839,33 +1967,35 @@ describe("LinkChatView", () => {
     });
 
     headerClose.click();
+    await vi.waitFor(() => {
+      expect(pendingUploads[0]?.signal?.aborted).toBe(true);
+      expect(dialog.open).toBe(false);
+    });
+
+    shadow.querySelector<HTMLButtonElement>(".kl-presence-trigger")?.click();
     expect(dialog.open).toBe(true);
+    Object.defineProperty(fileInput, "files", { configurable: true, value: [banner] });
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(catboxImageUpload).toHaveBeenCalledTimes(2));
+    const secondTimer = setIntervalSpy.mock.results.at(-1)?.value;
+    expect(secondTimer).toBeDefined();
+
+    pendingUploads[0]?.reject(new Error("The upload was cancelled"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      clearIntervalSpy.mock.calls.some(([timer]) => timer === secondTimer),
+    ).toBe(false);
     expect(dialog.querySelector(".kl-profile-banner-status")?.textContent).toContain(
-      "Wait for the public profile banner upload",
+      "Uploading to public Catbox",
     );
-    expect(shadow.querySelector(".kl-toast")?.textContent).toContain(
-      "Wait for the public profile banner upload",
-    );
-    footerClose.click();
-    expect(dialog.open).toBe(true);
-    const cancel = new Event("cancel", { cancelable: true });
-    dialog.dispatchEvent(cancel);
-    expect(cancel.defaultPrevented).toBe(true);
-    expect(dialog.open).toBe(true);
 
-    view.close();
-    expect(dialog.open).toBe(true);
-    expect(shadow.querySelector<HTMLElement>(".kl-panel")?.hidden).toBe(false);
-
-    if (!resolveUpload) throw new Error("Missing pending Catbox upload resolver");
-    resolveUpload("https://files.catbox.moe/profile-banner.webp");
+    pendingUploads[1]?.resolve("https://files.catbox.moe/reopened-banner.webp");
     await vi.waitFor(() => {
       expect(dialog.querySelector(".kl-profile-banner-status")?.textContent).toContain(
         "Banner uploaded",
       );
     });
-    footerClose.click();
-    expect(dialog.open).toBe(false);
     view.close();
     expect(shadow.querySelector<HTMLElement>(".kl-panel")?.hidden).toBe(true);
     view.destroy();
@@ -2073,6 +2203,35 @@ describe("LinkChatView", () => {
       expect(shadow?.querySelector(".kl-addon-profile-avatar img")).toBeNull();
     });
     expect(explicitProfileRefresh).toHaveBeenCalledWith(123, true, true);
+    const richProfileQuery = [...vi.mocked(adapter.sendKikiLinkProtocol).mock.calls]
+      .reverse()
+      .map(([, payload]) => JSON.parse(payload) as Record<string, unknown>)
+      .find((packet) => packet.t === "pq" && packet.p === 1);
+    if (!richProfileQuery || typeof richProfileQuery.i !== "string") {
+      throw new Error("Missing rich profile request");
+    }
+    presenceBus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "room",
+      payload: JSON.stringify({
+        t: "pf",
+        i: richProfileQuery.i,
+        x: "#8a1538",
+        y: "#2a9d8f",
+      }),
+    });
+    await vi.waitFor(() => {
+      const gradientCard = shadow?.querySelector<HTMLElement>(".kl-addon-profile-card");
+      expect(gradientCard?.dataset.customGradient).toBe("true");
+      expect(gradientCard?.style.getPropertyValue("--kl-profile-gradient-primary")).toBe("#8a1538");
+      expect(gradientCard?.style.getPropertyValue("--kl-profile-gradient-secondary")).toBe("#2a9d8f");
+      const styles = shadow?.querySelector("style")?.textContent ?? "";
+      expect(styles).toContain("--kl-profile-gradient-primary-safe: color-mix(");
+      expect(styles).toContain("var(--kl-profile-gradient-tone) 62%");
+      expect(styles).toContain(
+        "var(--kl-profile-gradient-primary-safe),\n    var(--kl-profile-gradient-secondary-safe)",
+      );
+    });
     explicitProfileRefresh.mockRestore();
     shadow?.querySelector<HTMLButtonElement>(".kl-addon-profile-show-avatar")?.click();
     await vi.waitFor(() => {
@@ -2232,7 +2391,24 @@ describe("LinkChatView", () => {
       'input[aria-label="Send an automatic reply while Idle or DND"]',
     );
     const afkMessage = shadow?.querySelector<HTMLTextAreaElement>(".kl-afk-reply-message");
-    if (!avatarUrl || !idleMinutes || !afkToggle || !afkMessage) {
+    const gradientToggle = shadow?.querySelector<HTMLInputElement>(
+      'input[aria-label="Use a two-color profile gradient"]',
+    );
+    const gradientPrimary = shadow?.querySelector<HTMLInputElement>(
+      'input[aria-label="First profile gradient color"]',
+    );
+    const gradientSecondary = shadow?.querySelector<HTMLInputElement>(
+      'input[aria-label="Second profile gradient color"]',
+    );
+    if (
+      !avatarUrl ||
+      !idleMinutes ||
+      !afkToggle ||
+      !afkMessage ||
+      !gradientToggle ||
+      !gradientPrimary ||
+      !gradientSecondary
+    ) {
       throw new Error("Missing KikiLink profile controls");
     }
     avatarUrl.value = "https://i.imgur.com/kiki.png";
@@ -2246,6 +2422,10 @@ describe("LinkChatView", () => {
     afkToggle.checked = true;
     afkToggle.dispatchEvent(new Event("change", { bubbles: true }));
     afkMessage.value = "Back later!";
+    gradientToggle.checked = true;
+    gradientToggle.dispatchEvent(new Event("change", { bubbles: true }));
+    gradientPrimary.value = "#8a1538";
+    gradientSecondary.value = "#2a9d8f";
     shadow
       ?.querySelector<HTMLButtonElement>(".kl-presence-dialog .kl-text-button--primary")
       ?.click();
@@ -2253,6 +2433,7 @@ describe("LinkChatView", () => {
       avatarUrl: "https://i.imgur.com/kiki.png",
       autoIdleMinutes: 7,
       afkAutoReply: { enabled: true, message: "Back later!" },
+      profileGradient: { enabled: true, primary: "#8a1538", secondary: "#2a9d8f" },
     });
 
     settings.update((draft) => {
@@ -3864,7 +4045,7 @@ describe("LinkChatView", () => {
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
       settings,
-      "0.25.0",
+      "0.26.0",
     );
     view.mount();
     await view.open();
@@ -3875,12 +4056,12 @@ describe("LinkChatView", () => {
     news?.click();
     expect(shadow?.querySelector<HTMLElement>(".kl-panel")?.dataset.workspace).toBe("news");
     expect(shadow?.querySelector<HTMLElement>(".kl-news-page")?.hidden).toBe(false);
-    const currentRelease = shadow?.querySelector<HTMLElement>('[data-version="0.25.0"]');
+    const currentRelease = shadow?.querySelector<HTMLElement>('[data-version="0.26.0"]');
     expect(currentRelease?.textContent).toContain("Current");
     expect(currentRelease?.querySelector("time")?.getAttribute("datetime")).toBe("2026-08-29");
-    expect(currentRelease?.textContent).toContain("Group clarity and expressive profiles");
+    expect(currentRelease?.textContent).toContain("Cleaner chats and profiles that last");
     expect(currentRelease?.textContent).toContain(
-      "bounded one-hop creator relay",
+      "bounded route-aware refresh",
     );
 
     const topbar = shadow?.querySelector<HTMLElement>(".kl-topbar");
@@ -4032,7 +4213,7 @@ describe("LinkChatView", () => {
     view.destroy();
   });
 
-  it("turns the current room into a nickname-first player notebook with native actions", () => {
+  it("turns the current room into a nickname-first player notebook with native actions", async () => {
     const startWhisper = vi.fn();
     const openProfile = vi.fn();
     const adapter = {
@@ -4059,15 +4240,17 @@ describe("LinkChatView", () => {
     const settings = new SettingsStore(new MemoryKeyValueStorage());
     const people = new PeopleRepository(new MemoryKeyValueStorage());
     const roster = new LinkRosterService(adapter, people, settings);
+    const chatService = new ChatService(new MemoryChatRepository(), settings);
     const view = new LinkChatView(
       adapter,
-      new ChatService(new MemoryChatRepository(), settings),
+      chatService,
       settings,
       "0.5.0",
       new LinkActivitiesService(adapter),
       roster,
     );
     view.mount();
+    await view.open();
 
     const shadow = document.querySelector("#kikilink-root")?.shadowRoot;
     shadow?.querySelector<HTMLButtonElement>('button[title="LinkRoster"]')?.click();
@@ -4078,6 +4261,46 @@ describe("LinkChatView", () => {
     expect(shadow?.querySelector(".kl-roster-entry-name")?.textContent).toBe("Reina");
     expect(shadow?.querySelector(".kl-roster-friend")?.textContent).toBe("FRIEND");
     expect(shadow?.querySelector(".kl-roster-number")?.textContent).toContain("Member 123");
+    const listAvatar = shadow?.querySelector<HTMLButtonElement>(".kl-roster-entry-avatar-button");
+    const detailAvatar = shadow?.querySelector<HTMLButtonElement>(".kl-roster-detail-avatar-button");
+    expect(listAvatar?.getAttribute("aria-label")).toBe("Open KikiLink profile for Reina");
+    expect(detailAvatar?.getAttribute("aria-label")).toBe("Open KikiLink profile for Reina");
+    listAvatar?.click();
+    expect(shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);
+    shadow?.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.close();
+
+    if (!shadow || !detailAvatar) throw new Error("Missing player detail avatar");
+    const menuLayer = shadow.querySelector<HTMLDialogElement>(".kl-profile-menu-layer");
+    if (!menuLayer) throw new Error("Missing player action menu");
+    const getConversation = vi.spyOn(chatService, "getConversation");
+
+    detailAvatar.focus();
+    detailAvatar.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }),
+    );
+    await vi.waitFor(() => expect(menuLayer.open).toBe(true));
+    expect(getConversation).toHaveBeenCalledTimes(1);
+    menuLayer.dispatchEvent(new Event("cancel", { cancelable: true }));
+    expect(menuLayer.open).toBe(false);
+    expect(shadow.activeElement).toBe(detailAvatar);
+
+    getConversation.mockClear();
+    vi.useFakeTimers();
+    const touchStart = new PointerEvent("pointerdown", {
+      bubbles: true,
+      button: 0,
+      clientX: 48,
+      clientY: 48,
+    });
+    Object.defineProperty(touchStart, "pointerType", { value: "touch" });
+    detailAvatar.dispatchEvent(touchStart);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(getConversation).toHaveBeenCalledTimes(1);
+    expect(menuLayer.open).toBe(true);
+    menuLayer.dispatchEvent(new Event("cancel", { cancelable: true }));
+    expect(menuLayer.open).toBe(false);
+    expect(shadow.activeElement).toBe(detailAvatar);
+    vi.useRealTimers();
 
     const note = shadow?.querySelector<HTMLTextAreaElement>(".kl-roster-note");
     const tags = shadow?.querySelector<HTMLInputElement>(".kl-roster-tags");

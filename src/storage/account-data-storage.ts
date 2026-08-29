@@ -1,3 +1,4 @@
+import { cleanBeepMessageContent } from "../bc/message-content";
 import {
   MemoryKeyValueStorage,
   SETTINGS_KEY,
@@ -529,14 +530,22 @@ async function capturePortableChats(repository: ChatRepository): Promise<Portabl
   if (!canSafelyCapturePortableSnapshot(repository)) {
     throw new Error("KikiLink portable chat snapshot source is incomplete");
   }
-  const conversations = (await repository.listConversations()).slice(0, MAX_CLOUD_CONVERSATIONS);
+  const conversations = (await repository.listConversations())
+    .slice(0, MAX_CLOUD_CONVERSATIONS)
+    .map((conversation) => ({
+      ...conversation,
+      lastMessage: cleanBeepMessageContent(conversation.lastMessage),
+    }));
   const messages: LinkMessage[] = [];
   for (const conversation of conversations) {
     messages.push(
       ...(await repository.getMessages(
         conversation.peerNumber,
         MAX_CLOUD_MESSAGES_PER_CONVERSATION,
-      )),
+      )).map((message) => ({
+        ...message,
+        content: cleanBeepMessageContent(message.content),
+      })),
     );
   }
   messages.sort((left, right) => right.sentAt - left.sentAt);
@@ -624,7 +633,7 @@ function sanitizeConversation(value: unknown): ConversationMeta | undefined {
     peerName,
     ...(localAlias ? { localAlias } : {}),
     ...(hiddenAt !== undefined ? { hiddenAt } : {}),
-    lastMessage: cleanText(value.lastMessage, 1000),
+    lastMessage: cleanText(cleanBeepMessageContent(value.lastMessage), 1000),
     lastMessageAt: validTime(value.lastMessageAt) ? value.lastMessageAt : 0,
     lastDirection,
     unread: integerInRange(value.unread, 0, 100_000, 0),
@@ -650,7 +659,7 @@ function sanitizeMessage(value: unknown): LinkMessage | undefined {
     direction: value.direction === "outgoing" ? "outgoing" : "incoming",
     peerNumber: value.peerNumber,
     peerName: cleanText(value.peerName, 80) || `Member ${value.peerNumber}`,
-    content: cleanText(value.content, 1000),
+    content: cleanText(cleanBeepMessageContent(value.content), 1000),
     sentAt: value.sentAt,
     includeRoom: value.includeRoom === true,
     ...(roomName ? { roomName } : {}),

@@ -13,6 +13,7 @@ export const MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
 const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
 const PROFILE_BANNER_WEBP_QUALITIES = [0.88, 0.76, 0.64, 0.52, 0.4] as const;
 const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
+const PROFILE_BANNER_UPLOAD_TIMEOUT_MS = 180_000;
 const RETRYABLE_UPLOAD_STATUSES = new Set([500, 502, 503, 504]);
 const LITTERBOX_UPLOAD_ENDPOINT =
   "https://litterbox.catbox.moe/resources/internals/api.php";
@@ -106,6 +107,8 @@ export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploa
 export async function uploadPreparedImageToCatbox(
   image: PreparedLocalImage,
   request?: typeof fetch,
+  onProgress?: UploadProgressListener,
+  signal?: AbortSignal,
 ): Promise<string> {
   validatePreparedImage(image);
   const form = new FormData();
@@ -114,8 +117,10 @@ export async function uploadPreparedImageToCatbox(
   const response = await uploadMultipart(
     CATBOX_UPLOAD_ENDPOINT,
     form,
-    IMAGE_UPLOAD_TIMEOUT_MS,
+    PROFILE_BANNER_UPLOAD_TIMEOUT_MS,
     request,
+    onProgress,
+    signal,
   );
   if (!response.ok) throw new Error(providerUploadError("Catbox", response));
   const directUrl = normalizeImageUrl(response.body.trim());
@@ -166,6 +171,7 @@ export async function uploadMusicToCatbox(
   file: File,
   request?: typeof fetch,
   onProgress?: UploadProgressListener,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (file.size <= 0) throw new Error("Choose a non-empty audio file");
   if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
@@ -187,6 +193,7 @@ export async function uploadMusicToCatbox(
     300_000,
     request,
     onProgress,
+    signal,
   );
   if (!response.ok) {
     throw new Error(providerUploadError("Catbox", response));
@@ -618,10 +625,18 @@ async function uploadMultipart(
   timeoutMs: number,
   request?: typeof fetch,
   onProgress?: UploadProgressListener,
+  signal?: AbortSignal,
 ): Promise<MultipartUploadResponse> {
-  const response = await uploadMultipartOnce(endpoint, form, timeoutMs, request, onProgress);
+  const response = await uploadMultipartOnce(
+    endpoint,
+    form,
+    timeoutMs,
+    request,
+    onProgress,
+    signal,
+  );
   if (!response.ok && RETRYABLE_UPLOAD_STATUSES.has(response.status)) {
-    return uploadMultipartOnce(endpoint, form, timeoutMs, request, onProgress);
+    return uploadMultipartOnce(endpoint, form, timeoutMs, request, onProgress, signal);
   }
   return response;
 }
@@ -632,18 +647,61 @@ async function uploadMultipartOnce(
   timeoutMs: number,
   request?: typeof fetch,
   onProgress?: UploadProgressListener,
+  signal?: AbortSignal,
 ): Promise<MultipartUploadResponse> {
-  if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request);
+  if (signal?.aborted) throw new Error("The upload was cancelled");
+  if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request, signal);
   const bridged = await uploadMultipartViaUserscriptBridge(
     endpoint,
     form,
     timeoutMs,
     onProgress,
+    signal,
   );
   if (bridged) return bridged;
   if (typeof GM_xmlhttpRequest === "function") {
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
+    return uploadMultipartWithGmRequest(endpoint, form, timeoutMs, onProgress, signal);
+  }
+  throw new Error(
+    "KikiLink upload bridge is unavailable. Reload Bondage Club and check the Catbox/Litterbox permission in your userscript manager.",
+  );
+}
+
+function uploadMultipartWithGmRequest(
+  endpoint: string,
+  form: FormData,
+  timeoutMs: number,
+  onProgress?: UploadProgressListener,
+  signal?: AbortSignal,
+): Promise<MultipartUploadResponse> {
+  if (signal?.aborted) return Promise.reject(new Error("The upload was cancelled"));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let transport: { abort(): void } | undefined;
+    let abortReason: "cancelled" | "timeout" | undefined;
+    const finish = (run: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      signal?.removeEventListener("abort", handleAbort);
+      run();
+    };
+    const abort = (reason: "cancelled" | "timeout"): void => {
+      if (settled) return;
+      abortReason = reason;
+      try {
+        transport?.abort();
+      } finally {
+        finish(() => reject(new Error(
+          reason === "timeout" ? "The upload timed out" : "The upload was cancelled",
+        )));
+      }
+    };
+    const handleAbort = (): void => abort("cancelled");
+    const watchdog = setTimeout(() => abort("timeout"), timeoutMs);
+    signal?.addEventListener("abort", handleAbort, { once: true });
+    try {
+      transport = GM_xmlhttpRequest({
         method: "POST",
         url: endpoint,
         data: form,
@@ -661,22 +719,32 @@ async function uploadMultipartOnce(
               : { total, percent: Math.min(100, Math.round((loaded / total) * 100)) }),
           });
         },
-        onload: (response) => resolve({
+        onload: (response) => finish(() => resolve({
           ok: response.status >= 200 && response.status < 300,
           status: response.status,
           body: response.responseText ?? "",
-        }),
-        onerror: (response) => reject(
-          new Error(response.status
-            ? `Upload network request failed with HTTP ${response.status}`
-            : "The upload host could not be reached"),
-        ),
-        onabort: () => reject(new Error("The upload was cancelled")),
-        ontimeout: () => reject(new Error("The upload timed out")),
+        })),
+        onerror: (response) => finish(() => reject(new Error(
+          abortReason === "timeout"
+            ? "The upload timed out"
+            : abortReason === "cancelled"
+              ? "The upload was cancelled"
+              : response.status
+                ? `Upload network request failed with HTTP ${response.status}`
+                : "The upload host could not be reached",
+        ))),
+        onabort: () => finish(() => reject(new Error(
+          abortReason === "timeout" ? "The upload timed out" : "The upload was cancelled",
+        ))),
+        ontimeout: () => finish(() => reject(new Error("The upload timed out"))),
       });
-    });
-  }
-  return uploadMultipartWithFetch(endpoint, form, timeoutMs, globalThis.fetch.bind(globalThis));
+      if (signal?.aborted) abort("cancelled");
+    } catch (error) {
+      finish(() => reject(error instanceof Error
+        ? error
+        : new Error("The upload bridge could not prepare this file")));
+    }
+  });
 }
 
 async function uploadMultipartWithFetch(
@@ -684,9 +752,17 @@ async function uploadMultipartWithFetch(
   form: FormData,
   timeoutMs: number,
   request: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<MultipartUploadResponse> {
+  if (signal?.aborted) throw new Error("The upload was cancelled");
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const handleAbort = (): void => controller.abort();
+  signal?.addEventListener("abort", handleAbort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await request(endpoint, {
       method: "POST",
@@ -701,8 +777,10 @@ async function uploadMultipartWithFetch(
       body: await response.text().catch(() => ""),
     };
   } catch (error) {
+    if (timedOut) throw new Error("The upload timed out");
+    if (signal?.aborted) throw new Error("The upload was cancelled");
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("The upload timed out");
+      throw new Error("The upload was cancelled");
     }
     if (error instanceof TypeError) {
       throw new Error("The upload was blocked by the browser network policy");
@@ -710,6 +788,7 @@ async function uploadMultipartWithFetch(
     throw error;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", handleAbort);
   }
 }
 

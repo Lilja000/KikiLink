@@ -3,6 +3,9 @@ import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 
+const WCE_LIKO_MAT_SUFFIX =
+  '\uf124{"messageType":"Message","messageColor":"#C60000"}\u2063LikoMAT:en\u2063';
+
 function setup(): {
   service: ChatService;
   repository: MemoryChatRepository;
@@ -132,6 +135,132 @@ describe("ChatService", () => {
     expect(await service.captureRecent(event)).toBe(true);
     expect(await service.captureRecent({ ...event, sentAt: 1750 })).toBe(false);
     expect(await service.getMessages(88)).toHaveLength(1);
+  });
+
+  it("canonicalizes transport suffixes before storing and deduplicating native recent Beeps", async () => {
+    const { service, repository } = setup();
+    const event = {
+      direction: "incoming" as const,
+      peerNumber: 89,
+      peerName: "Liko user",
+      content: `Я не сохраняла ${WCE_LIKO_MAT_SUFFIX}`,
+      sentAt: 1_000,
+      includeRoom: false,
+    };
+
+    expect(await service.captureRecent(event)).toBe(true);
+    expect(
+      await service.captureRecent({
+        ...event,
+        content: "Я не сохраняла",
+        sentAt: 1_750,
+      }),
+    ).toBe(false);
+
+    expect(await repository.getMessages(89)).toMatchObject([{ content: "Я не сохраняла" }]);
+    expect(await repository.getConversation(89)).toMatchObject({
+      lastMessage: "Я не сохраняла",
+    });
+  });
+
+  it("deduplicates a clean recent Beep against a legacy raw row while repairing it in place", async () => {
+    const { service, repository } = setup();
+    await repository.addMessage({
+      id: "legacy-native-beep",
+      direction: "incoming",
+      peerNumber: 90,
+      peerName: "Liko user",
+      content: `Уже было ${WCE_LIKO_MAT_SUFFIX}`,
+      sentAt: 1_000,
+      includeRoom: false,
+      read: true,
+    });
+    await repository.putConversation({
+      peerNumber: 90,
+      peerName: "Liko user",
+      lastMessage: `Уже было ${WCE_LIKO_MAT_SUFFIX}`,
+      lastMessageAt: 1_000,
+      lastDirection: "incoming",
+      unread: 0,
+      pinned: false,
+      draft: "",
+    });
+
+    expect(await service.captureRecent({
+      direction: "incoming",
+      peerNumber: 90,
+      peerName: "Liko user",
+      content: "Уже было",
+      sentAt: 1_750,
+      includeRoom: false,
+    })).toBe(false);
+    expect(await repository.getMessages(90)).toMatchObject([
+      { id: "legacy-native-beep", content: "Уже было" },
+    ]);
+  });
+
+  it("cleans old message reads and repairs previews while preserving authored near-matches", async () => {
+    const { service, repository } = setup();
+    const rawTransportContent = `Stored message ${WCE_LIKO_MAT_SUFFIX}`;
+    const authoredNearMatch =
+      'Keep this \uf124{"messageType":"Message","messageColor":"not-a-color"}';
+    await repository.addMessage({
+      id: "old-wire-message",
+      direction: "incoming",
+      peerNumber: 501,
+      peerName: "Old client",
+      content: rawTransportContent,
+      sentAt: 100,
+      includeRoom: false,
+      read: true,
+    });
+    await repository.putConversation({
+      peerNumber: 501,
+      peerName: "Old client",
+      lastMessage: rawTransportContent,
+      lastMessageAt: 100,
+      lastDirection: "incoming",
+      unread: 0,
+      pinned: false,
+      draft: "",
+    });
+    await repository.addMessage({
+      id: "authored-near-match",
+      direction: "incoming",
+      peerNumber: 502,
+      peerName: "Author",
+      content: authoredNearMatch,
+      sentAt: 200,
+      includeRoom: false,
+      read: true,
+    });
+    await repository.putConversation({
+      peerNumber: 502,
+      peerName: "Author",
+      lastMessage: authoredNearMatch,
+      lastMessageAt: 200,
+      lastDirection: "incoming",
+      unread: 0,
+      pinned: false,
+      draft: "",
+    });
+
+    expect(await service.getMessages(501)).toMatchObject([{ content: "Stored message" }]);
+    expect(await service.getMessages(502)).toMatchObject([{ content: authoredNearMatch }]);
+    expect(await service.listConversations()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ peerNumber: 501, lastMessage: "Stored message" }),
+        expect.objectContaining({ peerNumber: 502, lastMessage: authoredNearMatch }),
+      ]),
+    );
+    expect(await repository.getConversation(501)).toMatchObject({
+      lastMessage: "Stored message",
+    });
+    expect(await repository.getConversation(502)).toMatchObject({
+      lastMessage: authoredNearMatch,
+    });
+    expect(await repository.getMessages(501)).toMatchObject([{ content: "Stored message" }]);
+    expect(await repository.getMessages(502)).toMatchObject([{ content: authoredNearMatch }]);
   });
 
   it("replaces an account name with an explicitly resolved nickname", async () => {

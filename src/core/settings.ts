@@ -19,7 +19,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 25,
+  schemaVersion: 26,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -70,6 +70,11 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     avatarFrame: "none",
     profileStyle: "classic",
     profileOutlineColor: "",
+    profileGradient: {
+      enabled: false,
+      primary: "#d71932",
+      secondary: "#d8b65d",
+    },
     autoIdleMinutes: 10,
     afkAutoReply: {
       enabled: false,
@@ -222,7 +227,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 25,
+    schemaVersion: 26,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -317,6 +322,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? linkPresence.profileStyle
           : DEFAULT_SETTINGS.linkPresence.profileStyle,
       profileOutlineColor: sanitizeOptionalColor(linkPresence.profileOutlineColor),
+      profileGradient: sanitizeProfileGradient(linkPresence.profileGradient),
       autoIdleMinutes: integerInRange(
         linkPresence.autoIdleMinutes,
         0,
@@ -591,6 +597,20 @@ function sanitizeAvatarUrl(value: unknown): string {
 
 function sanitizeOptionalColor(value: unknown): string {
   return validColor(value) ? value.toLowerCase() : "";
+}
+
+function sanitizeProfileGradient(
+  value: unknown,
+): KikiLinkSettings["linkPresence"]["profileGradient"] {
+  if (!isRecord(value)) return structuredClone(DEFAULT_SETTINGS.linkPresence.profileGradient);
+  const primary = sanitizeOptionalColor(value.primary);
+  const secondary = sanitizeOptionalColor(value.secondary);
+  const validPair = Boolean(primary && secondary);
+  return {
+    enabled: value.enabled === true && validPair,
+    primary: validPair ? primary : DEFAULT_SETTINGS.linkPresence.profileGradient.primary,
+    secondary: validPair ? secondary : DEFAULT_SETTINGS.linkPresence.profileGradient.secondary,
+  };
 }
 
 function sanitizeRoomBadge(

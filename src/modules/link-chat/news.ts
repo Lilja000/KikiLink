@@ -9,6 +9,20 @@ export interface KikiLinkNewsRelease {
 /** A compact, curated changelog for the in-addon News page. */
 export const KIKILINK_NEWS: readonly KikiLinkNewsRelease[] = [
   {
+    version: "0.26.0",
+    date: "2026-08-29",
+    title: "Cleaner chats and profiles that last",
+    summary: "Direct and group chats now share one clear list, while profile themes, uploads, and saved public cards become more dependable.",
+    highlights: [
+      "Find direct and group conversations in one chronological searchable list, with unmistakable GROUP badges and no nested header scrollbar.",
+      "Read clean direct messages across WCE and LikoMAT, including old saved previews, without stripping ordinary lookalike text.",
+      "Cancel a stuck profile-banner upload for real and see progress while it runs; transport timers and active slots now clean up deterministically.",
+      "Choose two strict colors for a contrast-aware profile gradient, negotiated only with compatible profile requests.",
+      "Open saved voluntary public profiles immediately, with honest SAVED PROFILE or SAVED DETAILS labels and bounded route-aware refresh instead of global polling.",
+      "Open KikiLink profiles directly from Room and Players avatars, with safer long-name spacing and distinctly recolored existing decorations.",
+    ],
+  },
+  {
     version: "0.25.0",
     date: "2026-08-29",
     title: "Group clarity and expressive profiles",

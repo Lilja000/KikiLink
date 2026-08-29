@@ -38,6 +38,11 @@ describe("SettingsStore", () => {
       draft.linkReactions.sounds.chat = "custom:soft-bell";
       draft.linkPresence.bannerUrl = "https://files.catbox.moe/profile-banner.webp";
       draft.linkPresence.profileOutlineColor = "#A1B2C3";
+      draft.linkPresence.profileGradient = {
+        enabled: true,
+        primary: "#AA1133",
+        secondary: "#44CCEE",
+      };
     });
 
     const second = new SettingsStore(storage);
@@ -59,6 +64,11 @@ describe("SettingsStore", () => {
     expect(second.get().linkPresence).toMatchObject({
       bannerUrl: "https://files.catbox.moe/profile-banner.webp",
       profileOutlineColor: "#a1b2c3",
+      profileGradient: {
+        enabled: true,
+        primary: "#aa1133",
+        secondary: "#44ccee",
+      },
     });
   });
 
@@ -146,7 +156,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(25);
+    expect(settings.schemaVersion).toBe(26);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -270,7 +280,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(25);
+    expect(settings.schemaVersion).toBe(26);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -294,7 +304,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(25);
+    expect(settings.schemaVersion).toBe(26);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -338,22 +348,24 @@ describe("SettingsStore", () => {
       avatarFrame: "none",
       profileStyle: "classic",
       profileOutlineColor: "",
+      profileGradient: DEFAULT_SETTINGS.linkPresence.profileGradient,
       autoIdleMinutes: 30,
       afkAutoReply: DEFAULT_SETTINGS.linkPresence.afkAutoReply,
     });
   });
 
-  it("migrates schema-25 profile decoration details and accepts only safe values", () => {
+  it("migrates profile decoration details into schema 26 and accepts only safe values", () => {
     const legacy = sanitizeSettings({
       schemaVersion: 23,
       linkPresence: { status: "dnd" },
     });
-    expect(legacy.schemaVersion).toBe(25);
+    expect(legacy.schemaVersion).toBe(26);
     expect(legacy.linkPresence).toMatchObject({
       avatarFrame: "none",
       profileStyle: "classic",
       bannerUrl: "",
       profileOutlineColor: "",
+      profileGradient: DEFAULT_SETTINGS.linkPresence.profileGradient,
     });
 
     const decorated = sanitizeSettings({
@@ -363,6 +375,11 @@ describe("SettingsStore", () => {
         profileStyle: "midnight",
         bannerUrl: "https://files.catbox.moe/kiki-banner.webp",
         profileOutlineColor: "#Aa33CC",
+        profileGradient: {
+          enabled: true,
+          primary: "#AA1133",
+          secondary: "#44CCEE",
+        },
       },
     });
     expect(decorated.linkPresence).toMatchObject({
@@ -370,6 +387,11 @@ describe("SettingsStore", () => {
       profileStyle: "midnight",
       bannerUrl: "https://files.catbox.moe/kiki-banner.webp",
       profileOutlineColor: "#aa33cc",
+      profileGradient: {
+        enabled: true,
+        primary: "#aa1133",
+        secondary: "#44ccee",
+      },
     });
 
     for (const avatarFrame of ["laurel", "thorn", "moon", "ribbon"] as const) {
@@ -405,6 +427,20 @@ describe("SettingsStore", () => {
       expect(rejected.linkPresence.bannerUrl).toBe("");
       expect(rejected.linkPresence.profileOutlineColor).toBe("");
     }
+
+    for (const profileGradient of [
+      {
+        enabled: true,
+        primary: "red; background:url(https://tracker.example/x.png)",
+        secondary: "#abcdef",
+      },
+      { enabled: true, primary: "#123456" },
+      { enabled: true, primary: "#12345g", secondary: "#abcdef" },
+      ["#123456", "#abcdef"],
+    ]) {
+      expect(sanitizeSettings({ schemaVersion: 26, linkPresence: { profileGradient } })
+        .linkPresence.profileGradient).toEqual(DEFAULT_SETTINGS.linkPresence.profileGradient);
+    }
   });
 
   it("preserves advanced rules while adding schema-11 quick alerts", () => {
@@ -428,7 +464,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(25);
+    expect(settings.schemaVersion).toBe(26);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -604,7 +640,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(25);
+    expect(settings.schemaVersion).toBe(26);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -732,7 +768,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(25);
+    expect(settings.schemaVersion).toBe(26);
     expect(settings.linkRoom.favoriteRoomNames).toEqual(["Moon Garden", "Golden Hall"]);
     expect(settings.linkRoom.presets[0]).toMatchObject({
       id: "moon_room",

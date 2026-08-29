@@ -2,6 +2,7 @@ export const KIKILINK_UPLOAD_BRIDGE_MARKER_ID = "kikilink-upload-bridge-v1";
 export const KIKILINK_UPLOAD_REQUEST = "kikilink:upload-request:v1";
 export const KIKILINK_UPLOAD_RESPONSE = "kikilink:upload-response:v1";
 export const KIKILINK_UPLOAD_PROGRESS = "kikilink:upload-progress:v1";
+export const KIKILINK_UPLOAD_CANCEL = "kikilink:upload-cancel:v1";
 
 export const KIKILINK_ALLOWED_UPLOAD_ENDPOINTS = new Set([
   "https://catbox.moe/user/api.php",
@@ -19,6 +20,12 @@ export interface KikiLinkUploadRequestMessage {
   endpoint: string;
   timeoutMs: number;
   fields: KikiLinkUploadField[];
+}
+
+export interface KikiLinkUploadCancelMessage {
+  type: typeof KIKILINK_UPLOAD_CANCEL;
+  capability: string;
+  id: string;
 }
 
 export interface KikiLinkUploadResponseMessage {

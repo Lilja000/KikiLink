@@ -9,6 +9,7 @@ import { LinkPresenceService } from "../link-presence/link-presence-service";
 import { AfkAutoReplyService } from "./afk-auto-reply-service";
 import { GroupChatService } from "./group-chat-service";
 import { MemoryKeyValueStorage } from "../../core/settings";
+import { ProfileCacheRepository } from "../../storage/profile-cache-repository";
 
 export class LinkChatModule implements KikiLinkModule {
   readonly id = "link-chat";
@@ -30,6 +31,7 @@ export class LinkChatModule implements KikiLinkModule {
 
   start(context: KikiLinkContext): void {
     this.#context = context;
+    const accountStorage = context.accountStorage ?? new MemoryKeyValueStorage();
     this.#service = new ChatService(context.repository, context.settings);
     this.#activities = new LinkActivitiesService(context.adapter, context.settings);
     this.#activities.start();
@@ -43,6 +45,8 @@ export class LinkChatModule implements KikiLinkModule {
       context.settings,
       context.bus,
       context.version,
+      new ProfileCacheRepository(accountStorage),
+      context.memberNumber,
     );
     this.#presence.start();
     this.#afkAutoReply = new AfkAutoReplyService(context.adapter, {
@@ -56,7 +60,7 @@ export class LinkChatModule implements KikiLinkModule {
     this.#roster.prune();
     this.#groups = new GroupChatService(
       context.adapter,
-      context.accountStorage ?? new MemoryKeyValueStorage(),
+      accountStorage,
     );
     this.#view = new LinkChatView(
       context.adapter,

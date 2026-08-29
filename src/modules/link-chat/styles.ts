@@ -1150,7 +1150,7 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-feature-card-footer { gap: 7px; padding-top: 5px; }
 :host([data-density="super-compact"]) .kl-layout { grid-template-columns: 270px minmax(0, 1fr); }
 :host([data-density="super-compact"]) .kl-search-wrap { padding: 8px; }
-:host([data-density="super-compact"]) .kl-sidebar-heading { padding: 0 8px 5px 10px; }
+:host([data-density="super-compact"]) .kl-sidebar-heading { padding: 2px 8px 7px 10px; }
 :host([data-density="super-compact"]) .kl-search { height: 36px; border-radius: 9px; }
 :host([data-density="super-compact"]) .kl-sidebar-new-chat { width: 32px; height: 32px; }
 :host([data-density="super-compact"]) .kl-conversations { padding-inline: 5px; }
@@ -1161,6 +1161,7 @@ button { color: inherit; }
   border-radius: 10px;
 }
 :host([data-density="super-compact"]) .kl-conversation .kl-avatar { width: 36px; height: 36px; border-radius: 10px; }
+:host([data-density="super-compact"]) .kl-group-conversation-avatar { width: 36px; height: 36px; border-radius: 10px; }
 :host([data-density="super-compact"]) .kl-conversation-side { gap: 2px; }
 :host([data-density="super-compact"]) .kl-chat { grid-template-rows: 50px minmax(0, 1fr) auto; }
 :host([data-density="super-compact"]) .kl-chat-header { gap: 8px; padding-inline: 10px; }
@@ -1208,7 +1209,7 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-roster-body { gap: 9px; padding: 10px; }
 :host([data-density="super-compact"]) .kl-roster-list-pane { gap: 6px; }
 :host([data-density="super-compact"]) .kl-roster-scope { min-height: 34px; }
-:host([data-density="super-compact"]) .kl-roster-entry { grid-template-columns: 35px minmax(0, 1fr) auto; gap: 7px; padding: 5px; border-radius: 9px; }
+:host([data-density="super-compact"]) .kl-roster-entry { grid-template-columns: 35px minmax(0, 1fr); gap: 7px; padding: 5px; border-radius: 9px; }
 :host([data-density="super-compact"]) .kl-roster-entry .kl-avatar { width: 35px; height: 35px; border-radius: 9px; }
 :host([data-density="super-compact"]) .kl-roster-detail { padding: 10px; border-radius: 12px; }
 :host([data-density="super-compact"]) .kl-roster-quick-actions,
@@ -1230,10 +1231,9 @@ button { color: inherit; }
   display: grid;
   grid-template-areas:
     "search"
-    "groups"
     "heading"
     "chats";
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   border-right: 1px solid var(--kl-border);
   background: var(--kl-sidebar-bg);
 }
@@ -1241,13 +1241,12 @@ button { color: inherit; }
 .kl-search-wrap { grid-area: search; padding: 14px; }
 .kl-sidebar > .kl-sidebar-heading { grid-area: heading; }
 .kl-sidebar > .kl-conversations { grid-area: chats; }
-.kl-sidebar > .kl-group-sidebar { grid-area: groups; }
 .kl-sidebar-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 13px 8px 16px;
+  padding: 2px 13px 10px 16px;
   color: var(--kl-gold);
   font-size: var(--kl-type-xs);
   font-weight: 850;
@@ -1283,6 +1282,7 @@ button { color: inherit; }
   font-weight: 820;
 }
 .kl-sidebar-gallery .kl-icon { width: 16px; height: 16px; }
+.kl-sidebar-new-group .kl-icon { width: 17px; height: 17px; }
 .kl-search,
 .kl-composer-input,
 .kl-number-input,
@@ -1356,6 +1356,71 @@ button { color: inherit; }
   background: color-mix(in srgb, var(--kl-accent), transparent 88%);
 }
 
+.kl-group-conversation-avatar {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--kl-gold), var(--kl-border) 62%);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--kl-surface-2), transparent 8%);
+  overflow: hidden;
+}
+.kl-group-conversation-avatar-item {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--kl-avatar-bg);
+  overflow: hidden;
+  font-size: 8px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+.kl-group-conversation-avatar[data-avatar-count="1"] .kl-group-conversation-avatar-item {
+  grid-area: 1 / 1 / 3 / 3;
+  font-size: 11px;
+}
+.kl-group-conversation-avatar[data-avatar-count="2"] .kl-group-conversation-avatar-item {
+  grid-row: 1 / -1;
+  font-size: 10px;
+}
+.kl-group-conversation-avatar-item:nth-child(3) { grid-column: 1 / -1; }
+.kl-group-conversation-avatar-item img { width: 100%; height: 100%; object-fit: cover; }
+.kl-group-conversation-mark {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--kl-sidebar-bg);
+  border-radius: 999px;
+  background: var(--kl-gold);
+  color: #17100a;
+}
+.kl-group-conversation-mark .kl-icon { width: 11px; height: 11px; stroke-width: 2.2; }
+.kl-conversation-kind {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--kl-gold), transparent 82%);
+  color: var(--kl-gold);
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .06em;
+}
+.kl-conversation-preview[data-draft="true"] {
+  color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 28%);
+  font-style: italic;
+}
+
 .kl-avatar {
   position: relative;
   width: 44px;
@@ -1370,13 +1435,26 @@ button { color: inherit; }
   text-transform: uppercase;
 }
 .kl-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.kl-avatar-button {
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 15px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.kl-avatar-button:hover .kl-avatar { border-color: var(--kl-border-strong); filter: brightness(1.08); }
+.kl-avatar-button:focus-visible { outline: 2px solid var(--kl-gold); outline-offset: 2px; }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="blossom"] {
   border-color: #e97c94;
   box-shadow: inset 0 0 0 2px rgba(255, 211, 220, 0.72), 0 0 0 1px rgba(183, 23, 57, 0.25);
 }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="rose"] {
-  border-color: #d7a34d;
-  box-shadow: inset 0 0 0 2px rgba(125, 18, 42, 0.72), 0 0 0 1px rgba(214, 162, 75, 0.30);
+  border-color: #ff5a68;
+  box-shadow: inset 0 0 0 2px rgba(112, 7, 24, 0.78), 0 0 0 1px rgba(255, 51, 76, 0.34);
 }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="starlight"] {
   border-color: #b8a8ff;
@@ -1387,16 +1465,16 @@ button { color: inherit; }
   box-shadow: inset 0 0 0 2px rgba(37, 105, 65, 0.78), 0 0 0 1px rgba(221, 188, 100, 0.34);
 }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="thorn"] {
-  border-color: #b9344c;
-  box-shadow: inset 0 0 0 2px rgba(68, 11, 24, 0.82), 0 0 0 1px rgba(220, 65, 91, 0.34);
+  border-color: #51d6a0;
+  box-shadow: inset 0 0 0 2px rgba(5, 35, 26, 0.88), 0 0 0 1px rgba(45, 201, 143, 0.34);
 }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="moon"] {
   border-color: #b9c7ff;
   box-shadow: inset 0 0 0 2px rgba(62, 68, 142, 0.76), 0 0 8px rgba(133, 154, 255, 0.24);
 }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="ribbon"] {
-  border-color: #ef9eb3;
-  box-shadow: inset 0 0 0 2px rgba(120, 28, 58, 0.70), 0 0 0 1px rgba(244, 185, 116, 0.30);
+  border-color: #62e0c2;
+  box-shadow: inset 0 0 0 2px rgba(7, 63, 54, 0.78), 0 0 0 1px rgba(78, 224, 194, 0.34);
 }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="laurel"]::after,
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="thorn"]::after,
@@ -1417,21 +1495,21 @@ button { color: inherit; }
 }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="thorn"]::after {
   background:
-    conic-gradient(from 18deg at 9% 18%, transparent 0 38%, #d55268 40% 55%, transparent 57%),
-    conic-gradient(from 210deg at 87% 18%, transparent 0 40%, #7e142b 42% 57%, transparent 59%),
-    conic-gradient(from 110deg at 14% 82%, transparent 0 42%, #bd304b 44% 58%, transparent 60%);
+    conic-gradient(from 18deg at 9% 18%, transparent 0 38%, #62e6ad 40% 55%, transparent 57%),
+    conic-gradient(from 210deg at 87% 18%, transparent 0 40%, #126b4d 42% 57%, transparent 59%),
+    conic-gradient(from 110deg at 14% 82%, transparent 0 42%, #2dbb82 44% 58%, transparent 60%);
 }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="moon"]::after {
   background:
     radial-gradient(circle at 16% 17%, transparent 0 4px, #eef1ff 5px 7px, transparent 8px),
-    radial-gradient(circle at 84% 20%, #f3dc9b 0 1px, transparent 2px),
+    radial-gradient(circle at 84% 20%, #dff7ff 0 1px, transparent 2px),
     radial-gradient(circle at 18% 76%, #b9c7ff 0 1px, transparent 2px);
 }
 .kl-avatar:not(.kl-addon-profile-avatar)[data-avatar-frame="ribbon"]::after {
   background:
-    linear-gradient(135deg, rgba(245, 174, 194, 0.88) 0 7%, transparent 7% 100%),
-    radial-gradient(ellipse at 88% 18%, #f0bc70 0 3px, transparent 4px),
-    radial-gradient(ellipse at 13% 75%, #e47798 0 2px, transparent 3px);
+    linear-gradient(135deg, rgba(102, 232, 202, 0.90) 0 7%, transparent 7% 100%),
+    radial-gradient(ellipse at 88% 18%, #9ff5e2 0 3px, transparent 4px),
+    radial-gradient(ellipse at 13% 75%, #2fb796 0 2px, transparent 3px);
 }
 
 .kl-conversation-main { min-width: 0; }
@@ -2045,7 +2123,7 @@ button { color: inherit; }
 .kl-roster-entry {
   width: 100%;
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
+  grid-template-columns: 42px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   padding: 8px;
@@ -2054,14 +2132,31 @@ button { color: inherit; }
   background: transparent;
   color: inherit;
   text-align: left;
-  cursor: pointer;
+  cursor: default;
 }
 .kl-roster-entry:hover { background: var(--kl-surface-hover); }
+.kl-roster-entry:focus-within { background: color-mix(in srgb, var(--kl-surface-hover), transparent 18%); }
 .kl-roster-entry[data-selected="true"] {
   border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 28%);
   background: color-mix(in srgb, var(--kl-accent), transparent 87%);
 }
 .kl-roster-entry .kl-avatar { width: 42px; height: 42px; border-radius: 13px; }
+.kl-roster-entry-select {
+  min-width: 0;
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.kl-roster-entry-select:focus-visible { border-radius: 8px; box-shadow: 0 0 0 2px var(--kl-gold); }
 .kl-roster-entry-copy { min-width: 0; }
 .kl-roster-entry-name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; min-width: 0; }
 .kl-roster-entry-name { overflow: hidden; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
@@ -3015,7 +3110,8 @@ select:focus-visible {
 }
 .kl-profile-style-fields .kl-select { width: 100%; min-width: 0; }
 .kl-profile-banner-field,
-.kl-profile-outline-field {
+.kl-profile-outline-field,
+.kl-profile-gradient-field {
   min-width: 0;
   display: grid;
   gap: 9px;
@@ -3023,6 +3119,29 @@ select:focus-visible {
   border: 1px solid var(--kl-border);
   border-radius: 14px;
   background: color-mix(in srgb, var(--kl-surface-2), transparent 10%);
+}
+.kl-profile-gradient-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+.kl-profile-gradient-controls > label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--kl-muted);
+  font-size: var(--kl-type-xs);
+}
+.kl-profile-gradient-color {
+  width: 48px;
+  height: 40px;
+  padding: 3px;
+  border: 1px solid var(--kl-border-strong);
+  border-radius: 11px;
+  background: var(--kl-input-bg);
+  cursor: pointer;
 }
 .kl-profile-banner-preview {
   position: relative;
@@ -3135,6 +3254,12 @@ select:focus-visible {
   font-weight: 750;
   text-align: center;
 }
+.kl-addon-profile-unavailable {
+  max-width: 480px;
+  margin: 0 auto;
+  line-height: 1.55;
+  text-wrap: balance;
+}
 .kl-addon-profile-card {
   --kl-profile-bg: var(--kl-surface);
   --kl-profile-panel: var(--kl-surface-2);
@@ -3194,6 +3319,47 @@ select:focus-visible {
     radial-gradient(circle at 71% 34%, rgba(224, 214, 255, 0.72) 0 1px, transparent 2px),
     radial-gradient(circle at 88% 14%, rgba(190, 171, 255, 0.40) 0 7%, transparent 25%),
     linear-gradient(128deg, #24204b, #11162d 58%, #322045);
+}
+.kl-addon-profile-card[data-custom-gradient="true"] {
+  --kl-profile-gradient-primary-safe: color-mix(
+    in srgb,
+    var(--kl-profile-gradient-primary),
+    var(--kl-profile-gradient-tone) 62%
+  );
+  --kl-profile-gradient-secondary-safe: color-mix(
+    in srgb,
+    var(--kl-profile-gradient-secondary),
+    var(--kl-profile-gradient-tone) 62%
+  );
+  --kl-profile-bg: color-mix(
+    in srgb,
+    var(--kl-profile-gradient-primary-safe) 50%,
+    var(--kl-profile-gradient-secondary-safe)
+  );
+  --kl-profile-panel: color-mix(
+    in srgb,
+    var(--kl-profile-bg),
+    var(--kl-profile-gradient-tone) 24%
+  );
+  --kl-profile-panel-strong: color-mix(
+    in srgb,
+    var(--kl-profile-bg),
+    var(--kl-profile-gradient-tone) 34%
+  );
+  --kl-profile-muted: color-mix(in srgb, var(--kl-profile-text), transparent 28%);
+  --kl-profile-border: color-mix(in srgb, var(--kl-profile-text), transparent 78%);
+  --kl-profile-border-strong: color-mix(in srgb, var(--kl-profile-text), transparent 60%);
+  --kl-profile-highlight: var(--kl-profile-text);
+  --kl-profile-banner: linear-gradient(
+    125deg,
+    var(--kl-profile-gradient-primary-safe),
+    var(--kl-profile-gradient-secondary-safe)
+  );
+  background: linear-gradient(
+    145deg,
+    var(--kl-profile-gradient-primary-safe),
+    var(--kl-profile-gradient-secondary-safe)
+  );
 }
 .kl-addon-profile-hero {
   position: relative;
@@ -3278,16 +3444,16 @@ select:focus-visible {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.30), 0 0 0 3px rgba(215, 25, 50, 0.14);
 }
 .kl-addon-profile-avatar-shell[data-frame="rose"] {
-  border-color: rgba(235, 192, 112, 0.72);
+  border-color: rgba(255, 105, 116, 0.82);
   background:
-    conic-gradient(from 35deg, #7c1229, #e4a34d, #a91838, #f0c677, #7c1229),
+    conic-gradient(from 35deg, #570817, #ff4358, #8f0c25, #ff7a82, #570817),
     var(--kl-profile-bg);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.30), 0 0 0 3px rgba(214, 162, 75, 0.14);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.30), 0 0 0 3px rgba(255, 54, 79, 0.16);
 }
 .kl-addon-profile-avatar-shell[data-frame="starlight"] {
   border-color: rgba(214, 203, 255, 0.76);
   background:
-    conic-gradient(from 18deg, #7c6ee8, #d3a8ff, #6da3ef, #f2d38a, #7c6ee8),
+    conic-gradient(from 18deg, #6655dd, #d3a8ff, #765ee8, #eadcff, #6655dd),
     var(--kl-profile-bg);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.30), 0 0 18px rgba(150, 128, 255, 0.30);
 }
@@ -3299,25 +3465,25 @@ select:focus-visible {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.30), 0 0 0 3px rgba(96, 142, 80, 0.15);
 }
 .kl-addon-profile-avatar-shell[data-frame="thorn"] {
-  border-color: rgba(225, 81, 104, 0.76);
+  border-color: rgba(87, 226, 168, 0.82);
   background:
-    repeating-conic-gradient(from 8deg, #3f0b18 0 11deg, #bf3650 11deg 16deg, #17050a 16deg 25deg),
+    repeating-conic-gradient(from 8deg, #031c14 0 11deg, #2fc18a 11deg 16deg, #010c08 16deg 25deg),
     var(--kl-profile-bg);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), 0 0 0 3px rgba(187, 44, 70, 0.15);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), 0 0 0 3px rgba(45, 202, 143, 0.17);
 }
 .kl-addon-profile-avatar-shell[data-frame="moon"] {
   border-color: rgba(200, 209, 255, 0.82);
   background:
-    conic-gradient(from 30deg, #293063, #8493e8, #303b83, #e1c980, #293063),
+    conic-gradient(from 30deg, #293063, #9facf2, #303b83, #e8f5ff, #293063),
     var(--kl-profile-bg);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.30), 0 0 21px rgba(122, 143, 255, 0.34);
 }
 .kl-addon-profile-avatar-shell[data-frame="ribbon"] {
-  border-color: rgba(250, 181, 199, 0.82);
+  border-color: rgba(105, 235, 205, 0.84);
   background:
-    conic-gradient(from 45deg, #852c4c, #f0a7ba, #d99a50, #8d294a, #f2bdca, #852c4c),
+    conic-gradient(from 45deg, #075446, #64e2c4, #1c9a7d, #063b32, #a3f4e2, #075446),
     var(--kl-profile-bg);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.30), 0 0 0 3px rgba(230, 113, 145, 0.14);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.30), 0 0 0 3px rgba(52, 206, 169, 0.16);
 }
 .kl-addon-profile-avatar-shell[data-frame="blossom"]::after,
 .kl-addon-profile-avatar-shell[data-frame="rose"]::after,
@@ -3343,15 +3509,15 @@ select:focus-visible {
   content: "";
   inset: -7px;
   background:
-    radial-gradient(ellipse at 92% 52%, #f0c677 0 5px, transparent 6px),
+    radial-gradient(ellipse at 92% 52%, #ff7380 0 5px, transparent 6px),
     radial-gradient(ellipse at 12% 24%, #b92848 0 5px, transparent 6px),
-    radial-gradient(ellipse at 77% 4%, #f4d998 0 3px, transparent 4px);
+    radial-gradient(ellipse at 77% 4%, #ffc2c8 0 3px, transparent 4px);
 }
 .kl-addon-profile-avatar-shell[data-frame="starlight"]::after {
   content: "";
   inset: -8px;
   background:
-    radial-gradient(circle at 91% 9%, #fff0b8 0 3px, transparent 4px),
+    radial-gradient(circle at 91% 9%, #f4eaff 0 3px, transparent 4px),
     radial-gradient(circle at 10% 34%, #d7c8ff 0 3px, transparent 4px),
     radial-gradient(circle at 58% 94%, #9fc5ff 0 3px, transparent 4px),
     radial-gradient(circle at 24% 89%, #fff 0 2px, transparent 3px);
@@ -3370,17 +3536,17 @@ select:focus-visible {
   content: "";
   inset: -8px;
   background:
-    conic-gradient(from 14deg at 7% 16%, transparent 0 40%, #df5a70 42% 55%, transparent 57%),
-    conic-gradient(from 194deg at 93% 24%, transparent 0 40%, #7b1227 42% 57%, transparent 59%),
-    conic-gradient(from 92deg at 12% 78%, transparent 0 40%, #b52e48 42% 57%, transparent 59%),
-    conic-gradient(from 272deg at 63% 96%, transparent 0 40%, #dc5067 42% 57%, transparent 59%);
+    conic-gradient(from 14deg at 7% 16%, transparent 0 40%, #65e9b0 42% 55%, transparent 57%),
+    conic-gradient(from 194deg at 93% 24%, transparent 0 40%, #0d6246 42% 57%, transparent 59%),
+    conic-gradient(from 92deg at 12% 78%, transparent 0 40%, #27ae79 42% 57%, transparent 59%),
+    conic-gradient(from 272deg at 63% 96%, transparent 0 40%, #45cf96 42% 57%, transparent 59%);
 }
 .kl-addon-profile-avatar-shell[data-frame="moon"]::after {
   content: "";
   inset: -8px;
   background:
     radial-gradient(circle at 8% 18%, transparent 0 7px, #edf0ff 8px 11px, transparent 12px),
-    radial-gradient(circle at 89% 20%, #f0d68d 0 3px, transparent 4px),
+    radial-gradient(circle at 89% 20%, #dcf4ff 0 3px, transparent 4px),
     radial-gradient(circle at 14% 66%, #b9c7ff 0 2px, transparent 3px),
     radial-gradient(circle at 61% 96%, #fff 0 2px, transparent 3px);
 }
@@ -3388,10 +3554,10 @@ select:focus-visible {
   content: "";
   inset: -8px;
   background:
-    linear-gradient(135deg, #f0a7ba 0 7%, transparent 7% 100%),
-    radial-gradient(ellipse at 92% 22%, #f1c273 0 5px, transparent 6px),
-    radial-gradient(ellipse at 12% 71%, #d86d8e 0 4px, transparent 5px),
-    radial-gradient(ellipse at 60% 96%, #f5bdca 0 3px, transparent 4px);
+    linear-gradient(135deg, #69e4c7 0 7%, transparent 7% 100%),
+    radial-gradient(ellipse at 92% 22%, #a4f5e2 0 5px, transparent 6px),
+    radial-gradient(ellipse at 12% 71%, #2fb594 0 4px, transparent 5px),
+    radial-gradient(ellipse at 60% 96%, #6bdbc0 0 3px, transparent 4px);
 }
 .kl-addon-profile-identity {
   position: relative;
@@ -3400,12 +3566,17 @@ select:focus-visible {
   display: grid;
   align-content: start;
   gap: 5px;
+  padding-right: 12px;
   padding-top: 40px;
 }
 .kl-addon-profile-identity h2 {
   min-width: 0;
   margin: 0;
+  display: -webkit-box;
+  overflow: hidden;
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   font-family: Georgia, "Times New Roman", serif;
   font-size: clamp(22px, 4vw, 28px);
   line-height: 1.08;
@@ -3427,6 +3598,7 @@ select:focus-visible {
   letter-spacing: 0.06em;
 }
 .kl-addon-profile-badge--owner { border-color: color-mix(in srgb, #a855f7, transparent 55%); background: color-mix(in srgb, #a855f7, transparent 84%); color: color-mix(in srgb, #a855f7 68%, var(--kl-profile-text)); }
+.kl-addon-profile-badge--saved { border-color: var(--kl-profile-border-strong); background: color-mix(in srgb, var(--kl-profile-muted), transparent 88%); color: var(--kl-profile-muted); }
 .kl-addon-profile-badge--sub { border-color: color-mix(in srgb, #299de0, transparent 55%); background: color-mix(in srgb, #299de0, transparent 84%); color: color-mix(in srgb, #299de0 68%, var(--kl-profile-text)); }
 .kl-addon-profile-badge--lover { border-color: color-mix(in srgb, #e44386, transparent 54%); background: color-mix(in srgb, #e44386, transparent 84%); color: color-mix(in srgb, #e44386 68%, var(--kl-profile-text)); }
 .kl-addon-profile-badge--whitelist { border-color: color-mix(in srgb, #258bd0, transparent 55%); background: color-mix(in srgb, #258bd0, transparent 84%); color: color-mix(in srgb, #258bd0 68%, var(--kl-profile-text)); }
@@ -3688,6 +3860,7 @@ select:focus-visible {
 .kl-room-player-list { display: grid; gap: 8px; }
 .kl-room-player { min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px; border: 1px solid var(--kl-border); border-radius: 13px; background: var(--kl-surface); }
 .kl-room-player .kl-avatar { width: 42px; height: 42px; border-radius: 11px; }
+.kl-room-player-avatar-button { border-radius: 11px; }
 .kl-room-player-copy { min-width: 0; display: grid; gap: 2px; }
 .kl-room-player-copy > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kl-room-player-copy > span { color: var(--kl-muted); font-size: var(--kl-type-xs); }
@@ -4172,11 +4345,10 @@ select:focus-visible {
   min-width: 0;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
-  overflow-x: auto;
-  padding: 4px 2px 1px;
-  scrollbar-width: thin;
-  overscroll-behavior-inline: contain;
+  overflow: visible;
+  padding: 4px 2px;
 }
 .kl-group-participant-item { position: relative; flex: 0 0 auto; }
 .kl-group-member-target {
@@ -4460,7 +4632,7 @@ button.kl-group-member-target:focus-visible {
   .kl-addon-profile-avatar-shell { width: 84px; height: 84px; padding: 5px; border-radius: 28px; }
   .kl-addon-profile-avatar { width: 72px; height: 72px; border-radius: 23px; font-size: 20px; }
   .kl-addon-profile-avatar-shell > .kl-presence-dot { z-index: 10; right: -1px; bottom: -1px; width: 18px; height: 18px; }
-  .kl-addon-profile-identity { gap: 4px; padding-top: 34px; }
+  .kl-addon-profile-identity { gap: 4px; padding-top: 34px; padding-right: 16px; }
   .kl-addon-profile-identity h2 { font-size: 21px; }
   .kl-addon-profile-facts { gap: 7px; padding: 0 14px 14px; }
   .kl-addon-profile-fact { min-height: 60px; padding: 9px; }
@@ -4495,13 +4667,15 @@ button.kl-group-member-target:focus-visible {
 
 @media (forced-colors: active) {
   .kl-addon-profile-card,
+  .kl-addon-profile-card[data-custom-gradient="true"],
   .kl-addon-profile-fact,
   .kl-addon-profile-private,
   .kl-addon-profile-action,
   .kl-addon-profile-badge,
   .kl-profile-banner-field,
   .kl-profile-banner-preview,
-  .kl-profile-outline-field {
+  .kl-profile-outline-field,
+  .kl-profile-gradient-field {
     border-color: CanvasText;
     background: Canvas;
     color: CanvasText;

@@ -30,7 +30,8 @@ persistent profile avatar should use a separately managed durable HTTPS link.
 5. Only an explicit `Upload & send` action sends that prepared WebP as multipart `POST` data to
    `https://litterbox.catbox.moe/resources/internals/api.php`, with `reqtype=fileupload` and the
    selected `time`. Credentials and referrer information are omitted, and the request has a
-   60-second timeout.
+   60-second timeout. HTTP provider failures may retry once, but timeout, cancellation, and network
+   failures do not start a second upload.
 6. KikiLink accepts only a direct HTTPS `litter.catbox.moe/<id>.webp` response with no credentials,
    query, or fragment, then sends that URL as a normal Beep.
 
@@ -49,6 +50,19 @@ allows at most two concurrent uploads, 12 admitted requests and 160 MiB per roll
 and one file of at most 80 MiB per request. Exceeding either rolling limit fails closed behind a
 one-minute cooldown. Final navigation aborts active transports and clears this state; a BFCache
 freeze retains the same capability and listener so restored uploads continue to work.
+
+The page-side request carries a unique ID and supports an authenticated cancel message. Cancel,
+dialog close, timeout, navigation, and host teardown abort the underlying `GM_xmlhttpRequest`, remove
+listeners and timers once, and release the active-upload slot even if a userscript manager omits its
+normal timeout callback. Upload screens may show byte/percentage progress when the provider reports a
+total. If the privileged bridge is absent, KikiLink fails immediately with a reload/permission hint
+instead of attempting a browser fetch that Catbox or Litterbox is expected to block.
+
+Profile banners use the same bridge only after local signature validation, centered 1200×400 cropping,
+metadata-removing WebP re-encoding, and a 2 MiB cap. They go to long-lived public Catbox storage. The
+Presence dialog exposes progress and a Cancel action; closing it aborts the actual transfer and leaves
+the saved profile unchanged. Banner uploads use a dedicated 180-second timeout so a valid 2 MiB file
+can complete on a slow upstream connection; temporary chat-image uploads keep their 60-second limit.
 
 ## Device Gallery
 

@@ -32,6 +32,11 @@ export type AvatarFrame =
   | "moon"
   | "ribbon";
 export type ProfileCardStyle = "classic" | "garden" | "midnight";
+export interface ProfileGradient {
+  enabled: boolean;
+  primary: string;
+  secondary: string;
+}
 export type ImagePreviewPreference = "ask" | "always" | "never";
 export type ImageUploadRetention = "1h" | "12h" | "24h" | "72h";
 export type ReactionTrigger =
@@ -120,7 +125,12 @@ export interface PresenceSnapshot {
   avatarFrame?: AvatarFrame;
   profileStyle?: ProfileCardStyle;
   profileOutlineColor?: string;
+  profileGradient?: ProfileGradient;
   addonVersion?: string;
+  /** Public profile fields came wholly or partly from the bounded account-local cache. */
+  profileFromCache?: boolean;
+  /** Last successful receipt of the cached public profile fields. */
+  profileSyncedAt?: number;
 }
 
 export interface QuickAction {
@@ -273,7 +283,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 25;
+  schemaVersion: 26;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -321,6 +331,7 @@ export interface KikiLinkSettings {
     avatarFrame: AvatarFrame;
     profileStyle: ProfileCardStyle;
     profileOutlineColor: string;
+    profileGradient: ProfileGradient;
     autoIdleMinutes: number;
     afkAutoReply: {
       enabled: boolean;

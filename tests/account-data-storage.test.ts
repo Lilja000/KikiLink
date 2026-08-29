@@ -136,6 +136,11 @@ describe("BC account-scoped KikiLink storage", () => {
       draft.linkPresence.avatarUrl = "https://example.com/kiki.png";
       draft.linkPresence.bannerUrl = "https://files.catbox.moe/kiki-banner.webp";
       draft.linkPresence.profileOutlineColor = "#a14fd6";
+      draft.linkPresence.profileGradient = {
+        enabled: true,
+        primary: "#8A1538",
+        secondary: "#2A9D8F",
+      };
       draft.linkActivities.customActivities.push({
         id: "elbow-touch",
         name: "Elbow touch",
@@ -177,6 +182,11 @@ describe("BC account-scoped KikiLink storage", () => {
       "https://files.catbox.moe/kiki-banner.webp",
     );
     expect(mobileSettings.linkPresence.profileOutlineColor).toBe("#a14fd6");
+    expect(mobileSettings.linkPresence.profileGradient).toEqual({
+      enabled: true,
+      primary: "#8a1538",
+      secondary: "#2a9d8f",
+    });
     expect(mobileSettings.linkActivities.customActivities).toMatchObject([
       { id: "elbow-touch", targetGroup: "ItemArms", arousal: 4 },
     ]);
@@ -197,6 +207,80 @@ describe("BC account-scoped KikiLink storage", () => {
 
     await desktop.destroy();
     await mobile.destroy();
+  });
+
+  it("sanitizes recognized transport suffixes in portable chats without altering near-matches", async () => {
+    const rawTransportContent =
+      'Portable message \uf124{"messageType":"Message","messageColor":"#C60000"}' +
+      "\u2063LikoMAT:en\u2063";
+    const authoredNearMatch =
+      'Keep this \uf124{"messageType":"Message","messageColor":"red"}';
+    const remoteState = {
+      version: 1,
+      owner: 101,
+      updatedAt: 50,
+      chats: {
+        conversations: [{ ...conversation(), lastMessage: rawTransportContent }],
+        messages: [
+          { ...message(), content: rawTransportContent },
+          {
+            ...message(),
+            id: "303:21:authored",
+            content: authoredNearMatch,
+            sentAt: 21,
+          },
+        ],
+      },
+    };
+    globalThis.Player = {
+      MemberNumber: 101,
+      Name: "PortableKiki",
+      FriendNames: new Map(),
+      ExtensionSettings: { KikiLink: `JSON:${JSON.stringify(remoteState)}` },
+    };
+    globalThis.ServerPlayerExtensionSettingsSync = vi.fn();
+    const account = new AccountDataStorage(101, new MemoryKeyValueStorage());
+    const repository = new MemoryChatRepository();
+
+    await account.attachChatRepository(repository);
+
+    expect(await repository.getConversation(303)).toMatchObject({
+      lastMessage: "Portable message",
+    });
+    expect(await repository.getMessages(303)).toMatchObject([
+      { content: "Portable message" },
+      { content: authoredNearMatch },
+    ]);
+    await account.destroy();
+  });
+
+  it("never exports legacy transport envelopes from unsanitized local repository rows", async () => {
+    const rawTransportContent =
+      'Portable message \uf124{"messageType":"Message"}' +
+      "\u2063LikoMAT:en\u2063";
+    globalThis.Player = {
+      MemberNumber: 101,
+      Name: "PortableKiki",
+      FriendNames: new Map(),
+      ExtensionSettings: {},
+    };
+    globalThis.ServerPlayerExtensionSettingsSync = vi.fn();
+    const account = new AccountDataStorage(101, new MemoryKeyValueStorage());
+    const repository = new MemoryChatRepository();
+    await repository.addMessage({ ...message(), content: rawTransportContent });
+    await repository.putConversation({ ...conversation(), lastMessage: rawTransportContent });
+    await account.attachChatRepository(repository);
+
+    account.markChatChanged();
+    await account.flush();
+
+    expect(readCloudChatState()).toMatchObject({
+      conversations: [{ lastMessage: "Portable message" }],
+      messages: [{ content: "Portable message" }],
+    });
+    // Export safety does not need to mutate a repository that may be read-only or in fallback.
+    expect(await repository.getMessages(303)).toMatchObject([{ content: rawTransportContent }]);
+    await account.destroy();
   });
 
   it("rejects a portable payload when Player changes to another MemberNumber", async () => {
