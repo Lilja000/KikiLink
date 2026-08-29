@@ -1,10 +1,95 @@
 import { describe, expect, it } from "vitest";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
+import type { ConversationMeta } from "../src/core/types";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 
 const WCE_LIKO_MAT_SUFFIX =
   '\uf124{"messageType":"Message","messageColor":"#C60000"}\u2063LikoMAT:en\u2063';
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function flushMicrotasks(count = 12): Promise<void> {
+  for (let index = 0; index < count; index += 1) await Promise.resolve();
+}
+
+class DeferredConversationRepository extends MemoryChatRepository {
+  #nextPut:
+    | {
+        entered: ReturnType<typeof deferred>;
+        release: ReturnType<typeof deferred>;
+      }
+    | undefined;
+  #nextPrune:
+    | {
+        entered: ReturnType<typeof deferred>;
+        release: ReturnType<typeof deferred>;
+      }
+    | undefined;
+  #rejectNextPut = false;
+
+  deferNextPut(): { entered: Promise<void>; release: () => void } {
+    const entered = deferred();
+    const release = deferred();
+    this.#nextPut = { entered, release };
+    return { entered: entered.promise, release: release.resolve };
+  }
+
+  rejectNextPut(): void {
+    this.#rejectNextPut = true;
+  }
+
+  deferNextPrune(): { entered: Promise<void>; release: () => void } {
+    const entered = deferred();
+    const release = deferred();
+    this.#nextPrune = { entered, release };
+    return { entered: entered.promise, release: release.resolve };
+  }
+
+  override async putConversation(conversation: ConversationMeta): Promise<void> {
+    if (this.#rejectNextPut) {
+      this.#rejectNextPut = false;
+      throw new Error("Synthetic conversation write failure");
+    }
+    const pending = this.#nextPut;
+    if (pending) {
+      this.#nextPut = undefined;
+      pending.entered.resolve();
+      await pending.release.promise;
+    }
+    await super.putConversation(conversation);
+  }
+
+  override async deleteMessagesOlderThan(timestamp: number): Promise<number> {
+    const pending = this.#nextPrune;
+    if (pending) {
+      this.#nextPrune = undefined;
+      pending.entered.resolve();
+      await pending.release.promise;
+    }
+    return super.deleteMessagesOlderThan(timestamp);
+  }
+}
+
+function setupDeferred(): {
+  service: ChatService;
+  repository: DeferredConversationRepository;
+  settings: SettingsStore;
+} {
+  const repository = new DeferredConversationRepository();
+  const settings = new SettingsStore(new MemoryKeyValueStorage());
+  return {
+    service: new ChatService(repository, settings),
+    repository,
+    settings,
+  };
+}
 
 function setup(): {
   service: ChatService;
@@ -39,6 +124,223 @@ describe("ChatService", () => {
       { peerName: "Reina", content: "Hello", direction: "incoming", read: false },
     ]);
     expect(await service.getConversation(123)).toMatchObject({ unread: 1, lastMessage: "Hello" });
+  });
+
+  it("serializes concurrent captures per peer without losing unread or the newest preview", async () => {
+    const { service, repository } = setupDeferred();
+    const firstPut = repository.deferNextPut();
+    const first = service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 321,
+        peerName: "Queue",
+        content: "One",
+        sentAt: 100,
+        includeRoom: false,
+      },
+      false,
+    );
+    await firstPut.entered;
+
+    const second = service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 321,
+        peerName: "Queue",
+        content: "Two",
+        sentAt: 200,
+        includeRoom: false,
+      },
+      false,
+    );
+    // Give an unserialized second capture enough turns to read and commit stale metadata.
+    await flushMicrotasks();
+    firstPut.release();
+    await Promise.all([first, second]);
+
+    expect(await service.getConversation(321)).toMatchObject({
+      unread: 2,
+      lastMessage: "Two",
+      lastMessageAt: 200,
+    });
+    expect((await service.getMessages(321)).map((message) => message.content)).toEqual([
+      "One",
+      "Two",
+    ]);
+  });
+
+  it("does not let a concurrent metadata write roll a captured message preview back", async () => {
+    const { service, repository } = setupDeferred();
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 654,
+        peerName: "Metadata",
+        content: "Seed",
+        sentAt: 100,
+        includeRoom: false,
+      },
+      false,
+    );
+
+    const draftPut = repository.deferNextPut();
+    const draft = service.setDraft(654, "Metadata", "unfinished reply");
+    await draftPut.entered;
+    const capture = service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 654,
+        peerName: "Metadata",
+        content: "Fresh message",
+        sentAt: 200,
+        includeRoom: false,
+      },
+      false,
+    );
+    await flushMicrotasks();
+    draftPut.release();
+    await Promise.all([draft, capture]);
+
+    expect(await service.getConversation(654)).toMatchObject({
+      draft: "unfinished reply",
+      unread: 2,
+      lastMessage: "Fresh message",
+      lastMessageAt: 200,
+    });
+  });
+
+  it("creates a missing conversation from setDraft without nesting the peer queue", async () => {
+    const { service } = setup();
+
+    await service.setDraft(987, "New peer", "hello");
+
+    expect(await service.getConversation(987)).toMatchObject({
+      peerName: "New peer",
+      draft: "hello",
+    });
+  });
+
+  it("continues processing a peer after a queued repository write rejects", async () => {
+    const { service, repository } = setupDeferred();
+    repository.rejectNextPut();
+
+    await expect(service.ensureConversation(741, "Retry peer")).rejects.toThrow(
+      "Synthetic conversation write failure",
+    );
+    await expect(service.ensureConversation(741, "Retry peer")).resolves.toMatchObject({
+      peerName: "Retry peer",
+    });
+  });
+
+  it("waits for an in-flight capture before clearing history so nothing is resurrected", async () => {
+    const { service, repository } = setupDeferred();
+    const capturePut = repository.deferNextPut();
+    const capture = service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 852,
+        peerName: "Before clear",
+        content: "Must be cleared",
+        sentAt: 100,
+        includeRoom: false,
+      },
+      false,
+    );
+    await capturePut.entered;
+
+    let clearFinished = false;
+    const clear = service.clearHistory().then((result) => {
+      clearFinished = true;
+      return result;
+    });
+    await flushMicrotasks();
+    expect(clearFinished).toBe(false);
+
+    capturePut.release();
+    await capture;
+    await expect(clear).resolves.toBe(true);
+    expect(await repository.getConversation(852)).toBeUndefined();
+    expect(await repository.getMessages(852)).toEqual([]);
+    expect(await service.listConversations()).toEqual([]);
+  });
+
+  it("runs peer mutations requested after clear only after the clear barrier", async () => {
+    const { service, repository } = setupDeferred();
+    const capturePut = repository.deferNextPut();
+    const before = service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 853,
+        peerName: "Before clear",
+        content: "Old",
+        sentAt: 100,
+        includeRoom: false,
+      },
+      false,
+    );
+    await capturePut.entered;
+
+    const clear = service.clearHistory();
+    const after = service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 854,
+        peerName: "After clear",
+        content: "New",
+        sentAt: 200,
+        includeRoom: false,
+      },
+      false,
+    );
+    await flushMicrotasks();
+    expect(await repository.getConversation(854)).toBeUndefined();
+
+    capturePut.release();
+    await Promise.all([before, clear, after]);
+    expect(await repository.getConversation(853)).toBeUndefined();
+    expect(await repository.getMessages(853)).toEqual([]);
+    expect(await service.getConversation(854)).toMatchObject({
+      lastMessage: "New",
+    });
+    expect(await service.getMessages(854)).toMatchObject([{ content: "New" }]);
+  });
+
+  it("keeps captures requested after a deferred prune outside that prune", async () => {
+    const { service, repository } = setupDeferred();
+    await service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 855,
+        peerName: "Prune order",
+        content: "Old message",
+        sentAt: 1,
+        includeRoom: false,
+      },
+      false,
+    );
+
+    const pruneDelete = repository.deferNextPrune();
+    const prune = service.prune();
+    await pruneDelete.entered;
+    const after = service.capture(
+      {
+        direction: "incoming",
+        peerNumber: 855,
+        peerName: "Prune order",
+        content: "Captured after prune",
+        sentAt: 2,
+        includeRoom: false,
+      },
+      false,
+    );
+    await flushMicrotasks();
+    expect(await repository.getMessages(855)).toMatchObject([{ content: "Old message" }]);
+
+    pruneDelete.release();
+    await Promise.all([prune, after]);
+    expect(await service.getMessages(855)).toMatchObject([
+      { content: "Captured after prune" },
+    ]);
   });
 
   it("marks an active conversation as read", async () => {

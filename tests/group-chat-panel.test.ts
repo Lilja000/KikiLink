@@ -34,6 +34,7 @@ interface PanelHarness {
   failed: Set<number>;
   compatible: Set<number>;
   relayCompatible: Set<number>;
+  managedCompatible: Set<number>;
   knownFriends: Set<number>;
   statuses: Map<number, PresenceSnapshot["status"]>;
   presenceListeners: Set<(memberNumber?: number) => void>;
@@ -61,6 +62,7 @@ const names = new Map<number, string>([
 ]);
 
 afterEach(() => {
+  vi.useRealTimers();
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
@@ -73,6 +75,7 @@ function setup(
   const failed = new Set<number>();
   const compatible = new Set<number>([20, 30, 40, 50, 60]);
   const relayCompatible = new Set<number>([20, 30, 40, 50, 60]);
+  const managedCompatible = new Set<number>([20, 30, 40, 50, 60]);
   const knownFriends = new Set<number>([20, 30, 40, 50, 60, 70]);
   const statuses = new Map<number, PresenceSnapshot["status"]>();
   const presenceListeners = new Set<(memberNumber?: number) => void>();
@@ -120,6 +123,7 @@ function setup(
     }),
     hasGroupChatPeer: (memberNumber) => compatible.has(memberNumber),
     hasGroupRelayPeer: (memberNumber) => relayCompatible.has(memberNumber),
+    hasGroupManagedPeer: (memberNumber) => managedCompatible.has(memberNumber),
     request: vi.fn(() => true),
     requestMany: vi.fn(() => 0),
     subscribe: (listener) => {
@@ -130,6 +134,7 @@ function setup(
   const service = new GroupChatService(transport, storage, {
     now: () => 1_000_000,
     idFactory: (prefix) => `${prefix}_${(++id).toString(36).padStart(8, "0")}`,
+    hasManagedPeer: (memberNumber) => managedCompatible.has(memberNumber),
   });
   const panel = new GroupChatPanel(adapter, service, presence, {
     onActivate,
@@ -140,7 +145,13 @@ function setup(
     bindMemberProfileTarget: boundProfileTargets,
     ...optionOverrides,
   });
-  document.body.append(panel.sidebarSection, panel.chatPane, panel.newGroupDialog);
+  document.body.append(
+    panel.sidebarSection,
+    panel.chatPane,
+    panel.newGroupDialog,
+    panel.groupActionMenuLayer,
+    panel.groupDetailsDialog,
+  );
   return {
     service,
     adapter,
@@ -149,6 +160,7 @@ function setup(
     failed,
     compatible,
     relayCompatible,
+    managedCompatible,
     knownFriends,
     statuses,
     presenceListeners,
@@ -229,7 +241,7 @@ describe("GroupChatPanel group creation", () => {
     expect(() => harness.panel.openNewGroupDialog()).not.toThrow();
     expect(harness.panel.newGroupDialog.open).toBe(true);
     expect(harness.panel.newGroupDialog.querySelectorAll(".kl-group-contact")).toHaveLength(0);
-    expect(harness.panel.newGroupDialog.textContent).toContain("No relay-capable contacts");
+    expect(harness.panel.newGroupDialog.textContent).toContain("No managed-group-compatible contacts");
   });
 
   it("selects only detected peers, caps selection, and sends only after final confirmation", async () => {
@@ -239,6 +251,9 @@ describe("GroupChatPanel group creation", () => {
     expect(harness.panel.chatPane.className).toBe("kl-group-pane");
     expect(harness.panel.newGroupDialog.className).toBe("kl-group-dialog");
     expect(harness.panel.nodes.sidebarSection).toBe(harness.panel.sidebarSection);
+    expect(harness.panel.nodes.groupActionMenuLayer).toBe(harness.panel.groupActionMenuLayer);
+    expect(harness.panel.nodes.groupDetailsDialog).toBe(harness.panel.groupDetailsDialog);
+    expect(harness.panel.newGroupButton.title).toContain("2–4 KikiLink friends");
 
     harness.panel.openNewGroupDialog();
     expect(harness.panel.newGroupDialog.open).toBe(true);
@@ -273,8 +288,9 @@ describe("GroupChatPanel group creation", () => {
     const [group] = harness.service.listGroups();
     expect(group?.title).toBe("Garden Club");
     expect(group?.memberNumbers).toEqual([10, 20, 30]);
+    expect(group?.protocolVersion).toBe(2);
     expect(harness.sent
-      .filter((packet) => parseGroupChatPacket(packet.payload)?.t === "gi")
+      .filter((packet) => parseGroupChatPacket(packet.payload)?.t === "gs")
       .map((packet) => packet.target)).toEqual([20, 30]);
     expect(harness.panel.activeGroupId).toBe(group?.groupId);
     expect(harness.onActivate).toHaveBeenCalledWith(group?.groupId);
@@ -295,26 +311,26 @@ describe("GroupChatPanel group creation", () => {
     harness.panel.openNewGroupDialog();
 
     expect(harness.panel.newGroupDialog.querySelector("[data-member-number='60']")).toBeNull();
-    expect(harness.panel.newGroupDialog.textContent).toContain("relay-capable friends");
+    expect(harness.panel.newGroupDialog.textContent).toContain("friends with current managed-group support");
   });
 
-  it("offers only relay-capable peers for new groups and fails closed without v2 discovery", () => {
+  it("offers only managed peers for new groups and fails closed without g3 discovery", () => {
     const harness = setup();
-    harness.relayCompatible.delete(60);
+    harness.managedCompatible.delete(60);
     harness.panel.openNewGroupDialog();
 
     expect(harness.panel.newGroupDialog.querySelector("[data-member-number='60']")).toBeNull();
-    expect(harness.panel.newGroupDialog.textContent).toContain("relay-capable");
+    expect(harness.panel.newGroupDialog.textContent).toContain("managed-group support");
 
     harness.panel.newGroupDialog.close();
-    delete harness.presence.hasGroupRelayPeer;
+    delete harness.presence.hasGroupManagedPeer;
     harness.panel.openNewGroupDialog();
 
     expect(harness.panel.newGroupDialog.querySelectorAll(".kl-group-contact")).toHaveLength(0);
-    expect(harness.panel.newGroupDialog.textContent).toContain("No relay-capable contacts");
+    expect(harness.panel.newGroupDialog.textContent).toContain("No managed-group-compatible contacts");
   });
 
-  it("shows profile-capable avatars beside selection and confirmation controls without nesting buttons", () => {
+  it("shows profile-capable avatars beside selection and confirmation controls without nesting buttons", async () => {
     const harness = setup();
     harness.panel.openNewGroupDialog();
 
@@ -332,6 +348,11 @@ describe("GroupChatPanel group creation", () => {
     expect(profile.getAttribute("aria-label")).toContain("Open KikiLink profile for Reina");
     profile.focus();
     for (const listener of harness.presenceListeners) listener(20);
+    await vi.waitFor(() => {
+      expect(harness.panel.newGroupDialog.querySelector(
+        ".kl-group-contact-profile[data-group-member-number='20']",
+      )).not.toBe(profile);
+    });
     const refreshedProfile = required<HTMLButtonElement>(
       harness.panel.newGroupDialog,
       ".kl-group-contact-profile[data-group-member-number='20']",
@@ -351,6 +372,25 @@ describe("GroupChatPanel group creation", () => {
       expect.any(HTMLElement),
       expect.objectContaining({ memberNumber: 20, memberName: "Reina" }),
     );
+  });
+
+  it("coalesces contact discovery bursts and cancels queued modal work on close", async () => {
+    const harness = setup();
+    const knownContacts = vi.spyOn(harness.adapter, "getKnownContacts");
+    harness.panel.openNewGroupDialog();
+    knownContacts.mockClear();
+
+    for (const memberNumber of [20, 30, 40, 50]) {
+      for (const listener of harness.presenceListeners) listener(memberNumber);
+    }
+    expect(knownContacts).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(knownContacts).toHaveBeenCalledTimes(1));
+
+    knownContacts.mockClear();
+    for (const listener of harness.presenceListeners) listener(20);
+    harness.panel.newGroupDialog.close();
+    await settle();
+    expect(knownContacts).not.toHaveBeenCalled();
   });
 
   it("previews the same generated title that the service stores", async () => {
@@ -583,6 +623,73 @@ describe("GroupChatPanel conversation pane", () => {
     expect(required(harness.panel.sidebarSection, ".kl-group-avatar-stack")).toBe(sidebarStack);
   });
 
+  it("refreshes keyed transcript author names only when member-name revision changes", async () => {
+    const harness = setup();
+    const groupId = "group2_20_names001";
+    const epochId = "ge_names001";
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: serializeGroupChatPacket({
+        t: "gs",
+        v: 2,
+        g: groupId,
+        o: 20,
+        e: epochId,
+        r: 1,
+        m: [10, 20, 30],
+        n: "Names Crew",
+        p: "",
+        u: 1_000_000,
+      }),
+    })).toBe(true);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 30,
+      payload: serializeGroupChatPacket({
+        t: "gm",
+        v: 2,
+        g: groupId,
+        e: epochId,
+        i: "gmsg_names001",
+        c: "My display name changed",
+        u: 1_000_000,
+      }),
+    })).toBe(true);
+    await harness.panel.activate(groupId);
+    const original = required<HTMLElement>(
+      harness.panel.chatPane,
+      "[data-message-id='gmsg_names001']",
+    );
+    expect(original.querySelector(".kl-group-message-author")?.textContent).toBe("Mina");
+    const messageLog = required<HTMLElement>(harness.panel.chatPane, ".kl-group-message-log");
+    Object.defineProperties(messageLog, {
+      scrollHeight: { configurable: true, value: 600 },
+      clientHeight: { configurable: true, value: 120 },
+    });
+    messageLog.scrollTop = 140;
+
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: serializeGroupChatPacket({
+        t: "gn",
+        v: 2,
+        g: groupId,
+        o: 20,
+        e: epochId,
+        r: 1,
+        d: [[10, "Kiki"], [20, "Reina"], [30, "Minerva"]],
+        u: 1_000_001,
+      }),
+    })).toBe(true);
+
+    const refreshed = required<HTMLElement>(
+      harness.panel.chatPane,
+      "[data-message-id='gmsg_names001']",
+    );
+    expect(refreshed).not.toBe(original);
+    expect(refreshed.querySelector(".kl-group-message-author")?.textContent).toBe("Minerva");
+    expect(messageLog.scrollTop).toBe(140);
+  });
+
   it("does not reuse a keyed message node when two groups contain the same message id", async () => {
     const harness = setup();
     const first = await harness.service.createGroup([20, 30], "First Crew");
@@ -630,6 +737,42 @@ describe("GroupChatPanel conversation pane", () => {
     expect(secondNode.querySelector(".kl-group-message-content")?.textContent)
       .toBe("Second group content");
     expect(harness.panel.chatPane.textContent).not.toContain("First group content");
+  });
+
+  it("renders same-ID messages from different group authors as separate keyed rows", async () => {
+    const harness = setup();
+    const creation = await harness.service.createGroup([20, 30], "Collision-safe Crew");
+    const sharedMessageId = "gmsg_shared002";
+    for (const [senderNumber, content] of [
+      [20, "Reina's message"],
+      [30, "Mina's message"],
+    ] as const) {
+      expect(await harness.service.receiveProtocol({
+        senderNumber,
+        payload: serializeGroupChatPacket({
+          t: "gm",
+          v: 1,
+          g: creation.group.groupId,
+          i: sharedMessageId,
+          c: content,
+          u: 1_000_000,
+        }),
+      })).toBe(true);
+    }
+
+    await harness.panel.activate(creation.group.groupId);
+    const rows = [...harness.panel.chatPane.querySelectorAll<HTMLElement>(
+      `[data-message-id="${sharedMessageId}"]`,
+    )];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.dataset.messageKey)).toEqual([
+      `20:${sharedMessageId}`,
+      `30:${sharedMessageId}`,
+    ]);
+    expect(rows.map((row) => row.querySelector(".kl-group-message-content")?.textContent)).toEqual([
+      "Reina's message",
+      "Mina's message",
+    ]);
   });
 
   it("bounds the initial transcript and loads older messages without recreating visible nodes", async () => {
@@ -800,17 +943,27 @@ describe("GroupChatPanel conversation pane", () => {
     ).getAttribute("aria-label")).toContain("do not disturb");
   });
 
-  it("pins and removes a group through explicit host callbacks", async () => {
+  it("keeps the pane header compact and moves pin/remove/close into the action menu", async () => {
     const harness = setup();
     const creation = await harness.service.createGroup([20, 30], "Pinned Crew");
     await harness.panel.activate(creation.group.groupId);
 
-    click(harness.panel.chatPane, ".kl-group-pin");
+    expect(harness.panel.chatPane.querySelector(".kl-group-pin")).toBeNull();
+    expect(harness.panel.chatPane.querySelector(".kl-group-remove")).toBeNull();
+    expect(harness.panel.chatPane.querySelector(".kl-group-pane-close")).toBeNull();
+    expect(harness.panel.chatPane.querySelectorAll(".kl-group-pane-menu-trigger")).toHaveLength(1);
+
+    click(harness.panel.chatPane, ".kl-group-pane-menu-trigger");
+    click(harness.panel.groupActionMenuLayer, "[data-group-action='toggle-pin']");
     await vi.waitFor(() => expect(harness.service.getGroup(creation.group.groupId)?.pinned).toBe(true));
     expect(harness.panel.sidebarSection.textContent).toContain("Pinned");
-    expect(required(harness.panel.chatPane, ".kl-group-pin").textContent).toBe("Unpin");
 
-    click(harness.panel.chatPane, ".kl-group-remove");
+    click(harness.panel.chatPane, ".kl-group-pane-menu-trigger");
+    expect(required(
+      harness.panel.groupActionMenuLayer,
+      "[data-group-action='toggle-pin']",
+    ).textContent).toContain("Unpin group");
+    click(harness.panel.groupActionMenuLayer, "[data-group-action='remove']");
     await vi.waitFor(() => expect(harness.service.getGroup(creation.group.groupId)).toBeUndefined());
     expect(harness.panel.activeGroupId).toBeUndefined();
     expect(harness.panel.chatPane.hidden).toBe(true);
@@ -824,7 +977,8 @@ describe("GroupChatPanel conversation pane", () => {
     await harness.panel.activate(creation.group.groupId);
     vi.spyOn(storage, "setItem").mockImplementation(() => undefined);
 
-    click(harness.panel.chatPane, ".kl-group-remove");
+    click(harness.panel.chatPane, ".kl-group-pane-menu-trigger");
+    click(harness.panel.groupActionMenuLayer, "[data-group-action='remove']");
     await vi.waitFor(() => expect(harness.service.getGroup(creation.group.groupId)).toBeUndefined());
 
     expect(harness.feedback.at(-1)).toMatchObject({ tone: "warning" });
@@ -921,6 +1075,358 @@ describe("GroupChatPanel conversation pane", () => {
   });
 });
 
+describe("GroupChatPanel actions and managed details", () => {
+  it("offers an explicit ask-first reveal for a hidden custom group avatar", async () => {
+    const canRevealGroupAvatar = vi.fn(() => true);
+    const onRevealGroupAvatar = vi.fn();
+    const harness = setup(new MemoryKeyValueStorage(), {
+      canRevealGroupAvatar,
+      onRevealGroupAvatar,
+    });
+    const creation = await harness.service.createManagedGroup([20, 30], "Private Avatar Crew");
+    await harness.service.setGroupAvatar(
+      creation.group.groupId,
+      "https://images.example/private-avatar.webp",
+    );
+    const returnFocus = document.createElement("button");
+    document.body.append(returnFocus);
+
+    harness.panel.openGroupActionMenu(creation.group.groupId, returnFocus);
+    const reveal = required<HTMLButtonElement>(
+      harness.panel.groupActionMenuLayer,
+      '[data-group-action="show-avatar"]',
+    );
+    expect(reveal.textContent).toContain("Show group avatar");
+    reveal.click();
+
+    expect(onRevealGroupAvatar).toHaveBeenCalledWith(creation.group.groupId);
+    expect(harness.panel.groupActionMenuLayer.open).toBe(false);
+    expect(document.activeElement).toBe(returnFocus);
+    expect(canRevealGroupAvatar).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: creation.group.groupId,
+      avatarUrl: "https://images.example/private-avatar.webp",
+    }));
+  });
+
+  it("closes every transient group surface on host close and does not reopen stale details", async () => {
+    const renameGate = deferred<void>();
+    const onRenameGroup = vi.fn(() => renameGate.promise);
+    const harness = setup(new MemoryKeyValueStorage(), { onRenameGroup });
+    const creation = await harness.service.createManagedGroup([20, 30], "Host Close Crew");
+    const returnFocus = document.createElement("button");
+    document.body.append(returnFocus);
+
+    harness.panel.openNewGroupDialog();
+    expect(harness.panel.newGroupDialog.open).toBe(true);
+    harness.panel.handleHostClose();
+    expect(harness.panel.newGroupDialog.open).toBe(false);
+
+    harness.panel.openGroupActionMenu(creation.group.groupId, returnFocus);
+    expect(harness.panel.groupActionMenuLayer.open).toBe(true);
+    harness.panel.handleHostClose();
+    expect(harness.panel.groupActionMenuLayer.open).toBe(false);
+
+    harness.panel.openGroupDetails(creation.group.groupId, returnFocus);
+    const title = required<HTMLInputElement>(
+      harness.panel.groupDetailsDialog,
+      ".kl-group-manage-title",
+    );
+    title.value = "Renamed after close";
+    click(harness.panel.groupDetailsDialog, "[data-group-details-action='rename']");
+    expect(onRenameGroup).toHaveBeenCalledOnce();
+    harness.panel.handleHostClose();
+    expect(harness.panel.groupDetailsDialog.open).toBe(false);
+
+    renameGate.resolve();
+    await settle();
+    expect(harness.panel.groupDetailsDialog.open).toBe(false);
+    expect(harness.panel.groupActionMenuLayer.open).toBe(false);
+  });
+
+  it("binds an accessible context menu to host rows and restores focus on every close path", async () => {
+    const harness = setup();
+    const creation = await harness.service.createGroup([20, 30], "Context Crew");
+    const hostRow = document.createElement("button");
+    hostRow.type = "button";
+    hostRow.textContent = "Context Crew";
+    document.body.append(hostRow);
+    const dispose = harness.panel.bindGroupActionTarget(hostRow, creation.group.groupId);
+
+    hostRow.focus();
+    const contextMenu = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 72,
+      clientY: 84,
+    });
+    hostRow.dispatchEvent(contextMenu);
+    expect(contextMenu.defaultPrevented).toBe(true);
+    expect(harness.panel.groupActionMenuLayer.open).toBe(true);
+    expect(harness.panel.groupActionMenuLayer.textContent).toContain("Context Crew");
+    expect(harness.panel.groupActionMenuLayer.querySelectorAll("[role='menuitem']").length)
+      .toBeGreaterThanOrEqual(3);
+    expect(harness.panel.groupActionMenuLayer.querySelectorAll(".kl-icon").length)
+      .toBeGreaterThanOrEqual(3);
+
+    required<HTMLButtonElement>(
+      harness.panel.groupActionMenuLayer,
+      "[role='menuitem']",
+    ).dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(harness.panel.groupActionMenuLayer.open).toBe(false);
+    expect(document.activeElement).toBe(hostRow);
+
+    hostRow.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ContextMenu",
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(harness.panel.groupActionMenuLayer.open).toBe(true);
+    harness.panel.groupActionMenuLayer.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(harness.panel.groupActionMenuLayer.open).toBe(false);
+    expect(document.activeElement).toBe(hostRow);
+
+    hostRow.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F10",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(harness.panel.groupActionMenuLayer.open).toBe(true);
+    harness.panel.groupActionMenuLayer.dispatchEvent(new Event("cancel", {
+      bubbles: false,
+      cancelable: true,
+    }));
+    expect(harness.panel.groupActionMenuLayer.open).toBe(false);
+    expect(document.activeElement).toBe(hostRow);
+
+    dispose();
+    const afterDispose = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    hostRow.dispatchEvent(afterDispose);
+    expect(afterDispose.defaultPrevented).toBe(false);
+    expect(harness.panel.groupActionMenuLayer.open).toBe(false);
+  });
+
+  it("supports touch long-press without also activating the underlying conversation row", async () => {
+    const harness = setup();
+    const creation = await harness.service.createGroup([20, 30], "Touch Crew");
+    const hostRow = document.createElement("button");
+    hostRow.type = "button";
+    const activated = vi.fn();
+    hostRow.addEventListener("click", activated);
+    document.body.append(hostRow);
+    harness.panel.bindGroupActionTarget(hostRow, creation.group.groupId);
+    vi.useFakeTimers();
+
+    hostRow.dispatchEvent(new PointerEvent("pointerdown", {
+      pointerType: "touch",
+      clientX: 32,
+      clientY: 48,
+      bubbles: true,
+    }));
+    await vi.advanceTimersByTimeAsync(519);
+    expect(harness.panel.groupActionMenuLayer.open).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(harness.panel.groupActionMenuLayer.open).toBe(true);
+
+    hostRow.click();
+    expect(activated).not.toHaveBeenCalled();
+  });
+
+  it("exposes creator-only managed callbacks for name, avatar, outline, add, and kick", async () => {
+    const onRenameGroup = vi.fn(async () => undefined);
+    const onSetGroupAvatar = vi.fn(async () => undefined);
+    const onSetGroupOutlineColor = vi.fn(async () => undefined);
+    const onAddGroupMember = vi.fn(async () => undefined);
+    const onKickGroupMember = vi.fn(async () => undefined);
+    const onPickGroupAvatar = vi.fn(async () => undefined);
+    const renderGroupAvatar = vi.fn((target: HTMLElement) => {
+      target.textContent = "GC";
+    });
+    const harness = setup(new MemoryKeyValueStorage(), {
+      onRenameGroup,
+      onSetGroupAvatar,
+      onSetGroupOutlineColor,
+      onAddGroupMember,
+      onKickGroupMember,
+      onPickGroupAvatar,
+      renderGroupAvatar,
+      confirmKickMember: () => true,
+    });
+    const creation = await harness.service.createManagedGroup([20, 30, 40], "Managed Crew");
+    await harness.panel.activate(creation.group.groupId);
+
+    expect(required(harness.panel.chatPane, ".kl-group-pane-title-row").textContent)
+      .toContain("Creator");
+    expect(required(harness.panel.chatPane, ".kl-group-header-avatar").textContent).toBe("GC");
+    expect(harness.panel.openGroupDetails(creation.group.groupId)).toBe(true);
+    expect(harness.panel.groupDetailsDialog.textContent).toContain("You created this group");
+    expect(harness.panel.groupDetailsDialog.querySelectorAll(".kl-group-creator-badge").length)
+      .toBeGreaterThan(0);
+
+    const title = required<HTMLInputElement>(
+      harness.panel.groupDetailsDialog,
+      ".kl-group-manage-title",
+    );
+    title.value = "Renamed Crew";
+    click(harness.panel.groupDetailsDialog, "[data-group-details-action='rename']");
+    await vi.waitFor(() => expect(onRenameGroup).toHaveBeenCalledWith(
+      creation.group.groupId,
+      "Renamed Crew",
+    ));
+    await settle();
+
+    const avatar = required<HTMLInputElement>(
+      harness.panel.groupDetailsDialog,
+      ".kl-group-manage-avatar-url",
+    );
+    avatar.value = "https://files.catbox.moe/crew.webp";
+    click(harness.panel.groupDetailsDialog, "[data-group-details-action='set-avatar']");
+    await vi.waitFor(() => expect(onSetGroupAvatar).toHaveBeenCalledWith(
+      creation.group.groupId,
+      "https://files.catbox.moe/crew.webp",
+    ));
+    await settle();
+
+    const outline = required<HTMLInputElement>(
+      harness.panel.groupDetailsDialog,
+      ".kl-group-manage-outline",
+    );
+    outline.value = "#aa1133";
+    click(harness.panel.groupDetailsDialog, "[data-group-details-action='set-outline']");
+    await vi.waitFor(() => expect(onSetGroupOutlineColor).toHaveBeenCalledWith(
+      creation.group.groupId,
+      "#aa1133",
+    ));
+    await settle();
+
+    const select = required<HTMLSelectElement>(
+      harness.panel.groupDetailsDialog,
+      ".kl-group-manage-add-select",
+    );
+    select.value = "50";
+    click(harness.panel.groupDetailsDialog, "[data-group-details-action='add']");
+    await vi.waitFor(() => expect(onAddGroupMember).toHaveBeenCalledWith(
+      creation.group.groupId,
+      50,
+    ));
+    await settle();
+
+    click(
+      harness.panel.groupDetailsDialog,
+      ".kl-group-manage-member[data-member-number='20'] [data-group-details-action='kick']",
+    );
+    await vi.waitFor(() => expect(onKickGroupMember).toHaveBeenCalledWith(
+      creation.group.groupId,
+      20,
+    ));
+    await settle();
+
+    const picker = click(
+      harness.panel.groupDetailsDialog,
+      "[data-group-details-action='pick-avatar']",
+    );
+    await vi.waitFor(() => expect(onPickGroupAvatar).toHaveBeenCalledWith(
+      creation.group.groupId,
+      picker,
+    ));
+    expect(picker.isConnected).toBe(true);
+    expect(renderGroupAvatar).toHaveBeenCalled();
+  });
+
+  it("keeps non-creator details read-only and labels the actual creator", async () => {
+    const onRenameGroup = vi.fn();
+    const harness = setup(new MemoryKeyValueStorage(), { onRenameGroup });
+    const groupId = "group2_20_readonly1";
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: serializeGroupChatPacket({
+        t: "gs",
+        v: 2,
+        g: groupId,
+        o: 20,
+        e: "ge_readonly1",
+        r: 1,
+        m: [10, 20, 30],
+        n: "Reina's Crew",
+        p: "",
+        u: 1_000_000,
+      }),
+    })).toBe(true);
+
+    await harness.panel.activate(groupId);
+    expect(harness.panel.chatPane.textContent).toContain("3 members · Created by Reina");
+    expect(harness.panel.openGroupDetails(groupId)).toBe(true);
+    expect(harness.panel.groupDetailsDialog.textContent).toContain(
+      "Only Reina, the group creator, can change",
+    );
+    expect(harness.panel.groupDetailsDialog.textContent).toContain("Creator");
+    expect(harness.panel.groupDetailsDialog.querySelector(".kl-group-manage-title")).toBeNull();
+    expect(harness.panel.groupDetailsDialog.querySelector(".kl-group-manage-add")).toBeNull();
+    expect(harness.panel.groupDetailsDialog.querySelector(".kl-group-manage-kick")).toBeNull();
+    expect(onRenameGroup).not.toHaveBeenCalled();
+  });
+
+  it("does not wipe an in-progress manage form on unrelated draft updates", async () => {
+    const harness = setup();
+    const creation = await harness.service.createManagedGroup([20, 30], "Stable Form");
+    harness.panel.openGroupDetails(creation.group.groupId);
+    const title = required<HTMLInputElement>(
+      harness.panel.groupDetailsDialog,
+      ".kl-group-manage-title",
+    );
+    title.value = "Unsaved name in progress";
+
+    await harness.service.setDraft(creation.group.groupId, "Unrelated group draft");
+
+    expect(required(
+      harness.panel.groupDetailsDialog,
+      ".kl-group-manage-title",
+    )).toBe(title);
+    expect(title.value).toBe("Unsaved name in progress");
+  });
+
+  it("delegates image composition and safe message-body rendering to the host", async () => {
+    const onAttachImage = vi.fn(async () => undefined);
+    const renderMessageBody = vi.fn((message: GroupMessage) => {
+      const rendered = document.createElement("span");
+      rendered.className = "test-rendered-group-body";
+      rendered.textContent = `Rendered: ${message.content}`;
+      return rendered;
+    });
+    const harness = setup(new MemoryKeyValueStorage(), { onAttachImage, renderMessageBody });
+    const creation = await harness.service.createGroup([20, 30], "Image Crew");
+    await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: serializeGroupChatPacket({
+        t: "gm",
+        v: 1,
+        g: creation.group.groupId,
+        i: "gmsg_render001",
+        c: "https://files.catbox.moe/group.webp",
+        u: 1_000_000,
+      }),
+    });
+    await harness.panel.activate(creation.group.groupId);
+
+    expect(required(harness.panel.chatPane, ".test-rendered-group-body").textContent)
+      .toBe("Rendered: https://files.catbox.moe/group.webp");
+    expect(required(harness.panel.chatPane, ".kl-group-message-profile--large")).toBeTruthy();
+    expect(required(harness.panel.chatPane, ".kl-group-message-avatar")).toBeTruthy();
+    const attach = click(harness.panel.chatPane, ".kl-group-composer-attach");
+    await vi.waitFor(() => expect(onAttachImage).toHaveBeenCalledWith(
+      creation.group.groupId,
+      attach,
+    ));
+  });
+});
+
 describe("GroupChatPanel lifecycle", () => {
   it("explains that mutations are paused when saved group state cannot be read safely", () => {
     const storage = new MemoryKeyValueStorage();
@@ -974,6 +1480,8 @@ describe("GroupChatPanel lifecycle", () => {
     expect(harness.panel.sidebarSection.isConnected).toBe(false);
     expect(harness.panel.chatPane.isConnected).toBe(false);
     expect(harness.panel.newGroupDialog.isConnected).toBe(false);
+    expect(harness.panel.groupActionMenuLayer.isConnected).toBe(false);
+    expect(harness.panel.groupDetailsDialog.isConnected).toBe(false);
 
     await harness.service.createGroup([40, 50], "Second Crew");
     await settle();

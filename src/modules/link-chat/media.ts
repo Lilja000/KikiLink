@@ -6,7 +6,7 @@ export interface MessageLink {
 }
 
 const URL_PATTERN = /https:\/\/[^\s<>"'[\]]+/giu;
-const IMAGE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/iu;
+const IMAGE_EXTENSION = /\.(?:gif|jpe?g|png|webp)$/iu;
 const TRAILING_PUNCTUATION = /[),.;!?\]}]+$/u;
 
 export function parseMessageLinks(message: string): MessageLink[] {

@@ -1,5 +1,6 @@
 export const KIKILINK_UPLOAD_BRIDGE_MARKER_ID = "kikilink-upload-bridge-v1";
 export const KIKILINK_UPLOAD_REQUEST = "kikilink:upload-request:v1";
+export const KIKILINK_UPLOAD_ACCEPTED = "kikilink:upload-accepted:v1";
 export const KIKILINK_UPLOAD_RESPONSE = "kikilink:upload-response:v1";
 export const KIKILINK_UPLOAD_PROGRESS = "kikilink:upload-progress:v1";
 export const KIKILINK_UPLOAD_CANCEL = "kikilink:upload-cancel:v1";
@@ -28,8 +29,15 @@ export interface KikiLinkUploadCancelMessage {
   id: string;
 }
 
+export interface KikiLinkUploadAcceptedMessage {
+  type: typeof KIKILINK_UPLOAD_ACCEPTED;
+  capability: string;
+  id: string;
+}
+
 export interface KikiLinkUploadResponseMessage {
   type: typeof KIKILINK_UPLOAD_RESPONSE;
+  capability: string;
   id: string;
   ok: boolean;
   status: number;
@@ -39,6 +47,7 @@ export interface KikiLinkUploadResponseMessage {
 
 export interface KikiLinkUploadProgressMessage {
   type: typeof KIKILINK_UPLOAD_PROGRESS;
+  capability: string;
   id: string;
   loaded: number;
   total?: number;

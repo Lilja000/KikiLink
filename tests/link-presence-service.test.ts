@@ -22,10 +22,14 @@ function setup(options: {
   getOnlineFriendNumbers?: () => number[];
   expectedOwnMemberNumber?: number;
   storage?: MemoryKeyValueStorage;
+  relationshipReader?: ((memberNumber: number) => string[]) | null;
 } = {}) {
   const inRoom = options.inRoom === true;
   const storage = options.storage ?? new MemoryKeyValueStorage();
   const getOwnMemberNumber = options.getOwnMemberNumber ?? (() => 999);
+  const relationshipReader = options.relationshipReader === null
+    ? undefined
+    : options.relationshipReader ?? (() => []);
   const sendKikiLinkProtocol = vi.fn((_memberNumber: number, _payload: string) => "beep" as const);
   const broadcastKikiLinkProtocol = vi.fn((_payload: string) => false);
   const adapter = {
@@ -42,6 +46,7 @@ function setup(options: {
     ),
     hasOnlineFriendSnapshot: () => true,
     isKnownFriend: (memberNumber: number) => memberNumber === 123 || memberNumber === 456,
+    ...(relationshipReader ? { getPlayerRelationships: relationshipReader } : {}),
     isMemberInCurrentRoom: () => inRoom,
     isInChatRoom: () => inRoom,
     getCurrentRoomName: () => (inRoom ? "Moon Garden" : undefined),
@@ -86,6 +91,7 @@ describe("LinkPresenceService", () => {
     expect(service.hasCompatiblePeer(999)).toBe(true);
     expect(service.hasGroupChatPeer(999)).toBe(true);
     expect(service.hasGroupRelayPeer(999)).toBe(true);
+    expect(service.hasGroupManagedPeer(999)).toBe(true);
     expect(service.hasCompatiblePeer(123)).toBe(false);
 
     bus.emit("bc:protocol", {
@@ -119,8 +125,135 @@ describe("LinkPresenceService", () => {
     expect(service.get(123).profileFromCache).toBeUndefined();
     expect(service.hasCompatiblePeer(123)).toBe(true);
     expect(service.hasGroupChatPeer(123)).toBe(false);
+    expect(service.hasGroupManagedPeer(123)).toBe(false);
     expect(service.hasCompatiblePeer(123, Date.now() + 5 * 60_000 + 1)).toBe(false);
     service.stop();
+  });
+
+  it("does not answer a blacklisted peer and purges its live and cached profile state", () => {
+    const blocked = new Set<number>();
+    const { bus, service, sendKikiLinkProtocol } = setup({
+      relationshipReader: (memberNumber) => blocked.has(memberNumber) ? ["blacklist"] : [],
+    });
+    service.start();
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        a: "https://files.catbox.moe/blocked-profile.webp",
+        u: Date.now(),
+        v: "0.27.0",
+        g: 3,
+      }),
+    });
+    expect(service.hasCompatiblePeer(123)).toBe(true);
+    expect(service.hasCachedProfile(123)).toBe(true);
+
+    blocked.add(123);
+    sendKikiLinkProtocol.mockClear();
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pq", i: "blocked-query", p: 1 }),
+    });
+
+    expect(sendKikiLinkProtocol).not.toHaveBeenCalled();
+    expect(service.hasCompatiblePeer(123)).toBe(false);
+    expect(service.hasGroupManagedPeer(123)).toBe(false);
+    expect(service.hasCachedProfile(123)).toBe(false);
+    expect(service.get(123).avatarUrl).toBeUndefined();
+    service.stop();
+  });
+
+  it("fails closed and purges newly blocked profiles from read APIs without another packet", () => {
+    const blocked = new Set<number>();
+    const { bus, service } = setup({
+      relationshipReader: (memberNumber) => blocked.has(memberNumber) ? ["ghosted"] : [],
+    });
+    service.start();
+    for (const memberNumber of [123, 456]) {
+      bus.emit("bc:protocol", {
+        senderNumber: memberNumber,
+        channel: "beep",
+        payload: JSON.stringify({
+          t: "ps",
+          s: "online",
+          a: `https://files.catbox.moe/${memberNumber}.webp`,
+          u: Date.now(),
+          v: "0.27.0",
+          g: 3,
+        }),
+      });
+      expect(service.hasCachedProfile(memberNumber)).toBe(true);
+    }
+
+    blocked.add(123);
+    blocked.add(456);
+    expect(service.hasCachedProfile(123)).toBe(false);
+    expect(service.get(456)).toEqual({
+      memberNumber: 456,
+      status: "unknown",
+      source: "unknown",
+      updatedAt: 0,
+    });
+    expect(service.hasCachedProfile(456)).toBe(false);
+    expect(service.get(123).avatarUrl).toBeUndefined();
+    service.stop();
+  });
+
+  it("fails closed when the relationship reader throws or is unavailable", () => {
+    const relationshipReaders = [
+      () => {
+        throw new Error("Permission denied");
+      },
+      null,
+    ] as const;
+
+    for (const relationshipReader of relationshipReaders) {
+      const { bus, service, sendKikiLinkProtocol } = setup({ relationshipReader });
+      service.start();
+      sendKikiLinkProtocol.mockClear();
+
+      expect(service.request(123, true, true)).toBe(false);
+      expect(service.setTyping(123, true)).toBe(false);
+      for (const payload of [
+        { t: "pq", i: "guarded-query" },
+        { t: "pc", v: "0.27.0", g: 3 },
+        { t: "ps", s: "online", u: Date.now(), v: "0.27.0", g: 3 },
+        { t: "ty", a: 1 },
+      ]) {
+        bus.emit("bc:protocol", {
+          senderNumber: 123,
+          channel: "beep",
+          payload: JSON.stringify(payload),
+        });
+      }
+
+      expect(sendKikiLinkProtocol).not.toHaveBeenCalled();
+      expect(service.hasCompatiblePeer(123)).toBe(false);
+      expect(service.isTyping(123)).toBe(false);
+      expect(service.hasCachedProfile(123)).toBe(false);
+      service.stop();
+    }
+  });
+
+  it("survives a throwing room broadcast and still cleans up lifecycle timers", () => {
+    vi.useFakeTimers();
+    const { service, broadcastKikiLinkProtocol } = setup({ inRoom: true });
+    broadcastKikiLinkProtocol.mockImplementation(() => {
+      throw new Error("Guarded native transport");
+    });
+
+    expect(() => service.start()).not.toThrow();
+    expect(vi.getTimerCount()).toBeGreaterThanOrEqual(2);
+    expect(() => vi.advanceTimersByTime(30_000)).not.toThrow();
+    expect(broadcastKikiLinkProtocol).toHaveBeenCalled();
+
+    service.stop();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("clears cached remote profile fields immediately when reciprocal Presence is disabled", () => {
@@ -377,7 +510,7 @@ describe("LinkPresenceService", () => {
     service.stop();
   });
 
-  it("negotiates group chat separately from legacy KikiLink presence", () => {
+  it("negotiates legacy, relay, and managed group capabilities independently", () => {
     const { bus, service } = setup();
     service.start();
 
@@ -396,6 +529,7 @@ describe("LinkPresenceService", () => {
     });
     expect(service.hasGroupChatPeer(123)).toBe(true);
     expect(service.hasGroupRelayPeer(123)).toBe(false);
+    expect(service.hasGroupManagedPeer(123)).toBe(false);
 
     bus.emit("bc:protocol", {
       senderNumber: 123,
@@ -404,6 +538,16 @@ describe("LinkPresenceService", () => {
     });
     expect(service.hasGroupChatPeer(123)).toBe(true);
     expect(service.hasGroupRelayPeer(123)).toBe(true);
+    expect(service.hasGroupManagedPeer(123)).toBe(false);
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({ t: "pc", v: "0.27.0", g: 3 }),
+    });
+    expect(service.hasGroupChatPeer(123)).toBe(true);
+    expect(service.hasGroupRelayPeer(123)).toBe(true);
+    expect(service.hasGroupManagedPeer(123)).toBe(true);
     service.stop();
   });
 
@@ -431,7 +575,7 @@ describe("LinkPresenceService", () => {
       f: "starlight",
       c: "midnight",
       v: "0.11.0",
-      g: 2,
+      g: 3,
     });
 
     bus.emit("bc:protocol", {
@@ -596,6 +740,7 @@ describe("LinkPresenceService", () => {
       getOnlineFriends: () => [],
       hasOnlineFriendSnapshot: () => false,
       isKnownFriend: () => false,
+      getPlayerRelationships: () => [],
       isMemberInCurrentRoom: () => false,
       isInChatRoom: () => false,
       getCurrentRoomName: () => undefined,
@@ -1303,7 +1448,7 @@ describe("LinkPresenceService", () => {
     expect(service.hasCompatiblePeer(123)).toBe(true);
     expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
       123,
-      JSON.stringify({ t: "pc", v: "0.11.0", g: 2 }),
+      JSON.stringify({ t: "pc", v: "0.11.0", g: 3 }),
     );
     expect(service.requestMany([123])).toBe(0);
 

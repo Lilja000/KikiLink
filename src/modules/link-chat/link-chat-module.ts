@@ -61,6 +61,10 @@ export class LinkChatModule implements KikiLinkModule {
     this.#groups = new GroupChatService(
       context.adapter,
       accountStorage,
+      {
+        hasManagedPeer: (memberNumber) =>
+          this.#presence?.hasGroupManagedPeer(memberNumber) === true,
+      },
     );
     this.#view = new LinkChatView(
       context.adapter,

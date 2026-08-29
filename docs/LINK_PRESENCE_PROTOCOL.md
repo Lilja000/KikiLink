@@ -71,10 +71,13 @@ ignored rather than interpreted as markup or asset paths. `o` is either omitted 
 `#RRGGBB` color; `x` and `y` are either both omitted or both strict `#RRGGBB` colors. Colors are
 normalized to lowercase and can never contain CSS syntax.
 
-`g: 1` advertises legacy group-chat protocol v1, while `g: 2` advertises the relay-capable 0.25
-protocol. Stored v1 groups remain recognizable, but creation of a new relay group requires every
-selected peer to have recently advertised `g: 2`. A valid packet without `g` still confirms the
-addon for Blossom, direct chat, and profile discovery without claiming group support.
+`g: 1` advertises legacy group-chat protocol v1, `g: 2` advertises the relay-capable fixed-membership
+protocol, and `g: 3` advertises creator-managed groups. Stored v1 groups remain recognizable, but a
+new managed group or an explicit legacy conversion requires every selected peer to have recently
+advertised `g: 3`. An addition rechecks the candidate and all remaining remote members before the
+owner changes membership; a kick does not require the removed member to remain compatible. A valid
+packet without `g` still confirms the addon for Blossom, direct chat, and profile discovery without
+claiming group support.
 
 Every JSON payload is capped at 700 UTF-8 bytes before it reaches the common KikiLink transport.
 For a local presence state, status, timestamp, and addon version take priority; if optional content
@@ -88,7 +91,8 @@ collapses whitespace, and applies its field limit before display.
 
 Packets cannot invoke UI actions, edit settings, access notes, or run arbitrary code. Malformed
 JSON, unsupported values, invalid member identity from the transport, and oversized payloads are
-ignored.
+ignored. Blacklist/Ghost relationship reads are fail-closed: a guarded or throwing BC adapter cannot
+accidentally permit a profile reply or managed-group capability route.
 
 ## Capability and the Blossom
 

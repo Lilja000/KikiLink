@@ -21,6 +21,8 @@ export interface ChatMediaItem {
 export class ChatService {
   readonly #ephemeralMessages = new Map<number, LinkMessage[]>();
   readonly #ephemeralConversations = new Map<number, ConversationMeta>();
+  readonly #peerMutationTails = new Map<number, Promise<void>>();
+  #globalMutationTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly repository: ChatRepository,
@@ -29,12 +31,21 @@ export class ChatService {
 
   async capture(event: BeepEvent, activeConversation: boolean): Promise<LinkMessage> {
     const canonicalEvent = canonicalizeBeepEvent(event);
+    return this.#enqueuePeerMutation(canonicalEvent.peerNumber, () =>
+      this.#captureUnlocked(canonicalEvent, activeConversation),
+    );
+  }
+
+  async #captureUnlocked(
+    canonicalEvent: BeepEvent,
+    activeConversation: boolean,
+  ): Promise<LinkMessage> {
     const message: LinkMessage = {
       ...canonicalEvent,
       id: createId("beep"),
       read: canonicalEvent.direction === "outgoing" || activeConversation,
     };
-    const previous = await this.#getStoredConversation(canonicalEvent.peerNumber);
+    const previous = await this.#getStoredConversationUnlocked(canonicalEvent.peerNumber);
     const conversation: ConversationMeta = {
       peerNumber: canonicalEvent.peerNumber,
       peerName: preferredPeerName(
@@ -77,23 +88,34 @@ export class ChatService {
 
   async captureRecent(event: BeepEvent): Promise<boolean> {
     const canonicalEvent = canonicalizeBeepEvent(event);
-    const stored = await this.#getStoredConversation(canonicalEvent.peerNumber);
-    if (stored?.hiddenAt !== undefined && canonicalEvent.sentAt <= stored.hiddenAt) return false;
-    const messages = await this.getMessages(canonicalEvent.peerNumber, 500);
-    const duplicate = messages.some(
-      (message) =>
-        message.direction === canonicalEvent.direction &&
-        message.content === canonicalEvent.content &&
-        message.roomName === canonicalEvent.roomName &&
-        Math.abs(message.sentAt - canonicalEvent.sentAt) <= 2000,
-    );
-    if (duplicate) return false;
-    await this.capture(canonicalEvent, true);
-    return true;
+    return this.#enqueuePeerMutation(canonicalEvent.peerNumber, async () => {
+      const stored = await this.#getStoredConversationUnlocked(canonicalEvent.peerNumber);
+      if (stored?.hiddenAt !== undefined && canonicalEvent.sentAt <= stored.hiddenAt) return false;
+      const messages = await this.#getMessagesUnlocked(canonicalEvent.peerNumber, 500);
+      const duplicate = messages.some(
+        (message) =>
+          message.direction === canonicalEvent.direction &&
+          message.content === canonicalEvent.content &&
+          message.roomName === canonicalEvent.roomName &&
+          Math.abs(message.sentAt - canonicalEvent.sentAt) <= 2000,
+      );
+      if (duplicate) return false;
+      await this.#captureUnlocked(canonicalEvent, true);
+      return true;
+    });
   }
 
   async ensureConversation(peerNumber: number, peerName: string): Promise<ConversationMeta> {
-    const existing = await this.#getStoredConversation(peerNumber);
+    return this.#enqueuePeerMutation(peerNumber, () =>
+      this.#ensureConversationUnlocked(peerNumber, peerName),
+    );
+  }
+
+  async #ensureConversationUnlocked(
+    peerNumber: number,
+    peerName: string,
+  ): Promise<ConversationMeta> {
+    const existing = await this.#getStoredConversationUnlocked(peerNumber);
     if (existing && existing.hiddenAt === undefined) return existing;
 
     const conversation: ConversationMeta = {
@@ -111,11 +133,13 @@ export class ChatService {
   }
 
   async getConversation(peerNumber: number): Promise<ConversationMeta | undefined> {
-    const conversation = await this.#getStoredConversation(peerNumber);
-    return conversation?.hiddenAt === undefined ? conversation : undefined;
+    return this.#enqueuePeerMutation(peerNumber, async () => {
+      const conversation = await this.#getStoredConversationUnlocked(peerNumber);
+      return conversation?.hiddenAt === undefined ? conversation : undefined;
+    });
   }
 
-  async #getStoredConversation(peerNumber: number): Promise<ConversationMeta | undefined> {
+  async #getStoredConversationUnlocked(peerNumber: number): Promise<ConversationMeta | undefined> {
     const ephemeral = this.#ephemeralConversations.get(peerNumber);
     if (ephemeral) {
       const canonical = canonicalizeConversationPreview(ephemeral);
@@ -123,13 +147,24 @@ export class ChatService {
       return structuredClone(canonical);
     }
     const persisted = await this.repository.getConversation(peerNumber);
-    return persisted ? this.#repairConversationPreview(persisted) : undefined;
+    return persisted ? this.#repairConversationPreviewUnlocked(persisted) : undefined;
   }
 
   async listConversations(): Promise<ConversationMeta[]> {
     const persisted = await this.repository.listConversations();
     const canonicalPersisted = await Promise.all(
-      persisted.map((conversation) => this.#repairConversationPreview(conversation)),
+      persisted.map((conversation) => {
+        const canonical = canonicalizeConversationPreview(conversation);
+        if (canonical === conversation) return conversation;
+        return this.#enqueuePeerMutation(conversation.peerNumber, async () => {
+          // The list snapshot may have been read while a capture was still being committed.
+          // Repair the newest row inside the peer queue instead of writing stale metadata back.
+          const current = await this.repository.getConversation(conversation.peerNumber);
+          return current
+            ? this.#repairConversationPreviewUnlocked(current)
+            : canonical;
+        });
+      }),
     );
     const merged = new Map(
       canonicalPersisted.map((conversation) => [conversation.peerNumber, conversation]),
@@ -147,6 +182,12 @@ export class ChatService {
   }
 
   async getMessages(peerNumber: number, limit = 300): Promise<LinkMessage[]> {
+    return this.#enqueuePeerMutation(peerNumber, () =>
+      this.#getMessagesUnlocked(peerNumber, limit),
+    );
+  }
+
+  async #getMessagesUnlocked(peerNumber: number, limit = 300): Promise<LinkMessage[]> {
     const persisted = await this.repository.getMessages(peerNumber, limit);
     const ephemeral = this.#ephemeralMessages.get(peerNumber) ?? [];
     const canonicalPersisted = await Promise.all(
@@ -198,68 +239,83 @@ export class ChatService {
   }
 
   async markRead(peerNumber: number): Promise<void> {
-    const conversation = await this.getConversation(peerNumber);
-    if (!conversation || conversation.unread === 0) return;
-    await this.#saveConversation({ ...conversation, unread: 0 });
+    await this.#enqueuePeerMutation(peerNumber, async () => {
+      const conversation = await this.#getVisibleConversationUnlocked(peerNumber);
+      if (!conversation || conversation.unread === 0) return;
+      await this.#saveConversation({ ...conversation, unread: 0 });
+    });
   }
 
   async markUnread(peerNumber: number): Promise<void> {
-    const conversation = await this.getConversation(peerNumber);
-    if (!conversation || conversation.unread > 0) return;
-    await this.#saveConversation({ ...conversation, unread: 1 });
+    await this.#enqueuePeerMutation(peerNumber, async () => {
+      const conversation = await this.#getVisibleConversationUnlocked(peerNumber);
+      if (!conversation || conversation.unread > 0) return;
+      await this.#saveConversation({ ...conversation, unread: 1 });
+    });
   }
 
   async setPeerName(peerNumber: number, peerName: string): Promise<void> {
     const name = peerName.trim();
     if (!name) return;
-    const conversation = await this.getConversation(peerNumber);
-    if (!conversation || conversation.peerName === name) return;
-    await this.#saveConversation({ ...conversation, peerName: name });
+    await this.#enqueuePeerMutation(peerNumber, async () => {
+      const conversation = await this.#getVisibleConversationUnlocked(peerNumber);
+      if (!conversation || conversation.peerName === name) return;
+      await this.#saveConversation({ ...conversation, peerName: name });
+    });
   }
 
   async setLocalAlias(peerNumber: number, value: string): Promise<string | undefined> {
-    const conversation = await this.getConversation(peerNumber);
-    if (!conversation) return undefined;
     const localAlias = normalizeLocalAlias(value);
-    if (conversation.localAlias === localAlias) return localAlias;
-    const updated = { ...conversation };
-    if (localAlias) updated.localAlias = localAlias;
-    else delete updated.localAlias;
-    await this.#saveConversation(updated);
-    return localAlias;
+    return this.#enqueuePeerMutation(peerNumber, async () => {
+      const conversation = await this.#getVisibleConversationUnlocked(peerNumber);
+      if (!conversation) return undefined;
+      if (conversation.localAlias === localAlias) return localAlias;
+      const updated = { ...conversation };
+      if (localAlias) updated.localAlias = localAlias;
+      else delete updated.localAlias;
+      await this.#saveConversation(updated);
+      return localAlias;
+    });
   }
 
   async removeConversation(peerNumber: number): Promise<void> {
-    const previous = await this.#getStoredConversation(peerNumber);
-    this.#ephemeralMessages.delete(peerNumber);
-    this.#ephemeralConversations.delete(peerNumber);
-    await this.repository.deleteConversation(peerNumber);
-    if (!previous) return;
-    await this.#saveConversation({
-      peerNumber,
-      peerName: previous.peerName,
-      hiddenAt: Date.now(),
-      lastMessage: "",
-      lastMessageAt: 0,
-      lastDirection: "incoming",
-      unread: 0,
-      pinned: false,
-      draft: "",
+    await this.#enqueuePeerMutation(peerNumber, async () => {
+      const previous = await this.#getStoredConversationUnlocked(peerNumber);
+      this.#ephemeralMessages.delete(peerNumber);
+      this.#ephemeralConversations.delete(peerNumber);
+      await this.repository.deleteConversation(peerNumber);
+      if (!previous) return;
+      await this.#saveConversation({
+        peerNumber,
+        peerName: previous.peerName,
+        hiddenAt: Date.now(),
+        lastMessage: "",
+        lastMessageAt: 0,
+        lastDirection: "incoming",
+        unread: 0,
+        pinned: false,
+        draft: "",
+      });
     });
   }
 
   async setDraft(peerNumber: number, peerName: string, draft: string): Promise<void> {
-    const conversation =
-      (await this.getConversation(peerNumber)) ?? (await this.ensureConversation(peerNumber, peerName));
-    await this.#saveConversation({ ...conversation, draft });
+    await this.#enqueuePeerMutation(peerNumber, async () => {
+      const conversation =
+        (await this.#getVisibleConversationUnlocked(peerNumber)) ??
+        (await this.#ensureConversationUnlocked(peerNumber, peerName));
+      await this.#saveConversation({ ...conversation, draft });
+    });
   }
 
   async togglePinned(peerNumber: number): Promise<boolean> {
-    const conversation = await this.getConversation(peerNumber);
-    if (!conversation) return false;
-    const pinned = !conversation.pinned;
-    await this.#saveConversation({ ...conversation, pinned });
-    return pinned;
+    return this.#enqueuePeerMutation(peerNumber, async () => {
+      const conversation = await this.#getVisibleConversationUnlocked(peerNumber);
+      if (!conversation) return false;
+      const pinned = !conversation.pinned;
+      await this.#saveConversation({ ...conversation, pinned });
+      return pinned;
+    });
   }
 
   async totalUnread(): Promise<number> {
@@ -270,18 +326,66 @@ export class ChatService {
   async prune(): Promise<number> {
     const config = this.settings.get().linkChat;
     if (!config.saveHistory) return 0;
-    return this.repository.deleteMessagesOlderThan(Date.now() - config.retentionDays * DAY_MS);
+    const cutoff = Date.now() - config.retentionDays * DAY_MS;
+    return this.#enqueueGlobalMutation(() => this.repository.deleteMessagesOlderThan(cutoff));
   }
 
   async clearHistory(): Promise<boolean> {
-    try {
-      return this.repository.clearAllDurably
-        ? await this.repository.clearAllDurably()
-        : await this.repository.clearAll().then(() => true);
-    } finally {
-      this.#ephemeralMessages.clear();
-      this.#ephemeralConversations.clear();
-    }
+    return this.#enqueueGlobalMutation(async () => {
+      try {
+        return this.repository.clearAllDurably
+          ? await this.repository.clearAllDurably()
+          : await this.repository.clearAll().then(() => true);
+      } finally {
+        this.#ephemeralMessages.clear();
+        this.#ephemeralConversations.clear();
+      }
+    });
+  }
+
+  async #getVisibleConversationUnlocked(
+    peerNumber: number,
+  ): Promise<ConversationMeta | undefined> {
+    const conversation = await this.#getStoredConversationUnlocked(peerNumber);
+    return conversation?.hiddenAt === undefined ? conversation : undefined;
+  }
+
+  #enqueuePeerMutation<T>(peerNumber: number, mutation: () => Promise<T>): Promise<T> {
+    // Capture the global barrier synchronously. Maintenance requested after this call waits for
+    // this peer tail; peer work requested after maintenance waits for its new global tail.
+    const global = this.#globalMutationTail;
+    const previous = this.#peerMutationTails.get(peerNumber) ?? Promise.resolve();
+    const result = Promise.all([global, previous]).then(() => mutation());
+    // Store an always-fulfilled tail so one failed repository write cannot poison later work.
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#peerMutationTails.set(peerNumber, tail);
+    void tail.then(() => {
+      // A newer operation may already have installed its own tail for this peer.
+      if (this.#peerMutationTails.get(peerNumber) === tail) {
+        this.#peerMutationTails.delete(peerNumber);
+      }
+    });
+    return result;
+  }
+
+  #enqueueGlobalMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    const previousGlobal = this.#globalMutationTail;
+    const activePeers = [...this.#peerMutationTails.values()];
+    const result = Promise.all([previousGlobal, ...activePeers]).then(() => mutation());
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    // Installing the barrier before yielding ensures subsequently requested peer work cannot
+    // pass clear/prune, while the peer snapshot above contains every earlier mutation.
+    this.#globalMutationTail = tail;
+    void tail.then(() => {
+      if (this.#globalMutationTail === tail) this.#globalMutationTail = Promise.resolve();
+    });
+    return result;
   }
 
   async #saveConversation(conversation: ConversationMeta): Promise<void> {
@@ -293,7 +397,9 @@ export class ChatService {
     }
   }
 
-  async #repairConversationPreview(conversation: ConversationMeta): Promise<ConversationMeta> {
+  async #repairConversationPreviewUnlocked(
+    conversation: ConversationMeta,
+  ): Promise<ConversationMeta> {
     const canonical = canonicalizeConversationPreview(conversation);
     if (canonical === conversation) return conversation;
     try {

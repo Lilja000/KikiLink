@@ -1,5 +1,6 @@
 import {
   KIKILINK_ALLOWED_UPLOAD_ENDPOINTS,
+  KIKILINK_UPLOAD_ACCEPTED,
   KIKILINK_UPLOAD_BRIDGE_MARKER_ID,
   KIKILINK_UPLOAD_CANCEL,
   KIKILINK_UPLOAD_PROGRESS,
@@ -17,6 +18,7 @@ export const USERSCRIPT_UPLOAD_MAX_BYTES_PER_WINDOW =
   2 * USERSCRIPT_UPLOAD_MAX_FILE_BYTES;
 
 const MAX_ACTIVE_UPLOADS = 2;
+const CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
 const ID_PATTERN = /^[a-z0-9-]{8,80}$/iu;
 const CAPABILITY_PATTERN = /^[a-f0-9]{64}$/u;
 const FILE_NAME_PATTERN = /^kikilink-(?:image\.webp|room-music\.(?:mp3|mp4)|track\.(?:aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm))$/u;
@@ -46,19 +48,24 @@ export function installUserscriptUploadHost(capability: string): () => void {
     const request = validateRequest(event.data, capability);
     if (!request) return;
     if (activeUploads.has(request.id)) {
-      postError(request.id, "An upload with this identifier is already in progress");
+      postError(request.id, capability, "An upload with this identifier is already in progress");
       return;
     }
     if (activeUploads.size >= MAX_ACTIVE_UPLOADS) {
-      postError(request.id, "Another upload is already in progress");
+      postError(request.id, capability, "Another upload is already in progress");
       return;
     }
     const admission = admitUpload(budget, requestBytes(request), cooldownUntil);
     cooldownUntil = admission.cooldownUntil;
     if (!admission.allowed) {
-      postError(request.id, "Upload safety limit reached. Please wait before trying again");
+      postError(
+        request.id,
+        capability,
+        "Upload safety limit reached. Please wait before trying again",
+      );
       return;
     }
+    if (!postAccepted(request.id, capability)) return;
     activeUploads.add(request.id);
     void runUpload(
       request,
@@ -127,6 +134,7 @@ function runUpload(
       } finally {
         settle(() => postError(
           request.id,
+          request.capability,
           reason === "timeout" ? "The upload timed out" : "The upload was cancelled",
         ));
       }
@@ -146,30 +154,37 @@ function runUpload(
           );
         }
       }
-      transport = GM_xmlhttpRequest({
+      const requestOptions: KikiLinkGmXhrDetails = {
         method: "POST",
         url: request.endpoint,
         data: form,
-        anonymous: true,
+        // Catbox's API calls an upload anonymous when `userhash` is omitted. Tampermonkey's
+        // unrelated `anonymous` flag forces fetch mode in Chromium, disabling reliable native
+        // progress/timeout behavior. Keep Catbox on GM's XHR transport; Litterbox retains its
+        // credential-omitting fetch transport.
+        ...(request.endpoint === CATBOX_UPLOAD_ENDPOINT ? {} : { anonymous: true }),
         timeout: request.timeoutMs,
         onprogress: (event) => {
           if (settled || !canRespond()) return;
           const loaded = finiteNonNegative(event.loaded);
           const total = finitePositive(event.total);
-          window.postMessage(
-            {
+          try {
+            window.postMessage({
               type: KIKILINK_UPLOAD_PROGRESS,
+              capability: request.capability,
               id: request.id,
               loaded,
               ...(total === undefined ? {} : { total }),
-            },
-            window.location.origin,
-          );
+            }, window.location.origin);
+          } catch {
+            // The request watchdog and final response still own transport cleanup.
+          }
         },
         onload: (response) => settle(() => {
           window.postMessage(
             {
               type: KIKILINK_UPLOAD_RESPONSE,
+              capability: request.capability,
               id: request.id,
               ok: response.status >= 200 && response.status < 300,
               status: response.status,
@@ -180,6 +195,7 @@ function runUpload(
         }),
         onerror: (response) => settle(() => postError(
           request.id,
+          request.capability,
           abortReason === "timeout"
             ? "The upload timed out"
             : abortReason === "cancelled"
@@ -190,16 +206,26 @@ function runUpload(
         )),
         onabort: () => settle(() => postError(
           request.id,
+          request.capability,
           abortReason === "timeout" ? "The upload timed out" : "The upload was cancelled",
         )),
-        ontimeout: () => settle(() => postError(request.id, "The upload timed out")),
-      });
+        ontimeout: () => settle(() => postError(
+          request.id,
+          request.capability,
+          "The upload timed out",
+        )),
+      };
+      transport = GM_xmlhttpRequest(requestOptions);
       if (!settled) {
         activeRequests.set(request.id, () => abort("cancelled"));
         watchdog = setTimeout(() => abort("timeout"), request.timeoutMs);
       }
     } catch {
-      settle(() => postError(request.id, "The upload bridge could not prepare this file"));
+      settle(() => postError(
+        request.id,
+        request.capability,
+        "The upload bridge could not prepare this file",
+      ));
     }
   });
 }
@@ -240,12 +266,12 @@ function validateRequest(
   }
   const fields = source.fields.map(validateField);
   if (fields.some((field) => field === null)) {
-    postError(source.id, "The upload bridge rejected malformed form data");
+    postError(source.id, capability, "The upload bridge rejected malformed form data");
     return null;
   }
   const validFields = fields as KikiLinkUploadField[];
   if (!validForm(source.endpoint, validFields)) {
-    postError(source.id, "The upload bridge rejected unsupported form data");
+    postError(source.id, capability, "The upload bridge rejected unsupported form data");
     return null;
   }
   return {
@@ -345,9 +371,29 @@ function ensureReadyMarker(): void {
   (document.head ?? document.documentElement).append(marker);
 }
 
-function postError(id: string, error: string): void {
+function postAccepted(id: string, capability: string): boolean {
+  try {
+    window.postMessage(
+      { type: KIKILINK_UPLOAD_ACCEPTED, capability, id },
+      window.location.origin,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function postError(id: string, capability: string, error: string): void {
   window.postMessage(
-    { type: KIKILINK_UPLOAD_RESPONSE, id, ok: false, status: 0, body: "", error },
+    {
+      type: KIKILINK_UPLOAD_RESPONSE,
+      capability,
+      id,
+      ok: false,
+      status: 0,
+      body: "",
+      error,
+    },
     window.location.origin,
   );
 }

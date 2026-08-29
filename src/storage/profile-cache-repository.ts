@@ -16,7 +16,7 @@ const MAX_DISPLAY_NAME_LENGTH = 80;
 const MAX_PROFILE_REVISION_LENGTH = 64;
 const MAX_ADDON_VERSION_LENGTH = 24;
 
-const DIRECT_IMAGE_PATH = /\.(?:avif|gif|jpe?g|png|webp)$/iu;
+const DIRECT_IMAGE_PATH = /\.(?:gif|jpe?g|png|webp)$/iu;
 const SAFE_REVISION = /^[a-z0-9_-]{1,64}$/iu;
 const SAFE_VERSION = /^[a-z0-9][a-z0-9._+-]{0,23}$/iu;
 const HEX_COLOR = /^#[0-9a-f]{6}$/iu;

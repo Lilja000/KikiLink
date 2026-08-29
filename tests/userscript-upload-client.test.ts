@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { uploadMultipartViaUserscriptBridge } from "../src/userscript-upload-client";
 import {
+  KIKILINK_UPLOAD_ACCEPTED,
   KIKILINK_UPLOAD_BRIDGE_MARKER_ID,
   KIKILINK_UPLOAD_CANCEL,
   KIKILINK_UPLOAD_REQUEST,
@@ -26,7 +27,15 @@ describe("userscript upload client", () => {
     installCapability();
     const messages: Array<Record<string, unknown>> = [];
     vi.spyOn(window, "postMessage").mockImplementation((message) => {
-      messages.push(message as Record<string, unknown>);
+      const outgoing = message as Record<string, unknown>;
+      messages.push(outgoing);
+      if (outgoing.type === KIKILINK_UPLOAD_REQUEST) {
+        dispatchHostMessage({
+          type: KIKILINK_UPLOAD_ACCEPTED,
+          capability: CAPABILITY,
+          id: outgoing.id,
+        });
+      }
     });
 
     const upload = uploadMultipartViaUserscriptBridge(ENDPOINT, uploadForm(), 1_000);
@@ -46,6 +55,27 @@ describe("userscript upload client", () => {
     }]);
 
     await vi.advanceTimersByTimeAsync(10_000);
+    expect(messages.filter((message) => message.type === KIKILINK_UPLOAD_CANCEL)).toHaveLength(1);
+  });
+
+  it("fails fast and cancels when a stale bridge marker has no matching host", async () => {
+    vi.useFakeTimers();
+    installBridgeMarker();
+    installCapability();
+    const messages: Array<Record<string, unknown>> = [];
+    vi.spyOn(window, "postMessage").mockImplementation((message) => {
+      messages.push(message as Record<string, unknown>);
+    });
+
+    const upload = uploadMultipartViaUserscriptBridge(ENDPOINT, uploadForm(), 30_000);
+    const errorPromise = upload.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(3_000);
+    const error = await errorPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("did not accept the request");
+    expect(messages.filter((message) => message.type === KIKILINK_UPLOAD_CANCEL)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(40_000);
     expect(messages.filter((message) => message.type === KIKILINK_UPLOAD_CANCEL)).toHaveLength(1);
   });
 
@@ -86,17 +116,19 @@ describe("userscript upload client", () => {
       const outgoing = message as Record<string, unknown>;
       messages.push(outgoing);
       if (outgoing.type !== KIKILINK_UPLOAD_REQUEST) return;
-      window.dispatchEvent(new MessageEvent("message", {
-        data: {
-          type: KIKILINK_UPLOAD_RESPONSE,
-          id: outgoing.id,
-          ok: true,
-          status: 200,
-          body: "https://files.catbox.moe/banner.webp",
-        },
-        origin: window.location.origin,
-        source: window,
-      }));
+      dispatchHostMessage({
+        type: KIKILINK_UPLOAD_ACCEPTED,
+        capability: CAPABILITY,
+        id: outgoing.id,
+      });
+      dispatchHostMessage({
+        type: KIKILINK_UPLOAD_RESPONSE,
+        capability: CAPABILITY,
+        id: outgoing.id,
+        ok: true,
+        status: 200,
+        body: "https://files.catbox.moe/banner.webp",
+      });
     });
     const controller = new AbortController();
 
@@ -116,7 +148,79 @@ describe("userscript upload client", () => {
     await vi.advanceTimersByTimeAsync(3_000);
     expect(messages.filter((message) => message.type === KIKILINK_UPLOAD_CANCEL)).toHaveLength(0);
   });
+
+  it("ignores accepted, progress, and successful response messages with the wrong capability", async () => {
+    installBridgeMarker();
+    installCapability();
+    const progress = vi.fn();
+    vi.spyOn(window, "postMessage").mockImplementation((message) => {
+      const outgoing = message as Record<string, unknown>;
+      if (outgoing.type !== KIKILINK_UPLOAD_REQUEST) return;
+      const wrongCapability = "c".repeat(64);
+      dispatchHostMessage({
+        type: KIKILINK_UPLOAD_ACCEPTED,
+        capability: wrongCapability,
+        id: outgoing.id,
+      });
+      dispatchHostMessage({
+        type: "kikilink:upload-progress:v1",
+        capability: wrongCapability,
+        id: outgoing.id,
+        loaded: 1,
+        total: 2,
+      });
+      dispatchHostMessage({
+        type: KIKILINK_UPLOAD_RESPONSE,
+        capability: wrongCapability,
+        id: outgoing.id,
+        ok: true,
+        status: 200,
+        body: "https://files.catbox.moe/forged.webp",
+      });
+      dispatchHostMessage({
+        type: KIKILINK_UPLOAD_ACCEPTED,
+        capability: CAPABILITY,
+        id: outgoing.id,
+      });
+      dispatchHostMessage({
+        type: "kikilink:upload-progress:v1",
+        capability: CAPABILITY,
+        id: outgoing.id,
+        loaded: 2,
+        total: 2,
+      });
+      dispatchHostMessage({
+        type: KIKILINK_UPLOAD_RESPONSE,
+        capability: CAPABILITY,
+        id: outgoing.id,
+        ok: true,
+        status: 200,
+        body: "https://files.catbox.moe/real.webp",
+      });
+    });
+
+    await expect(uploadMultipartViaUserscriptBridge(
+      ENDPOINT,
+      uploadForm(),
+      30_000,
+      progress,
+    )).resolves.toEqual({
+      ok: true,
+      status: 200,
+      body: "https://files.catbox.moe/real.webp",
+    });
+    expect(progress).toHaveBeenCalledOnce();
+    expect(progress).toHaveBeenCalledWith({ loaded: 2, total: 2, percent: 100 });
+  });
 });
+
+function dispatchHostMessage(data: Record<string, unknown>): void {
+  window.dispatchEvent(new MessageEvent("message", {
+    data,
+    origin: window.location.origin,
+    source: window,
+  }));
+}
 
 function installBridgeMarker(): void {
   const marker = document.createElement("meta");

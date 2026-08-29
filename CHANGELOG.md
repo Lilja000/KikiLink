@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.27.0 - 2026-08-29
+
+- Added creator-managed group chats behind the newly negotiated `g: 3` capability. The creator is
+  visibly identified and may rename the group, set or clear a direct-HTTPS avatar, choose a strict
+  `#RRGGBB` outline, add one compatible member, or kick a non-owner while the group remains within
+  3–5 members. Old fixed-membership groups remain usable as legacy groups and require an explicit
+  owner-only conversion to a new creator-bound ID before management is enabled.
+- Bound managed group authority to the creator encoded in the group ID, a cryptographically random
+  membership epoch, and monotonic state/appearance/name revisions. Authoritative ID creation fails
+  closed when the browser has no secure RNG. Membership changes rotate the epoch; kicked members
+  receive an owner-authenticated removal with a durable bounded retry, stale state and messages fail
+  closed, replay/rate/storage collections remain capped, and unsolicited owners cannot consume every
+  local group slot.
+- Replaced the tall group header action row with a compact avatar, title, creator marker, and one
+  accessible menu. The same menu opens by right-click, keyboard Context Menu or Shift+F10, and
+  touch/pen hold; it restores focus, closes on Escape/outside input, and exposes details, pin,
+  removal, close, and owner-only management without retaining detached conversation rows.
+- Added ordinary HTTPS and privacy-prepared local image messages to groups. Uploads revalidate the
+  destination after asynchronous work, reuse the guarded LinkChat preview renderer, and appear in
+  the lazy all-chat Gallery with an Open group action. Group author avatars are slightly larger,
+  custom group avatars retain stable image nodes, and the status-like group marker is no longer
+  clipped by the avatar stack.
+- Reworked mixed direct/group navigation around keyed reusable rows, cached summaries, coalesced
+  animation-frame refreshes, and targeted transcript updates. Focus and scroll survive refreshes,
+  remote image object URLs stay valid while leased by live elements, and per-view timers,
+  long-press bindings, uploads, and object URLs have explicit teardown paths.
+- Bound group replay identity to the authenticated original MemberNumber plus message ID. A member
+  racing another author's observed ID can no longer suppress that author's direct or creator-relayed
+  message; storage version 3 preserves old version-1/2 replay IDs as conservative origin wildcards,
+  and the keyed transcript can render legitimate same-ID messages from different authors.
+- Hardened remote JPG/PNG/GIF/WebP loading before browser decode with strict MIME/signature agreement,
+  redirect and private-address rejection, 5 MiB transfer, 4096-axis, 8-megapixel canvas, animation
+  frame/pixel/rate, request/decode concurrency, queue, cache, lease, visibility, and live-preview
+  residency bounds. Sub-20-ms animation frames and AVIF now fail closed rather than relying on
+  decoder-specific timing or unbounded primary AV1 sequence metadata.
+- Added the same fail-before-decode principle to selected local JPG/PNG/WebP files: bounded header
+  inspection validates JPEG frames, PNG/APNG canvases, and WebP canvases/frames against the existing
+  32-megapixel preparation limit, plus a 240-frame/64-megapixel animation-cycle budget, before
+  `createImageBitmap` or `Image` can allocate them.
+- Fixed direct-chat peer-switch, draft, and double-send races with per-peer mutation queues and a
+  durability barrier for global clear/prune operations. Room media and image composers now capture
+  and revalidate their destination, so a late completion cannot write into a closed view or a
+  different conversation.
+- Fixed profile-banner Catbox uploads hanging until timeout. Catbox now keeps
+  `GM_xmlhttpRequest` in XHR mode by omitting the fetch-forcing anonymous option; bridge readiness and
+  capability acknowledgement are authenticated, a missing/stale bridge fails in about three seconds,
+  each request has one total deadline, and cancel/teardown releases both page and userscript resources.
+  Litterbox keeps its credential-free anonymous mode. Non-idempotent upload POSTs no longer retry
+  automatically after ambiguous provider errors, avoiding duplicate public files without a retained URL.
+- Fixed profile names sitting on or escaping the banner boundary, contact-picker avatars layering
+  across cards, Gallery/New group controls crowding the section label, and the tiny nested group-header
+  scrollbar. Long profile names keep a safe inset and wrap/clamp within the card at narrow widths.
+- Quieted and clarified the New group toolbar action with a distinct restrained treatment plus visible
+  tooltip and accessible label. Owner/read-only group details, avatar picker, outline reset, member
+  limits, and errors remain keyboard and mobile usable, including forced-color and reduced-motion modes.
+- Hardened presence privacy so guarded Blacklist/Ghost checks fail closed and profile requests cannot
+  escape through a throwing BC adapter. New tests cover managed authorization, revision/epoch replay,
+  revocation retries and bounds, context-menu lifecycle, layout regressions, upload bridge deadlines,
+  image leases, direct-chat races, and keyed rendering.
+
 ## 0.26.0 - 2026-08-29
 
 - Rebuilt Chat navigation as one chronological, searchable list for direct and group conversations.

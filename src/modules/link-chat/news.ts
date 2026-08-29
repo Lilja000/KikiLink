@@ -9,6 +9,20 @@ export interface KikiLinkNewsRelease {
 /** A compact, curated changelog for the in-addon News page. */
 export const KIKILINK_NEWS: readonly KikiLinkNewsRelease[] = [
   {
+    version: "0.27.0",
+    date: "2026-08-29",
+    title: "Groups you can truly manage",
+    summary: "Creator-managed groups gain identity, membership, images, and a compact menu, with faster chat rendering and a repaired banner uploader.",
+    highlights: [
+      "Rename your managed group, upload a clearly labeled public Catbox avatar, choose its outline, add compatible people, or kick non-owners while the group stays within 3–5 members.",
+      "Right-click, use the keyboard menu key, or hold a group for one compact action menu; the shorter header leaves more room for chat.",
+      "Send guarded HTTPS or privacy-prepared local images to groups and find them later in the shared lazy Gallery.",
+      "Keep older fixed-member groups as honest legacy records, with an explicit creator-only conversion before any management rights exist.",
+      "Upload Catbox profile banners without the fetch-mode hang, with authenticated bridge acceptance, one total deadline, and deterministic cancellation.",
+      "Enjoy keyed chat rows, origin-safe replay checks, visibility-bounded remote images, safer drafts and peer switching, larger group avatars, and repaired profile/contact spacing.",
+    ],
+  },
+  {
     version: "0.26.0",
     date: "2026-08-29",
     title: "Cleaner chats and profiles that last",

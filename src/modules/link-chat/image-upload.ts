@@ -11,10 +11,12 @@ export const MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
 export const MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
 
 const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_LOCAL_ANIMATION_FRAMES = 240;
+const MAX_LOCAL_ANIMATION_PIXELS = 64 * 1024 * 1024;
 const PROFILE_BANNER_WEBP_QUALITIES = [0.88, 0.76, 0.64, 0.52, 0.4] as const;
 const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const PROFILE_BANNER_UPLOAD_TIMEOUT_MS = 180_000;
-const RETRYABLE_UPLOAD_STATUSES = new Set([500, 502, 503, 504]);
+const TEMPORARY_UPLOAD_STATUSES = new Set([500, 502, 503, 504]);
 const LITTERBOX_UPLOAD_ENDPOINT =
   "https://litterbox.catbox.moe/resources/internals/api.php";
 const CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
@@ -55,7 +57,7 @@ export interface PreparedLocalImage {
 
 export interface LocalImageUploader<Config = LitterboxUploadConfig> {
   prepare(file: File): Promise<PreparedLocalImage>;
-  upload(image: PreparedLocalImage, config: Config): Promise<string>;
+  upload(image: PreparedLocalImage, config: Config, signal?: AbortSignal): Promise<string>;
 }
 
 interface CloudinaryUploadResponse {
@@ -76,7 +78,11 @@ export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploa
     return prepareLocalImage(file);
   }
 
-  async upload(image: PreparedLocalImage, config: LitterboxUploadConfig): Promise<string> {
+  async upload(
+    image: PreparedLocalImage,
+    config: LitterboxUploadConfig,
+    signal?: AbortSignal,
+  ): Promise<string> {
     const normalizedConfig = normalizeLitterboxUploadConfig(config);
     if (!normalizedConfig) throw new Error("Choose a valid temporary image lifetime");
     validatePreparedImage(image);
@@ -90,6 +96,8 @@ export class LitterboxImageUploader implements LocalImageUploader<LitterboxUploa
       form,
       IMAGE_UPLOAD_TIMEOUT_MS,
       this.request,
+      undefined,
+      signal,
     );
     if (!response.ok) {
       throw new Error(providerUploadError("Litterbox", response));
@@ -134,6 +142,7 @@ export async function uploadLocalRoomAudio(
   file: File,
   config: LitterboxUploadConfig,
   request?: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<string> {
   const normalizedConfig = normalizeLitterboxUploadConfig(config);
   if (!normalizedConfig) throw new Error("Choose a valid temporary music lifetime");
@@ -157,6 +166,8 @@ export async function uploadLocalRoomAudio(
     form,
     IMAGE_UPLOAD_TIMEOUT_MS,
     request,
+    undefined,
+    signal,
   );
   if (!response.ok) {
     throw new Error(providerUploadError("Litterbox", response));
@@ -210,7 +221,11 @@ export class CloudinaryImageUploader implements LocalImageUploader<CloudinaryUpl
     return prepareLocalImage(file);
   }
 
-  async upload(image: PreparedLocalImage, config: CloudinaryUploadConfig): Promise<string> {
+  async upload(
+    image: PreparedLocalImage,
+    config: CloudinaryUploadConfig,
+    signal?: AbortSignal,
+  ): Promise<string> {
     const normalizedConfig = normalizeCloudinaryUploadConfig(config);
     if (!normalizedConfig) throw new Error("Complete the local image upload setup first");
     validatePreparedImage(image);
@@ -220,8 +235,11 @@ export class CloudinaryImageUploader implements LocalImageUploader<CloudinaryUpl
     form.append("upload_preset", normalizedConfig.uploadPreset);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), IMAGE_UPLOAD_TIMEOUT_MS);
+    const cancel = (): void => controller.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
 
     try {
+      if (signal?.aborted) throw new DOMException("cancelled", "AbortError");
       const response = await this.request(
         `https://api.cloudinary.com/v1_1/${encodeURIComponent(normalizedConfig.cloudName)}/image/upload`,
         {
@@ -247,11 +265,12 @@ export class CloudinaryImageUploader implements LocalImageUploader<CloudinaryUpl
       return directUrl;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
-        throw new Error("The image upload timed out");
+        throw new Error(signal?.aborted ? "The upload was cancelled" : "The image upload timed out");
       }
       throw error;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
     }
   }
 }
@@ -386,11 +405,21 @@ export async function validateLocalImageFile(file: File): Promise<void> {
   if (file.size <= 0) throw new Error("Choose a non-empty image file");
   if (file.size > MAX_LOCAL_IMAGE_BYTES) throw new Error("Choose an image up to 10 MB");
 
-  const detectedType = detectLocalImageType(await file.slice(0, 16).arrayBuffer());
+  // Inspect declared dimensions before handing attacker-controlled bytes to a browser decoder.
+  // Reading the bounded encoded file costs at most 10 MiB and avoids a compressed image with an
+  // enormous canvas allocating far more memory inside createImageBitmap/Image first.
+  const contents = await file.arrayBuffer();
+  const detectedType = detectLocalImageType(contents);
   if (!detectedType) throw new Error("Use a real JPG, PNG, or WebP image");
-  if (file.type && file.type.toLocaleLowerCase() !== detectedType) {
+  const declaredType = file.type.toLocaleLowerCase();
+  if (
+    declaredType &&
+    declaredType !== detectedType &&
+    !(detectedType === "image/png" && declaredType === "image/apng")
+  ) {
     throw new Error("The file contents do not match its image type");
   }
+  validateDeclaredLocalImageDimensions(new Uint8Array(contents), detectedType);
 }
 
 export function detectLocalImageType(header: ArrayBuffer): "image/jpeg" | "image/png" | "image/webp" | null {
@@ -421,6 +450,409 @@ export function detectLocalImageType(header: ArrayBuffer): "image/jpeg" | "image
     return "image/webp";
   }
   return null;
+}
+
+type LocalImageType = Exclude<ReturnType<typeof detectLocalImageType>, null>;
+
+function validateDeclaredLocalImageDimensions(
+  bytes: Uint8Array,
+  type: LocalImageType,
+): void {
+  if (type === "image/png") {
+    validatePngDimensions(bytes);
+    return;
+  }
+  if (type === "image/jpeg") {
+    validateJpegDimensions(bytes);
+    return;
+  }
+  validateWebpDimensions(bytes);
+}
+
+function validatePngDimensions(bytes: Uint8Array): void {
+  if (
+    !hasByteRange(bytes, 8, 25) ||
+    readUint32Be(bytes, 8) !== 13 ||
+    readAscii(bytes, 12, 4) !== "IHDR"
+  ) {
+    throw localImageHeaderError();
+  }
+  const canvasWidth = readUint32Be(bytes, 16);
+  const canvasHeight = readUint32Be(bytes, 20);
+  assertSafeLocalDimensions(canvasWidth, canvasHeight);
+
+  // APNG frame-control chunks can declare additional decoded surfaces. Walk the bounded chunk
+  // envelope so a small canvas cannot conceal an oversized animated frame from the preflight.
+  let offset = 8;
+  let chunks = 0;
+  let declaredAnimationFrames: number | undefined;
+  let animationFrameHeaders = 0;
+  while (offset < bytes.byteLength) {
+    if (++chunks > 4_096 || !hasByteRange(bytes, offset, 12)) {
+      throw localImageHeaderError();
+    }
+    const length = readUint32Be(bytes, offset);
+    const dataStart = offset + 8;
+    const chunkEnd = dataStart + length + 4;
+    if (!Number.isSafeInteger(chunkEnd) || chunkEnd > bytes.byteLength) {
+      throw localImageHeaderError();
+    }
+    const chunkType = readAscii(bytes, offset + 4, 4);
+    if (offset === 8 && (chunkType !== "IHDR" || length !== 13)) {
+      throw localImageHeaderError();
+    }
+    if (offset !== 8 && chunkType === "IHDR") throw localImageHeaderError();
+    if (chunkType === "acTL") {
+      if (length !== 8 || declaredAnimationFrames !== undefined) {
+        throw localImageHeaderError();
+      }
+      declaredAnimationFrames = readUint32Be(bytes, dataStart);
+      assertSafeLocalAnimation(
+        declaredAnimationFrames,
+        canvasWidth,
+        canvasHeight,
+      );
+    } else if (chunkType === "fcTL") {
+      if (declaredAnimationFrames === undefined) throw localImageHeaderError();
+      if (length !== 26) throw localImageHeaderError();
+      const width = readUint32Be(bytes, dataStart + 4);
+      const height = readUint32Be(bytes, dataStart + 8);
+      const x = readUint32Be(bytes, dataStart + 12);
+      const y = readUint32Be(bytes, dataStart + 16);
+      assertSafeLocalDimensions(width, height);
+      if (
+        x > canvasWidth ||
+        y > canvasHeight ||
+        width > canvasWidth - x ||
+        height > canvasHeight - y
+      ) {
+        throw localImageHeaderError();
+      }
+      animationFrameHeaders += 1;
+      if (animationFrameHeaders > declaredAnimationFrames) throw localImageHeaderError();
+    }
+    offset = chunkEnd;
+  }
+  if (
+    declaredAnimationFrames !== undefined &&
+    animationFrameHeaders !== declaredAnimationFrames
+  ) {
+    throw localImageHeaderError();
+  }
+}
+
+function validateJpegDimensions(bytes: Uint8Array): void {
+  if (!hasByteRange(bytes, 0, 4) || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    throw localImageHeaderError();
+  }
+  let offset = 2;
+  let markers = 0;
+  let sawFrame = false;
+  let sawScan = false;
+  let inEntropyData = false;
+  while (offset < bytes.byteLength) {
+    if (inEntropyData) {
+      while (offset < bytes.byteLength) {
+        if (bytes[offset] !== 0xff) {
+          offset += 1;
+          continue;
+        }
+        const markerStart = offset;
+        while (offset < bytes.byteLength && bytes[offset] === 0xff) offset += 1;
+        if (!hasByteRange(bytes, offset, 1)) throw localImageHeaderError();
+        const entropyMarker = bytes[offset] ?? -1;
+        if (entropyMarker === 0x00 || (entropyMarker >= 0xd0 && entropyMarker <= 0xd7)) {
+          offset += 1;
+          continue;
+        }
+        offset = markerStart;
+        inEntropyData = false;
+        break;
+      }
+      if (inEntropyData) break;
+      continue;
+    }
+    if (++markers > 4_096 || bytes[offset] !== 0xff) throw localImageHeaderError();
+    while (offset < bytes.byteLength && bytes[offset] === 0xff) offset += 1;
+    if (!hasByteRange(bytes, offset, 1)) throw localImageHeaderError();
+    const marker = bytes[offset] ?? -1;
+    offset += 1;
+    if (marker === 0xd9) {
+      if (!sawFrame || !sawScan || offset !== bytes.byteLength) throw localImageHeaderError();
+      return;
+    }
+    if (marker === 0x00 || marker === 0xd8) {
+      throw localImageHeaderError();
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      throw localImageHeaderError();
+    }
+    if (!hasByteRange(bytes, offset, 2)) throw localImageHeaderError();
+    const segmentLength = readUint16Be(bytes, offset);
+    const segmentEnd = offset + segmentLength;
+    if (segmentLength < 2 || segmentEnd > bytes.byteLength) throw localImageHeaderError();
+    if (isJpegFrameMarker(marker)) {
+      if (sawFrame || segmentLength < 8) throw localImageHeaderError();
+      assertSafeLocalDimensions(
+        readUint16Be(bytes, offset + 5),
+        readUint16Be(bytes, offset + 3),
+      );
+      sawFrame = true;
+    } else if (marker === 0xda) {
+      const scanComponents = bytes[offset + 2] ?? 0;
+      if (!sawFrame || scanComponents < 1 || segmentLength !== 6 + scanComponents * 2) {
+        throw localImageHeaderError();
+      }
+      sawScan = true;
+      inEntropyData = true;
+    }
+    offset = segmentEnd;
+  }
+  throw localImageHeaderError();
+}
+
+function isJpegFrameMarker(marker: number): boolean {
+  return marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+}
+
+function validateWebpDimensions(bytes: Uint8Array): void {
+  if (
+    !hasByteRange(bytes, 0, 12) ||
+    readAscii(bytes, 0, 4) !== "RIFF" ||
+    readAscii(bytes, 8, 4) !== "WEBP" ||
+    readUint32Le(bytes, 4) + 8 !== bytes.byteLength
+  ) {
+    throw localImageHeaderError();
+  }
+
+  let offset = 12;
+  let chunks = 0;
+  let sawDimensions = false;
+  let canvas: { width: number; height: number } | undefined;
+  let staticImages = 0;
+  let animatedFrames = 0;
+  while (offset < bytes.byteLength) {
+    if (++chunks > 4_096 || !hasByteRange(bytes, offset, 8)) {
+      throw localImageHeaderError();
+    }
+    const type = readAscii(bytes, offset, 4);
+    const length = readUint32Le(bytes, offset + 4);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    const next = dataEnd + (length & 1);
+    if (!Number.isSafeInteger(next) || next > bytes.byteLength) throw localImageHeaderError();
+    if (type === "VP8X") {
+      if (offset !== 12 || canvas || length !== 10) throw localImageHeaderError();
+      canvas = {
+        width: readUint24Le(bytes, dataStart + 4) + 1,
+        height: readUint24Le(bytes, dataStart + 7) + 1,
+      };
+      assertSafeLocalDimensions(canvas.width, canvas.height);
+      sawDimensions = true;
+    } else if (type === "VP8 ") {
+      const dimensions = validateVp8Dimensions(bytes, dataStart, dataEnd);
+      assertMatchingWebpDimensions(canvas, dimensions);
+      staticImages += 1;
+      if (staticImages > 1) throw localImageHeaderError();
+      sawDimensions = true;
+    } else if (type === "VP8L") {
+      const dimensions = validateVp8lDimensions(bytes, dataStart, dataEnd);
+      assertMatchingWebpDimensions(canvas, dimensions);
+      staticImages += 1;
+      if (staticImages > 1) throw localImageHeaderError();
+      sawDimensions = true;
+    } else if (type === "ANMF") {
+      if (!canvas || length < 16) throw localImageHeaderError();
+      const x = readUint24Le(bytes, dataStart) * 2;
+      const y = readUint24Le(bytes, dataStart + 3) * 2;
+      const frame = {
+        width: readUint24Le(bytes, dataStart + 6) + 1,
+        height: readUint24Le(bytes, dataStart + 9) + 1,
+      };
+      assertSafeLocalDimensions(frame.width, frame.height);
+      if (
+        x > canvas.width ||
+        y > canvas.height ||
+        frame.width > canvas.width - x ||
+        frame.height > canvas.height - y
+      ) {
+        throw localImageHeaderError();
+      }
+      const payload = validateWebpFramePayloadDimensions(bytes, dataStart + 16, dataEnd);
+      if (payload.width !== frame.width || payload.height !== frame.height) {
+        throw localImageHeaderError();
+      }
+      animatedFrames += 1;
+      assertSafeLocalAnimation(animatedFrames, canvas.width, canvas.height);
+      sawDimensions = true;
+    }
+    offset = next;
+  }
+  if (
+    !sawDimensions ||
+    offset !== bytes.byteLength ||
+    (animatedFrames > 0 ? staticImages !== 0 : staticImages !== 1)
+  ) {
+    throw localImageHeaderError();
+  }
+}
+
+function validateWebpFramePayloadDimensions(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+): { width: number; height: number } {
+  let offset = start;
+  let chunks = 0;
+  let dimensions: { width: number; height: number } | undefined;
+  while (offset < end) {
+    if (++chunks > 4_096 || offset > end - 8 || !hasByteRange(bytes, offset, 8)) {
+      throw localImageHeaderError();
+    }
+    const type = readAscii(bytes, offset, 4);
+    const length = readUint32Le(bytes, offset + 4);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    const next = dataEnd + (length & 1);
+    if (!Number.isSafeInteger(next) || next > end) throw localImageHeaderError();
+    if (type === "VP8 ") {
+      if (dimensions) throw localImageHeaderError();
+      dimensions = validateVp8Dimensions(bytes, dataStart, dataEnd);
+    } else if (type === "VP8L") {
+      if (dimensions) throw localImageHeaderError();
+      dimensions = validateVp8lDimensions(bytes, dataStart, dataEnd);
+    }
+    offset = next;
+  }
+  if (!dimensions || offset !== end) throw localImageHeaderError();
+  return dimensions;
+}
+
+function validateVp8Dimensions(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+): { width: number; height: number } {
+  if (
+    start > end - 10 ||
+    !hasByteRange(bytes, start, 10) ||
+    bytes[start + 3] !== 0x9d ||
+    bytes[start + 4] !== 0x01 ||
+    bytes[start + 5] !== 0x2a
+  ) {
+    throw localImageHeaderError();
+  }
+  const dimensions = {
+    width: readUint16Le(bytes, start + 6) & 0x3fff,
+    height: readUint16Le(bytes, start + 8) & 0x3fff,
+  };
+  assertSafeLocalDimensions(dimensions.width, dimensions.height);
+  return dimensions;
+}
+
+function validateVp8lDimensions(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+): { width: number; height: number } {
+  if (start > end - 5 || !hasByteRange(bytes, start, 5) || bytes[start] !== 0x2f) {
+    throw localImageHeaderError();
+  }
+  const packed = readUint32Le(bytes, start + 1);
+  if ((packed >>> 29) !== 0) throw localImageHeaderError();
+  const dimensions = {
+    width: (packed & 0x3fff) + 1,
+    height: ((packed >>> 14) & 0x3fff) + 1,
+  };
+  assertSafeLocalDimensions(dimensions.width, dimensions.height);
+  return dimensions;
+}
+
+function assertMatchingWebpDimensions(
+  canvas: { width: number; height: number } | undefined,
+  payload: { width: number; height: number },
+): void {
+  if (canvas && (canvas.width !== payload.width || canvas.height !== payload.height)) {
+    throw localImageHeaderError();
+  }
+}
+
+function assertSafeLocalDimensions(width: number, height: number): void {
+  const pixels = width * height;
+  if (
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    !Number.isSafeInteger(pixels) ||
+    pixels > MAX_LOCAL_IMAGE_PIXELS
+  ) {
+    throw new Error("This image has too many pixels to prepare safely");
+  }
+}
+
+function assertSafeLocalAnimation(frames: number, width: number, height: number): void {
+  const compositedPixels = frames * width * height;
+  if (
+    !Number.isSafeInteger(frames) ||
+    frames < 1 ||
+    frames > MAX_LOCAL_ANIMATION_FRAMES ||
+    !Number.isSafeInteger(compositedPixels) ||
+    compositedPixels > MAX_LOCAL_ANIMATION_PIXELS
+  ) {
+    throw new Error("This animated image is too complex to prepare safely");
+  }
+}
+
+function hasByteRange(bytes: Uint8Array, offset: number, length: number): boolean {
+  return Number.isSafeInteger(offset) && Number.isSafeInteger(length) &&
+    offset >= 0 && length >= 0 && offset <= bytes.byteLength - length;
+}
+
+function readAscii(bytes: Uint8Array, offset: number, length: number): string {
+  if (!hasByteRange(bytes, offset, length)) throw localImageHeaderError();
+  let value = "";
+  for (let index = 0; index < length; index += 1) {
+    value += String.fromCharCode(bytes[offset + index] ?? 0);
+  }
+  return value;
+}
+
+function readUint16Be(bytes: Uint8Array, offset: number): number {
+  if (!hasByteRange(bytes, offset, 2)) throw localImageHeaderError();
+  return (bytes[offset] ?? 0) * 0x100 + (bytes[offset + 1] ?? 0);
+}
+
+function readUint16Le(bytes: Uint8Array, offset: number): number {
+  if (!hasByteRange(bytes, offset, 2)) throw localImageHeaderError();
+  return (bytes[offset] ?? 0) + (bytes[offset + 1] ?? 0) * 0x100;
+}
+
+function readUint24Le(bytes: Uint8Array, offset: number): number {
+  if (!hasByteRange(bytes, offset, 3)) throw localImageHeaderError();
+  return (bytes[offset] ?? 0) +
+    (bytes[offset + 1] ?? 0) * 0x100 +
+    (bytes[offset + 2] ?? 0) * 0x1_0000;
+}
+
+function readUint32Be(bytes: Uint8Array, offset: number): number {
+  if (!hasByteRange(bytes, offset, 4)) throw localImageHeaderError();
+  return (bytes[offset] ?? 0) * 0x1_000000 +
+    (bytes[offset + 1] ?? 0) * 0x1_0000 +
+    (bytes[offset + 2] ?? 0) * 0x100 +
+    (bytes[offset + 3] ?? 0);
+}
+
+function readUint32Le(bytes: Uint8Array, offset: number): number {
+  if (!hasByteRange(bytes, offset, 4)) throw localImageHeaderError();
+  return (bytes[offset] ?? 0) +
+    (bytes[offset + 1] ?? 0) * 0x100 +
+    (bytes[offset + 2] ?? 0) * 0x1_0000 +
+    (bytes[offset + 3] ?? 0) * 0x1_000000;
+}
+
+function localImageHeaderError(): Error {
+  return new Error("This image header could not be inspected safely");
 }
 
 async function decodeLocalImage(
@@ -627,7 +1059,10 @@ async function uploadMultipart(
   onProgress?: UploadProgressListener,
   signal?: AbortSignal,
 ): Promise<MultipartUploadResponse> {
-  const response = await uploadMultipartOnce(
+  // Upload POSTs are not idempotent and neither provider accepts an idempotency key. Even a 5xx
+  // can be returned after the public file was stored, so an automatic retry could create a second
+  // untracked bearer URL. Leave retries to an explicit user action.
+  return uploadMultipartOnce(
     endpoint,
     form,
     timeoutMs,
@@ -635,10 +1070,6 @@ async function uploadMultipart(
     onProgress,
     signal,
   );
-  if (!response.ok && RETRYABLE_UPLOAD_STATUSES.has(response.status)) {
-    return uploadMultipartOnce(endpoint, form, timeoutMs, request, onProgress, signal);
-  }
-  return response;
 }
 
 async function uploadMultipartOnce(
@@ -701,11 +1132,11 @@ function uploadMultipartWithGmRequest(
     const watchdog = setTimeout(() => abort("timeout"), timeoutMs);
     signal?.addEventListener("abort", handleAbort, { once: true });
     try {
-      transport = GM_xmlhttpRequest({
+      const requestOptions: KikiLinkGmXhrDetails = {
         method: "POST",
         url: endpoint,
         data: form,
-        anonymous: true,
+        ...(endpoint === CATBOX_UPLOAD_ENDPOINT ? {} : { anonymous: true }),
         timeout: timeoutMs,
         onprogress: (event) => {
           const loaded = Number.isFinite(event.loaded) ? Math.max(0, event.loaded) : 0;
@@ -737,7 +1168,8 @@ function uploadMultipartWithGmRequest(
           abortReason === "timeout" ? "The upload timed out" : "The upload was cancelled",
         ))),
         ontimeout: () => finish(() => reject(new Error("The upload timed out"))),
-      });
+      };
+      transport = GM_xmlhttpRequest(requestOptions);
       if (signal?.aborted) abort("cancelled");
     } catch (error) {
       finish(() => reject(error instanceof Error
@@ -801,7 +1233,7 @@ function providerUploadError(
   provider: "Catbox" | "Litterbox",
   response: MultipartUploadResponse,
 ): string {
-  if (RETRYABLE_UPLOAD_STATUSES.has(response.status)) {
+  if (TEMPORARY_UPLOAD_STATUSES.has(response.status)) {
     return `${provider} is temporarily unavailable (HTTP ${response.status}). Try again in a moment.`;
   }
   return cleanProviderError(response.body) || `${provider} returned HTTP ${response.status}`;

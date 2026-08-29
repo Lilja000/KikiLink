@@ -1,6 +1,7 @@
 import type { UploadProgress } from "./modules/link-chat/image-upload";
 import {
   KIKILINK_ALLOWED_UPLOAD_ENDPOINTS,
+  KIKILINK_UPLOAD_ACCEPTED,
   KIKILINK_UPLOAD_BRIDGE_MARKER_ID,
   KIKILINK_UPLOAD_CANCEL,
   KIKILINK_UPLOAD_PROGRESS,
@@ -12,6 +13,7 @@ import {
 declare const __KIKILINK_UPLOAD_CAPABILITY__: string;
 
 const UPLOAD_CAPABILITY_PATTERN = /^[a-f0-9]{64}$/u;
+const UPLOAD_ACCEPT_TIMEOUT_MS = 3_000;
 
 export interface UserscriptMultipartResponse {
   ok: boolean;
@@ -24,6 +26,8 @@ interface PendingUpload {
   reject(error: Error): void;
   onProgress?: (progress: UploadProgress) => void;
   timer: ReturnType<typeof setTimeout>;
+  acceptTimer: ReturnType<typeof setTimeout>;
+  accepted: boolean;
   capability: string;
   signal?: AbortSignal;
   abortListener?: () => void;
@@ -31,6 +35,7 @@ interface PendingUpload {
 
 interface IncomingUploadMessage {
   type?: unknown;
+  capability?: unknown;
   id?: unknown;
   loaded?: unknown;
   total?: unknown;
@@ -88,11 +93,21 @@ export async function uploadMultipartViaUserscriptBridge(
       postCancel(id, pending.capability);
       pending.reject(new Error("The upload timed out"));
     }, timeoutMs + 2_000);
+    const acceptTimer = setTimeout(() => {
+      const pending = takePendingUpload(id);
+      if (!pending) return;
+      postCancel(id, pending.capability);
+      pending.reject(new Error(
+        "KikiLink upload bridge did not accept the request. Reload Bondage Club and check the Catbox/Litterbox permission in your userscript manager.",
+      ));
+    }, Math.min(UPLOAD_ACCEPT_TIMEOUT_MS, timeoutMs));
     const pending: PendingUpload = {
       resolve,
       reject,
       ...(onProgress ? { onProgress } : {}),
       timer,
+      acceptTimer,
+      accepted: false,
       capability,
       ...(signal ? { signal } : {}),
     };
@@ -137,9 +152,18 @@ function installResponseListener(): void {
     const source = data as IncomingUploadMessage;
     if (typeof source.id !== "string") return;
     const pending = pendingUploads.get(source.id);
-    if (!pending) return;
+    if (!pending || source.capability !== pending.capability) return;
+
+    if (source.type === KIKILINK_UPLOAD_ACCEPTED) {
+      if (!pending.accepted) {
+        pending.accepted = true;
+        clearTimeout(pending.acceptTimer);
+      }
+      return;
+    }
 
     if (source.type === KIKILINK_UPLOAD_PROGRESS) {
+      if (!pending.accepted) return;
       const loaded = finiteNonNegative(source.loaded);
       const total = finitePositive(source.total);
       pending.onProgress?.({
@@ -151,6 +175,8 @@ function installResponseListener(): void {
       return;
     }
     if (source.type !== KIKILINK_UPLOAD_RESPONSE) return;
+    const isAuthenticatedError = typeof source.error === "string" && source.error.length > 0;
+    if (!pending.accepted && !isAuthenticatedError) return;
 
     const completed = takePendingUpload(source.id);
     if (!completed) return;
@@ -171,6 +197,7 @@ function takePendingUpload(id: string): PendingUpload | undefined {
   if (!pending) return undefined;
   pendingUploads.delete(id);
   clearTimeout(pending.timer);
+  clearTimeout(pending.acceptTimer);
   if (pending.signal && pending.abortListener) {
     pending.signal.removeEventListener("abort", pending.abortListener);
   }

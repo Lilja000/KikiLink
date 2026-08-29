@@ -10,9 +10,11 @@ import {
   USERSCRIPT_UPLOAD_MAX_REQUESTS_PER_WINDOW,
 } from "../src/userscript-upload-host";
 import {
+  KIKILINK_UPLOAD_ACCEPTED,
   KIKILINK_UPLOAD_BRIDGE_MARKER_ID,
   KIKILINK_UPLOAD_CANCEL,
   KIKILINK_UPLOAD_REQUEST,
+  KIKILINK_UPLOAD_RESPONSE,
   type KikiLinkUploadRequestMessage,
 } from "../src/userscript-upload-protocol";
 
@@ -58,6 +60,60 @@ describe("userscript upload host", () => {
 
     dispatchRequest(uploadRequest("accepted"), window.location.origin, window);
     expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("uses GM XHR for Catbox while Litterbox retains credential-omitting fetch mode", async () => {
+    const request = successfulRequest();
+    vi.stubGlobal("GM_xmlhttpRequest", request);
+    installHost();
+
+    dispatchRequest(uploadRequest("catbox-xhr"), window.location.origin, window);
+    await Promise.resolve();
+    dispatchRequest(litterboxUploadRequest("litterbox-fetch"), window.location.origin, window);
+
+    const catbox = request.mock.calls[0]?.[0] as KikiLinkGmXhrDetails | undefined;
+    const litterbox = request.mock.calls[1]?.[0] as KikiLinkGmXhrDetails | undefined;
+    expect(catbox?.url).toBe("https://catbox.moe/user/api.php");
+    expect(catbox?.anonymous).toBeUndefined();
+    expect((catbox?.data as FormData).has("userhash")).toBe(false);
+    expect(litterbox?.url).toBe(
+      "https://litterbox.catbox.moe/resources/internals/api.php",
+    );
+    expect(litterbox?.anonymous).toBe(true);
+  });
+
+  it("authenticates accepted, progress, and response messages", () => {
+    const messages: Array<Record<string, unknown>> = [];
+    vi.spyOn(window, "postMessage").mockImplementation((message) => {
+      messages.push(message as Record<string, unknown>);
+    });
+    const request = vi.fn((details: KikiLinkGmXhrDetails) => {
+      details.onprogress?.({ loaded: 1, total: 2, lengthComputable: true });
+      details.onload({ status: 200, responseText: "https://files.catbox.moe/test.webp" });
+      return { abort: vi.fn() };
+    });
+    vi.stubGlobal("GM_xmlhttpRequest", request);
+    installHost();
+
+    dispatchRequest(uploadRequest("authenticated-output"), window.location.origin, window);
+
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: KIKILINK_UPLOAD_ACCEPTED,
+        capability: CAPABILITY,
+        id: "authenticated-output",
+      }),
+      expect.objectContaining({
+        type: "kikilink:upload-progress:v1",
+        capability: CAPABILITY,
+        id: "authenticated-output",
+      }),
+      expect.objectContaining({
+        type: KIKILINK_UPLOAD_RESPONSE,
+        capability: CAPABILITY,
+        id: "authenticated-output",
+      }),
+    ]));
   });
 
   it("fails closed after the rolling request budget and admits again after the window", async () => {
@@ -167,8 +223,10 @@ describe("userscript upload host", () => {
   it("releases its active slot when posting a completed response throws", async () => {
     const request = successfulRequest();
     vi.stubGlobal("GM_xmlhttpRequest", request);
-    vi.spyOn(window, "postMessage").mockImplementation(() => {
-      throw new DOMException("page is unloading", "InvalidStateError");
+    vi.spyOn(window, "postMessage").mockImplementation((message) => {
+      if ((message as Record<string, unknown>).type === KIKILINK_UPLOAD_RESPONSE) {
+        throw new DOMException("page is unloading", "InvalidStateError");
+      }
     });
     installHost();
 
@@ -225,6 +283,19 @@ function uploadRequest(
         fileName: "kikilink-image.webp",
         mimeType: "image/webp",
       },
+    ],
+  };
+}
+
+function litterboxUploadRequest(id: string): KikiLinkUploadRequestMessage {
+  const request = uploadRequest(id);
+  return {
+    ...request,
+    endpoint: "https://litterbox.catbox.moe/resources/internals/api.php",
+    fields: [
+      request.fields[0]!,
+      { kind: "text", name: "time", value: "24h" },
+      request.fields[1]!,
     ],
   };
 }

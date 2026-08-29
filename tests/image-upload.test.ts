@@ -44,17 +44,55 @@ describe("local image uploads", () => {
   });
 
   it("checks file contents instead of trusting its filename", async () => {
-    const realPng = new File(
-      [bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)],
-      "private-name.png",
-      { type: "image/png" },
-    );
+    const realPng = pngFile("private-name.png");
     const disguisedText = new File(["not an image"], "photo.png", { type: "image/png" });
 
     await expect(validateLocalImageFile(realPng)).resolves.toBeUndefined();
     await expect(validateLocalImageFile(disguisedText)).rejects.toThrow(
       "Use a real JPG, PNG, or WebP image",
     );
+  });
+
+  it("preflights ordinary JPG, PNG, and WebP dimensions from their encoded headers", async () => {
+    await expect(validateLocalImageFile(jpegFile(640, 480))).resolves.toBeUndefined();
+    await expect(validateLocalImageFile(pngFile("ordinary.png", 640, 480))).resolves.toBeUndefined();
+    await expect(
+      validateLocalImageFile(apngFrameFile(640, 480, 640, 480, "image/apng")),
+    ).resolves.toBeUndefined();
+    await expect(validateLocalImageFile(webpFile(640, 480))).resolves.toBeUndefined();
+  });
+
+  it("rejects oversized declared canvases before invoking a browser image decoder", async () => {
+    const decode = vi.fn();
+    vi.stubGlobal("createImageBitmap", decode);
+
+    for (const file of [
+      jpegFile(65_535, 65_535),
+      pngFile("oversized.png", 65_535, 65_535),
+      apngFrameFile(1, 1, 65_535, 65_535),
+      webpFile(65_535, 65_535),
+      webpNestedFrameFile(1, 1, 16_383, 16_383),
+    ]) {
+      await expect(prepareProfileBanner(file)).rejects.toThrow(
+        "This image has too many pixels to prepare safely",
+      );
+    }
+    await expect(
+      prepareProfileBanner(jpegFileWithFrames([[1, 1], [65_535, 65_535]])),
+    ).rejects.toThrow("This image header could not be inspected safely");
+    await expect(
+      prepareProfileBanner(pngFileWithDuplicateHeader(1, 1, 65_535, 65_535)),
+    ).rejects.toThrow("This image header could not be inspected safely");
+    await expect(
+      prepareProfileBanner(webpNestedFrameFile(1, 1, 1, 1, 33_554_428, 0)),
+    ).rejects.toThrow("This image header could not be inspected safely");
+    await expect(
+      prepareProfileBanner(apngFrameFile(512, 512, 512, 512, "image/png", 241)),
+    ).rejects.toThrow("This animated image is too complex to prepare safely");
+    await expect(
+      prepareProfileBanner(webpManyFramesFile(4_096, 4_096, 5)),
+    ).rejects.toThrow("This animated image is too complex to prepare safely");
+    expect(decode).not.toHaveBeenCalled();
   });
 
   it("privacy-prepares a centered, exact 3:1 profile banner", async () => {
@@ -166,6 +204,29 @@ describe("local image uploads", () => {
     expect((uploaded as File).type).toBe("image/webp");
   });
 
+  it("cancels an in-flight Litterbox upload through the caller lifecycle signal", async () => {
+    const controller = new AbortController();
+    const request = vi.fn<typeof fetch>((_endpoint, options) =>
+      new Promise<Response>((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("cancelled", "AbortError")),
+          { once: true },
+        );
+      }));
+    const uploader = new LitterboxImageUploader(request as typeof fetch);
+
+    const upload = uploader.upload(
+      preparedImage(),
+      { retention: "24h" },
+      controller.signal,
+    );
+    controller.abort();
+
+    await expect(upload).rejects.toThrow("The upload was cancelled");
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("uploads a prepared generic WebP to long-lived Catbox storage", async () => {
     const request = vi.fn<typeof fetch>(async () =>
       new Response("https://files.catbox.moe/gallery_123.webp\n", { status: 200 }));
@@ -207,6 +268,39 @@ describe("local image uploads", () => {
     );
     expect(progress).toHaveBeenCalledWith({ loaded: 2, total: 4, percent: 50 });
     expect(requestDetails?.timeout).toBe(180_000);
+    expect(requestDetails?.anonymous).toBeUndefined();
+    expect((requestDetails?.data as FormData).has("userhash")).toBe(false);
+  });
+
+  it("keeps Litterbox on the credential-omitting GM transport", async () => {
+    let requestDetails: KikiLinkGmXhrDetails | undefined;
+    globalThis.GM_xmlhttpRequest = vi.fn((details: KikiLinkGmXhrDetails) => {
+      requestDetails = details;
+      queueMicrotask(() => details.onload({
+        status: 200,
+        responseText: "https://litter.catbox.moe/temporary.webp",
+      }));
+      return { abort: vi.fn() };
+    });
+
+    await expect(new LitterboxImageUploader().upload(preparedImage(), {
+      retention: "24h",
+    })).resolves.toBe("https://litter.catbox.moe/temporary.webp");
+    expect(requestDetails?.anonymous).toBe(true);
+  });
+
+  it("does not automatically retry an ambiguous Catbox 503 upload", async () => {
+    const attemptTimeouts: number[] = [];
+    globalThis.GM_xmlhttpRequest = vi.fn((details: KikiLinkGmXhrDetails) => {
+      attemptTimeouts.push(details.timeout ?? 0);
+      details.onload({ status: 503, responseText: "temporarily unavailable" });
+      return { abort: vi.fn() };
+    });
+
+    await expect(uploadPreparedImageToCatbox(preparedImage())).rejects.toThrow(
+      "Catbox is temporarily unavailable (HTTP 503). Try again in a moment.",
+    );
+    expect(attemptTimeouts).toEqual([180_000]);
   });
 
   it("cancels an injected fetch upload without retrying it", async () => {
@@ -253,17 +347,11 @@ describe("local image uploads", () => {
     expect(pageFetch).not.toHaveBeenCalled();
   });
 
-  it("retries one temporary Litterbox 500 response and succeeds without exposing HTML", async () => {
-    let attempts = 0;
-    const request = vi.fn<typeof fetch>(async () => {
-      attempts += 1;
-      return attempts === 1
-        ? new Response(
-            '<!doctype html><html><title>500 | Internal Server Error</title></html>',
-            { status: 500 },
-          )
-        : new Response("https://litter.catbox.moe/recovered.webp\n", { status: 200 });
-    });
+  it("does not automatically retry an ambiguous Litterbox 500 upload", async () => {
+    const request = vi.fn<typeof fetch>(async () => new Response(
+      '<!doctype html><html><title>500 | Internal Server Error</title></html>',
+      { status: 500 },
+    ));
     const uploader = new LitterboxImageUploader(request as typeof fetch);
     const image: PreparedLocalImage = {
       blob: new Blob([bytes(1, 2, 3)], { type: "image/webp" }),
@@ -272,13 +360,13 @@ describe("local image uploads", () => {
       sourceBytes: 3,
     };
 
-    await expect(uploader.upload(image, { retention: "24h" })).resolves.toBe(
-      "https://litter.catbox.moe/recovered.webp",
+    await expect(uploader.upload(image, { retention: "24h" })).rejects.toThrow(
+      "Litterbox is temporarily unavailable (HTTP 500). Try again in a moment.",
     );
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledOnce();
   });
 
-  it("turns a repeated host-side HTML 500 into a short actionable error", async () => {
+  it("turns a host-side HTML 500 into a short actionable error", async () => {
     const request = vi.fn<typeof fetch>(async () =>
       new Response(
         '<!doctype html><html lang="en"><meta charset="UTF-8"><title>500 | Internal Server Error</title>',
@@ -298,7 +386,7 @@ describe("local image uploads", () => {
       "Litterbox is temporarily unavailable (HTTP 500). Try again in a moment.",
     );
     expect((error as Error).message).not.toMatch(/doctype|<html|<meta/iu);
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledOnce();
   });
 
   it("rejects Litterbox responses outside the exact temporary WebP host and shape", async () => {
@@ -339,6 +427,32 @@ describe("local image uploads", () => {
     const uploaded = form.get("fileToUpload") as File;
     expect(uploaded.name).toBe("kikilink-room-music.mp3");
     expect(form.get("time")).toBe("72h");
+  });
+
+  it("cancels room-music upload transport through its lifecycle signal", async () => {
+    const controller = new AbortController();
+    const request = vi.fn<typeof fetch>((_endpoint, options) =>
+      new Promise<Response>((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("cancelled", "AbortError")),
+          { once: true },
+        );
+      }));
+    const file = new File([bytes(1, 2, 3)], "private-room.mp3", {
+      type: "audio/mpeg",
+    });
+
+    const upload = uploadLocalRoomAudio(
+      file,
+      { retention: "24h" },
+      request,
+      controller.signal,
+    );
+    controller.abort();
+
+    await expect(upload).rejects.toThrow("The upload was cancelled");
+    expect(request).toHaveBeenCalledOnce();
   });
 
   it("matches Bondage Club's MP3/MP4 room-music allowlist", async () => {
@@ -390,9 +504,9 @@ describe("local image uploads", () => {
     expect(details).toMatchObject({
       method: "POST",
       url: "https://catbox.moe/user/api.php",
-      anonymous: true,
       timeout: 300_000,
     });
+    expect(details?.anonymous).toBeUndefined();
     expect((details?.data as FormData).get("fileToUpload")).toBeInstanceOf(File);
     expect(progress).toHaveBeenCalledWith({ loaded: 50, total: 100, percent: 50 });
   });
@@ -437,9 +551,9 @@ describe("local image uploads", () => {
       expect(details).toMatchObject({
         method: "POST",
         url: "https://catbox.moe/user/api.php",
-        anonymous: true,
         timeout: 300_000,
       });
+      expect(details?.anonymous).toBeUndefined();
       const form = details?.data as FormData;
       expect(form.get("reqtype")).toBe("fileupload");
       expect((form.get("fileToUpload") as File).name).toBe("kikilink-track.ogg");
@@ -527,12 +641,180 @@ function preparedImage(): PreparedLocalImage {
   };
 }
 
-function pngFile(name = "banner.png"): File {
-  return new File(
-    [bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)],
-    name,
-    { type: "image/png" },
-  );
+function pngFile(name = "banner.png", width = 1_200, height = 400): File {
+  return new File([pngHeader(width, height)], name, { type: "image/png" });
+}
+
+function pngHeader(width: number, height: number): Uint8Array<ArrayBuffer> {
+  const contents = new Uint8Array(33);
+  contents.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  writeUint32Be(contents, 8, 13);
+  writeAscii(contents, 12, "IHDR");
+  writeUint32Be(contents, 16, width);
+  writeUint32Be(contents, 20, height);
+  contents[24] = 8;
+  contents[25] = 6;
+  return contents;
+}
+
+function apngFrameFile(
+  canvasWidth: number,
+  canvasHeight: number,
+  frameWidth: number,
+  frameHeight: number,
+  type = "image/png",
+  declaredFrames = 1,
+): File {
+  const contents = new Uint8Array(33 + 20 + 38);
+  contents.set(pngHeader(canvasWidth, canvasHeight));
+  writeUint32Be(contents, 33, 8);
+  writeAscii(contents, 37, "acTL");
+  writeUint32Be(contents, 41, declaredFrames);
+  writeUint32Be(contents, 53, 26);
+  writeAscii(contents, 57, "fcTL");
+  writeUint32Be(contents, 65, frameWidth);
+  writeUint32Be(contents, 69, frameHeight);
+  return new File([contents], "animated.png", { type });
+}
+
+function pngFileWithDuplicateHeader(
+  firstWidth: number,
+  firstHeight: number,
+  secondWidth: number,
+  secondHeight: number,
+): File {
+  const contents = new Uint8Array(58);
+  contents.set(pngHeader(firstWidth, firstHeight));
+  writeUint32Be(contents, 33, 13);
+  writeAscii(contents, 37, "IHDR");
+  writeUint32Be(contents, 41, secondWidth);
+  writeUint32Be(contents, 45, secondHeight);
+  return new File([contents], "decoy.png", { type: "image/png" });
+}
+
+function jpegFile(width: number, height: number): File {
+  return jpegFileWithFrames([[width, height]]);
+}
+
+function jpegFileWithFrames(dimensions: readonly (readonly [number, number])[]): File {
+  const contents = new Uint8Array(2 + dimensions.length * 13 + 12);
+  contents.set([0xff, 0xd8]);
+  let offset = 2;
+  for (const [width, height] of dimensions) {
+    contents.set([0xff, 0xc0, 0x00, 0x0b, 0x08], offset);
+    writeUint16Be(contents, offset + 5, height);
+    writeUint16Be(contents, offset + 7, width);
+    contents.set([0x01, 0x01, 0x11, 0x00], offset + 9);
+    offset += 13;
+  }
+  contents.set([
+    0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00,
+    0xff, 0xd9,
+  ], offset);
+  return new File([contents], "local.jpg", { type: "image/jpeg" });
+}
+
+function webpFile(width: number, height: number): File {
+  const contents = new Uint8Array(48);
+  writeAscii(contents, 0, "RIFF");
+  writeUint32Le(contents, 4, contents.byteLength - 8);
+  writeAscii(contents, 8, "WEBP");
+  writeAscii(contents, 12, "VP8X");
+  writeUint32Le(contents, 16, 10);
+  writeUint24Le(contents, 24, width - 1);
+  writeUint24Le(contents, 27, height - 1);
+  writeAscii(contents, 30, "VP8 ");
+  writeUint32Le(contents, 34, 10);
+  contents.set([0, 0, 0, 0x9d, 0x01, 0x2a], 38);
+  writeUint16Le(contents, 44, width);
+  writeUint16Le(contents, 46, height);
+  return new File([contents], "local.webp", { type: "image/webp" });
+}
+
+function webpNestedFrameFile(
+  canvasWidth: number,
+  canvasHeight: number,
+  payloadWidth: number,
+  payloadHeight: number,
+  frameX = 0,
+  frameY = 0,
+): File {
+  const contents = new Uint8Array(72);
+  writeAscii(contents, 0, "RIFF");
+  writeUint32Le(contents, 4, contents.byteLength - 8);
+  writeAscii(contents, 8, "WEBP");
+  writeAscii(contents, 12, "VP8X");
+  writeUint32Le(contents, 16, 10);
+  writeUint24Le(contents, 24, canvasWidth - 1);
+  writeUint24Le(contents, 27, canvasHeight - 1);
+  writeAscii(contents, 30, "ANMF");
+  writeUint32Le(contents, 34, 34);
+  writeUint24Le(contents, 38, frameX / 2);
+  writeUint24Le(contents, 41, frameY / 2);
+  // Keep the frame rectangle small; the nested VP8 payload is the concealed oversized surface.
+  writeAscii(contents, 54, "VP8 ");
+  writeUint32Le(contents, 58, 10);
+  contents.set([0, 0, 0, 0x9d, 0x01, 0x2a], 62);
+  writeUint16Le(contents, 68, payloadWidth);
+  writeUint16Le(contents, 70, payloadHeight);
+  return new File([contents], "animated.webp", { type: "image/webp" });
+}
+
+function webpManyFramesFile(width: number, height: number, frameCount: number): File {
+  const contents = new Uint8Array(30 + frameCount * 42);
+  writeAscii(contents, 0, "RIFF");
+  writeUint32Le(contents, 4, contents.byteLength - 8);
+  writeAscii(contents, 8, "WEBP");
+  writeAscii(contents, 12, "VP8X");
+  writeUint32Le(contents, 16, 10);
+  contents[20] = 0x02;
+  writeUint24Le(contents, 24, width - 1);
+  writeUint24Le(contents, 27, height - 1);
+  for (let index = 0; index < frameCount; index += 1) {
+    const offset = 30 + index * 42;
+    writeAscii(contents, offset, "ANMF");
+    writeUint32Le(contents, offset + 4, 34);
+    writeAscii(contents, offset + 24, "VP8 ");
+    writeUint32Le(contents, offset + 28, 10);
+    contents.set([0, 0, 0, 0x9d, 0x01, 0x2a, 0x01, 0x00, 0x01, 0x00], offset + 32);
+  }
+  return new File([contents], "many-frames.webp", { type: "image/webp" });
+}
+
+function writeAscii(target: Uint8Array, offset: number, value: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    target[offset + index] = value.charCodeAt(index);
+  }
+}
+
+function writeUint16Be(target: Uint8Array, offset: number, value: number): void {
+  target[offset] = (value >>> 8) & 0xff;
+  target[offset + 1] = value & 0xff;
+}
+
+function writeUint16Le(target: Uint8Array, offset: number, value: number): void {
+  target[offset] = value & 0xff;
+  target[offset + 1] = (value >>> 8) & 0xff;
+}
+
+function writeUint24Le(target: Uint8Array, offset: number, value: number): void {
+  target[offset] = value & 0xff;
+  target[offset + 1] = (value >>> 8) & 0xff;
+  target[offset + 2] = (value >>> 16) & 0xff;
+}
+
+function writeUint32Be(target: Uint8Array, offset: number, value: number): void {
+  target[offset] = (value >>> 24) & 0xff;
+  target[offset + 1] = (value >>> 16) & 0xff;
+  target[offset + 2] = (value >>> 8) & 0xff;
+  target[offset + 3] = value & 0xff;
+}
+
+function writeUint32Le(target: Uint8Array, offset: number, value: number): void {
+  target[offset] = value & 0xff;
+  target[offset + 1] = (value >>> 8) & 0xff;
+  target[offset + 2] = (value >>> 16) & 0xff;
+  target[offset + 3] = (value >>> 24) & 0xff;
 }
 
 function installImagePreparationHarness(

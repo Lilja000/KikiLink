@@ -13,6 +13,7 @@ describe("LinkChat media", () => {
     expect(isDirectImageUrl("https://cdn.example/photo.JPG")).toBe(true);
     expect(normalizeImageUrl("http://cdn.example/image.png")).toBeNull();
     expect(normalizeImageUrl("https://cdn.example/page.html")).toBeNull();
+    expect(normalizeImageUrl("https://cdn.example/unbounded.avif")).toBeNull();
     expect(normalizeImageUrl("https://user:secret@cdn.example/image.png")).toBeNull();
   });
 

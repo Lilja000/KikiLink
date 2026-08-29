@@ -9,6 +9,8 @@ import {
   GROUP_INVITE_RATE_REFILL_MS,
   GROUP_MAX_COUNT,
   GROUP_MAX_MESSAGES,
+  GROUP_MANAGED_AVATAR_URL_MAX_CHARS,
+  GROUP_MANAGED_MESSAGE_MAX_CONTENT,
   GROUP_MESSAGE_MAX_CONTENT,
   GROUP_MEMBER_NAME_MAX_CHARS,
   GROUP_PACKET_MAX_CHARS,
@@ -62,6 +64,7 @@ interface TestHarness {
   storage: KeyValueStorage;
   sent: SentPacket[];
   friends: Set<number>;
+  managedPeers: Set<number>;
   room: Set<number>;
   blocked: Set<number>;
   failed: Set<number>;
@@ -75,9 +78,11 @@ function setup(
   storage: KeyValueStorage = new MemoryKeyValueStorage(),
   ownMemberNumber = 10,
   persistenceDelayMs?: number,
+  customIdFactory?: (prefix: "group" | "gmsg") => string,
 ): TestHarness {
   const sent: SentPacket[] = [];
   const friends = new Set<number>([20, 30, 40, 50]);
+  const managedPeers = new Set<number>([20, 30, 40, 50]);
   const room = new Set<number>();
   const blocked = new Set<number>();
   const failed = new Set<number>();
@@ -114,12 +119,15 @@ function setup(
   return {
     service: new GroupChatService(transport, storage, {
       now: () => now,
-      idFactory: (prefix) => `${prefix}_${(++id).toString(36).padStart(8, "0")}`,
+      idFactory: customIdFactory ??
+        ((prefix) => `${prefix}_${(++id).toString(36).padStart(8, "0")}`),
       ...(persistenceDelayMs === undefined ? {} : { persistenceDelayMs }),
+      hasManagedPeer: (memberNumber) => managedPeers.has(memberNumber),
     }),
     storage,
     sent,
     friends,
+    managedPeers,
     room,
     blocked,
     failed,
@@ -196,6 +204,67 @@ function names(
   return serializeGroupChatPacket({ t: "gn", v: 1, g: groupId, d: entries, u: sentAt });
 }
 
+function managedState(
+  groupId = "group2_20_aaaaaaaa",
+  epochId = "ge_aaaaaaaa",
+  revision = 1,
+  members = [10, 20, 30],
+  title = "Managed friends",
+  predecessorId = "",
+  sentAt = 1_000_000,
+): string {
+  return serializeGroupChatPacket({
+    t: "gs",
+    v: 2,
+    g: groupId,
+    o: 20,
+    e: epochId,
+    r: revision,
+    m: members,
+    n: title,
+    p: predecessorId,
+    u: sentAt,
+  });
+}
+
+function managedAppearance(
+  groupId = "group2_20_aaaaaaaa",
+  revision = 1,
+  avatarUrl = "https://files.catbox.moe/group.webp",
+  outlineColor = "#aabbcc",
+  sentAt = 1_000_000,
+): string {
+  return serializeGroupChatPacket({
+    t: "ga",
+    v: 2,
+    g: groupId,
+    o: 20,
+    e: "ge_aaaaaaaa",
+    r: revision,
+    a: avatarUrl,
+    c: outlineColor,
+    u: sentAt,
+  });
+}
+
+function managedMessage(
+  groupId: string,
+  epochId: string,
+  id: string,
+  content: string,
+  sentAt = 1_000_000,
+): string {
+  return serializeGroupChatPacket({
+    t: "gm",
+    v: 2,
+    g: groupId,
+    e: epochId,
+    i: id,
+    c: content,
+    u: sentAt,
+  });
+}
+
 interface NetworkPacket extends SentPacket {
   sender: number;
 }
@@ -252,6 +321,7 @@ class TestGroupNetwork {
         idFactory: (prefix) =>
           `${prefix}_${(++this.#id).toString(36).padStart(8, "0")}`,
         persistenceDelayMs: 0,
+        hasManagedPeer: (target) => this.clients.has(target),
       }),
       friends: friendSet,
       blocked,
@@ -429,6 +499,70 @@ describe("group chat wire protocol", () => {
       c: "safe\u202egnimda",
       u: 1,
     }))).toBeNull();
+  });
+
+  it("parses exact creator-bound managed packets and enforces the UTF-8 envelope", () => {
+    expect(parseGroupChatPacket(managedState())).toMatchObject({
+      t: "gs",
+      v: 2,
+      g: "group2_20_aaaaaaaa",
+      o: 20,
+      e: "ge_aaaaaaaa",
+      r: 1,
+    });
+    expect(parseGroupChatPacket(managedAppearance())).toMatchObject({
+      t: "ga",
+      a: "https://files.catbox.moe/group.webp",
+      c: "#aabbcc",
+    });
+    expect(parseGroupChatPacket(JSON.stringify({
+      t: "gs",
+      v: 2,
+      g: "group2_20_aaaaaaaa",
+      o: 30,
+      e: "ge_aaaaaaaa",
+      r: 1,
+      m: [10, 20, 30],
+      n: "Forwarded",
+      p: "",
+      u: 1,
+    }))).toBeNull();
+    expect(parseGroupChatPacket(JSON.stringify({
+      t: "ga",
+      v: 2,
+      g: "group2_20_aaaaaaaa",
+      o: 20,
+      e: "ge_aaaaaaaa",
+      r: 1,
+      a: "http://example.com/avatar.webp",
+      c: "#abcdef",
+      u: 1,
+    }))).toBeNull();
+    expect(parseGroupChatPacket(JSON.stringify({
+      t: "ga",
+      v: 2,
+      g: "group2_20_aaaaaaaa",
+      o: 20,
+      e: "ge_aaaaaaaa",
+      r: 1,
+      a: "https://example.com/avatar.webp",
+      c: "#ABCDEF",
+      u: 1,
+    }))).toBeNull();
+
+    const oversizedUnicode = {
+      t: "gr" as const,
+      v: 2 as const,
+      g: "group2_20_aaaaaaaa",
+      e: "ge_aaaaaaaa",
+      o: 30,
+      i: "gmsg_unicode1",
+      c: "界".repeat(GROUP_MANAGED_MESSAGE_MAX_CONTENT),
+      u: 1,
+    };
+    expect(JSON.stringify(oversizedUnicode).length).toBeLessThanOrEqual(GROUP_PACKET_MAX_CHARS);
+    expect(() => serializeGroupChatPacket(oversizedUnicode)).toThrow(/transport bounds/u);
+    expect(parseGroupChatPacket(JSON.stringify(oversizedUnicode))).toBeNull();
   });
 });
 
@@ -1010,6 +1144,45 @@ describe("GroupChatService", () => {
     }
   });
 
+  it("binds replay identity to the original author so one member cannot suppress another", async () => {
+    const storage = new MemoryKeyValueStorage();
+    const harness = setup(storage);
+    await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: invite("group_aaaaaaaa", [10, 20, 30, 40]),
+    });
+    const sharedId = "gmsg_collision01";
+
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 30,
+      payload: message("group_aaaaaaaa", sharedId, "Attacker raced the visible ID"),
+    })).toBe(true);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: relay("group_aaaaaaaa", 40, sharedId, "Authentic relayed message"),
+    })).toBe(true);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: relay("group_aaaaaaaa", 40, sharedId, "Replay"),
+    })).toBe(false);
+
+    expect(harness.service.getMessages("group_aaaaaaaa")).toMatchObject([
+      { id: sharedId, senderNumber: 30, content: "Attacker raced the visible ID" },
+      { id: sharedId, senderNumber: 40, content: "Authentic relayed message" },
+    ]);
+    await harness.service.flush();
+
+    const restored = setup(storage).service;
+    expect(restored.getMessages("group_aaaaaaaa")).toMatchObject([
+      { id: sharedId, senderNumber: 30 },
+      { id: sharedId, senderNumber: 40 },
+    ]);
+    expect(await restored.receiveProtocol({
+      senderNumber: 30,
+      payload: message("group_aaaaaaaa", sharedId, "Stored replay"),
+    })).toBe(false);
+  });
+
   it("bounds and rate-limits the creator relay queue", async () => {
     vi.useFakeTimers();
     try {
@@ -1057,6 +1230,90 @@ describe("GroupChatService", () => {
         const packet = parseGroupChatPacket(payload);
         return packet?.t === "gr" && packet.o !== target;
       })).toBe(true);
+      await creator.service.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("admits and fairly drains another relay origin behind a busy origin", async () => {
+    vi.useFakeTimers();
+    try {
+      const creator = setup();
+      const creation = await creator.service.createGroup([20, 30, 40, 50], "Fair relay");
+      creator.sent.splice(0);
+
+      for (let index = 0; index < 4; index += 1) {
+        expect(await creator.service.receiveProtocol({
+          senderNumber: 20,
+          payload: message(
+            creation.group.groupId,
+            `gmsg_busy${index.toString(36).padStart(8, "0")}`,
+            `Busy ${index}`,
+          ),
+        })).toBe(true);
+      }
+      expect(await creator.service.receiveProtocol({
+        senderNumber: 30,
+        payload: message(creation.group.groupId, "gmsg_fair0001", "Must not starve"),
+      })).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(GROUP_RELAY_INTERVAL_MS * 4);
+      const origins = creator.sent
+        .map(({ payload }) => parseGroupChatPacket(payload))
+        .filter((packet) => packet?.t === "gr")
+        .map((packet) => packet.o);
+      expect(origins).toEqual([20, 30, 20, 30]);
+      await creator.service.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("admits a quiet group flow at saturation and drains it within one fair round", async () => {
+    vi.useFakeTimers();
+    try {
+      const creator = setup();
+      const hotGroup = await creator.service.createGroup([20, 30, 40, 50], "Hot relay");
+      const quietGroup = await creator.service.createGroup([20, 40], "Quiet relay");
+      creator.sent.splice(0);
+
+      for (let index = 0; index < 20; index += 1) {
+        const origin = index % 2 === 0 ? 20 : 30;
+        expect(await creator.service.receiveProtocol({
+          senderNumber: origin,
+          payload: message(
+            hotGroup.group.groupId,
+            `gmsg_hot${index.toString(36).padStart(8, "0")}`,
+            `Hot ${index}`,
+          ),
+        })).toBe(true);
+      }
+      expect(await creator.service.receiveProtocol({
+        senderNumber: 20,
+        payload: message(quietGroup.group.groupId, "gmsg_quiet001", "Quiet but timely"),
+      })).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(GROUP_RELAY_INTERVAL_MS * 3);
+      const firstRound = creator.sent
+        .map(({ payload }) => parseGroupChatPacket(payload))
+        .filter((packet) => packet?.t === "gr");
+      expect(firstRound).toHaveLength(3);
+      expect(firstRound.some((packet) =>
+        packet.g === quietGroup.group.groupId && packet.o === 20
+      )).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(
+        GROUP_RELAY_INTERVAL_MS * (GROUP_RELAY_QUEUE_CAPACITY - 3),
+      );
+      const relays = creator.sent
+        .map(({ payload }) => parseGroupChatPacket(payload))
+        .filter((packet) => packet?.t === "gr");
+      expect(relays).toHaveLength(GROUP_RELAY_QUEUE_CAPACITY);
+      expect(relays.filter((packet) => packet.g === quietGroup.group.groupId)).toHaveLength(1);
+      expect(relays.filter((packet) => packet.g === hotGroup.group.groupId)).toHaveLength(
+        GROUP_RELAY_QUEUE_CAPACITY - 1,
+      );
       await creator.service.destroy();
     } finally {
       vi.useRealTimers();
@@ -1180,7 +1437,7 @@ describe("GroupChatService", () => {
     expect(result.persisted).toBe(true);
     expect(result.handedOffTo).toEqual([20]);
     expect(result.failed).toEqual([{ memberNumber: 30, message: "Member 30 is offline" }]);
-    expect(harness.sent).toHaveLength(5);
+    expect(harness.sent).toHaveLength(2);
     const messagePackets = harness.sent.filter(
       (packet) => parseGroupChatPacket(packet.payload)?.t === "gm",
     );
@@ -1203,7 +1460,7 @@ describe("GroupChatService", () => {
 
     await creator.service.sendMessage(creation.group.groupId, "First");
     expect(creator.sent.map((packet) => parseGroupChatPacket(packet.payload)?.t)).toEqual([
-      "gi", "gi", "gn", "gn", "gm", "gm",
+      "gm", "gm",
     ]);
 
     creator.sent.splice(0);
@@ -1316,12 +1573,14 @@ describe("GroupChatService", () => {
     }
   });
 
-  it("bounds a continuously extended persistence debounce by the max-wait deadline", async () => {
+  it("avoids full-history max-wait writes during continuous draft typing", async () => {
     vi.useFakeTimers();
     try {
       const storage = new ControlledStorage();
       const harness = setup(storage, 10, 300);
       const creation = await harness.service.createGroup([20, 30], "Continuous group");
+      await harness.service.flush();
+      storage.writes = 0;
 
       for (let index = 1; index <= 7; index += 1) {
         await vi.advanceTimersByTimeAsync(250);
@@ -1329,15 +1588,17 @@ describe("GroupChatService", () => {
         expect(storage.writes).toBe(0);
       }
 
-      await vi.advanceTimersByTimeAsync(GROUP_PERSISTENCE_MAX_WAIT_MS - 1_750 - 1);
+      await vi.advanceTimersByTimeAsync(GROUP_PERSISTENCE_MAX_WAIT_MS - 1_750);
       expect(storage.writes).toBe(0);
-      await vi.advanceTimersByTimeAsync(1);
+
+      // Lifecycle boundaries still persist the newest draft synchronously.
+      expect(harness.service.flushNow()).toEqual({ degraded: false, pendingChanges: false });
       expect(storage.writes).toBe(1);
       expect(JSON.parse(storage.getItem(GROUP_CHAT_STORAGE_KEY)!) as unknown).toMatchObject({
         groups: [expect.objectContaining({ draft: "continuous 7" })],
       });
 
-      // The max-wait flush must cancel the still-pending trailing callback.
+      // The lifecycle flush must cancel the still-pending trailing callback.
       await vi.advanceTimersByTimeAsync(300);
       expect(storage.writes).toBe(1);
       await harness.service.destroy();
@@ -1428,7 +1689,7 @@ describe("GroupChatService", () => {
   it.each([
     ["malformed", "{not valid json"],
     ["unsupported", JSON.stringify({
-      version: 2,
+      version: 4,
       groups: [],
       messages: [],
       tombstones: [],
@@ -1438,7 +1699,7 @@ describe("GroupChatService", () => {
       version: 1,
       groups: [],
       messages: [],
-      tombstones: Array.from({ length: 61 }, (_, index) => ({
+      tombstones: Array.from({ length: 513 }, (_, index) => ({
         groupId: `group_${index.toString(36).padStart(8, "0")}`,
         removedAt: 1_000_000 + index,
       })),
@@ -1590,12 +1851,51 @@ describe("GroupChatService", () => {
     };
     expect(afterPrune.messages.map(({ id }) => id)).toEqual(["gmsg_bbbbbbbb"]);
     expect(afterPrune.messageTombstones).toEqual([
-      expect.objectContaining({ messageId: "gmsg_aaaaaaaa" }),
+      expect.objectContaining({ originNumber: 20, messageId: "gmsg_aaaaaaaa" }),
     ]);
     expect(await harness.service.receiveProtocol({
       senderNumber: 20,
       payload: message("group_aaaaaaaa", "gmsg_aaaaaaaa", "Replay"),
     })).toBe(false);
+  });
+
+  it("migrates version-2 replay IDs as origin-wildcard tombstones", async () => {
+    const storage = new MemoryKeyValueStorage();
+    const initial = setup(storage);
+    await initial.service.receiveProtocol({ senderNumber: 20, payload: invite() });
+    await initial.service.receiveProtocol({
+      senderNumber: 20,
+      payload: message("group_aaaaaaaa", "gmsg_legacyseen", "Old stored message", 900_000),
+    });
+    await initial.service.prune(1_000_000);
+    await initial.service.flush();
+
+    const oldState = JSON.parse(storage.getItem(GROUP_CHAT_STORAGE_KEY)!) as {
+      version: number;
+      messageTombstones: Array<Record<string, unknown>>;
+    };
+    oldState.version = 2;
+    for (const tombstone of oldState.messageTombstones) delete tombstone.originNumber;
+    storage.setItem(GROUP_CHAT_STORAGE_KEY, JSON.stringify(oldState));
+
+    const restored = setup(storage).service;
+    expect(restored.getPersistenceState().degraded).toBe(false);
+    expect(await restored.receiveProtocol({
+      senderNumber: 30,
+      payload: message("group_aaaaaaaa", "gmsg_legacyseen", "Must stay blocked for any origin"),
+    })).toBe(false);
+    await restored.setDraft("group_aaaaaaaa", "migrated");
+    await restored.flush();
+
+    const migrated = JSON.parse(storage.getItem(GROUP_CHAT_STORAGE_KEY)!) as {
+      version: number;
+      messageTombstones: Array<Record<string, unknown>>;
+    };
+    expect(migrated.version).toBe(3);
+    expect(migrated.messageTombstones).toEqual([
+      expect.objectContaining({ messageId: "gmsg_legacyseen" }),
+    ]);
+    expect(migrated.messageTombstones[0]).not.toHaveProperty("originNumber");
   });
 
   it("caps stored groups and messages without disturbing immutable membership", async () => {
@@ -1647,5 +1947,744 @@ describe("GroupChatService", () => {
       senderNumber: 20,
       payload: message("group_aaaaaaaa", evictedMessageId, "Replay after reload"),
     })).toBe(false);
+  });
+});
+
+describe("GroupChatService managed v2", () => {
+  it("creates a g3-gated owner-bound group and avoids an immediate repair burst", async () => {
+    const harness = setup();
+    harness.managedPeers.delete(30);
+    await expect(harness.service.createManagedGroup([20, 30], "Managed"))
+      .rejects.toThrow(/g3/u);
+    expect(harness.service.listGroups()).toEqual([]);
+    expect(harness.sent).toEqual([]);
+
+    harness.managedPeers.add(30);
+    const created = await harness.service.createManagedGroup([20, 30], "Managed");
+    expect(created.group).toMatchObject({
+      title: "Managed",
+      creatorNumber: 10,
+      protocolVersion: 2,
+      stateRevision: 1,
+      appearanceRevision: 1,
+      memberNumbers: [10, 20, 30],
+      avatarUrl: "",
+      outlineColor: "",
+    });
+    expect(created.group.groupId).toMatch(/^group2_10_/u);
+    expect(created.group.epochId).toMatch(/^ge_/u);
+    expect(harness.sent.map(({ payload }) => parseGroupChatPacket(payload)?.t)).toEqual([
+      "gs", "gs", "ga", "ga", "gn", "gn",
+    ]);
+
+    harness.sent.splice(0);
+    const sent = await harness.service.sendMessage(created.group.groupId, "Hello managed group");
+    expect(sent.persisted).toBe(true);
+    expect(harness.sent.map(({ payload }) => parseGroupChatPacket(payload)?.t)).toEqual([
+      "gm", "gm",
+    ]);
+    expect(parseGroupChatPacket(harness.sent[0]!.payload)).toMatchObject({
+      v: 2,
+      e: created.group.epochId,
+    });
+  });
+
+  it("repairs a known failed state recipient immediately without resending to successes", async () => {
+    const harness = setup();
+    harness.failed.add(30);
+    const created = await harness.service.createManagedGroup([20, 30], "Partial state");
+    expect(created.handedOffTo).toEqual([20]);
+    expect(created.failed).toContainEqual({ memberNumber: 30, message: "Member 30 is offline" });
+
+    harness.failed.delete(30);
+    harness.sent.splice(0);
+    await harness.service.sendMessage(created.group.groupId, "Trigger targeted repair");
+    const stateTargets = harness.sent
+      .filter(({ payload }) => parseGroupChatPacket(payload)?.t === "gs")
+      .map(({ target }) => target);
+    expect(stateTargets).toEqual([30]);
+  });
+
+  it("durably commits managed state before handing a newer revision to participants", async () => {
+    const storage = new MemoryKeyValueStorage();
+    const owner = setup(storage, 10, 5_000);
+    const created = await owner.service.createManagedGroup([20, 30], "Durable first");
+    expect(JSON.parse(storage.getItem(GROUP_CHAT_STORAGE_KEY)!) as unknown).toMatchObject({
+      groups: [expect.objectContaining({ groupId: created.group.groupId, stateRevision: 1 })],
+    });
+
+    const participant = setup(new MemoryKeyValueStorage(), 20);
+    participant.friends.add(10);
+    const firstState = owner.sent.find(({ target, payload }) =>
+      target === 20 && parseGroupChatPacket(payload)?.t === "gs"
+    )?.payload;
+    expect(await participant.service.receiveProtocol({
+      senderNumber: 10,
+      payload: firstState!,
+    })).toBe(true);
+
+    owner.sent.splice(0);
+    const added = await owner.service.addMember(created.group.groupId, 40);
+    const newerState = owner.sent.find(({ target, payload }) =>
+      target === 20 && parseGroupChatPacket(payload)?.t === "gs"
+    )?.payload;
+    expect(await participant.service.receiveProtocol({
+      senderNumber: 10,
+      payload: newerState!,
+    })).toBe(true);
+
+    // Simulate an immediate owner reload without waiting for the 5-second debounce.
+    const reloadedOwner = setup(storage).service;
+    expect(reloadedOwner.getGroup(created.group.groupId)).toMatchObject({
+      memberNumbers: [10, 20, 30, 40],
+      epochId: added.group.epochId,
+      stateRevision: added.group.stateRevision,
+    });
+    expect(participant.service.getGroup(created.group.groupId)).toMatchObject({
+      memberNumbers: [10, 20, 30, 40],
+      epochId: added.group.epochId,
+      stateRevision: added.group.stateRevision,
+    });
+  });
+
+  it("rolls back a managed mutation and sends nothing when durable storage fails", async () => {
+    const storage = new ControlledStorage();
+    const harness = setup(storage, 10, 5_000);
+    const created = await harness.service.createManagedGroup([20, 30], "Before failure");
+    const beforeGroup = harness.service.getGroup(created.group.groupId);
+    const beforeStorage = storage.getItem(GROUP_CHAT_STORAGE_KEY);
+    harness.sent.splice(0);
+    storage.available = false;
+
+    await expect(harness.service.renameGroup(created.group.groupId, "Must roll back"))
+      .rejects.toThrow(/no packet was sent/u);
+    expect(harness.service.getGroup(created.group.groupId)).toEqual(beforeGroup);
+    expect(harness.sent).toEqual([]);
+    expect(storage.getItem(GROUP_CHAT_STORAGE_KEY)).toBe(beforeStorage);
+
+    storage.available = true;
+    await harness.service.flush();
+    expect(storage.getItem(GROUP_CHAT_STORAGE_KEY)).toBe(beforeStorage);
+  });
+
+  it("rejects an oversized UTF-8 message before repair, transport, or local history", async () => {
+    const harness = setup();
+    const created = await harness.service.createManagedGroup([20, 30], "UTF-8");
+    harness.sent.splice(0);
+
+    await expect(harness.service.sendMessage(
+      created.group.groupId,
+      "界".repeat(GROUP_MANAGED_MESSAGE_MAX_CONTENT),
+    )).rejects.toThrow(/safe UTF-8 encoding/u);
+    expect(harness.sent).toEqual([]);
+    expect(harness.service.getMessages(created.group.groupId)).toEqual([]);
+  });
+
+  it("adapts a five-member UTF-8 name envelope instead of silently dropping gn", async () => {
+    const storage = new MemoryKeyValueStorage();
+    const initial = setup(storage);
+    const created = await initial.service.createManagedGroup([20, 30, 40], "UTF-8 names");
+    await initial.service.flush();
+    const state = JSON.parse(storage.getItem(GROUP_CHAT_STORAGE_KEY)!) as {
+      groups: Array<{ memberNames: Record<string, string> }>;
+    };
+    for (const memberNumber of [10, 20, 30, 40]) {
+      state.groups[0]!.memberNames[memberNumber] = "界".repeat(GROUP_MEMBER_NAME_MAX_CHARS);
+    }
+    storage.setItem(GROUP_CHAT_STORAGE_KEY, JSON.stringify(state));
+
+    const restored = setup(storage);
+    await restored.service.addMember(created.group.groupId, 50);
+    const namesPayload = restored.sent.find(({ payload }) => {
+      const packet = parseGroupChatPacket(payload);
+      return packet?.t === "gn" && packet.v === 2;
+    })?.payload;
+    expect(namesPayload).toBeDefined();
+    expect(new TextEncoder().encode(namesPayload!).byteLength).toBeLessThanOrEqual(
+      GROUP_PACKET_MAX_CHARS,
+    );
+    const namesPacket = parseGroupChatPacket(namesPayload!);
+    expect(namesPacket?.t === "gn" && namesPacket.v === 2
+      ? namesPacket.d.some(([, name]) => name.length < GROUP_MEMBER_NAME_MAX_CHARS)
+      : false).toBe(true);
+  });
+
+  it("rejects forwarded owner state and applies only monotonic creator updates", async () => {
+    const harness = setup();
+    const initial = managedState();
+
+    expect(await harness.service.receiveProtocol({ senderNumber: 30, payload: initial })).toBe(false);
+    expect(harness.service.listGroups()).toEqual([]);
+    expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: initial })).toBe(true);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState(
+        "group2_20_aaaaaaaa",
+        "ge_aaaaaaaa",
+        2,
+        [10, 20, 30],
+        "Renamed safely",
+      ),
+    })).toBe(true);
+    expect(harness.service.getGroup("group2_20_aaaaaaaa")?.title).toBe("Renamed safely");
+
+    expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: initial })).toBe(false);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState(
+        "group2_20_aaaaaaaa",
+        "ge_aaaaaaaa",
+        2,
+        [10, 20, 30],
+        "Conflicting replay",
+      ),
+    })).toBe(false);
+    expect(harness.service.getGroup("group2_20_aaaaaaaa")?.title).toBe("Renamed safely");
+  });
+
+  it("accepts inbound state and removal only after verified durable persistence", async () => {
+    const storage = new ControlledStorage();
+    const harness = setup(storage, 10, 5_000);
+    const groupId = "group2_20_aaaaaaaa";
+    const epoch = "ge_aaaaaaaa";
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState(groupId, epoch, 1, [10, 20, 30], "Durable inbound"),
+    })).toBe(true);
+    const revisionOneStorage = storage.getItem(GROUP_CHAT_STORAGE_KEY);
+    const updates = vi.fn();
+    harness.service.subscribe(updates);
+
+    storage.available = false;
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState(groupId, epoch, 2, [10, 20, 30], "Must roll back"),
+    })).toBe(false);
+    expect(harness.service.getGroup(groupId)).toMatchObject({
+      title: "Durable inbound",
+      stateRevision: 1,
+    });
+    expect(storage.getItem(GROUP_CHAT_STORAGE_KEY)).toBe(revisionOneStorage);
+    expect(updates.mock.calls.some(([update]) => update.kind === "group-updated")).toBe(false);
+
+    storage.available = true;
+    await harness.service.flush();
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState(groupId, epoch, 2, [10, 20, 30], "Durable revision two"),
+    })).toBe(true);
+    expect(setup(storage).service.getGroup(groupId)).toMatchObject({
+      title: "Durable revision two",
+      stateRevision: 2,
+    });
+
+    const removal = serializeGroupChatPacket({
+      t: "gx",
+      v: 2,
+      g: groupId,
+      o: 20,
+      e: epoch,
+      r: 3,
+      u: 1_000_000,
+    });
+    storage.available = false;
+    expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: removal })).toBe(false);
+    expect(harness.service.getGroup(groupId)).toBeDefined();
+
+    storage.available = true;
+    await harness.service.flush();
+    expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: removal })).toBe(true);
+    expect(harness.service.getGroup(groupId)).toBeUndefined();
+    expect(setup(storage).service.getGroup(groupId)).toBeUndefined();
+  });
+
+  it("converges when an intermediate add and kick state was missed", async () => {
+    const harness = setup();
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState(
+        "group2_20_aaaaaaaa",
+        "ge_aaaaaaaa",
+        1,
+        [10, 20, 30],
+        "Before missed updates",
+      ),
+    })).toBe(true);
+
+    // Revision 2 added member 40 with another epoch, but this participant never received it.
+    // Revision 3 removes 40 again: membership matches local r1 while the epoch must still advance.
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState(
+        "group2_20_aaaaaaaa",
+        "ge_cccccccc",
+        3,
+        [10, 20, 30],
+        "After missed updates",
+      ),
+    })).toBe(true);
+    expect(harness.service.getGroup("group2_20_aaaaaaaa")).toMatchObject({
+      title: "After missed updates",
+      epochId: "ge_cccccccc",
+      stateRevision: 3,
+    });
+  });
+
+  it("keeps managed membership atomic when epoch rotation cannot produce a fresh ID", async () => {
+    let groupIds = 0;
+    const harness = setup(
+      new MemoryKeyValueStorage(),
+      10,
+      undefined,
+      (prefix) => {
+        if (prefix === "gmsg") return "gmsg_aaaaaaaa";
+        groupIds += 1;
+        return groupIds === 1 ? "group_aaaaaaaa" : "group_bbbbbbbb";
+      },
+    );
+    const created = await harness.service.createManagedGroup([20, 30], "Atomic");
+    await harness.service.flush();
+    const beforeGroup = harness.service.getGroup(created.group.groupId);
+    const beforeStorage = harness.storage.getItem(GROUP_CHAT_STORAGE_KEY);
+    harness.sent.splice(0);
+
+    await expect(harness.service.addMember(created.group.groupId, 40))
+      .rejects.toThrow(/unique group generation/u);
+    expect(harness.service.getGroup(created.group.groupId)).toEqual(beforeGroup);
+    expect(harness.sent).toEqual([]);
+    await harness.service.flush();
+    expect(harness.storage.getItem(GROUP_CHAT_STORAGE_KEY)).toBe(beforeStorage);
+  });
+
+  it("lets only the creator rename and set canonical avatar/outline appearance", async () => {
+    const owner = setup();
+    const created = await owner.service.createManagedGroup([20, 30], "Before");
+    owner.sent.splice(0);
+
+    await owner.service.renameGroup(created.group.groupId, "After");
+    await owner.service.setGroupAvatar(
+      created.group.groupId,
+      "https://files.catbox.moe/group-avatar.webp",
+    );
+    await owner.service.setGroupOutlineColor(created.group.groupId, "#C60000");
+    expect(owner.service.getGroup(created.group.groupId)).toMatchObject({
+      title: "After",
+      stateRevision: 2,
+      appearanceRevision: 3,
+      avatarUrl: "https://files.catbox.moe/group-avatar.webp",
+      outlineColor: "#c60000",
+    });
+    expect(owner.sent.map(({ payload }) => parseGroupChatPacket(payload)?.t)).toEqual([
+      "gs", "gs", "ga", "ga", "ga", "ga",
+    ]);
+    await expect(owner.service.setGroupAvatar(
+      created.group.groupId,
+      `https://example.com/${"a".repeat(GROUP_MANAGED_AVATAR_URL_MAX_CHARS)}.webp`,
+    )).rejects.toThrow(/450/u);
+    await expect(owner.service.setGroupAvatar(
+      created.group.groupId,
+      "https://example.com/unbounded.avif",
+    )).rejects.toThrow(/direct HTTPS image/u);
+
+    const participant = setup();
+    await participant.service.receiveProtocol({ senderNumber: 20, payload: managedState() });
+    await expect(participant.service.renameGroup("group2_20_aaaaaaaa", "Takeover"))
+      .rejects.toThrow(/owner/u);
+    await expect(participant.service.setGroupOutlineColor("group2_20_aaaaaaaa", "#ffffff"))
+      .rejects.toThrow(/owner/u);
+    await expect(participant.service.addMember("group2_20_aaaaaaaa", 40))
+      .rejects.toThrow(/owner/u);
+    await expect(participant.service.kickMember("group2_20_aaaaaaaa", 30))
+      .rejects.toThrow(/owner/u);
+    expect(participant.sent).toEqual([]);
+  });
+
+  it("rotates epochs for add/kick, rejects stale messages, and preserves former-author history", async () => {
+    const storage = new MemoryKeyValueStorage();
+    const harness = setup(storage);
+    const created = await harness.service.createManagedGroup([20, 30], "Mutable");
+    const firstEpoch = created.group.epochId!;
+    const added = await harness.service.addMember(created.group.groupId, 40);
+    expect(added.group.memberNumbers).toEqual([10, 20, 30, 40]);
+    expect(added.group.epochId).not.toBe(firstEpoch);
+    const activeEpoch = added.group.epochId!;
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedMessage(
+        created.group.groupId,
+        activeEpoch,
+        "gmsg_former001",
+        "Before the kick",
+      ),
+    })).toBe(true);
+
+    const kicked = await harness.service.kickMember(created.group.groupId, 20);
+    expect(kicked.group.memberNumbers).toEqual([10, 30, 40]);
+    expect(kicked.group.epochId).not.toBe(activeEpoch);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedMessage(
+        created.group.groupId,
+        activeEpoch,
+        "gmsg_stale0001",
+        "Stale after kick",
+      ),
+    })).toBe(false);
+    await harness.service.flush();
+
+    const reloaded = setup(storage).service;
+    expect(reloaded.getGroup(created.group.groupId)?.memberNumbers).toEqual([10, 30, 40]);
+    expect(reloaded.getMessages(created.group.groupId)).toEqual([
+      expect.objectContaining({ senderNumber: 20, senderName: "Reina", content: "Before the kick" }),
+    ]);
+  });
+
+  it("cancels an old pending kick when the same target is re-added and rejects late gx", async () => {
+    const owner = setup();
+    const created = await owner.service.createManagedGroup([20, 30, 40], "Re-add safely");
+    const participant = setup(new MemoryKeyValueStorage(), 20);
+    participant.friends.add(10);
+    const initialState = owner.sent.find(({ target, payload }) =>
+      target === 20 && parseGroupChatPacket(payload)?.t === "gs"
+    )!.payload;
+    expect(await participant.service.receiveProtocol({
+      senderNumber: 10,
+      payload: initialState,
+    })).toBe(true);
+
+    owner.failed.add(20);
+    owner.sent.splice(0);
+    await owner.service.kickMember(created.group.groupId, 20);
+    const lateRemoval = owner.sent.find(({ target, payload }) =>
+      target === 20 && parseGroupChatPacket(payload)?.t === "gx"
+    )!.payload;
+
+    owner.failed.delete(20);
+    owner.sent.splice(0);
+    const readded = await owner.service.addMember(created.group.groupId, 20);
+    const readdState = owner.sent.find(({ target, payload }) =>
+      target === 20 && parseGroupChatPacket(payload)?.t === "gs"
+    )!.payload;
+    expect(await participant.service.receiveProtocol({
+      senderNumber: 10,
+      payload: readdState,
+    })).toBe(true);
+    expect(await participant.service.receiveProtocol({
+      senderNumber: 10,
+      payload: lateRemoval,
+    })).toBe(false);
+    expect(participant.service.getGroup(created.group.groupId)).toMatchObject({
+      epochId: readded.group.epochId,
+      stateRevision: readded.group.stateRevision,
+    });
+
+    await owner.service.flush();
+    expect(JSON.parse(owner.storage.getItem(GROUP_CHAT_STORAGE_KEY)!) as unknown).toMatchObject({
+      pendingRevocations: [],
+    });
+  });
+
+  it("applies an epoch-bound kick tombstone and permits only a newer re-add", async () => {
+    const harness = setup();
+    expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: managedState(
+      "group2_20_aaaaaaaa",
+      "ge_oldoldold",
+      1,
+      [10, 20, 30, 40],
+    ) })).toBe(true);
+    const removal = serializeGroupChatPacket({
+      t: "gx",
+      v: 2,
+      g: "group2_20_aaaaaaaa",
+      o: 20,
+      e: "ge_oldoldold",
+      r: 2,
+      u: 1_000_000,
+    });
+    expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: removal })).toBe(true);
+    expect(harness.service.getGroup("group2_20_aaaaaaaa")).toBeUndefined();
+    expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: managedState(
+      "group2_20_aaaaaaaa",
+      "ge_newnewnew",
+      3,
+      [10, 20, 30, 40],
+      "Invalid conversion",
+      "group_missingxx",
+    ) })).toBe(false);
+    expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: managedState(
+      "group2_20_aaaaaaaa",
+      "ge_oldoldold",
+      1,
+      [10, 20, 30, 40],
+    ) })).toBe(false);
+    harness.setNow(1_000_000 + GROUP_INVITE_RATE_REFILL_MS);
+    expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: managedState(
+      "group2_20_aaaaaaaa",
+      "ge_newnewnew",
+      3,
+      [10, 20, 30, 40],
+      "Re-added",
+    ) })).toBe(true);
+    expect(harness.service.getGroup("group2_20_aaaaaaaa")).toMatchObject({
+      title: "Re-added",
+      epochId: "ge_newnewnew",
+      stateRevision: 3,
+    });
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: serializeGroupChatPacket({
+        t: "ga",
+        v: 2,
+        g: "group2_20_aaaaaaaa",
+        o: 20,
+        e: "ge_oldoldold",
+        r: 99,
+        a: "https://files.catbox.moe/stale.webp",
+        c: "#ffffff",
+        u: 1_000_000,
+      }),
+    })).toBe(false);
+    expect(harness.service.getGroup("group2_20_aaaaaaaa")?.avatarUrl).toBe("");
+  });
+
+  it("rate-limits authoritative state separately from display metadata bundles", async () => {
+    const harness = setup();
+    const groupId = "group2_20_aaaaaaaa";
+    const epoch = "ge_aaaaaaaa";
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState(groupId, epoch, 1),
+    })).toBe(true);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: serializeGroupChatPacket({
+        t: "ga",
+        v: 2,
+        g: groupId,
+        o: 20,
+        e: epoch,
+        r: 1,
+        a: "",
+        c: "",
+        u: 1_000_000,
+      }),
+    })).toBe(true);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: serializeGroupChatPacket({
+        t: "gn",
+        v: 2,
+        g: groupId,
+        o: 20,
+        e: epoch,
+        r: 1,
+        d: [[10, "Kiki"], [20, "Reina"], [30, "Mina"]],
+        u: 1_000_000,
+      }),
+    })).toBe(true);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState(groupId, epoch, 2, [10, 20, 30], "Renamed"),
+    })).toBe(true);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: serializeGroupChatPacket({
+        t: "ga",
+        v: 2,
+        g: groupId,
+        o: 20,
+        e: epoch,
+        r: 2,
+        a: "https://files.catbox.moe/group.webp",
+        c: "#c60000",
+        u: 1_000_000,
+      }),
+    })).toBe(true);
+    expect(harness.service.getGroup(groupId)).toMatchObject({
+      title: "Renamed",
+      avatarUrl: "https://files.catbox.moe/group.webp",
+      outlineColor: "#c60000",
+    });
+  });
+
+  it("converts legacy ownership only by issuing a new owner-bound managed ID", async () => {
+    const harness = setup();
+    const legacy = await harness.service.createGroup([20, 30], "Legacy");
+    harness.sent.splice(0);
+    const converted = await harness.service.convertLegacyGroup(legacy.group.groupId);
+
+    expect(converted.group.protocolVersion).toBe(2);
+    expect(converted.group.groupId).not.toBe(legacy.group.groupId);
+    expect(converted.group.groupId).toMatch(/^group2_10_/u);
+    expect(harness.service.getGroup(legacy.group.groupId)).toBeUndefined();
+    const state = parseGroupChatPacket(harness.sent[0]!.payload);
+    expect(state).toMatchObject({ t: "gs", v: 2, p: legacy.group.groupId, o: 10 });
+  });
+
+  it("keeps short group image URLs compatible and clamps future-authored ordering time", async () => {
+    const harness = setup();
+    const created = await harness.service.createManagedGroup([20, 30], "Images");
+    harness.sent.splice(0);
+    const url = "https://files.catbox.moe/picture.webp";
+    const sent = await harness.service.sendMessage(created.group.groupId, url);
+    expect(sent.persisted).toBe(true);
+    expect(parseGroupChatPacket(harness.sent[0]!.payload)).toMatchObject({ c: url, v: 2 });
+
+    harness.setNow(2_000_000);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedMessage(
+        created.group.groupId,
+        created.group.epochId!,
+        "gmsg_future001",
+        "I cannot pin the group in the future",
+        2_299_999,
+      ),
+    })).toBe(true);
+    expect(harness.service.getMessages(created.group.groupId).at(-1)?.sentAt).toBe(2_000_000);
+  });
+
+  it("bounds remote managed invites per owner while preserving local and other-owner capacity", async () => {
+    const harness = setup();
+    for (let index = 0; index < 5; index += 1) {
+      expect(await harness.service.receiveProtocol({
+        senderNumber: 20,
+        payload: managedState(
+          `group2_20_${index.toString(36).padStart(8, "0")}`,
+          `ge_${index.toString(36).padStart(8, "0")}`,
+          1,
+        ),
+      })).toBe(true);
+    }
+    harness.setNow(1_100_000);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: managedState("group2_20_zzzzzzzz", "ge_zzzzzzzz", 1),
+    })).toBe(false);
+
+    harness.setNow(1_120_000);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 30,
+      payload: serializeGroupChatPacket({
+        t: "gs",
+        v: 2,
+        g: "group2_30_aaaaaaaa",
+        o: 30,
+        e: "ge_otherownr",
+        r: 1,
+        m: [10, 30, 40],
+        n: "Another owner",
+        p: "",
+        u: 1_120_000,
+      }),
+    })).toBe(true);
+    await expect(harness.service.createManagedGroup([20, 30], "Local still fits"))
+      .resolves.toMatchObject({ group: { creatorNumber: 10 } });
+  });
+
+  it("reserves local capacity even when legacy friends send many compatible invites", async () => {
+    const harness = setup();
+    for (let index = 0; index < GROUP_MAX_COUNT - 5; index += 1) {
+      harness.setNow(1_000_000 + index * GROUP_INVITE_RATE_REFILL_MS);
+      expect(await harness.service.receiveProtocol({
+        senderNumber: 20,
+        payload: invite(`group_${index.toString(36).padStart(8, "0")}`),
+      })).toBe(true);
+    }
+    harness.setNow(1_000_000 + (GROUP_MAX_COUNT - 5) * GROUP_INVITE_RATE_REFILL_MS);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: invite("group_zzzzzzzz"),
+    })).toBe(false);
+    await expect(harness.service.createManagedGroup([40, 50], "Reserved local slot"))
+      .resolves.toMatchObject({ group: { creatorNumber: 10 } });
+  });
+
+  it("retains managed local-removal replay protection beyond the legacy 60-group horizon", async () => {
+    const harness = setup();
+    let firstState = "";
+    for (let index = 0; index < 61; index += 1) {
+      harness.setNow(1_000_000 + index * GROUP_INVITE_RATE_REFILL_MS);
+      const suffix = index.toString(36).padStart(8, "0");
+      const state = managedState(`group2_20_${suffix}`, `ge_${suffix}`, 1);
+      if (index === 0) firstState = state;
+      expect(await harness.service.receiveProtocol({ senderNumber: 20, payload: state })).toBe(true);
+      await expect(harness.service.removeGroup(`group2_20_${suffix}`)).resolves.toBe(true);
+    }
+
+    harness.setNow(1_000_000 + 61 * GROUP_INVITE_RATE_REFILL_MS);
+    expect(await harness.service.receiveProtocol({
+      senderNumber: 20,
+      payload: firstState,
+    })).toBe(false);
+    expect(harness.service.listGroups()).toEqual([]);
+  });
+
+  it("persists failed kicks and retries the epoch-bound removal after the route recovers", async () => {
+    const ownerStorage = new MemoryKeyValueStorage();
+    const owner = setup(ownerStorage);
+    const created = await owner.service.createManagedGroup([20, 30, 40], "Retry removal");
+    const initialState = owner.sent.find(({ target, payload }) =>
+      target === 20 && parseGroupChatPacket(payload)?.t === "gs"
+    )?.payload;
+    expect(initialState).toBeDefined();
+
+    const removedParticipant = setup(new MemoryKeyValueStorage(), 20);
+    removedParticipant.friends.add(10);
+    expect(await removedParticipant.service.receiveProtocol({
+      senderNumber: 10,
+      payload: initialState!,
+    })).toBe(true);
+
+    owner.failed.add(20);
+    const kicked = await owner.service.kickMember(created.group.groupId, 20);
+    expect(kicked.failed).toContainEqual({ memberNumber: 20, message: "Member 20 is offline" });
+    await owner.service.flush();
+    expect(JSON.parse(ownerStorage.getItem(GROUP_CHAT_STORAGE_KEY)!) as unknown).toMatchObject({
+      pendingRevocations: [expect.objectContaining({
+        groupId: created.group.groupId,
+        targetNumber: 20,
+      })],
+    });
+    await owner.service.destroy();
+
+    const restoredOwner = setup(ownerStorage);
+    restoredOwner.setNow(1_000_000 + 30_001);
+    await restoredOwner.service.sendMessage(created.group.groupId, "Retry pending removal");
+    const retriedRemoval = restoredOwner.sent.find(({ target, payload }) =>
+      target === 20 && parseGroupChatPacket(payload)?.t === "gx"
+    )?.payload;
+    expect(retriedRemoval).toBeDefined();
+    expect(await removedParticipant.service.receiveProtocol({
+      senderNumber: 10,
+      payload: retriedRemoval!,
+    })).toBe(true);
+    expect(removedParticipant.service.getGroup(created.group.groupId)).toBeUndefined();
+
+    await restoredOwner.service.flush();
+    expect(JSON.parse(ownerStorage.getItem(GROUP_CHAT_STORAGE_KEY)!) as unknown).toMatchObject({
+      pendingRevocations: [],
+    });
+  });
+
+  it("retries a failed kick from one lifecycle-owned timer without later owner activity", async () => {
+    vi.useFakeTimers();
+    const owner = setup();
+    try {
+      const created = await owner.service.createManagedGroup([20, 30, 40], "Timer removal");
+      owner.failed.add(20);
+      await owner.service.kickMember(created.group.groupId, 20);
+      owner.failed.delete(20);
+      owner.sent.splice(0);
+      owner.setNow(1_000_000 + 30_001);
+
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(owner.sent.some(({ target, payload }) =>
+        target === 20 && parseGroupChatPacket(payload)?.t === "gx"
+      )).toBe(true);
+    } finally {
+      await owner.service.destroy();
+      vi.useRealTimers();
+    }
   });
 });

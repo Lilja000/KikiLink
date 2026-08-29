@@ -11,12 +11,12 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. The userscript checks this same address
 for future KikiLink updates.
 
-Version `0.26.0` runs all Bondage Club and ModSDK integration in the page realm without reading
+Version `0.27.0` runs all Bondage Club and ModSDK integration in the page realm without reading
 `unsafeWindow`. Only structured upload fields cross into the DOM-only userscript sandbox for the narrowly
-granted Catbox/Litterbox request. This release unifies direct and group navigation, fixes WCE/LikoMAT
-message envelopes, makes profile-banner uploads genuinely cancellable, adds negotiated two-color profile
-gradients, and keeps a bounded account-local copy of voluntarily shared public profiles for honest
-saved-card fallback. It does not change the proven
+granted Catbox/Litterbox request. This release adds creator-managed groups with mutable membership,
+group identity controls, image messages, and a compact accessible action menu; it also fixes the Catbox
+banner transport, profile/contact layout edges, and several chat rendering, upload, and concurrency races.
+It does not change the proven
 Blossom integration: the flower still joins the same BC-native status-icon boundary as Echo and WCE
 exactly once and sits directly below Echo's clothing icon, clear of the chat edge. It is
 shown only for the authenticated character and protocol-confirmed KikiLink peers, independently of
@@ -112,13 +112,24 @@ so they can follow that same account to another device.
   groups; group rows use participant-avatar stacks and an explicit `GROUP` badge
 - Group and direct transports/history remain isolated while sharing familiar previews, pins, times,
   unread counts, Gallery access, and new-chat actions
-- Choose 2–4 known BC friends that recently advertised relay-capable group support and confirm the complete
-  participant list before invitations are sent; version-1 membership is fixed, so changing
-  participants means starting a new group
+- Choose 2–4 known BC friends that recently advertised managed-group support and confirm the complete
+  participant list before invitations are sent. The creator is visibly identified and can rename a
+  managed group, upload a privacy-prepared avatar to explicitly labeled public Catbox storage, set a
+  direct avatar link and outline color, and add or kick compatible members while keeping the total at
+  3–5 people
+- Existing fixed-membership groups remain readable and usable as legacy groups. Their creator can choose
+  an explicit conversion to a new creator-bound managed ID; KikiLink never infers admin rights from an
+  old ambiguous group packet
+- Right-click, keyboard Context Menu/Shift+F10, or touch-and-hold a group to open one accessible menu
+  for details, pinning, local removal, and close. The compact header leaves more room for messages
 - Clickable participant chips, creation/confirmation members, and message-author avatars open KikiLink
   profiles with the same mouse, keyboard, context-menu, and touch behavior as other player avatars
 - The newest 120 group messages render first, with older history added in bounded 100-message pages;
-  the composer follows the same Enter-to-send preference as direct chat and supports Ctrl/Cmd+Enter
+  slightly larger author avatars and a keyed transcript avoid unnecessary replacement while names update
+- Group composers accept the same direct HTTPS image links and explicit privacy-prepared local uploads as
+  direct chats. Group images use the existing protected preview policy and also appear in the lazy Gallery
+- Custom group avatars follow the same `Ask first`, `Always show`, or `Links only` image policy. Under
+  `Ask first`, `Show group avatar` in the group menu reveals only that exact creator-and-URL for the session
 - Group drafts, removal, and honest per-recipient local BC handoff feedback; the protocol does not
   claim delivery receipts
 - Incoming group invitations auto-accept only from known BC friends; sharing a room alone never lets
@@ -126,13 +137,16 @@ so they can follow that same account to another device.
 - When BC has no direct route between two members, the author may hand the packet to the group creator
   for one-hop forwarding. This works only while the creator is online, running the compatible addon,
   reachable, and able to reach the recipient; there is no offline queue, retry service, or confirmation
-- Creator relay is rate-bounded, short-lived, block-aware, restricted to the immutable member list,
-  and never relays a relayed packet. The creator remains the v1 trust root, so groups should be created
-  only with a trusted creator
+- Creator relay is rate-bounded, short-lived, block-aware, restricted to the authenticated current
+  membership and epoch, and never relays a relayed packet. The creator remains the trust root, so groups
+  should be created only with a trusted creator
 - Creator-supplied display names help identify participants without becoming authority: authenticated
   MemberNumbers still control sender identity, membership, replay checks, and rate limits
-- A strict 246-character group-message limit keeps both direct and creator-relay packets within the validated
-  700-character wire bound, even when JSON escaping expands the content
+- Replay identity combines the authenticated original MemberNumber with the message ID, so another
+  member cannot suppress an authentic direct or creator-relayed message by racing the same visible ID
+- Every group packet stays within its validated versioned bound (700 UTF-16 characters for legacy,
+  700 UTF-8 bytes for managed), including worst-case escaping; managed state uses monotonic revisions
+  and a fresh epoch whenever membership changes
 - Native recent Beeps imported from the current game session without duplicates
 - Persistent message history in a separate local database for each BC account
 - A bounded mirror of up to 600 recent messages follows the same BC account to another device
@@ -154,7 +168,8 @@ so they can follow that same account to another device.
 - Image previews hide the repeated raw URL; `Show original` is the only outbound link on the card
 - Account-free temporary JPG, PNG, and WebP sharing through Litterbox, with selectable
   1, 12, 24, or 72 hour retention and generic source filenames
-- Local privacy preparation before upload: validate the real file signature, remove the original
+- Local privacy preparation before upload: validate the real file signature, declared JPG/PNG/WebP
+  dimensions, and bounded APNG/WebP animation cycle before browser decode; remove the original
   filename and embedded metadata, convert to WebP, and resize the longest edge to at most 2560 px
 - Choosing a file never starts a network request; only the explicit `Upload & send` action uploads it
 - Compact `Reply` and `Copy` icons beside messages, with plain-text quotes compatible with native Beeps
@@ -177,6 +192,11 @@ so they can follow that same account to another device.
   previews/history, without stripping malformed or ordinary JSON-like user text
 - Smooth bounded rendering: 120 recent messages at once, incremental live append, stable image-card
   geometry, and on-demand older history
+- Keyed mixed-chat rows, cached summaries, coalesced animation-frame updates, and leased remote-image
+  object URLs keep the chat list responsive without dropping features or image quality
+- Guarded remote previews validate format and decoded/animated resource bounds before display, start
+  only near visible UI, cap concurrent requests and decodes, and retain only a small bounded set of rich
+  message previews; AVIF stays link-only because it cannot yet be bounded safely before browser decode
 - Stable scrolling without viewport-triggered message paint; older history is prepended without replacing
   messages already on screen
 - Softly grouped incoming and outgoing bubbles with a very light one-pixel top gradient
@@ -206,7 +226,7 @@ so they can follow that same account to another device.
   renamed MP3/MP4 room audio up to 20 MB can fill the music field
 - A device-local Music track has a `Share & use as room music` action that creates and reuses a
   temporary Litterbox link, then opens the same review-and-apply Room Tools flow as Gallery
-- A lazy all-chat gallery deduplicates direct images across saved conversations and labels Catbox/Litterbox media
+- A lazy all-chat gallery deduplicates direct and group images across saved conversations and labels Catbox/Litterbox media
 - A visible Gallery Home card and labeled Chat button open the library without adding another main tab
 - Direct image links can be saved without sending a chat message; privacy-prepared local additions are
   either kept indefinitely in account-isolated IndexedDB on that device, uploaded to public Catbox
@@ -347,7 +367,7 @@ best-effort hop through the online group creator. KikiLink has no group server o
 - The portable snapshot is bounded to 120,000 encoded characters. Settings are retained first;
   recent chats are trimmed before notebook data if the account approaches that safety bound.
 - Group chats use a separate account-scoped browser record bounded to 30 groups, 500 messages per
-  group, 3,000 group messages overall, and 60 removed-group tombstones.
+  group, 3,000 group messages overall, and 512 small removal/revocation tombstones.
 - Cloud-mirror writes are batched, and a temporary sync failure leaves the complete local copy and
   pending changes available for a later retry.
 - The complete local account copy remains available even when BC account sync is temporarily unavailable.

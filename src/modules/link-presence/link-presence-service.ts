@@ -34,12 +34,15 @@ const TYPING_REFRESH_MS = 1_800;
 const TYPING_TTL_MS = 5_500;
 const MAX_PROTOCOL_PAYLOAD = 700;
 const UNCHANGED_PROFILE_CACHE_REFRESH_MS = 15 * 60_000;
+const GROUP_CAPABILITY_VERSION = 3 as const;
+
+type GroupCapabilityVersion = 1 | 2 | typeof GROUP_CAPABILITY_VERSION;
 
 type PresenceListener = (memberNumber?: number) => void;
 
 type PresencePacket =
   | { t: "pq"; i: string; b?: 1; p?: 1; e?: 1 }
-  | { t: "pc"; v: string; g?: 1 | 2 }
+  | { t: "pc"; v: string; g?: GroupCapabilityVersion }
   | {
       t: "ps";
       i?: string;
@@ -50,7 +53,7 @@ type PresencePacket =
       c?: ProfileCardStyle;
       u: number;
       v: string;
-      g?: 1 | 2;
+      g?: GroupCapabilityVersion;
     }
   | { t: "pf"; i: string; h?: string; o?: string; x?: string; y?: string }
   | { t: "ty"; a: 0 | 1 };
@@ -98,7 +101,10 @@ export class LinkPresenceService {
   readonly #remote = new Map<number, RemotePresence>();
   readonly #remoteProfileDetails = new Map<number, RemoteProfileDetails>();
   readonly #compatiblePeers = new Map<number, number>();
-  readonly #groupCompatiblePeers = new Map<number, { seenAt: number; version: 1 | 2 }>();
+  readonly #groupCompatiblePeers = new Map<
+    number,
+    { seenAt: number; version: GroupCapabilityVersion }
+  >();
   readonly #remoteVersions = new Map<number, string>();
   readonly #listeners = new Set<PresenceListener>();
   readonly #lastRequestAt = new Map<number, number>();
@@ -316,6 +322,13 @@ export class LinkPresenceService {
     if (!this.#hasAuthenticatedIdentity() || !this.settings.get().linkPresence.enabled) {
       return false;
     }
+    if (
+      !isPositiveMemberNumber(memberNumber) ||
+      (memberNumber !== this.#authenticatedOwnMemberNumber &&
+        this.#rejectPeerForRelationship(memberNumber))
+    ) {
+      return false;
+    }
     return this.#cachedProfile(memberNumber, now) !== undefined;
   }
 
@@ -426,6 +439,9 @@ export class LinkPresenceService {
           : {}),
         addonVersion: this.version,
       };
+    }
+    if (!isPositiveMemberNumber(memberNumber) || this.#rejectPeerForRelationship(memberNumber)) {
+      return { memberNumber, status: "unknown", source: "unknown", updatedAt: 0 };
     }
 
     const cached = this.settings.get().linkPresence.enabled
@@ -562,6 +578,7 @@ export class LinkPresenceService {
     ) {
       return false;
     }
+    if (this.#rejectPeerForRelationship(memberNumber)) return false;
     const requestProfile = includeProfile && this.settings.get().linkPresence.enabled;
     if (includeProfile && !requestProfile) this.#pendingProfileRequests.delete(memberNumber);
     const now = Date.now();
@@ -660,12 +677,23 @@ export class LinkPresenceService {
     return capability !== undefined && now - capability.seenAt <= REMOTE_STATUS_TTL_MS;
   }
 
-  /** Relay-capable group v2 peers are required when creating a new group conversation. */
+  /** Relay-capable group v2+ peers are required when creating a new group conversation. */
   hasGroupRelayPeer(memberNumber: number, now = Date.now()): boolean {
     if (!this.#hasAuthenticatedIdentity()) return false;
     if (memberNumber === this.#authenticatedOwnMemberNumber) return true;
     const capability = this.#groupCompatiblePeers.get(memberNumber);
-    return capability?.version === 2 && now - capability.seenAt <= REMOTE_STATUS_TTL_MS;
+    return capability !== undefined &&
+      capability.version >= 2 &&
+      now - capability.seenAt <= REMOTE_STATUS_TTL_MS;
+  }
+
+  /** Managed group v3 peers understand owner-authorized metadata and membership changes. */
+  hasGroupManagedPeer(memberNumber: number, now = Date.now()): boolean {
+    if (!this.#hasAuthenticatedIdentity()) return false;
+    if (memberNumber === this.#authenticatedOwnMemberNumber) return true;
+    const capability = this.#groupCompatiblePeers.get(memberNumber);
+    return capability?.version === GROUP_CAPABILITY_VERSION &&
+      now - capability.seenAt <= REMOTE_STATUS_TTL_MS;
   }
 
   setTyping(memberNumber: number, active: boolean, force = false): boolean {
@@ -677,6 +705,7 @@ export class LinkPresenceService {
     ) {
       return false;
     }
+    if (this.#rejectPeerForRelationship(memberNumber)) return false;
     if (!this.settings.get().linkChat.typingIndicators && !(force && !active)) return false;
 
     const previous = this.#localTyping.get(memberNumber);
@@ -741,6 +770,7 @@ export class LinkPresenceService {
     ) {
       return;
     }
+    if (this.#rejectPeerForRelationship(senderNumber)) return;
     const packet = parsePresencePacket(payload);
     if (!packet) return;
     const receivedAt = Date.now();
@@ -1009,6 +1039,71 @@ export class LinkPresenceService {
     }
   }
 
+  /**
+   * Relationship reads form a privacy boundary. Missing or guarded native state is denied until
+   * BC can prove that the peer is neither blacklisted nor ghosted.
+   */
+  #rejectPeerForRelationship(memberNumber: number): boolean {
+    let rejected = true;
+    const readRelationships = this.adapter.getPlayerRelationships;
+    if (typeof readRelationships === "function") {
+      try {
+        const relationships = readRelationships.call(this.adapter, memberNumber);
+        if (Array.isArray(relationships)) {
+          rejected = relationships.some((relationship) => {
+            const normalized = String(relationship).toLowerCase();
+            return normalized === "blacklist" ||
+              normalized === "blacklisted" ||
+              normalized === "ghost" ||
+              normalized === "ghosted";
+          });
+        }
+      } catch {
+        // Cross-realm Player relationship wrappers can be revoked between frames.
+      }
+    }
+    if (rejected) this.#purgePeerState(memberNumber);
+    return rejected;
+  }
+
+  #purgePeerState(memberNumber: number): void {
+    let changed = false;
+    changed = this.#remote.delete(memberNumber) || changed;
+    changed = this.#remoteProfileDetails.delete(memberNumber) || changed;
+    changed = this.#compatiblePeers.delete(memberNumber) || changed;
+    changed = this.#groupCompatiblePeers.delete(memberNumber) || changed;
+    changed = this.#remoteVersions.delete(memberNumber) || changed;
+    changed = this.#pendingProfileRequests.delete(memberNumber) || changed;
+    changed = this.#localTyping.delete(memberNumber) || changed;
+    changed = this.#remoteTypingUntil.delete(memberNumber) || changed;
+    changed = this.#lastRequestAt.delete(memberNumber) || changed;
+    changed = this.#lastForcedRequestAt.delete(memberNumber) || changed;
+    changed = this.#lastProfileRequestAt.delete(memberNumber) || changed;
+    changed = this.#lastResponseAt.delete(memberNumber) || changed;
+    changed = this.#lastProfileResponseAt.delete(memberNumber) || changed;
+    changed = this.#queuedRequests.delete(memberNumber) || changed;
+    changed = this.#reachableOnlineFriends.delete(memberNumber) || changed;
+
+    const queueLength = this.#requestQueue.length;
+    for (let index = this.#requestQueue.length - 1; index >= 0; index -= 1) {
+      if (this.#requestQueue[index] === memberNumber) this.#requestQueue.splice(index, 1);
+    }
+    changed = this.#requestQueue.length !== queueLength || changed;
+
+    const typingTimer = this.#typingExpiryTimers.get(memberNumber);
+    if (typingTimer !== undefined) {
+      clearTimeout(typingTimer);
+      this.#typingExpiryTimers.delete(memberNumber);
+      changed = true;
+    }
+    try {
+      changed = (this.profileCache?.remove(memberNumber) ?? false) || changed;
+    } catch {
+      // Cache persistence is optional; volatile privacy state has already been removed.
+    }
+    if (changed) this.#notify(memberNumber);
+  }
+
   #sendPresence(target: number, requestId?: string): void {
     if (!this.#hasAuthenticatedIdentity()) return;
     const config = this.settings.get().linkPresence;
@@ -1022,7 +1117,7 @@ export class LinkPresenceService {
       c: config.profileStyle,
       u: Date.now(),
       v: this.version,
-      g: 2,
+      g: GROUP_CAPABILITY_VERSION,
     };
     try {
       if (!this.#hasAuthenticatedIdentity()) return;
@@ -1057,7 +1152,11 @@ export class LinkPresenceService {
 
   #sendCapability(target?: number): void {
     if (!this.#hasAuthenticatedIdentity()) return;
-    const payload = JSON.stringify({ t: "pc", v: this.version, g: 2 } satisfies PresencePacket);
+    const payload = JSON.stringify({
+      t: "pc",
+      v: this.version,
+      g: GROUP_CAPABILITY_VERSION,
+    } satisfies PresencePacket);
     try {
       if (!this.#hasAuthenticatedIdentity()) return;
       if (target === undefined) this.adapter.broadcastKikiLinkProtocol(payload);
@@ -1083,7 +1182,7 @@ export class LinkPresenceService {
       ...(includeProfile ? { f: config.avatarFrame, c: config.profileStyle } : {}),
       u: Date.now(),
       v: this.version,
-      g: 2,
+      g: GROUP_CAPABILITY_VERSION,
     };
     try {
       if (!this.#hasAuthenticatedIdentity()) return;
@@ -1111,7 +1210,11 @@ export class LinkPresenceService {
     if (force || roomChanged) {
       if (!this.#hasAuthenticatedIdentity()) return;
       const query: PresencePacket = { t: "pq", i: createId("room").slice(-18), b: 1 };
-      this.adapter.broadcastKikiLinkProtocol(JSON.stringify(query));
+      try {
+        this.adapter.broadcastKikiLinkProtocol(JSON.stringify(query));
+      } catch {
+        // Guarded or temporarily unavailable native transport must not abort service startup.
+      }
     }
     if (this.settings.get().linkPresence.enabled) {
       this.#publishOwnPresence();
@@ -1430,7 +1533,7 @@ function parsePresencePacket(payload: string): PresencePacket | null {
       ? {
           t: "pc",
           v: version,
-          ...("g" in value && (value.g === 1 || value.g === 2) ? { g: value.g } : {}),
+          ...("g" in value && isGroupCapabilityVersion(value.g) ? { g: value.g } : {}),
         }
       : null;
   }
@@ -1493,7 +1596,7 @@ function parsePresencePacket(payload: string): PresencePacket | null {
     ...(profileStyle ? { c: profileStyle } : {}),
     u: value.u,
     v: version,
-    ...("g" in value && (value.g === 1 || value.g === 2) ? { g: value.g } : {}),
+    ...("g" in value && isGroupCapabilityVersion(value.g) ? { g: value.g } : {}),
   };
 }
 
@@ -1521,7 +1624,7 @@ export function serializePresencePacket(packet: Extract<PresencePacket, { t: "ps
     ...(packet.c !== undefined && isProfileCardStyle(packet.c) ? { c: packet.c } : {}),
     u: packet.u,
     v: version,
-    ...(packet.g === 1 || packet.g === 2 ? { g: packet.g } : {}),
+    ...(packet.g !== undefined && isGroupCapabilityVersion(packet.g) ? { g: packet.g } : {}),
   };
   let payload = JSON.stringify(bounded);
   // Required status/time/version always win. Long optional URLs and escaped status notes can make
@@ -1583,6 +1686,10 @@ function isProfileCardStyle(value: unknown): value is ProfileCardStyle {
 
 function isPresenceStatus(value: unknown): value is PresenceStatus {
   return value === "online" || value === "idle" || value === "dnd" || value === "offline";
+}
+
+function isGroupCapabilityVersion(value: unknown): value is GroupCapabilityVersion {
+  return value === 1 || value === 2 || value === GROUP_CAPABILITY_VERSION;
 }
 
 function isPositiveMemberNumber(value: unknown): value is number {

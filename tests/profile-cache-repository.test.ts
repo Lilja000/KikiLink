@@ -113,6 +113,9 @@ describe("ProfileCacheRepository", () => {
       syncedAt: now,
       lastAccessedAt: now,
     });
+    expect(repository.upsert(profile(457, {
+      avatarUrl: "https://cdn.example/unbounded.avif",
+    }), now)).not.toHaveProperty("avatarUrl");
     expect(() => repository.upsert(profile(0), now)).toThrow("Invalid cached public profile");
   });
 

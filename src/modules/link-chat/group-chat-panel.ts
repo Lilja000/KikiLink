@@ -1,6 +1,7 @@
 import type { BCAdapter } from "../../bc/adapter";
 import type { PresenceSnapshot } from "../../core/types";
 import type { LinkPresenceService } from "../link-presence/link-presence-service";
+import { kikiIcon } from "./icons";
 import {
   GROUP_MESSAGE_MAX_CONTENT,
   GROUP_TITLE_MAX_CHARS,
@@ -9,6 +10,7 @@ import {
   type GroupConversation,
   type GroupDeliveryFailure,
   type GroupMessage,
+  type GroupMutationResult,
   type GroupSendResult,
 } from "./group-chat-service";
 
@@ -18,6 +20,11 @@ const DRAFT_SAVE_DELAY_MS = 180;
 const INITIAL_MESSAGE_RENDER_LIMIT = 120;
 const MESSAGE_RENDER_PAGE_SIZE = 100;
 const GROUP_STACK_VISIBLE_MEMBERS = 3;
+const GROUP_MAX_MEMBERS = 5;
+const GROUP_MIN_MEMBERS = 3;
+const GROUP_MENU_LONG_PRESS_MS = 520;
+const GROUP_MENU_LONG_PRESS_MOVE_PX = 9;
+const GROUP_MENU_CLICK_SUPPRESSION_MS = 700;
 
 export type GroupChatPanelAdapter = Pick<
   BCAdapter,
@@ -28,7 +35,9 @@ export type GroupChatPanelPresence = Pick<
   LinkPresenceService,
   "get" | "hasGroupChatPeer" | "request" | "requestMany" | "subscribe"
 > & {
-  /** Added by group protocol v2; absence is treated as incompatible for new invitations. */
+  /** Managed protocol v3; absence is treated as incompatible for new invitations. */
+  hasGroupManagedPeer?(memberNumber: number): boolean;
+  /** Kept for older hosts, but deliberately insufficient for creating a managed group. */
   hasGroupRelayPeer?(memberNumber: number): boolean;
 };
 
@@ -66,12 +75,49 @@ export interface GroupChatPanelOptions {
   getEnterToSend?: () => boolean;
   /** Lets a host provide one unified direct/group list without rendering the legacy sidebar. */
   renderSidebar?: boolean;
+  /** Optional host hooks; the panel falls back to the corresponding service mutation. */
+  onRenameGroup?: GroupTextMutationCallback;
+  onSetGroupAvatar?: GroupTextMutationCallback;
+  onSetGroupOutlineColor?: GroupTextMutationCallback;
+  onAddGroupMember?: GroupMemberMutationCallback;
+  onKickGroupMember?: GroupMemberMutationCallback;
+  onConvertLegacyGroup?: GroupIdMutationCallback;
+  /** Opens the host's privacy-aware file picker/uploader for a group avatar. */
+  onPickGroupAvatar?: (groupId: string, returnFocus: HTMLElement) => void | Promise<void>;
+  /** Opens the host's shared image composer with a typed group destination. */
+  onAttachImage?: (groupId: string, returnFocus: HTMLElement) => void | Promise<void>;
+  /** Reuses the host's safe link/image renderer without duplicating remote-load policy here. */
+  renderMessageBody?: (message: GroupMessage) => Node | undefined;
+  /** Uses the host's privacy-aware group image renderer when available. */
+  renderGroupAvatar?: (target: HTMLElement, group: GroupConversation) => void;
+  /** Exposes one explicit per-session reveal when the host's preview policy is ask-first. */
+  canRevealGroupAvatar?: (group: GroupConversation) => boolean;
+  onRevealGroupAvatar?: (groupId: string) => void;
+  confirmKickMember?: (
+    group: GroupConversation,
+    member: GroupChatPanelMemberTarget,
+  ) => boolean | Promise<boolean>;
 }
+
+type GroupPanelMutationValue = GroupMutationResult | void;
+type GroupIdMutationCallback = (
+  groupId: string,
+) => GroupPanelMutationValue | Promise<GroupPanelMutationValue>;
+type GroupTextMutationCallback = (
+  groupId: string,
+  value: string,
+) => GroupPanelMutationValue | Promise<GroupPanelMutationValue>;
+type GroupMemberMutationCallback = (
+  groupId: string,
+  memberNumber: number,
+) => GroupPanelMutationValue | Promise<GroupPanelMutationValue>;
 
 export interface GroupChatPanelNodes {
   sidebarSection: HTMLElement;
   chatPane: HTMLElement;
   newGroupDialog: HTMLDialogElement;
+  groupActionMenuLayer: HTMLDialogElement;
+  groupDetailsDialog: HTMLDialogElement;
 }
 
 interface ContactOption {
@@ -89,6 +135,8 @@ export class GroupChatPanel {
   readonly sidebarSection: HTMLElement;
   readonly chatPane: HTMLElement;
   readonly newGroupDialog: HTMLDialogElement;
+  readonly groupActionMenuLayer: HTMLDialogElement;
+  readonly groupDetailsDialog: HTMLDialogElement;
   readonly newGroupButton: HTMLButtonElement;
 
   readonly #groupList: HTMLElement;
@@ -96,6 +144,8 @@ export class GroupChatPanel {
   readonly #groupCount: HTMLElement;
   readonly #aggregateUnread: HTMLElement;
   readonly #paneTitle: HTMLElement;
+  readonly #headerAvatar: HTMLElement;
+  readonly #creatorBadge: HTMLElement;
   readonly #memberSummary: HTMLElement;
   readonly #participantStrip: HTMLElement;
   readonly #transcript: HTMLElement;
@@ -104,15 +154,25 @@ export class GroupChatPanel {
   readonly #composer: HTMLTextAreaElement;
   readonly #counter: HTMLElement;
   readonly #sendButton: HTMLButtonElement;
-  readonly #pinButton: HTMLButtonElement;
-  readonly #removeButton: HTMLButtonElement;
+  readonly #attachImageButton: HTMLButtonElement;
+  readonly #paneMenuButton: HTMLButtonElement;
   readonly #paneFeedback: HTMLElement;
   readonly #dialogHeading: HTMLElement;
   readonly #dialogBody: HTMLElement;
   readonly #dialogActions: HTMLElement;
   readonly #dialogFeedback: HTMLElement;
+  readonly #groupActionMenu: HTMLElement;
+  readonly #groupDetailsTitle: HTMLElement;
+  readonly #groupDetailsBody: HTMLElement;
+  readonly #groupDetailsActions: HTMLElement;
   readonly #unsubscribeGroup: () => void;
   readonly #unsubscribePresence: () => void;
+  readonly #groupActionTargetBindings = new WeakMap<
+    HTMLElement,
+    { cleanup: () => void; reference: WeakRef<HTMLElement> }
+  >();
+  readonly #groupActionTargetReferences = new Set<WeakRef<HTMLElement>>();
+  readonly #suppressedGroupTargetClicks = new WeakMap<HTMLElement, number>();
 
   #currentGroupId: string | undefined;
   #contacts: ContactOption[] = [];
@@ -124,11 +184,20 @@ export class GroupChatPanel {
   #creating = false;
   #sending = false;
   #paneActionBusy = false;
+  #detailsActionBusy = false;
   #destroyed = false;
   #draftTimer: ReturnType<typeof setTimeout> | undefined;
+  #contactPresenceRenderFrame: number | undefined;
   #pendingDraft: { groupId: string; value: string } | undefined;
   #messageRenderLimit = INITIAL_MESSAGE_RENDER_LIMIT;
   #messageRenderGroupId: string | undefined;
+  #messageRenderMemberNamesRevision: number | undefined;
+  #menuGroupId: string | undefined;
+  #menuReturnFocus: HTMLElement | undefined;
+  #detailsGroupId: string | undefined;
+  #detailsReturnFocus: HTMLElement | undefined;
+  #detailsRenderSignature: string | undefined;
+  #detailsLifecycleToken = 0;
 
   constructor(
     private readonly adapter: GroupChatPanelAdapter,
@@ -137,6 +206,7 @@ export class GroupChatPanel {
     private readonly options: GroupChatPanelOptions = {},
   ) {
     this.newGroupButton = button("kl-group-new", "New group", "Create a group chat");
+    this.newGroupButton.title = "Create a group chat with 2–4 KikiLink friends";
     this.newGroupButton.addEventListener("click", () => this.openNewGroupDialog());
 
     const sidebarHeading = node("h2", "kl-group-sidebar-title", "Groups");
@@ -155,15 +225,20 @@ export class GroupChatPanel {
     this.#sidebarEmpty = node(
       "p",
       "kl-group-list-empty",
-      "No group chats yet. Create one with 2–4 relay-capable KikiLink contacts.",
+      "No group chats yet. Create one with 2–4 managed-group-compatible KikiLink contacts.",
     );
     this.sidebarSection = node("section", "kl-group-sidebar");
     this.sidebarSection.setAttribute("aria-label", "Group chats");
     this.sidebarSection.append(sidebarHeader, this.#groupList, this.#sidebarEmpty);
 
-    const closeButton = button("kl-group-pane-close", "Close", "Close group chat");
-    closeButton.addEventListener("click", () => this.closeActive());
+    this.#headerAvatar = node("div", "kl-group-header-avatar", "G");
+    this.#headerAvatar.setAttribute("aria-hidden", "true");
     this.#paneTitle = node("h2", "kl-group-pane-title", "Group chat");
+    this.#creatorBadge = node("span", "kl-group-creator-badge", "Creator");
+    this.#creatorBadge.title = "You created this group";
+    this.#creatorBadge.hidden = true;
+    const titleRow = node("div", "kl-group-pane-title-row");
+    titleRow.append(this.#paneTitle, this.#creatorBadge);
     this.#memberSummary = node("p", "kl-group-member-summary");
     this.#participantStrip = node("div", "kl-group-participant-strip");
     this.#participantStrip.setAttribute("role", "list");
@@ -171,18 +246,23 @@ export class GroupChatPanel {
     const titleBlock = node("div", "kl-group-pane-heading");
     titleBlock.append(
       node("span", "kl-group-pane-eyebrow", "Group chat"),
-      this.#paneTitle,
+      titleRow,
       this.#memberSummary,
       this.#participantStrip,
     );
-    this.#pinButton = button("kl-group-pin", "Pin", "Pin this group");
-    this.#pinButton.addEventListener("click", () => void this.#togglePinned());
-    this.#removeButton = button("kl-group-remove", "Remove", "Remove this group chat");
-    this.#removeButton.addEventListener("click", () => void this.#removeActive());
-    const paneActions = node("div", "kl-group-pane-actions");
-    paneActions.append(this.#pinButton, this.#removeButton, closeButton);
+    this.#paneMenuButton = button(
+      "kl-group-pane-menu kl-group-pane-menu-trigger",
+      "",
+      "Group actions",
+    );
+    this.#paneMenuButton.title = "Group actions";
+    this.#paneMenuButton.append(kikiIcon("more"));
+    this.#paneMenuButton.addEventListener("click", () => {
+      const groupId = this.#currentGroupId;
+      if (groupId) this.openGroupActionMenu(groupId, this.#paneMenuButton);
+    });
     const paneHeader = node("header", "kl-group-pane-header");
-    paneHeader.append(titleBlock, paneActions);
+    paneHeader.append(this.#headerAvatar, titleBlock, this.#paneMenuButton);
 
     this.#messageLog = node("div", "kl-group-message-log");
     this.#messageLog.id = uniqueDomId("kl-group-message-log");
@@ -227,10 +307,22 @@ export class GroupChatPanel {
     this.#sendButton = button("kl-group-send", "Send", "Send group message");
     this.#sendButton.disabled = true;
     this.#sendButton.addEventListener("click", () => void this.#sendActiveMessage());
+    this.#attachImageButton = button(
+      "kl-group-composer-attach",
+      "",
+      "Attach an image to this group",
+    );
+    this.#attachImageButton.title = "Attach image";
+    this.#attachImageButton.append(kikiIcon("image"));
+    this.#attachImageButton.addEventListener("click", () => void this.#attachImage());
+    const composerRow = node("div", "kl-group-composer-row");
+    composerRow.append(this.#attachImageButton, this.#composer);
+    const composerActions = node("div", "kl-group-composer-actions");
+    composerActions.append(this.#counter, this.#sendButton);
     const composerFooter = node("div", "kl-group-composer-footer");
-    composerFooter.append(this.#counter, this.#sendButton);
+    composerFooter.append(composerActions);
     const composerArea = node("div", "kl-group-composer-area");
-    composerArea.append(composerLabel, this.#composer, composerFooter);
+    composerArea.append(composerLabel, composerRow, composerFooter);
 
     this.#paneFeedback = node("p", "kl-group-feedback");
     this.#paneFeedback.setAttribute("role", "status");
@@ -263,6 +355,40 @@ export class GroupChatPanel {
       if (!this.#creating) this.#resetCreateDialog();
     });
 
+    this.#groupActionMenu = node("div", "kl-group-menu");
+    this.#groupActionMenu.setAttribute("role", "menu");
+    this.#groupActionMenu.setAttribute("aria-label", "Group actions");
+    this.#groupActionMenu.addEventListener("keydown", (event) => this.#onGroupMenuKeyDown(event));
+    this.groupActionMenuLayer = document.createElement("dialog");
+    this.groupActionMenuLayer.className = "kl-group-menu-layer";
+    this.groupActionMenuLayer.setAttribute("aria-label", "Group actions");
+    this.groupActionMenuLayer.append(this.#groupActionMenu);
+    this.groupActionMenuLayer.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      this.#closeGroupActionMenu(true);
+    });
+    this.groupActionMenuLayer.addEventListener("pointerdown", (event) => {
+      if (event.target === this.groupActionMenuLayer) this.#closeGroupActionMenu(true);
+    });
+
+    this.#groupDetailsTitle = node("h2", "kl-group-details-title", "Group details");
+    this.#groupDetailsTitle.id = uniqueDomId("kl-group-details-title");
+    this.#groupDetailsBody = node("div", "kl-group-details-body");
+    this.#groupDetailsActions = node("div", "kl-group-details-actions");
+    this.groupDetailsDialog = document.createElement("dialog");
+    this.groupDetailsDialog.className = "kl-group-details-dialog";
+    this.groupDetailsDialog.setAttribute("aria-labelledby", this.#groupDetailsTitle.id);
+    this.groupDetailsDialog.append(
+      this.#groupDetailsTitle,
+      this.#groupDetailsBody,
+      this.#groupDetailsActions,
+    );
+    this.groupDetailsDialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      if (this.#detailsActionBusy) return;
+      this.#closeGroupDetails(true);
+    });
+
     this.#unsubscribeGroup = this.service.subscribe((update) => this.#onGroupUpdate(update));
     this.#unsubscribePresence = this.presence.subscribe((memberNumber) =>
       this.#onPresenceUpdate(memberNumber),
@@ -279,11 +405,159 @@ export class GroupChatPanel {
       sidebarSection: this.sidebarSection,
       chatPane: this.chatPane,
       newGroupDialog: this.newGroupDialog,
+      groupActionMenuLayer: this.groupActionMenuLayer,
+      groupDetailsDialog: this.groupDetailsDialog,
     };
   }
 
   get activeGroupId(): string | undefined {
     return this.#currentGroupId;
+  }
+
+  /**
+   * Adds the same accessible action menu used by the pane header to any host-rendered group row.
+   * The returned disposer is idempotent; destroy() also releases bindings that a host forgot.
+   */
+  bindGroupActionTarget(
+    target: HTMLElement,
+    groupId: string | (() => string | undefined),
+  ): () => void {
+    this.#unbindGroupActionTarget(target);
+    for (const reference of this.#groupActionTargetReferences) {
+      if (!reference.deref()) this.#groupActionTargetReferences.delete(reference);
+    }
+    const reference = new WeakRef(target);
+    const resolveGroupId = typeof groupId === "function" ? groupId : () => groupId;
+    let longPressTimer: ReturnType<typeof setTimeout> | undefined;
+    let pointerStart: { x: number; y: number } | undefined;
+
+    const clearLongPress = (): void => {
+      if (longPressTimer !== undefined) clearTimeout(longPressTimer);
+      longPressTimer = undefined;
+      pointerStart = undefined;
+    };
+    const open = (x?: number, y?: number): void => {
+      const resolved = resolveGroupId();
+      if (resolved) this.openGroupActionMenu(resolved, target, x, y);
+    };
+    const onContextMenu = (event: MouseEvent): void => {
+      if (!resolveGroupId()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      clearLongPress();
+      open(event.clientX, event.clientY);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
+      if (!resolveGroupId()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      open();
+    };
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+      if (!resolveGroupId()) return;
+      clearLongPress();
+      pointerStart = { x: event.clientX, y: event.clientY };
+      const pressX = event.clientX;
+      const pressY = event.clientY;
+      longPressTimer = setTimeout(() => {
+        longPressTimer = undefined;
+        this.#suppressedGroupTargetClicks.set(
+          target,
+          Date.now() + GROUP_MENU_CLICK_SUPPRESSION_MS,
+        );
+        open(pressX, pressY);
+      }, GROUP_MENU_LONG_PRESS_MS);
+    };
+    const onPointerMove = (event: PointerEvent): void => {
+      if (!pointerStart) return;
+      if (
+        Math.abs(event.clientX - pointerStart.x) > GROUP_MENU_LONG_PRESS_MOVE_PX ||
+        Math.abs(event.clientY - pointerStart.y) > GROUP_MENU_LONG_PRESS_MOVE_PX
+      ) {
+        clearLongPress();
+      }
+    };
+    const onSuppressedClick = (event: MouseEvent): void => {
+      const suppressUntil = this.#suppressedGroupTargetClicks.get(target) ?? 0;
+      if (suppressUntil <= Date.now()) return;
+      this.#suppressedGroupTargetClicks.delete(target);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    target.addEventListener("contextmenu", onContextMenu);
+    target.addEventListener("keydown", onKeyDown);
+    target.addEventListener("pointerdown", onPointerDown);
+    target.addEventListener("pointermove", onPointerMove);
+    target.addEventListener("pointerup", clearLongPress);
+    target.addEventListener("pointercancel", clearLongPress);
+    target.addEventListener("dragstart", clearLongPress);
+    target.addEventListener("click", onSuppressedClick, true);
+
+    let active = true;
+    const cleanup = (): void => {
+      if (!active) return;
+      active = false;
+      clearLongPress();
+      target.removeEventListener("contextmenu", onContextMenu);
+      target.removeEventListener("keydown", onKeyDown);
+      target.removeEventListener("pointerdown", onPointerDown);
+      target.removeEventListener("pointermove", onPointerMove);
+      target.removeEventListener("pointerup", clearLongPress);
+      target.removeEventListener("pointercancel", clearLongPress);
+      target.removeEventListener("dragstart", clearLongPress);
+      target.removeEventListener("click", onSuppressedClick, true);
+      if (this.#groupActionTargetBindings.get(target)?.cleanup === cleanup) {
+        this.#groupActionTargetBindings.delete(target);
+        this.#groupActionTargetReferences.delete(reference);
+      }
+    };
+    this.#groupActionTargetBindings.set(target, { cleanup, reference });
+    this.#groupActionTargetReferences.add(reference);
+    return cleanup;
+  }
+
+  /** Opens the action menu programmatically; useful for unified host conversation rows. */
+  openGroupActionMenu(
+    groupId: string,
+    returnFocus?: HTMLElement,
+    clientX?: number,
+    clientY?: number,
+  ): boolean {
+    if (this.#destroyed) return false;
+    const group = this.service.getGroup(groupId);
+    if (!group) return false;
+    this.#ensureFloatingNodesMounted();
+    if (this.groupDetailsDialog.open) this.#closeGroupDetails(false);
+    if (this.groupActionMenuLayer.open) this.#closeGroupActionMenu(false);
+    this.#menuGroupId = groupId;
+    this.#menuReturnFocus = returnFocus;
+    this.#renderGroupActionMenu(group);
+    openDialog(this.groupActionMenuLayer);
+    this.#positionGroupActionMenu(returnFocus, clientX, clientY);
+    this.#groupActionMenu
+      .querySelector<HTMLButtonElement>("button[role='menuitem']:not(:disabled)")
+      ?.focus();
+    return true;
+  }
+
+  /** Opens owner controls or read-only details, depending on service-authoritative group state. */
+  openGroupDetails(groupId: string, returnFocus?: HTMLElement): boolean {
+    if (this.#destroyed) return false;
+    const group = this.service.getGroup(groupId);
+    if (!group) return false;
+    this.#ensureFloatingNodesMounted();
+    if (this.groupDetailsDialog.open) this.#closeGroupDetails(false);
+    this.#detailsGroupId = groupId;
+    this.#detailsReturnFocus = returnFocus;
+    this.#detailsRenderSignature = undefined;
+    this.#renderGroupDetails(group);
+    openDialog(this.groupDetailsDialog);
+    this.groupDetailsDialog
+      .querySelector<HTMLElement>("input:not(:disabled), select:not(:disabled), button:not(:disabled)")
+      ?.focus();
+    return true;
   }
 
   /** Applies the host chat search to group titles, members, numbers, and the latest preview. */
@@ -331,6 +605,7 @@ export class GroupChatPanel {
       // Message identifiers are unique only inside a group. Force the transcript renderer to
       // discard the previous group's keyed nodes before it considers reusing message IDs.
       this.#messageRenderGroupId = undefined;
+      this.#messageRenderMemberNamesRevision = undefined;
       this.#messageRenderLimit = INITIAL_MESSAGE_RENDER_LIMIT;
     }
     this.chatPane.hidden = false;
@@ -359,6 +634,23 @@ export class GroupChatPanel {
     this.#closeActive(true);
   }
 
+  /** Closes transient group UI when the host Link Deck is hidden without discarding chat state. */
+  handleHostClose(): void {
+    if (this.#destroyed) return;
+    this.#detailsLifecycleToken += 1;
+    this.#cancelContactPresenceRefresh();
+    if (this.newGroupDialog.open) {
+      try {
+        this.newGroupDialog.close();
+      } catch {
+        this.newGroupDialog.removeAttribute("open");
+      }
+    }
+    if (!this.#creating) this.#resetCreateDialog();
+    this.#closeGroupActionMenu(false);
+    this.#closeGroupDetails(false);
+  }
+
   /** Clears unread only when the host has made the already-selected group pane visible again. */
   async markVisibleActiveRead(): Promise<void> {
     const groupId = this.#currentGroupId;
@@ -384,6 +676,11 @@ export class GroupChatPanel {
       this.#contacts = this.#knownContacts();
       this.#renderContactOptions();
     }
+    if (this.groupDetailsDialog.open && this.#detailsGroupId) {
+      const group = this.service.getGroup(this.#detailsGroupId);
+      if (group) this.#renderGroupDetails(group);
+      else this.#closeGroupDetails(true);
+    }
   }
 
   /** Commits the panel's shorter UI debounce before a page lifecycle flush. */
@@ -395,6 +692,8 @@ export class GroupChatPanel {
     if (this.#destroyed) return;
     this.#flushDraft();
     this.#destroyed = true;
+    this.#detailsLifecycleToken += 1;
+    this.#cancelContactPresenceRefresh();
     this.#unsubscribeGroup();
     this.#unsubscribePresence();
     try {
@@ -402,9 +701,613 @@ export class GroupChatPanel {
     } catch {
       this.newGroupDialog.removeAttribute("open");
     }
+    this.#closeGroupActionMenu(false);
+    this.#closeGroupDetails(false);
+    for (const reference of [...this.#groupActionTargetReferences]) {
+      const target = reference.deref();
+      if (target) this.#unbindGroupActionTarget(target);
+    }
+    this.#groupActionTargetReferences.clear();
     this.sidebarSection.remove();
     this.chatPane.remove();
     this.newGroupDialog.remove();
+    this.groupActionMenuLayer.remove();
+    this.groupDetailsDialog.remove();
+  }
+
+  #unbindGroupActionTarget(target: HTMLElement): void {
+    this.#groupActionTargetBindings.get(target)?.cleanup();
+  }
+
+  #ensureFloatingNodesMounted(): void {
+    const parent = this.newGroupDialog.parentNode ?? this.chatPane.parentNode ?? document.body;
+    if (!this.groupActionMenuLayer.parentNode) parent.appendChild(this.groupActionMenuLayer);
+    if (!this.groupDetailsDialog.parentNode) parent.appendChild(this.groupDetailsDialog);
+  }
+
+  #renderGroupActionMenu(group: GroupConversation): void {
+    const header = node("div", "kl-group-menu-header");
+    const avatar = node("div", "kl-group-header-avatar");
+    avatar.setAttribute("aria-hidden", "true");
+    this.#renderGroupAvatar(avatar, group);
+    const copy = node("div", "kl-group-menu-copy");
+    copy.append(
+      node("strong", "kl-group-menu-title", group.title),
+      node(
+        "span",
+        "kl-group-menu-meta",
+        `${group.memberNumbers.length} members · ${group.protocolVersion === 2 ? "Managed group" : "Legacy group"}`,
+      ),
+    );
+    header.append(avatar, copy);
+
+    const primary = node("div", "kl-group-menu-section");
+    primary.append(this.#groupMenuAction(
+      this.#isGroupCreator(group) && group.protocolVersion === 2 ? "Manage group" : "Group details",
+      "details",
+      () => {
+        const returnFocus = this.#menuReturnFocus;
+        this.#closeGroupActionMenu(false);
+        this.openGroupDetails(group.groupId, returnFocus);
+      },
+    ));
+    if (this.options.onAttachImage) {
+      primary.append(this.#groupMenuAction("Attach image", "attach-image", () => {
+        const returnFocus = this.#menuReturnFocus ?? this.#paneMenuButton;
+        this.#closeGroupActionMenu(false);
+        void this.#attachGroupImage(group.groupId, returnFocus);
+      }));
+    }
+    let canRevealGroupAvatar = false;
+    try {
+      canRevealGroupAvatar = this.options.canRevealGroupAvatar?.(structuredClone(group)) === true;
+    } catch {
+      canRevealGroupAvatar = false;
+    }
+    if (this.options.onRevealGroupAvatar && canRevealGroupAvatar) {
+      primary.append(this.#groupMenuAction("Show group avatar", "show-avatar", () => {
+        const returnFocus = this.#menuReturnFocus;
+        this.#closeGroupActionMenu(false);
+        try {
+          this.options.onRevealGroupAvatar?.(group.groupId);
+        } catch {
+          this.#report({
+            tone: "error",
+            message: "The group avatar could not be revealed safely.",
+            groupId: group.groupId,
+          });
+        }
+        this.#restoreGroupFocus(returnFocus);
+      }));
+    }
+    primary.append(this.#groupMenuAction(
+      group.pinned ? "Unpin group" : "Pin group",
+      "toggle-pin",
+      () => {
+        this.#closeGroupActionMenu(true);
+        void this.#togglePinned(group.groupId);
+      },
+    ));
+    if (group.groupId === this.#currentGroupId) {
+      primary.append(this.#groupMenuAction("Close chat", "close", () => {
+        this.#closeGroupActionMenu(false);
+        this.closeActive();
+      }));
+    }
+
+    const danger = node("div", "kl-group-menu-section");
+    danger.append(this.#groupMenuAction("Remove from this device", "remove", () => {
+      this.#closeGroupActionMenu(true);
+      void this.#removeGroup(group.groupId);
+    }, true));
+    this.#groupActionMenu.replaceChildren(header, primary, danger);
+  }
+
+  #groupMenuAction(
+    label: string,
+    action: string,
+    activate: () => void,
+    danger = false,
+  ): HTMLButtonElement {
+    const item = button(
+      danger ? "kl-group-menu-action kl-group-menu-action--danger" : "kl-group-menu-action",
+      "",
+    );
+    item.dataset.groupAction = action;
+    item.setAttribute("role", "menuitem");
+    item.disabled = this.#paneActionBusy;
+    const icon = action === "attach-image" || action === "show-avatar"
+      ? "image"
+      : action === "toggle-pin"
+        ? "pin"
+        : action === "close"
+          ? "close"
+          : action === "remove"
+            ? "trash"
+            : "settings";
+    item.append(kikiIcon(icon), node("span", "kl-group-menu-action-label", label));
+    item.addEventListener("click", activate);
+    return item;
+  }
+
+  #onGroupMenuKeyDown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.#closeGroupActionMenu(true);
+      return;
+    }
+    const items = [...this.#groupActionMenu.querySelectorAll<HTMLButtonElement>(
+      "button[role='menuitem']:not(:disabled)",
+    )];
+    if (items.length === 0) return;
+    const current = items.indexOf(event.target as HTMLButtonElement);
+    let next = -1;
+    if (event.key === "ArrowDown") next = current < 0 ? 0 : (current + 1) % items.length;
+    else if (event.key === "ArrowUp") {
+      next = current < 0 ? items.length - 1 : (current - 1 + items.length) % items.length;
+    } else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = items.length - 1;
+    if (next < 0) return;
+    event.preventDefault();
+    items[next]?.focus();
+  }
+
+  #positionGroupActionMenu(
+    source?: HTMLElement,
+    clientX?: number,
+    clientY?: number,
+  ): void {
+    const rect = source?.getBoundingClientRect();
+    const requestedX = Number.isFinite(clientX) && clientX !== undefined
+      ? clientX
+      : rect?.left ?? 8;
+    const requestedY = Number.isFinite(clientY) && clientY !== undefined
+      ? clientY
+      : (rect?.bottom ?? 8) + 4;
+    const viewportWidth = Math.max(0, globalThis.innerWidth ?? 0);
+    const viewportHeight = Math.max(0, globalThis.innerHeight ?? 0);
+    const measuredWidth = this.#groupActionMenu.offsetWidth || 244;
+    const measuredHeight = this.#groupActionMenu.offsetHeight || 260;
+    const left = Math.max(8, Math.min(requestedX, Math.max(8, viewportWidth - measuredWidth - 8)));
+    const top = Math.max(8, Math.min(requestedY, Math.max(8, viewportHeight - measuredHeight - 8)));
+    this.#groupActionMenu.style.left = `${left}px`;
+    this.#groupActionMenu.style.top = `${top}px`;
+  }
+
+  #closeGroupActionMenu(restoreFocus: boolean): void {
+    const returnFocus = restoreFocus ? this.#menuReturnFocus : undefined;
+    this.#menuGroupId = undefined;
+    this.#menuReturnFocus = undefined;
+    closeDialog(this.groupActionMenuLayer);
+    if (restoreFocus) this.#restoreGroupFocus(returnFocus);
+  }
+
+  #renderGroupDetails(group: GroupConversation): void {
+    const signature = JSON.stringify([
+      group.groupId,
+      group.title,
+      group.creatorNumber,
+      group.protocolVersion,
+      group.epochId,
+      group.stateRevision,
+      group.appearanceRevision,
+      group.memberNamesRevision,
+      group.avatarUrl,
+      group.outlineColor,
+      group.memberNumbers,
+    ]);
+    if (this.#detailsRenderSignature === signature) return;
+    this.#detailsRenderSignature = signature;
+    const isCreator = this.#isGroupCreator(group);
+    const managed = group.protocolVersion === 2;
+    this.#groupDetailsTitle.textContent = isCreator && managed
+      ? `Manage ${group.title}`
+      : `Group details · ${group.title}`;
+
+    const summary = node("section", "kl-group-details-summary");
+    const avatar = node("div", "kl-group-details-avatar");
+    avatar.setAttribute("aria-hidden", "true");
+    this.#renderGroupAvatar(avatar, group);
+    const creatorName = this.#memberName(group, group.creatorNumber);
+    const summaryCopy = node("div", "kl-group-details-copy");
+    summaryCopy.append(
+      node("strong", "kl-group-menu-title", group.title),
+      node(
+        "span",
+        "kl-group-menu-meta",
+        `${group.memberNumbers.length} members · Creator: ${creatorName} (#${group.creatorNumber})`,
+      ),
+    );
+    summary.append(avatar, summaryCopy);
+
+    const notice = node("p", "kl-group-manage-notice");
+    notice.setAttribute("role", "status");
+    notice.setAttribute("aria-live", "polite");
+    if (!isCreator) {
+      notice.textContent = `Only ${creatorName}, the group creator, can change its name, avatar, color, or membership.`;
+    } else if (!managed) {
+      notice.textContent = "This is a legacy group. Its details are read-only until you upgrade it to the managed group protocol.";
+    } else {
+      notice.textContent = "You created this group. Changes are accepted only from your authenticated BC identity and distributed by the group service.";
+    }
+
+    const content = document.createDocumentFragment();
+    content.append(summary, notice);
+    if (isCreator && managed) content.append(this.#renderManagedGroupFields(group, notice));
+    else content.append(this.#renderGroupMemberList(group, false, notice));
+    this.#groupDetailsBody.replaceChildren(content);
+
+    const actions = document.createDocumentFragment();
+    if (isCreator && !managed) {
+      const upgrade = button("kl-group-details-button", "Upgrade to managed group");
+      upgrade.dataset.groupDetailsAction = "convert";
+      upgrade.addEventListener("click", () => void this.#runGroupMutation(
+        group.groupId,
+        () => this.options.onConvertLegacyGroup
+          ? this.options.onConvertLegacyGroup(group.groupId)
+          : this.service.convertLegacyGroup(group.groupId),
+        "Group upgraded to the managed protocol.",
+      ));
+      actions.append(upgrade);
+    }
+    const close = button("kl-group-details-button", "Close", "Close group details");
+    close.dataset.groupDetailsAction = "close";
+    close.addEventListener("click", () => this.#closeGroupDetails(true));
+    actions.append(close);
+    this.#groupDetailsActions.replaceChildren(actions);
+    if (this.#detailsActionBusy) this.#setGroupDetailsDisabled(true);
+  }
+
+  #renderManagedGroupFields(group: GroupConversation, notice: HTMLElement): HTMLElement {
+    const fields = node("div", "kl-group-manage-fields");
+
+    const titleField = node("div", "kl-group-manage-field");
+    const titleLabel = node("label", "kl-group-dialog-label", "Group name");
+    const titleInput = document.createElement("input");
+    titleInput.className = "kl-group-manage-title";
+    titleInput.type = "text";
+    titleInput.maxLength = GROUP_TITLE_MAX_CHARS;
+    titleInput.value = group.title;
+    titleInput.id = uniqueDomId("kl-group-manage-title");
+    titleLabel.htmlFor = titleInput.id;
+    const saveTitle = button("kl-group-manage-save", "Save name");
+    saveTitle.dataset.groupDetailsAction = "rename";
+    saveTitle.addEventListener("click", () => {
+      const value = sliceCompleteUtf16(titleInput.value, GROUP_TITLE_MAX_CHARS).trim();
+      if (!value) {
+        notice.textContent = "A group name cannot be empty.";
+        notice.dataset.tone = "error";
+        titleInput.focus();
+        return;
+      }
+      void this.#runGroupMutation(
+        group.groupId,
+        () => this.options.onRenameGroup
+          ? this.options.onRenameGroup(group.groupId, value)
+          : this.service.renameGroup(group.groupId, value),
+        "Group name updated.",
+      );
+    });
+    titleField.append(titleLabel, titleInput, saveTitle);
+
+    const avatarField = node("div", "kl-group-manage-field");
+    const avatarLabel = node("label", "kl-group-dialog-label", "Group avatar link");
+    const avatarInput = document.createElement("input");
+    avatarInput.className = "kl-group-manage-avatar-url";
+    avatarInput.type = "url";
+    avatarInput.maxLength = 450;
+    avatarInput.value = group.avatarUrl;
+    avatarInput.placeholder = "https://… direct image link";
+    avatarInput.id = uniqueDomId("kl-group-manage-avatar");
+    avatarLabel.htmlFor = avatarInput.id;
+    const saveAvatar = button("kl-group-manage-save", "Save avatar");
+    saveAvatar.dataset.groupDetailsAction = "set-avatar";
+    saveAvatar.addEventListener("click", () => void this.#runGroupMutation(
+      group.groupId,
+      () => this.options.onSetGroupAvatar
+        ? this.options.onSetGroupAvatar(group.groupId, avatarInput.value.trim())
+        : this.service.setGroupAvatar(group.groupId, avatarInput.value.trim()),
+      avatarInput.value.trim() ? "Group avatar updated." : "Group avatar cleared.",
+    ));
+    const clearAvatar = button("kl-group-manage-save", "Clear avatar");
+    clearAvatar.dataset.groupDetailsAction = "clear-avatar";
+    clearAvatar.disabled = !group.avatarUrl;
+    clearAvatar.addEventListener("click", () => void this.#runGroupMutation(
+      group.groupId,
+      () => this.options.onSetGroupAvatar
+        ? this.options.onSetGroupAvatar(group.groupId, "")
+        : this.service.setGroupAvatar(group.groupId, ""),
+      "Group avatar cleared.",
+    ));
+    avatarField.append(avatarLabel, avatarInput, saveAvatar, clearAvatar);
+    if (this.options.onPickGroupAvatar) {
+      const uploadHelp = node(
+        "p",
+        "kl-group-dialog-help kl-group-manage-upload-help",
+        "Local files are metadata-stripped, prepared as WebP, then uploaded to a public long-lived Catbox link.",
+      );
+      const pickAvatar = button("kl-group-manage-save", "Choose & upload to Catbox");
+      pickAvatar.dataset.groupDetailsAction = "pick-avatar";
+      pickAvatar.title = "Prepare this image and upload it publicly to Catbox";
+      pickAvatar.addEventListener("click", () =>
+        void this.#pickGroupAvatar(group.groupId, pickAvatar));
+      avatarField.append(uploadHelp, pickAvatar);
+    }
+
+    const outlineField = node("div", "kl-group-manage-field");
+    const outlineLabel = node("label", "kl-group-dialog-label", "Avatar outline color");
+    const outlineRow = node("div", "kl-group-manage-outline-row");
+    const outlineInput = document.createElement("input");
+    outlineInput.className = "kl-group-manage-outline";
+    outlineInput.type = "color";
+    outlineInput.value = validOutlineColor(group.outlineColor) ?? "#c89b3c";
+    outlineInput.id = uniqueDomId("kl-group-manage-outline");
+    outlineLabel.htmlFor = outlineInput.id;
+    const saveOutline = button("kl-group-manage-save kl-group-manage-outline-save", "Save color");
+    saveOutline.dataset.groupDetailsAction = "set-outline";
+    saveOutline.addEventListener("click", () => void this.#runGroupMutation(
+      group.groupId,
+      () => this.options.onSetGroupOutlineColor
+        ? this.options.onSetGroupOutlineColor(group.groupId, outlineInput.value)
+        : this.service.setGroupOutlineColor(group.groupId, outlineInput.value),
+      "Group outline color updated.",
+    ));
+    const resetOutline = button("kl-group-manage-reset-outline", "Use default");
+    resetOutline.dataset.groupDetailsAction = "reset-outline";
+    resetOutline.disabled = !group.outlineColor;
+    resetOutline.addEventListener("click", () => void this.#runGroupMutation(
+      group.groupId,
+      () => this.options.onSetGroupOutlineColor
+        ? this.options.onSetGroupOutlineColor(group.groupId, "")
+        : this.service.setGroupOutlineColor(group.groupId, ""),
+      "Group outline color reset.",
+    ));
+    outlineRow.append(outlineInput, saveOutline, resetOutline);
+    outlineField.append(outlineLabel, outlineRow);
+
+    fields.append(
+      titleField,
+      avatarField,
+      outlineField,
+      this.#renderGroupMemberList(group, true, notice),
+    );
+    return fields;
+  }
+
+  #renderGroupMemberList(
+    group: GroupConversation,
+    manageable: boolean,
+    notice: HTMLElement,
+  ): HTMLElement {
+    const section = node("section", "kl-group-manage-members");
+    section.append(node("h3", "kl-group-menu-title", "Members"));
+    for (const memberNumber of group.memberNumbers) {
+      const member = {
+        memberNumber,
+        memberName: this.#memberName(group, memberNumber),
+      };
+      const row = node("div", "kl-group-manage-member");
+      row.dataset.memberNumber = String(memberNumber);
+      const copy = node("div", "kl-group-manage-member-copy");
+      copy.append(
+        node("strong", "kl-group-contact-name", member.memberName),
+        node("span", "kl-group-contact-detail", `#${memberNumber}`),
+      );
+      if (memberNumber === group.creatorNumber) {
+        copy.append(node("span", "kl-group-manage-member-role kl-group-creator-badge", "Creator"));
+      }
+      row.append(this.#memberProfileTarget(member, "kl-group-manage-member-profile"), copy);
+      if (manageable && memberNumber !== group.creatorNumber) {
+        const kick = button("kl-group-manage-kick", "Kick", `Remove ${member.memberName} from group`);
+        kick.dataset.groupDetailsAction = "kick";
+        kick.disabled = group.memberNumbers.length <= GROUP_MIN_MEMBERS;
+        kick.addEventListener("click", () => void this.#kickGroupMember(group, member, notice));
+        row.append(kick);
+      }
+      section.append(row);
+    }
+
+    if (manageable) {
+      const add = node("div", "kl-group-manage-add");
+      const select = document.createElement("select");
+      select.className = "kl-group-manage-add-select";
+      select.setAttribute("aria-label", "Friend to add to group");
+      const candidates = this.#knownContacts().filter((contact) =>
+        !group.memberNumbers.includes(contact.memberNumber) && this.#isCompatible(contact.memberNumber),
+      );
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = candidates.length > 0
+        ? "Choose a managed-group-compatible friend"
+        : "No compatible friends available";
+      select.append(placeholder);
+      for (const candidate of candidates) {
+        const option = document.createElement("option");
+        option.value = String(candidate.memberNumber);
+        option.textContent = `${candidate.memberName} (#${candidate.memberNumber})`;
+        select.append(option);
+      }
+      const addButton = button("kl-group-manage-add-button", "Add member");
+      addButton.dataset.groupDetailsAction = "add";
+      addButton.disabled = candidates.length === 0 ||
+        group.memberNumbers.length >= GROUP_MAX_MEMBERS;
+      addButton.addEventListener("click", () => {
+        const memberNumber = Number(select.value);
+        const candidate = candidates.find((entry) => entry.memberNumber === memberNumber);
+        if (!candidate) {
+          notice.textContent = "Choose a friend to add first.";
+          notice.dataset.tone = "error";
+          select.focus();
+          return;
+        }
+        void this.#runGroupMutation(
+          group.groupId,
+          () => this.options.onAddGroupMember
+            ? this.options.onAddGroupMember(group.groupId, candidate.memberNumber)
+            : this.service.addMember(group.groupId, candidate.memberNumber),
+          `${candidate.memberName} was added to the group.`,
+        );
+      });
+      add.append(select, addButton);
+      section.append(add);
+    }
+    return section;
+  }
+  async #kickGroupMember(
+    group: GroupConversation,
+    member: GroupChatPanelMemberTarget,
+    notice: HTMLElement,
+  ): Promise<void> {
+    let confirmed = false;
+    try {
+      confirmed = this.options.confirmKickMember
+        ? await this.options.confirmKickMember(group, member)
+        : typeof window !== "undefined" &&
+          window.confirm(`Remove ${member.memberName} from “${group.title}”?`);
+    } catch {
+      confirmed = false;
+    }
+    if (!confirmed) {
+      notice.textContent = "Member removal cancelled.";
+      return;
+    }
+    await this.#runGroupMutation(
+      group.groupId,
+      () => this.options.onKickGroupMember
+        ? this.options.onKickGroupMember(group.groupId, member.memberNumber)
+        : this.service.kickMember(group.groupId, member.memberNumber),
+      `${member.memberName} was removed from the group.`,
+    );
+  }
+
+  async #pickGroupAvatar(groupId: string, returnFocus: HTMLElement): Promise<void> {
+    const pick = this.options.onPickGroupAvatar;
+    if (!pick || !this.service.getGroup(groupId)) return;
+    try {
+      // The host can retain returnFocus through the native file dialog and an async upload.
+      // Do not rebuild this details dialog here, or that focus target would become detached.
+      await pick(groupId, returnFocus);
+    } catch (error) {
+      this.#report({
+        tone: "error",
+        message: errorMessage(error, "The group avatar picker could not be opened."),
+        groupId,
+      });
+    }
+  }
+
+  async #runGroupMutation(
+    groupId: string,
+    mutate: () => GroupPanelMutationValue | Promise<GroupPanelMutationValue>,
+    successMessage: string,
+    reportSuccess = true,
+  ): Promise<void> {
+    if (this.#detailsActionBusy) return;
+    const lifecycleToken = this.#detailsLifecycleToken;
+    const wasActive = this.#currentGroupId === groupId;
+    const returnFocus = this.#detailsReturnFocus;
+    this.#detailsActionBusy = true;
+    this.#setGroupDetailsDisabled(true);
+    const notice = this.#groupDetailsBody.querySelector<HTMLElement>(".kl-group-manage-notice");
+    if (notice) {
+      notice.textContent = "Saving group changes…";
+      notice.dataset.tone = "info";
+    }
+    try {
+      const result = await mutate();
+      if (lifecycleToken !== this.#detailsLifecycleToken || this.#destroyed) return;
+      const mutationResult = result && typeof result === "object" ? result : undefined;
+      const resultGroup = mutationResult?.group;
+      if (resultGroup && resultGroup.groupId !== groupId) {
+        this.#detailsGroupId = resultGroup.groupId;
+        if (wasActive) await this.activate(resultGroup.groupId);
+      }
+      const failures = mutationResult?.failed ?? [];
+      if (reportSuccess) {
+        const completionMessage = failures.length > 0
+          ? `${successMessage} ${failures.length} local delivery handoff${plural(failures.length)} failed.`
+          : successMessage;
+        this.#report({
+          tone: failures.length > 0 ? "warning" : "success",
+          message: completionMessage,
+          groupId: resultGroup?.groupId ?? groupId,
+          ...(mutationResult
+            ? {
+                handedOffTo: [...mutationResult.handedOffTo],
+                failed: failures.map((failure) => ({ ...failure })),
+              }
+            : {}),
+        });
+        const completionNotice = this.#groupDetailsBody.querySelector<HTMLElement>(
+          ".kl-group-manage-notice",
+        );
+        if (completionNotice) {
+          completionNotice.textContent = completionMessage;
+          completionNotice.dataset.tone = failures.length > 0 ? "warning" : "success";
+        }
+      }
+      const nextGroupId = resultGroup?.groupId ?? groupId;
+      const nextGroup = this.service.getGroup(nextGroupId);
+      if (nextGroup && !this.#destroyed) {
+        if (!this.groupDetailsDialog.open) {
+          this.openGroupDetails(nextGroupId, returnFocus);
+        } else if (this.#detailsGroupId === nextGroupId) {
+          this.#renderGroupDetails(nextGroup);
+        }
+      }
+    } catch (error) {
+      if (lifecycleToken !== this.#detailsLifecycleToken || this.#destroyed) return;
+      const message = errorMessage(error, "The group could not be updated.");
+      const currentNotice = this.#groupDetailsBody.querySelector<HTMLElement>(
+        ".kl-group-manage-notice",
+      );
+      if (currentNotice) {
+        currentNotice.textContent = message;
+        currentNotice.dataset.tone = "error";
+      }
+      this.#report({ tone: "error", message, groupId });
+    } finally {
+      this.#detailsActionBusy = false;
+      this.#setGroupDetailsDisabled(false);
+    }
+  }
+
+  #setGroupDetailsDisabled(disabled: boolean): void {
+    for (const control of this.groupDetailsDialog.querySelectorAll<
+      HTMLButtonElement | HTMLInputElement | HTMLSelectElement
+    >("button, input, select")) {
+      if (disabled) {
+        if (control.dataset.disabledBeforeBusy === undefined) {
+          control.dataset.disabledBeforeBusy = String(control.disabled);
+        }
+        control.disabled = true;
+      } else if (control.dataset.disabledBeforeBusy !== undefined) {
+        control.disabled = control.dataset.disabledBeforeBusy === "true";
+        delete control.dataset.disabledBeforeBusy;
+      }
+    }
+  }
+
+  #closeGroupDetails(restoreFocus: boolean): void {
+    const returnFocus = restoreFocus ? this.#detailsReturnFocus : undefined;
+    this.#detailsGroupId = undefined;
+    this.#detailsReturnFocus = undefined;
+    this.#detailsRenderSignature = undefined;
+    closeDialog(this.groupDetailsDialog);
+    if (restoreFocus) this.#restoreGroupFocus(returnFocus);
+  }
+
+  #restoreGroupFocus(preferred?: HTMLElement): void {
+    if (preferred?.isConnected) {
+      preferred.focus();
+      return;
+    }
+    if (this.#currentGroupId && !this.chatPane.hidden && this.#paneMenuButton.isConnected) {
+      this.#paneMenuButton.focus();
+      return;
+    }
+    if (this.newGroupButton.isConnected) this.newGroupButton.focus();
   }
 
   #renderSidebar(): void {
@@ -439,12 +1342,17 @@ export class GroupChatPanel {
     this.#sidebarEmpty.hidden = groups.length > 0;
     this.#sidebarEmpty.textContent = this.#groupQuery
       ? "No group chats match this search."
-      : "No group chats yet. Create one with 2–4 relay-capable KikiLink contacts.";
+      : "No group chats yet. Create one with 2–4 managed-group-compatible KikiLink contacts.";
     const fragment = document.createDocumentFragment();
     for (const group of groups) {
       const listEntry = existingEntries.get(group.groupId) ?? this.#createGroupListEntry();
+      existingEntries.delete(group.groupId);
       this.#updateGroupListEntry(listEntry, group);
       fragment.append(listEntry);
+    }
+    for (const staleEntry of existingEntries.values()) {
+      const staleTarget = staleEntry.querySelector<HTMLElement>("[data-group-id]");
+      if (staleTarget) this.#unbindGroupActionTarget(staleTarget);
     }
     this.#groupList.replaceChildren(fragment);
     if (focusedGroupId) {
@@ -460,6 +1368,7 @@ export class GroupChatPanel {
       const groupId = row.dataset.groupId;
       if (groupId) void this.activate(groupId);
     });
+    this.bindGroupActionTarget(row, () => row.dataset.groupId);
     const listEntry = node("div", "kl-group-list-entry");
     listEntry.setAttribute("role", "listitem");
     listEntry.append(row);
@@ -560,6 +1469,29 @@ export class GroupChatPanel {
     return stack;
   }
 
+  #renderGroupAvatar(target: HTMLElement, group: GroupConversation): void {
+    const signature = JSON.stringify([
+      group.groupId,
+      group.appearanceRevision,
+      group.avatarUrl,
+      group.outlineColor,
+      group.title,
+    ]);
+    if (target.dataset.groupAvatarSignature === signature) return;
+    target.dataset.groupAvatarSignature = signature;
+    target.dataset.groupId = group.groupId;
+    target.dataset.hasAvatar = String(Boolean(group.avatarUrl));
+    target.textContent = avatarText(group.title);
+    const outline = validOutlineColor(group.outlineColor);
+    if (outline) target.style.setProperty("--kl-group-outline", outline);
+    else target.style.removeProperty("--kl-group-outline");
+    try {
+      this.options.renderGroupAvatar?.(target, structuredClone(group));
+    } catch {
+      target.textContent = avatarText(group.title);
+    }
+  }
+
   #renderParticipantStrip(group: GroupConversation): void {
     const members = group.memberNumbers.map((memberNumber) => ({
       memberNumber,
@@ -572,6 +1504,7 @@ export class GroupChatPanel {
     for (const member of members) {
       const listItem = node("span", "kl-group-participant-item");
       listItem.setAttribute("role", "listitem");
+      listItem.dataset.creator = String(member.memberNumber === group.creatorNumber);
       listItem.append(this.#memberProfileTarget(member, "kl-group-participant"));
       fragment.append(listItem);
     }
@@ -660,30 +1593,42 @@ export class GroupChatPanel {
     this.chatPane.hidden = false;
     this.chatPane.setAttribute("aria-label", `Group chat: ${group.title}`);
     this.#paneTitle.textContent = group.title;
-    const members = group.memberNumbers.map((memberNumber) => this.#memberName(group, memberNumber));
-    this.#memberSummary.textContent = `${group.memberNumbers.length} members · ${members.join(", ")}`;
+    const ownMemberNumber = this.#ownMemberNumber();
+    this.#creatorBadge.hidden = ownMemberNumber !== group.creatorNumber;
+    this.#renderGroupAvatar(this.#headerAvatar, group);
+    const creatorName = this.#memberName(group, group.creatorNumber);
+    this.#memberSummary.textContent =
+      `${group.memberNumbers.length} members · Created by ${creatorName}`;
     this.#renderParticipantStrip(group);
-    this.#pinButton.textContent = group.pinned ? "Unpin" : "Pin";
-    this.#pinButton.setAttribute("aria-label", `${group.pinned ? "Unpin" : "Pin"} ${group.title}`);
-    this.#pinButton.disabled = this.#paneActionBusy;
-    this.#removeButton.disabled = this.#paneActionBusy;
+    this.#paneMenuButton.disabled = this.#paneActionBusy;
+    this.#paneMenuButton.setAttribute("aria-label", `Actions for ${group.title}`);
     if (syncMessages) this.#renderMessages(group);
-    if (syncDraft) this.#composer.value = group.draft;
+    const maxContent = this.#messageMaxContent(group.groupId);
+    this.#composer.maxLength = maxContent;
+    if (syncDraft) this.#composer.value = group.draft.slice(0, maxContent);
     this.#updateComposerControls();
   }
 
   #renderMessages(group: GroupConversation): void {
     const changedRenderGroup = this.#messageRenderGroupId !== group.groupId;
+    const changedMemberNames =
+      !changedRenderGroup &&
+      this.#messageRenderMemberNamesRevision !== group.memberNamesRevision;
+    const previousScrollTop = this.#messageLog.scrollTop;
+    const hadRenderedMessages = this.#messageLog.childElementCount > 0;
+    const wasFollowingNewest =
+      !hadRenderedMessages ||
+      this.#messageLog.scrollHeight - this.#messageLog.scrollTop - this.#messageLog.clientHeight < 48;
     if (changedRenderGroup) {
       this.#messageRenderGroupId = group.groupId;
       this.#messageRenderLimit = INITIAL_MESSAGE_RENDER_LIMIT;
+    }
+    if (changedRenderGroup || changedMemberNames) {
+      this.#messageRenderMemberNamesRevision = group.memberNamesRevision;
       this.#messageLog.replaceChildren();
       this.#messageLog.scrollTop = 0;
     }
-    const shouldFollowNewest =
-      changedRenderGroup ||
-      this.#messageLog.childElementCount === 0 ||
-      this.#messageLog.scrollHeight - this.#messageLog.scrollTop - this.#messageLog.clientHeight < 48;
+    const shouldFollowNewest = changedRenderGroup || wasFollowingNewest;
     const messages = this.service.getMessages(group.groupId);
     const hiddenCount = Math.max(0, messages.length - this.#messageRenderLimit);
     const visibleMessages = messages.slice(-this.#messageRenderLimit);
@@ -708,11 +1653,11 @@ export class GroupChatPanel {
 
     this.#messageLog.querySelector(".kl-group-message-empty")?.remove();
     const existing = new Map<string, HTMLElement>();
-    for (const item of this.#messageLog.querySelectorAll<HTMLElement>("[data-message-id]")) {
-      const messageId = item.dataset.messageId;
-      if (messageId) existing.set(messageId, item);
+    for (const item of this.#messageLog.querySelectorAll<HTMLElement>("[data-message-key]")) {
+      const messageKey = item.dataset.messageKey;
+      if (messageKey) existing.set(messageKey, item);
     }
-    const desiredIds = visibleMessages.map((message) => message.id);
+    const desiredIds = visibleMessages.map(groupMessageKey);
     const existingIds = [...existing.keys()];
     const canAppend =
       existingIds.length <= desiredIds.length &&
@@ -745,11 +1690,12 @@ export class GroupChatPanel {
       }
       const fragment = document.createDocumentFragment();
       for (const message of visibleMessages) {
-        fragment.append(existing.get(message.id) ?? this.#createMessageNode(group, message));
+        fragment.append(existing.get(groupMessageKey(message)) ?? this.#createMessageNode(group, message));
       }
       this.#messageLog.replaceChildren(fragment);
     }
     if (shouldFollowNewest) this.#messageLog.scrollTop = this.#messageLog.scrollHeight;
+    else if (changedMemberNames) this.#messageLog.scrollTop = previousScrollTop;
   }
 
   #createMessageNode(
@@ -759,6 +1705,7 @@ export class GroupChatPanel {
     const item = node("article", "kl-group-message");
     item.dataset.direction = message.direction;
     item.dataset.messageId = message.id;
+    item.dataset.messageKey = groupMessageKey(message);
     item.dataset.groupMemberNumber = String(message.senderNumber);
     const memberName = this.#memberName(group, message.senderNumber);
     const author = message.direction === "outgoing" ? "You" : memberName;
@@ -766,6 +1713,10 @@ export class GroupChatPanel {
       { memberNumber: message.senderNumber, memberName },
       "kl-group-message-profile",
     );
+    authorTarget.classList.add("kl-group-message-profile--large");
+    authorTarget
+      .querySelector<HTMLElement>("[data-group-member-avatar='true']")
+      ?.classList.add("kl-group-message-avatar");
     const authorNode = node("strong", "kl-group-message-author", author);
     const timestamp = document.createElement("time");
     timestamp.className = "kl-group-message-time";
@@ -773,7 +1724,20 @@ export class GroupChatPanel {
     timestamp.textContent = formatMessageTime(message.sentAt);
     const meta = node("header", "kl-group-message-meta");
     meta.append(authorNode, timestamp);
-    const content = node("p", "kl-group-message-content", message.content);
+    const content = node("div", "kl-group-message-content");
+    let rendered = false;
+    if (this.options.renderMessageBody) {
+      try {
+        const body = this.options.renderMessageBody({ ...message });
+        if (body) {
+          content.append(body);
+          rendered = true;
+        }
+      } catch {
+        // A host renderer must never make the transcript unusable; plain text is always safe.
+      }
+    }
+    if (!rendered) content.textContent = message.content;
     item.append(authorTarget, meta, content);
     return item;
   }
@@ -794,8 +1758,9 @@ export class GroupChatPanel {
 
   #onComposerInput(): void {
     if (!this.#currentGroupId) return;
-    if (this.#composer.value.length > GROUP_MESSAGE_MAX_CONTENT) {
-      this.#composer.value = this.#composer.value.slice(0, GROUP_MESSAGE_MAX_CONTENT);
+    const maxContent = this.#messageMaxContent(this.#currentGroupId);
+    if (this.#composer.value.length > maxContent) {
+      this.#composer.value = this.#composer.value.slice(0, maxContent);
     }
     this.#updateComposerControls();
     this.#scheduleDraft(this.#currentGroupId, this.#composer.value);
@@ -803,11 +1768,44 @@ export class GroupChatPanel {
 
   #updateComposerControls(): void {
     const length = this.#composer.value.length;
-    this.#counter.textContent = `${length}/${GROUP_MESSAGE_MAX_CONTENT}`;
-    this.#counter.dataset.nearLimit = String(length >= GROUP_MESSAGE_MAX_CONTENT - 20);
+    const maxContent = this.#currentGroupId
+      ? this.#messageMaxContent(this.#currentGroupId)
+      : GROUP_MESSAGE_MAX_CONTENT;
+    this.#counter.textContent = `${length}/${maxContent}`;
+    this.#counter.dataset.nearLimit = String(length >= maxContent - 20);
     this.#sendButton.disabled =
       this.#sending || !this.#currentGroupId || this.#composer.value.trim().length === 0;
     this.#composer.disabled = this.#sending || !this.#currentGroupId;
+    this.#attachImageButton.disabled =
+      this.#sending || !this.#currentGroupId || !this.options.onAttachImage;
+  }
+
+  #messageMaxContent(groupId: string): number {
+    try {
+      const value = this.service.getMessageMaxContent(groupId);
+      return Number.isSafeInteger(value) && value > 0 ? value : GROUP_MESSAGE_MAX_CONTENT;
+    } catch {
+      return GROUP_MESSAGE_MAX_CONTENT;
+    }
+  }
+
+  #attachImage(): Promise<void> {
+    const groupId = this.#currentGroupId;
+    if (!groupId) return Promise.resolve();
+    return this.#attachGroupImage(groupId, this.#attachImageButton);
+  }
+
+  async #attachGroupImage(groupId: string, returnFocus: HTMLElement): Promise<void> {
+    if (!this.options.onAttachImage || !this.service.getGroup(groupId)) return;
+    try {
+      await this.options.onAttachImage(groupId, returnFocus);
+    } catch (error) {
+      this.#report({
+        tone: "error",
+        message: errorMessage(error, "The image composer could not be opened."),
+        groupId,
+      });
+    }
   }
 
   #isComposerFocused(): boolean {
@@ -912,8 +1910,8 @@ export class GroupChatPanel {
     });
   }
 
-  async #togglePinned(): Promise<void> {
-    const groupId = this.#currentGroupId;
+  async #togglePinned(requestedGroupId?: string): Promise<void> {
+    const groupId = requestedGroupId ?? this.#currentGroupId;
     if (!groupId || this.#paneActionBusy) return;
     this.#paneActionBusy = true;
     this.#renderActiveGroup(false, false);
@@ -936,14 +1934,14 @@ export class GroupChatPanel {
     }
   }
 
-  async #removeActive(): Promise<void> {
-    const groupId = this.#currentGroupId;
+  async #removeGroup(requestedGroupId?: string): Promise<void> {
+    const groupId = requestedGroupId ?? this.#currentGroupId;
     const group = groupId ? this.service.getGroup(groupId) : undefined;
     if (!groupId || !group || this.#paneActionBusy) return;
     const confirmed = this.options.confirmRemove
       ? await this.options.confirmRemove(group)
       : typeof window !== "undefined" && window.confirm(`Remove “${group.title}” from KikiLink?`);
-    if (!confirmed || this.#currentGroupId !== groupId) return;
+    if (!confirmed || !this.service.getGroup(groupId)) return;
     this.#paneActionBusy = true;
     this.#renderActiveGroup(false, false);
     try {
@@ -974,9 +1972,11 @@ export class GroupChatPanel {
   #closeActive(notify: boolean): void {
     const groupId = this.#currentGroupId;
     if (!groupId) return;
+    if (this.#menuGroupId === groupId) this.#closeGroupActionMenu(false);
     this.#flushDraft();
     this.#currentGroupId = undefined;
     this.#messageRenderGroupId = undefined;
+    this.#messageRenderMemberNamesRevision = undefined;
     this.#messageRenderLimit = INITIAL_MESSAGE_RENDER_LIMIT;
     this.chatPane.hidden = true;
     this.#participantStrip.replaceChildren();
@@ -999,7 +1999,13 @@ export class GroupChatPanel {
       return;
     }
     this.#renderSidebar();
+    if (update.kind === "group-removed") {
+      if (this.#menuGroupId === update.groupId) this.#closeGroupActionMenu(true);
+      if (this.#detailsGroupId === update.groupId) this.#closeGroupDetails(true);
+    }
     if (update.kind === "cleared") {
+      this.#closeGroupActionMenu(true);
+      this.#closeGroupDetails(true);
       this.#closeActive(true);
       return;
     }
@@ -1007,11 +2013,22 @@ export class GroupChatPanel {
       this.#closeActive(true);
       return;
     }
+    if (
+      update.kind === "group-updated" &&
+      this.groupDetailsDialog.open &&
+      this.#detailsGroupId === update.groupId
+    ) {
+      const detailsGroup = this.service.getGroup(update.groupId);
+      if (detailsGroup) this.#renderGroupDetails(detailsGroup);
+    }
     if (!("groupId" in update) || update.groupId !== this.#currentGroupId) return;
     if (update.kind === "message") {
       this.#renderActiveGroup(false, true);
     } else if (update.kind === "group-updated") {
-      this.#renderActiveGroup(false, false);
+      this.#renderActiveGroup(
+        false,
+        this.#messageRenderMemberNamesRevision !== update.group.memberNamesRevision,
+      );
     }
   }
 
@@ -1019,8 +2036,24 @@ export class GroupChatPanel {
     if (this.#destroyed) return;
     this.#refreshMemberPresentations(memberNumber);
     if (!this.newGroupDialog.open) return;
-    this.#contacts = this.#knownContacts();
-    if (this.#dialogStage === "select") this.#renderContactOptions();
+    this.#scheduleContactPresenceRefresh();
+  }
+
+  #scheduleContactPresenceRefresh(): void {
+    if (this.#contactPresenceRenderFrame !== undefined) return;
+    this.#contactPresenceRenderFrame = requestAnimationFrame(() => {
+      this.#contactPresenceRenderFrame = undefined;
+      if (this.#destroyed || !this.newGroupDialog.open || this.#dialogStage !== "select") return;
+      this.#contacts = this.#knownContacts();
+      this.#renderContactOptions();
+    });
+  }
+
+  #cancelContactPresenceRefresh(): void {
+    if (this.#contactPresenceRenderFrame !== undefined) {
+      cancelAnimationFrame(this.#contactPresenceRenderFrame);
+    }
+    this.#contactPresenceRenderFrame = undefined;
   }
 
   #refreshMemberPresentations(memberNumber?: number): void {
@@ -1031,6 +2064,7 @@ export class GroupChatPanel {
       ...this.sidebarSection.querySelectorAll<HTMLElement>(selector),
       ...this.chatPane.querySelectorAll<HTMLElement>(selector),
       ...this.newGroupDialog.querySelectorAll<HTMLElement>(selector),
+      ...this.groupDetailsDialog.querySelectorAll<HTMLElement>(selector),
     ]) {
       const candidate = Number(target.dataset.groupMemberNumber);
       if (!Number.isSafeInteger(candidate) || candidate <= 0) continue;
@@ -1093,7 +2127,7 @@ export class GroupChatPanel {
     const help = node(
       "p",
       "kl-group-dialog-help",
-      "Choose 2–4 relay-capable friends using the current KikiLink group protocol. Your group will have 3–5 members including you. Compatibility is checked again before sending.",
+      "Choose 2–4 friends with current managed-group support. Your group will have 3–5 members including you. Compatibility is checked again before sending.",
     );
     const selection = node("p", "kl-group-selection-status");
     selection.setAttribute("aria-live", "polite");
@@ -1171,8 +2205,8 @@ export class GroupChatPanel {
     list.replaceChildren();
     if (visible.length === 0) {
       const message = compatible.length === 0
-        ? "No relay-capable contacts detected yet. Keep this window open while KikiLink checks for current versions."
-        : "No relay-capable contacts match this search.";
+        ? "No managed-group-compatible contacts detected yet. Keep this window open while KikiLink checks current versions."
+        : "No managed-group-compatible contacts match this search.";
       list.append(node("p", "kl-group-contact-empty", message));
     } else {
       for (const contact of visible) {
@@ -1202,6 +2236,7 @@ export class GroupChatPanel {
         });
         const listItem = node("div", "kl-group-contact-item");
         listItem.setAttribute("role", "listitem");
+        listItem.dataset.selected = String(selected);
         listItem.append(
           this.#memberProfileTarget(member, "kl-group-contact-profile"),
           contactButton,
@@ -1281,7 +2316,7 @@ export class GroupChatPanel {
     this.#dialogFeedback.textContent = "Creating group and handing invitations to Bondage Club…";
     this.#dialogFeedback.dataset.tone = "info";
     try {
-      const result = await this.service.createGroup(
+      const result = await this.service.createManagedGroup(
         [...this.#selectedMembers],
         this.#requestedTitle,
       );
@@ -1335,6 +2370,7 @@ export class GroupChatPanel {
   }
 
   #resetCreateDialog(): void {
+    this.#cancelContactPresenceRefresh();
     this.#selectedMembers.clear();
     this.#dialogStage = "select";
     this.#requestedTitle = "";
@@ -1389,8 +2425,8 @@ export class GroupChatPanel {
     try {
       return this.#isKnownFriend(memberNumber) &&
         this.presence.hasGroupChatPeer(memberNumber) &&
-        typeof this.presence.hasGroupRelayPeer === "function" &&
-        this.presence.hasGroupRelayPeer(memberNumber);
+        typeof this.presence.hasGroupManagedPeer === "function" &&
+        this.presence.hasGroupManagedPeer(memberNumber);
     } catch {
       return false;
     }
@@ -1411,6 +2447,11 @@ export class GroupChatPanel {
     } catch {
       return undefined;
     }
+  }
+
+  #isGroupCreator(group: GroupConversation): boolean {
+    const ownMemberNumber = this.#ownMemberNumber();
+    return ownMemberNumber !== undefined && ownMemberNumber === group.creatorNumber;
   }
 
   #presenceSnapshot(memberNumber: number): PresenceSnapshot | undefined {
@@ -1473,6 +2514,24 @@ function button(className: string, text: string, ariaLabel?: string): HTMLButton
   return result;
 }
 
+function openDialog(dialog: HTMLDialogElement): void {
+  if (dialog.open) return;
+  try {
+    dialog.showModal();
+  } catch {
+    dialog.setAttribute("open", "");
+  }
+}
+
+function closeDialog(dialog: HTMLDialogElement): void {
+  if (!dialog.open) return;
+  try {
+    dialog.close();
+  } catch {
+    dialog.removeAttribute("open");
+  }
+}
+
 let domId = 0;
 
 function uniqueDomId(prefix: string): string {
@@ -1480,15 +2539,27 @@ function uniqueDomId(prefix: string): string {
   return `${prefix}-${domId}`;
 }
 
+let messageTimeFormatter: Intl.DateTimeFormat | undefined;
+
+function groupMessageKey(message: Pick<GroupMessage, "senderNumber" | "id">): string {
+  return `${message.senderNumber}:${message.id}`;
+}
+
 function formatMessageTime(value: number): string {
   try {
-    return new Intl.DateTimeFormat(undefined, {
+    messageTimeFormatter ??= new Intl.DateTimeFormat(undefined, {
       hour: "2-digit",
       minute: "2-digit",
-    }).format(new Date(value));
+    });
+    return messageTimeFormatter.format(new Date(value));
   } catch {
     return "";
   }
+}
+
+function validOutlineColor(value: string): string | undefined {
+  const normalized = value.trim();
+  return /^#[\da-f]{6}$/iu.test(normalized) ? normalized : undefined;
 }
 
 function presenceLabel(snapshot: PresenceSnapshot | undefined): string {

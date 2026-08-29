@@ -19,9 +19,10 @@ if (uninstallUploadHost) {
 
 const script = document.createElement("script");
 script.dataset.kikilinkPageRuntime = __KIKILINK_VERSION__;
-// Keep the capability lexical to the injected runtime: it is never written to the marker, a
-// window property, or a response. A hostile page-realm listener can still observe a legitimate
-// request, so the sandbox host's rolling budget remains the authoritative abuse boundary.
+// Keep the capability lexical to the injected runtime: it is never written to the marker or a
+// window property. Authenticated bridge replies intentionally echo it for request correlation;
+// a hostile page-realm listener can therefore observe a legitimate exchange, so the sandbox
+// host's rolling budget remains the authoritative abuse boundary.
 script.textContent = `(() => { const __KIKILINK_UPLOAD_CAPABILITY__ = ${JSON.stringify(
   uploadCapability ?? "",
 )};\n${__KIKILINK_PAGE_BUNDLE__}\n})();`;
