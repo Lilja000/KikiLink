@@ -1,3 +1,5 @@
+import { KIKILINK_DISTRIBUTION } from "./distribution";
+
 export const KIKILINK_RELEASE_PACKAGE_URL =
   "https://raw.githubusercontent.com/Lilja000/KikiLink/main/package.json";
 export const KIKILINK_USERSCRIPT_INSTALL_URL =
@@ -12,6 +14,7 @@ const PRODUCTION_BC_HOST_SUFFIXES = [
   "bondageprojects.elementfx.com",
   "bondageprojects.com",
   "bondage-europe.com",
+  "bondageeurope.com",
   "bondage-asia.com",
 ] as const;
 const STRICT_SEMVER =
@@ -48,6 +51,7 @@ export async function checkForKikiLinkUpdate(
   options: KikiLinkUpdateCheckOptions = {},
 ): Promise<string | undefined> {
   try {
+    if (KIKILINK_DISTRIBUTION === "fusam") return undefined;
     const current = parseSemVer(currentVersion);
     if (!current) return undefined;
 

@@ -1756,6 +1756,7 @@ button { color: inherit; }
 .kl-message-reply-copy { min-width: 0; display: flex; align-items: baseline; gap: 5px; }
 .kl-message-reply-author { flex: 0 1 auto; overflow: hidden; color: var(--kl-gold); text-overflow: ellipsis; white-space: nowrap; }
 .kl-message-reply-excerpt { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--kl-muted); text-overflow: ellipsis; white-space: nowrap; }
+.kl-message-reply-warning { flex: 0 0 auto; color: var(--kl-warning, #f0b35a); font-size: 9px; text-transform: uppercase; }
 .kl-message-row[data-direction="outgoing"] .kl-message-reply { border-bottom-color: color-mix(in srgb, var(--kl-accent-foreground), transparent 70%); }
 .kl-message-row[data-direction="outgoing"] .kl-message-reply-author,
 .kl-message-row[data-direction="outgoing"] .kl-message-reply-icon { color: color-mix(in srgb, var(--kl-accent-foreground), var(--kl-gold) 28%); }
@@ -3898,7 +3899,7 @@ select:focus-visible {
 .kl-image-file-privacy-icon { width: 16px; height: 16px; flex: 0 0 auto; display: grid; place-items: center; margin-top: 1px; color: var(--kl-gold); }
 .kl-image-file-privacy-icon .kl-icon { width: 16px; height: 16px; }
 .kl-local-image-thumbnail { width: 54px; height: 54px; flex: 0 0 auto; object-fit: cover; border-radius: 10px; background: #09090a; }
-.kl-message-content { line-height: 1.48; white-space: pre-wrap; }
+.kl-message-content { line-height: 1.48; unicode-bidi: plaintext; white-space: pre-wrap; }
 .kl-message-action-text { font-style: italic; }
 .kl-message-link { color: #efc56c; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor, transparent 48%); text-underline-offset: 2px; }
 .kl-message-row[data-direction="outgoing"] .kl-message-link { color: var(--kl-accent-foreground); }
@@ -4660,6 +4661,7 @@ button.kl-group-member-target:focus-visible {
 .kl-group-message-profile--large .kl-group-member-avatar { width: 30px; height: 30px; border-radius: 10px; font-size: 10px; }
 .kl-group-message-meta { grid-area: meta; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .kl-group-message-author { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--kl-gold); font-size: var(--kl-type-xs); text-overflow: ellipsis; white-space: nowrap; }
+.kl-group-message-relay-warning { min-width: 0; color: var(--kl-warning, #f0b35a); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kl-group-message-time { flex: 0 0 auto; color: var(--kl-meta); font-size: 10px; }
 .kl-group-message-content { grid-area: content; min-width: 0; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .kl-group-composer-area { position: relative; }

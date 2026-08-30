@@ -5,10 +5,12 @@ messages. It does not add a KikiLink media server or require an image-host accou
 
 ## Provider choice
 
-Temporary chat images and room media use Litterbox's anonymous API with a selected lifetime of
+Temporary chat images and room media use Litterbox's public API with a selected lifetime of
 1, 12, 24, or 72 hours. Profile banners, managed-group avatars, explicitly selected Catbox Gallery
 items, and playlist music use Catbox's account-unlinked file-upload form without a `userhash`
-instead. Persistent profile/group art never falls back to Litterbox. Catbox's
+instead in the standalone userscript. FUSAM disables Catbox uploads because that endpoint does not
+allow the required cross-origin page request. Persistent profile/group art never silently falls back
+to Litterbox. Catbox's
 current FAQ says anonymous files are removed after two years without a download; account-associated
 files are permanent. KikiLink does not request or send a Catbox account token, so Music describes
 its uploads as long-lived rather than guaranteed permanent.
@@ -35,14 +37,15 @@ persistent profile avatar should use a separately managed durable HTTPS link.
    `kikilink-image.webp`.
 5. Only an explicit `Upload & send` action sends that prepared WebP as multipart `POST` data to
    `https://litterbox.catbox.moe/resources/internals/api.php`, with `reqtype=fileupload` and the
-   selected `time`. The Litterbox request uses the userscript manager's anonymous mode, and the
-   request has a 60-second total deadline. Upload POSTs are never retried automatically: provider,
+   selected `time`. The standalone userscript uses the userscript manager's anonymous mode; FUSAM
+   uses an ordinary page request with credentials omitted. The request has a 60-second total deadline.
+   Upload POSTs are never retried automatically: provider,
    timeout, cancellation, and network failures require another explicit user action, because neither
    host offers an idempotency key and an ambiguous retry could create a second untracked public file.
 6. KikiLink accepts only a direct HTTPS `litter.catbox.moe/<id>.webp` response with no credentials,
    query, or fragment, then sends that URL as a normal Beep.
 
-## Privileged upload bridge boundary
+## Standalone userscript upload bridge
 
 The userscript sandbox keeps `GM_xmlhttpRequest`; Bondage Club and the KikiLink page runtime do not
 receive that privilege. Each page load creates a cryptographically random 256-bit capability and
@@ -67,11 +70,15 @@ message type, and bounded schema remain mandatory in both directions; a wrong or
 rejected. A marker alone is not treated as proof of a live host: if the sandbox does not acknowledge
 the exact request and capability within three seconds, KikiLink asks for a reload and retry without
 directing the user through a separate provider-permission setup. Cancel, dialog close, timeout,
-navigation, and host teardown abort the
-underlying `GM_xmlhttpRequest`, remove listeners and timers once, and release the active-upload slot
+navigation, and host teardown abort the underlying `GM_xmlhttpRequest`, remove listeners and timers
+once, and release the active-upload slot
 even if a userscript manager omits its normal timeout callback. Upload screens may show
-byte/percentage progress when the provider reports a total. KikiLink never falls back to a normal
-page fetch that Catbox or Litterbox is expected to block.
+byte/percentage progress when the provider reports a total. The standalone build never silently falls
+back from this bridge to a less privileged page request.
+
+The token and bridge limits reduce accidental or confused-deputy requests; they do not make a hostile
+page-realm addon unable to observe page data. KikiLink's application, Bondage Club, and co-installed
+page-realm addons share a trust boundary. See [`PRIVACY.md`](../PRIVACY.md).
 
 Profile banners use the same bridge only after local signature validation, centered 1200×400 cropping,
 metadata-removing WebP re-encoding, and a 2 MiB cap. They go to long-lived public Catbox storage. The
@@ -89,20 +96,30 @@ a valid 2 MiB file can complete on a slow upstream connection; temporary chat-im
 Managed-group creators also have an explicit `Choose & upload to Catbox` avatar action. The selected
 file goes through KikiLink's local image validation, metadata-removing WebP preparation, and bounded
 size checks before the same long-lived public Catbox transport is used. The control states the public
-storage consequence before the file picker opens. A late result is discarded if the BC identity,
-group ownership, group existence, or previously saved avatar changed while the upload was running.
+storage consequence before the file picker opens. This action is unavailable in FUSAM. A late result
+is discarded if the BC identity, group ownership, group existence, or previously saved avatar changed
+while the upload was running.
+
+## FUSAM transport
+
+FUSAM loads KikiLink directly in the Bondage Club page realm and provides no userscript-manager XHR
+privilege. Credential-omitting Litterbox requests are supported where its CORS policy permits them.
+Catbox's upload endpoint does not permit the corresponding browser request, so KikiLink disables all
+Catbox upload choices in FUSAM. It does not proxy those files through a KikiLink service. Device-local
+storage, direct HTTPS URLs, and temporary Litterbox uploads remain available where applicable.
 
 ## Device Gallery
 
 Choosing `Add to Gallery` and selecting a local file follows the same validation and privacy
-preparation, but selection itself makes no network request. The final save action offers three
-explicit storage choices:
+preparation, but selection itself makes no network request. Depending on the distribution, the final
+save action offers up to three explicit storage choices:
 
 - `This device` writes the prepared WebP to an IndexedDB database whose name includes the
   authenticated BC MemberNumber. KikiLink asks the browser for persistent storage, keeps the record
   until the user deletes it, and does not put the blob in synchronized BC settings. Clearing the
   site's browser data still removes it.
-- `Catbox` uploads the prepared WebP without a `userhash` and saves its long-lived public bearer link.
+- `Catbox` is available in the standalone userscript. It uploads the prepared WebP without a `userhash`
+  and saves its long-lived public bearer link.
   The userscript-manager cookie caveat above still applies. KikiLink does not set an automatic expiry,
   but the file is not guaranteed permanent: Catbox's
   current policy can remove an anonymous file after two years without a download.
@@ -115,12 +132,17 @@ that creates a temporary Litterbox link.
 
 ## Device Music and room sharing
 
-Music tracks saved `On this device` remain private IndexedDB blobs during ordinary playback. A room
-administrator can explicitly choose `Share & use as room music`, or enable the session-only playlist
-follow switch. For a compatible MP3/MP4 up to 20 MB, that action creates a generically named temporary
-Litterbox upload using the same 1/12/24/72-hour setting as other room media. KikiLink keeps the returned
-URL only in memory and reuses it until shortly before expiry, avoiding repeated uploads of the same track.
-Other browser-playable formats remain device-only because Bondage Club room music accepts MP3/MP4 links.
+Music tracks saved `On this device` remain device-local IndexedDB blobs during ordinary playback. A
+room administrator can explicitly choose `Share & use as room music`, or enable the session-only
+playlist follow switch. For a compatible MP3/MP4 up to 20 MB, that action creates a generically named
+temporary Litterbox upload using the same 1/12/24/72-hour setting as other room media. KikiLink keeps
+the returned URL only in memory and reuses it until shortly before expiry, avoiding repeated uploads
+of the same track. Other browser-playable formats remain device-only because Bondage Club room music
+accepts MP3/MP4 links.
+
+Music uploads do not re-encode the source. KikiLink uses a generic filename, but embedded audio tags,
+artwork, author names, or device metadata may remain. Catbox music upload is available only in the
+standalone userscript and has the same possible ambient-cookie behavior as image uploads.
 
 Catbox/Litterbox HTTP errors are not retried automatically. If a provider returns an HTML error page,
 KikiLink shows a short provider/status notice rather than exposing the page source; the user can
@@ -128,8 +150,8 @@ decide whether to try a new upload.
 
 ## Remaining risks and limits
 
-- Catbox/Litterbox receives the prepared pixels and network request. KikiLink cannot independently
-  verify provider-side storage or deletion.
+- Catbox/Litterbox receives the prepared pixels and network request, including the source IP address
+  and request time. KikiLink cannot independently verify provider-side storage or deletion.
 - Catbox XHR compatibility may include an ambient Catbox cookie as described above. Use a browser
   profile without a Catbox login if separating the upload from that provider session matters.
 - Re-encoding removes hidden file metadata, not personal information visible in the picture itself.
@@ -142,10 +164,9 @@ decide whether to try a new upload.
 - Uploads can fail because of provider availability or policy, browser content-security policy, or
   connectivity. A successful URL is kept in the link field if Beep sending fails, so it is not lost.
 
-Remote chat previews and profile art use separate privacy preferences. Chat media keeps its existing
-`Ask before loading` default. Profile avatars, profile banners, and managed-group avatars default to
-`Always show`; the user can restore `Ask before loading`, where `Show profile avatar/banner` reveals
-only that exact member-and-normalized-URL pair for the browser session and a changed URL asks again.
+Remote chat previews and profile art use separate privacy preferences. Both categories default to
+`Ask before loading`, where `Show profile avatar/banner` reveals only that exact
+member-and-normalized-URL pair for the browser session and a changed URL asks again.
 `Links only` makes no remote image request for that category. Image requests use anonymous CORS,
 omit credentials and referrer data, refuse redirects,
 reject local/private/reserved IP literals, and require the MIME type to agree with a validated
@@ -157,3 +178,6 @@ The shared loader allows at most four active fetches, four leased browser decode
 active-plus-queued requests, uses a 15-second queue-and-transfer deadline, starts UI images only near
 visibility, retains at most six rich message previews, and cancels detached or replaced work. A host
 without CORS support can still be opened through the original link.
+
+Credentials and referrer omission do not hide the viewer's network IP address or request time from
+the remote image host. Choosing `Always show` opts into those requests automatically.

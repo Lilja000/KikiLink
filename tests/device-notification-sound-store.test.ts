@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DeviceNotificationSoundStore,
   MAX_NOTIFICATION_SOUND_DURATION_MS,
+  MAX_NOTIFICATION_SOUND_TOTAL_BYTES,
+  MAX_NOTIFICATION_SOUNDS,
+  assertNotificationSoundStorageCapacity,
 } from "../src/storage/device-notification-sound-store";
 
 afterEach(() => {
@@ -37,6 +40,23 @@ describe("DeviceNotificationSoundStore", () => {
     ).rejects.toThrow("at most 5 seconds");
     expect(await store.list()).toHaveLength(0);
     store.close();
+  });
+
+  it("enforces bounded custom-sound count and aggregate bytes", () => {
+    expect(() => assertNotificationSoundStorageCapacity(MAX_NOTIFICATION_SOUNDS - 1, 0, 1))
+      .not.toThrow();
+    expect(() => assertNotificationSoundStorageCapacity(MAX_NOTIFICATION_SOUNDS, 0, 1))
+      .toThrow("24 custom sounds");
+    expect(() => assertNotificationSoundStorageCapacity(
+      0,
+      MAX_NOTIFICATION_SOUND_TOTAL_BYTES - 1,
+      1,
+    )).not.toThrow();
+    expect(() => assertNotificationSoundStorageCapacity(
+      0,
+      MAX_NOTIFICATION_SOUND_TOTAL_BYTES,
+      1,
+    )).toThrow("40 MB");
   });
 });
 

@@ -79,6 +79,7 @@ function setup(
   ownMemberNumber = 10,
   persistenceDelayMs?: number,
   customIdFactory?: (prefix: "group" | "gmsg") => string,
+  shouldPersistHistory?: () => boolean,
 ): TestHarness {
   const sent: SentPacket[] = [];
   const friends = new Set<number>([20, 30, 40, 50]);
@@ -123,6 +124,7 @@ function setup(
         ((prefix) => `${prefix}_${(++id).toString(36).padStart(8, "0")}`),
       ...(persistenceDelayMs === undefined ? {} : { persistenceDelayMs }),
       hasManagedPeer: (memberNumber) => managedPeers.has(memberNumber),
+      ...(shouldPersistHistory ? { shouldPersistHistory } : {}),
     }),
     storage,
     sent,
@@ -1002,7 +1004,12 @@ describe("GroupChatService", () => {
       payload: relay("group_aaaaaaaa", 10, "gmsg_relay001", "Replay"),
     })).toBe(false);
     expect(recipient.service.getMessages("group_aaaaaaaa")).toMatchObject([
-      { id: "gmsg_relay001", senderNumber: 10, content: "Valid relay" },
+      {
+        id: "gmsg_relay001",
+        senderNumber: 10,
+        content: "Valid relay",
+        relayedByCreator: 20,
+      },
     ]);
     expect(recipient.sent).toEqual([]);
   });
@@ -1537,6 +1544,60 @@ describe("GroupChatService", () => {
     expect(updates).toHaveBeenCalledWith(expect.objectContaining({ kind: "group-removed" }));
   });
 
+  it("keeps group messages session-only when history saving is disabled", async () => {
+    const storage = new MemoryKeyValueStorage();
+    let persistHistory = true;
+    const harness = setup(storage, 10, 0, undefined, () => persistHistory);
+    await harness.service.receiveProtocol(
+      { senderNumber: 20, payload: invite() },
+      undefined,
+    );
+    await harness.service.receiveProtocol(
+      {
+        senderNumber: 20,
+        payload: message("group_aaaaaaaa", "gmsg_privacy1", "session secret"),
+      },
+      undefined,
+    );
+    await harness.service.setDraft("group_aaaaaaaa", "private draft");
+
+    persistHistory = false;
+    await harness.service.applyHistoryPolicy(0);
+    const raw = storage.getItem(GROUP_CHAT_STORAGE_KEY) ?? "";
+    const stored = JSON.parse(raw) as {
+      groups: Array<{ draft: string; lastMessage: string }>;
+      messages: unknown[];
+      messageTombstones: Array<{ messageId: string }>;
+    };
+    expect(raw).not.toContain("session secret");
+    expect(raw).not.toContain("private draft");
+    expect(stored.groups).toMatchObject([{ draft: "", lastMessage: "" }]);
+    expect(stored.messages).toEqual([]);
+    expect(stored.messageTombstones).toContainEqual(
+      expect.objectContaining({ messageId: "gmsg_privacy1" }),
+    );
+    expect(harness.service.getMessages("group_aaaaaaaa")).toMatchObject([
+      { content: "session secret" },
+    ]);
+    expect(harness.service.getGroup("group_aaaaaaaa")).toMatchObject({
+      draft: "private draft",
+    });
+
+    const reloaded = setup(storage, 10, 0, undefined, () => false);
+    expect(reloaded.service.getMessages("group_aaaaaaaa")).toEqual([]);
+    expect(reloaded.service.getGroup("group_aaaaaaaa")).toMatchObject({
+      draft: "",
+      lastMessage: "",
+    });
+    expect(await reloaded.service.receiveProtocol(
+      {
+        senderNumber: 20,
+        payload: message("group_aaaaaaaa", "gmsg_privacy1", "replayed secret"),
+      },
+      undefined,
+    )).toBe(false);
+  });
+
   it("trailing-debounces a burst of high-frequency mutations into one storage write", async () => {
     vi.useFakeTimers();
     try {
@@ -1795,6 +1856,77 @@ describe("GroupChatService", () => {
     ]);
     await harness.service.destroy();
     await account.destroy();
+  });
+
+  it("does not overwrite unreadable storage when history saving is disabled", async () => {
+    const storage = new ControlledStorage();
+    const seeded = setup(storage);
+    await seeded.service.receiveProtocol({ senderNumber: 20, payload: invite() });
+    await seeded.service.receiveProtocol({
+      senderNumber: 20,
+      payload: message("group_aaaaaaaa", "gmsg_private1", "previous secret"),
+    });
+    await seeded.service.flush();
+    await seeded.service.destroy();
+    const storedBeforeFailure = storage.getItem(GROUP_CHAT_STORAGE_KEY);
+    const writesBeforeFailure = storage.writes;
+
+    storage.readable = false;
+    const harness = setup(storage, 10, 0, undefined, () => false);
+
+    expect(harness.service.getPersistenceState()).toEqual({
+      degraded: true,
+      pendingChanges: true,
+    });
+    expect(storage.writes).toBe(writesBeforeFailure);
+    await expect(harness.service.createGroup([20, 30], "Session group")).rejects.toThrow(
+      /storage is unavailable or unsupported/u,
+    );
+    expect(storage.writes).toBe(writesBeforeFailure);
+
+    storage.readable = true;
+    await expect(harness.service.flush()).resolves.toEqual({
+      degraded: false,
+      pendingChanges: false,
+    });
+    const scrubbed = storage.getItem(GROUP_CHAT_STORAGE_KEY) ?? "";
+    expect(scrubbed).not.toContain("previous secret");
+    expect(harness.service.getMessages("group_aaaaaaaa")).toMatchObject([
+      { content: "previous secret" },
+    ]);
+    expect(storedBeforeFailure).toContain("previous secret");
+    await harness.service.destroy();
+  });
+
+  it("does not overwrite malformed storage when history saving is disabled", async () => {
+    const storage = new ControlledStorage();
+    const raw = "{malformed private group history";
+    storage.setItem(GROUP_CHAT_STORAGE_KEY, raw);
+    const writesBeforeLoad = storage.writes;
+
+    const harness = setup(storage, 10, 0, undefined, () => false);
+
+    expect(harness.service.getPersistenceState()).toEqual({
+      degraded: true,
+      pendingChanges: true,
+    });
+    expect(storage.writes).toBe(writesBeforeLoad);
+    expect(storage.getItem(GROUP_CHAT_STORAGE_KEY)).toBe(raw);
+    expect(harness.service.listGroups()).toEqual([]);
+    await expect(harness.service.createGroup([20, 30], "Session group")).rejects.toThrow(
+      /storage is unavailable or unsupported/u,
+    );
+    await expect(harness.service.flush()).resolves.toEqual({
+      degraded: true,
+      pendingChanges: true,
+    });
+    expect(storage.writes).toBe(writesBeforeLoad);
+    expect(storage.getItem(GROUP_CHAT_STORAGE_KEY)).toBe(raw);
+
+    await expect(harness.service.clear()).resolves.toBe(true);
+    expect(storage.getItem(GROUP_CHAT_STORAGE_KEY)).toBeNull();
+    await expect(harness.service.createGroup([20, 30], "Fresh session group")).resolves.toBeDefined();
+    await harness.service.destroy();
   });
 
   it("reports a silent clear failure, survives reload honestly, and retries an empty state", async () => {

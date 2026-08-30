@@ -129,13 +129,15 @@ character-loop hook.
 - Status notes are limited to 80 characters. Avatar and banner URLs are limited to 500 characters
   and must pass the same direct HTTPS image validation as chat previews. Avatar state follows normal
   presence exchange; a banner or bio is sent only to the member who explicitly opened the profile.
-- Remote avatars and banners load without credentials or referrer data. The loader refuses redirects and
+- Remote avatars and banners load without credentials or referrer data. The remote host still receives
+  the viewer's network IP address and request time. The loader refuses redirects and
   local/private/reserved IP literals, then validates the HTTPS response URL, supported image MIME,
   and a 5 MiB limit before exposing only a local blob URL to the image element. It permits at most
   four active fetches and 32 active-plus-queued requests, applies a 15-second deadline across queueing
   and transfer, and cancels work when its last consumer closes or replaces the image. Profile art has
-  a dedicated preference and defaults to `Always show`; `Ask before loading` keeps initials or the built-in banner until the user
-  reveals that exact member-and-normalized-URL pair for the session, and a changed URL asks again;
+  a dedicated preference and defaults to `Ask before loading`, which keeps initials or the built-in
+  banner until the user reveals that exact member-and-normalized-URL pair for the session; a changed
+  URL asks again. `Always show` opts into contacting each art host automatically;
   `Links only` never requests it. Frames, card styles, and outline colors contain no remote image URL
   and can render without loading remote pixels. The two optional gradient colors follow the same
   explicit-open boundary as the banner and outline and are never included in room broadcasts.

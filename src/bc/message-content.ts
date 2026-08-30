@@ -3,6 +3,7 @@ const MESSAGE_METADATA_MARKER = "\uf124";
 const MAX_METADATA_LENGTH = 128;
 const MAX_LIKO_MAT_LANGUAGE_LENGTH = 32;
 const MAX_TRANSPORT_ENVELOPES = 4;
+const BIDI_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
 const LIKO_MAT_TRAILER_PATTERNS = [
   // Normal wire form.
   `\\u2063LikoMAT:([a-zA-Z-]{1,${MAX_LIKO_MAT_LANGUAGE_LENGTH}})(?::tr)?\\u2063`,
@@ -40,7 +41,7 @@ export function cleanBeepMessageContent(value: unknown): string {
     }
     break;
   }
-  return content.slice(0, MAX_BEEP_MESSAGE_LENGTH);
+  return content.replace(BIDI_CONTROLS, "").slice(0, MAX_BEEP_MESSAGE_LENGTH);
 }
 
 function stripLikoMatTrailer(value: string): string {

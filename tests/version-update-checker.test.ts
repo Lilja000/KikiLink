@@ -64,6 +64,17 @@ describe("KikiLink version update checker", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("recognizes both production European hostname spellings", async () => {
+    for (const hostname of ["www.bondage-europe.com", "www.bondageeurope.com"] as const) {
+      const fetchImpl = vi.fn<KikiLinkUpdateFetch>(async () => packageResponse("1.0.1"));
+      await expect(checkForKikiLinkUpdate("1.0.0", {
+        hostname,
+        fetchImpl,
+      })).resolves.toBe("1.0.1");
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  });
+
   it("uses strict SemVer precedence and reports only a genuinely newer version", async () => {
     const cases = [
       ["0.22.9", "0.22.10", "0.22.10"],

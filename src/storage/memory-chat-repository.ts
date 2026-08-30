@@ -49,6 +49,19 @@ export class MemoryChatRepository implements ChatRepository {
     return removed;
   }
 
+  async deleteMessagesForConversationAtOrBefore(
+    peerNumber: number,
+    timestamp: number,
+  ): Promise<number> {
+    let removed = 0;
+    for (const [id, message] of this.#messages) {
+      if (message.peerNumber !== peerNumber || message.sentAt > timestamp) continue;
+      this.#messages.delete(id);
+      removed += 1;
+    }
+    return removed;
+  }
+
   async trimConversation(peerNumber: number, keepNewest: number): Promise<number> {
     const messages = [...this.#messages.values()]
       .filter((message) => message.peerNumber === peerNumber)

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SETTINGS,
   MemoryKeyValueStorage,
+  SETTINGS_KEY,
   SettingsStore,
   sanitizeSettings,
 } from "../src/core/settings";
@@ -74,6 +75,36 @@ describe("SettingsStore", () => {
         secondary: "#44ccee",
       },
     });
+  });
+
+  it("writes a canonical privacy-safe value after loading valid legacy JSON", () => {
+    const storage = new MemoryKeyValueStorage();
+    storage.setItem(SETTINGS_KEY, JSON.stringify({
+      schemaVersion: 27,
+      unknownRootField: "remove me",
+      linkChat: {
+        imageUploads: {
+          enabled: true,
+          retention: "24h",
+          cloudName: "legacy-cloud-name",
+          uploadPreset: "legacy-upload-preset",
+        },
+      },
+      linkPresence: { profileImagePreviews: "always" },
+    }));
+
+    const settings = new SettingsStore(storage).get();
+    expect(settings.schemaVersion).toBe(28);
+    expect(settings.linkPresence.profileImagePreviews).toBe("ask");
+
+    const persisted = JSON.parse(storage.getItem(SETTINGS_KEY) ?? "null") as Record<
+      string,
+      unknown
+    >;
+    expect(persisted.schemaVersion).toBe(28);
+    expect(persisted).not.toHaveProperty("unknownRootField");
+    expect(JSON.stringify(persisted)).not.toContain("legacy-cloud-name");
+    expect(JSON.stringify(persisted)).not.toContain("legacy-upload-preset");
   });
 
   it("rejects invalid persisted values", () => {
@@ -160,7 +191,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(27);
+    expect(settings.schemaVersion).toBe(28);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -284,7 +315,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(27);
+    expect(settings.schemaVersion).toBe(28);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -308,7 +339,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(27);
+    expect(settings.schemaVersion).toBe(28);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -348,7 +379,7 @@ describe("SettingsStore", () => {
       status: "dnd",
       statusMessage: "In a scene",
       bio: "",
-      profileImagePreviews: "always",
+      profileImagePreviews: "ask",
       avatarUrl: "",
       bannerUrl: "",
       avatarFrame: "none",
@@ -360,25 +391,32 @@ describe("SettingsStore", () => {
     });
   });
 
-  it("defaults profile art to visible while bounding public bio and privacy overrides", () => {
+  it("defaults profile art to consent-first previews while bounding public bio", () => {
     const defaults = sanitizeSettings({ schemaVersion: 26, linkPresence: {} });
-    expect(defaults.linkPresence.profileImagePreviews).toBe("always");
+    expect(defaults.linkPresence.profileImagePreviews).toBe("ask");
+
+    for (const legacyPreference of ["always", "ask", "never"] as const) {
+      expect(sanitizeSettings({
+        schemaVersion: 27,
+        linkPresence: { profileImagePreviews: legacyPreference },
+      }).linkPresence.profileImagePreviews).toBe("ask");
+    }
 
     const customized = sanitizeSettings({
-      schemaVersion: 27,
+      schemaVersion: 28,
       linkPresence: {
-        profileImagePreviews: "ask",
+        profileImagePreviews: "always",
         bio: `  ${"🌸".repeat(200)}\u202e  `,
       },
     });
-    expect(customized.linkPresence.profileImagePreviews).toBe("ask");
+    expect(customized.linkPresence.profileImagePreviews).toBe("always");
     expect([...customized.linkPresence.bio]).toHaveLength(160);
     expect(customized.linkPresence.bio).not.toContain("\u202e");
 
     expect(sanitizeSettings({
-      schemaVersion: 27,
+      schemaVersion: 28,
       linkPresence: { profileImagePreviews: "remote-css" },
-    }).linkPresence.profileImagePreviews).toBe("always");
+    }).linkPresence.profileImagePreviews).toBe("ask");
   });
 
   it("migrates profile decoration details into schema 26 and accepts only safe values", () => {
@@ -386,7 +424,7 @@ describe("SettingsStore", () => {
       schemaVersion: 23,
       linkPresence: { status: "dnd" },
     });
-    expect(legacy.schemaVersion).toBe(27);
+    expect(legacy.schemaVersion).toBe(28);
     expect(legacy.linkPresence).toMatchObject({
       avatarFrame: "none",
       profileStyle: "classic",
@@ -491,7 +529,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(27);
+    expect(settings.schemaVersion).toBe(28);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -667,7 +705,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(27);
+    expect(settings.schemaVersion).toBe(28);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -763,7 +801,7 @@ describe("SettingsStore", () => {
             description: "Quiet room",
             background: "Boudoir",
             limit: 8,
-            admins: [0, 0, -1],
+            admins: [123456, 123456, -1],
             whitelist: [123],
             blacklist: [456],
             visibility: ["All"],
@@ -795,13 +833,13 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(27);
+    expect(settings.schemaVersion).toBe(28);
     expect(settings.linkRoom.favoriteRoomNames).toEqual(["Moon Garden", "Golden Hall"]);
     expect(settings.linkRoom.presets[0]).toMatchObject({
       id: "moon_room",
       label: "Moon Garden",
       room: {
-        admins: [0],
+        admins: [123456],
         whitelist: [123],
         blacklist: [456],
         custom: { sizeMode: 2, musicSync: true },

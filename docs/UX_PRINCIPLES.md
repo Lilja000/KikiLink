@@ -133,8 +133,9 @@ Before a UI release, verify:
 - Destructive actions explain exactly what local data they remove.
 - Notebook imports are bounded, validated, and merge-safe; existing private notes are not overwritten.
 - Encounter retention never removes favorites or records containing notes or tags.
-- Remote images do not load without the user's chosen preview policy and always use a
-  no-referrer request.
+- Chat and profile images default to `Ask before loading`. Every remote image follows the user's
+  chosen preview policy and uses a no-credentials, no-referrer request; the UI explains that the host
+  still receives the viewer's IP address and request time.
 - Choosing a local image causes no network request; upload requires a plainly labeled action,
   strips the original filename and metadata, and explains that the resulting URL is public.
 - Long-press actions cancel when the pointer moves so they do not fight phone scrolling;

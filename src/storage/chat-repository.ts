@@ -7,6 +7,8 @@ export interface ChatRepository {
   listConversations(): Promise<ConversationMeta[]>;
   putConversation(conversation: ConversationMeta): Promise<void>;
   deleteConversation(peerNumber: number): Promise<void>;
+  /** Deletes one peer's messages at or before a portable deletion tombstone. */
+  deleteMessagesForConversationAtOrBefore(peerNumber: number, timestamp: number): Promise<number>;
   deleteMessagesOlderThan(timestamp: number): Promise<number>;
   trimConversation(peerNumber: number, keepNewest: number): Promise<number>;
   clearAll(): Promise<void>;

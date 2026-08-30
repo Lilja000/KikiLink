@@ -3,8 +3,32 @@
 KikiLink's application code is an original implementation.
 
 The build includes **Bondage Club Mod Development Kit** (`bondage-club-mod-sdk`)
-as a compatibility dependency. ModSDK is distributed under the MIT License:
+1.2.0 as a compatibility dependency. Source:
 https://github.com/Jomshir98/bondage-club-mod-sdk
+
+## Bondage Club Mod Development Kit license
+
+MIT License
+
+Copyright (c) 2022 Jomshir98
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 KikiLink does not embed or copy application code from BCX, WCE, LSCG,
 BCTweaks, ULTRAbc, MBS, BCAR, or other Bondage Club addons.

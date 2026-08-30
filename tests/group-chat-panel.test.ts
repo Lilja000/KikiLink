@@ -814,6 +814,28 @@ describe("GroupChatPanel conversation pane", () => {
     ]);
   });
 
+  it("labels creator relays as unverified instead of attributing them as direct messages", async () => {
+    const harness = setup();
+    const creation = await harness.service.createGroup([20, 30], "Relay warning crew");
+    vi.spyOn(harness.service, "getMessages").mockReturnValue([{
+      id: "gmsg_unverified1",
+      groupId: creation.group.groupId,
+      senderNumber: 20,
+      senderName: "Reina",
+      direction: "incoming",
+      content: "Creator-supplied claim",
+      sentAt: 1_000_000,
+      read: false,
+      relayedByCreator: 10,
+    }]);
+
+    await harness.panel.activate(creation.group.groupId);
+    expect(required(harness.panel.chatPane, ".kl-group-message-author").textContent)
+      .toBe("Claimed Reina");
+    expect(required(harness.panel.chatPane, ".kl-group-message-relay-warning").textContent)
+      .toContain("original sender unverified");
+  });
+
   it("bounds the initial transcript and loads older messages without recreating visible nodes", async () => {
     const harness = setup();
     const creation = await harness.service.createGroup([20, 30], "History Crew");

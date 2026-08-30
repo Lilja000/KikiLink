@@ -205,7 +205,7 @@ export class BCAdapter {
     this.#ready = true;
     this.bus.emit("bc:status", { state: "ready" });
     this.bus.emit("bc:ready", { memberNumber: Player.MemberNumber });
-    this.#logger.info(`Connected as ${Player.Name} [${Player.MemberNumber}]`);
+    this.#logger.info("Connected to the authenticated BC session");
   }
 
   stop(): void {

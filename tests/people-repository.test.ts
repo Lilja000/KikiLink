@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MemoryKeyValueStorage } from "../src/core/settings";
 import type { PersonRecord } from "../src/core/types";
-import { PeopleRepository } from "../src/storage/people-repository";
+import { PEOPLE_KEY, PeopleRepository } from "../src/storage/people-repository";
 
 function person(memberNumber: number, overrides: Partial<PersonRecord> = {}): PersonRecord {
   return {
@@ -40,6 +40,28 @@ describe("PeopleRepository", () => {
         favorite: true,
       }),
     );
+  });
+
+  it("rewrites successfully loaded records in their canonical bounded form", () => {
+    const storage = new MemoryKeyValueStorage();
+    storage.setItem(PEOPLE_KEY, JSON.stringify([
+      {
+        ...person(123),
+        displayName: "  Reina  ",
+        tags: [" Trusted ", "trusted"],
+        unknownPrivateField: "must not survive",
+      },
+      { memberNumber: -1, note: "discard invalid row" },
+    ]));
+
+    expect(new PeopleRepository(storage).get(123)).toMatchObject({
+      displayName: "Reina",
+      tags: ["Trusted"],
+    });
+    const persisted = JSON.parse(storage.getItem(PEOPLE_KEY) ?? "null") as unknown[];
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).not.toHaveProperty("unknownPrivateField");
+    expect(JSON.stringify(persisted)).not.toContain("discard invalid row");
   });
 
   it("ignores malformed storage and keeps the collection strictly bounded", () => {

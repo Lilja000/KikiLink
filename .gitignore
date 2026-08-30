@@ -1,6 +1,7 @@
 node_modules/
 dist/*
 !dist/KikiLink.user.js
+!dist/KikiLink.fusam.js
 coverage/
 design/library/
 design/references/Screenshot_*.jpg

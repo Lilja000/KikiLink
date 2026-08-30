@@ -132,6 +132,9 @@ export class PeopleRepository {
         const record = sanitizePerson(value);
         if (record) this.#records.set(record.memberNumber, record);
       }
+      this.#prune();
+      const canonical = JSON.stringify(this.list());
+      if (canonical !== raw) this.#persist();
     } catch {
       // Ignore malformed old data instead of breaking KikiLink startup.
     }

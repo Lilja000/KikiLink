@@ -146,6 +146,8 @@ export interface GroupMessage {
   content: string;
   sentAt: number;
   read: boolean;
+  /** Relay transport authenticates the creator, not the origin claimed inside the packet. */
+  relayedByCreator?: number;
 }
 
 export interface GroupProtocolEvent {
@@ -213,6 +215,8 @@ export interface GroupChatServiceOptions {
   persistenceDelayMs?: number;
   /** Capability is checked again at the service boundary, never only in the picker UI. */
   hasManagedPeer?: (memberNumber: number) => boolean;
+  /** Message bodies and drafts stay session-only while this returns false. */
+  shouldPersistHistory?: () => boolean;
 }
 
 export interface GroupInvitePacket {
@@ -448,6 +452,7 @@ export class GroupChatService {
   readonly #now: () => number;
   readonly #idFactory: (prefix: "group" | "gmsg") => string;
   readonly #hasManagedPeer: ((memberNumber: number) => boolean) | undefined;
+  readonly #shouldPersistHistory: () => boolean;
   readonly #persistenceDelayMs: number;
   readonly #accountMemberNumber: number;
   #accountInvalidated = false;
@@ -472,6 +477,7 @@ export class GroupChatService {
     // Creator authority and membership generations must never fall back to timestamp IDs.
     this.#idFactory = options.idFactory ?? ((prefix) => createSecureId(prefix));
     this.#hasManagedPeer = options.hasManagedPeer;
+    this.#shouldPersistHistory = options.shouldPersistHistory ?? (() => true);
     this.#persistenceDelayMs = integerInRange(
       options.persistenceDelayMs,
       0,
@@ -484,6 +490,10 @@ export class GroupChatService {
     }
     this.#accountMemberNumber = accountMemberNumber;
     this.#load();
+    if (!this.#historyPersistenceEnabled()) {
+      this.#persistenceDirty = true;
+      this.#flushPersistenceNow();
+    }
     this.#scheduleRevocationRetry();
   }
 
@@ -1126,6 +1136,21 @@ export class GroupChatService {
     return removed;
   }
 
+  /** Applies the current history preference and retention before the next reload. */
+  async applyHistoryPolicy(olderThan: number): Promise<GroupPersistenceState> {
+    this.#assertOpen();
+    if (this.#historyPersistenceEnabled()) {
+      await this.prune(olderThan);
+      return this.getPersistenceState();
+    }
+    await this.#settleMutations();
+    this.#assertBoundAccount();
+    this.#markPersistenceDirty();
+    this.#clearPersistenceTimers();
+    this.#flushPersistenceNow();
+    return this.getPersistenceState();
+  }
+
   /** Flushes every mutation that reached the service before this call. */
   async flush(): Promise<GroupPersistenceState> {
     this.#clearPersistenceTimers();
@@ -1618,6 +1643,7 @@ export class GroupChatService {
       content: packet.c,
       sentAt: clampRemoteTimestamp(packet.u, receivedAt),
       read: activeGroupId === packet.g,
+      relayedByCreator: senderNumber,
     };
     this.#appendMessage(group, message);
     this.#schedulePersistence();
@@ -2886,24 +2912,50 @@ export class GroupChatService {
   }
 
   #storedState(): StoredGroupChatState {
+    const persistHistory = this.#historyPersistenceEnabled();
+    const groups = [...this.#groups.values()].sort(sortGroups).map((group) => {
+      const stored = cloneGroup(group);
+      if (persistHistory) return stored;
+      stored.draft = "";
+      stored.lastMessage = "";
+      stored.lastMessageAt = 0;
+      stored.unread = 0;
+      delete stored.lastSenderNumber;
+      return stored;
+    });
+    const replayOnlyMessages = persistHistory
+      ? []
+      : [...this.#messages.entries()].flatMap(([groupId, messages]) =>
+          messages.map((message): StoredMessageTombstone => ({
+            groupId,
+            originNumber: message.senderNumber,
+            messageId: message.id,
+            seenAt: safeNow(this.#now),
+          })),
+        );
     const state: StoredGroupChatState = {
       version: GROUP_STORAGE_VERSION,
-      groups: [...this.#groups.values()].sort(sortGroups).map((group) => cloneGroup(group)),
-      messages: [...this.#messages.values()]
-        .flat()
-        .sort(compareMessages)
-        .map((message) => structuredClone(message)),
+      groups,
+      messages: persistHistory
+        ? [...this.#messages.values()]
+            .flat()
+            .sort(compareMessages)
+            .map((message) => structuredClone(message))
+        : [],
       tombstones: [...this.#tombstones]
         .map(([groupId, tombstone]) => ({ groupId, ...structuredClone(tombstone) }))
         .sort((left, right) => right.removedAt - left.removedAt)
         .slice(0, GROUP_MAX_TOMBSTONES),
-      messageTombstones: [...this.#messageTombstones.entries()]
-        .flatMap(([groupId, ids]) =>
-          [...ids].flatMap(([identity, seenAt]) => {
-            const parsed = parseMessageIdentity(identity);
-            return parsed ? [{ groupId, ...parsed, seenAt }] : [];
-          }),
-        )
+      messageTombstones: [
+        ...[...this.#messageTombstones.entries()]
+          .flatMap(([groupId, ids]) =>
+            [...ids].flatMap(([identity, seenAt]) => {
+              const parsed = parseMessageIdentity(identity);
+              return parsed ? [{ groupId, ...parsed, seenAt }] : [];
+            }),
+          ),
+        ...replayOnlyMessages,
+      ]
         .sort(compareMessageTombstones)
         .slice(-GROUP_MAX_REPLAY_IDS_TOTAL),
       pendingRevocations: [...this.#pendingRevocations.values()]
@@ -2912,6 +2964,15 @@ export class GroupChatService {
         .slice(-GROUP_MAX_PENDING_REVOCATIONS),
     };
     return state;
+  }
+
+  #historyPersistenceEnabled(): boolean {
+    try {
+      return this.#shouldPersistHistory() !== false;
+    } catch {
+      // A broken settings reader must fail closed for message and draft persistence.
+      return false;
+    }
   }
 
   #load(): void {
@@ -3755,6 +3816,10 @@ function sanitizeStoredMessage(
     content,
     sentAt: value.sentAt,
     read: direction === "outgoing" || value.read === true,
+    ...(value.relayedByCreator === group.creatorNumber &&
+    value.senderNumber !== group.creatorNumber
+      ? { relayedByCreator: group.creatorNumber }
+      : {}),
   };
 }
 

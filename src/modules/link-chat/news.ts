@@ -9,6 +9,19 @@ export interface KikiLinkNewsRelease {
 /** A compact, curated changelog for the in-addon News page. */
 export const KIKILINK_NEWS: readonly KikiLinkNewsRelease[] = [
   {
+    version: "0.29.0",
+    date: "2026-08-30",
+    title: "FUSAM release and privacy hardening",
+    summary: "KikiLink now has a dedicated FUSAM build, consent-first remote profile art, durable history controls, and tighter protocol and device-storage bounds.",
+    highlights: [
+      "Install through FUSAM with a purpose-built page-realm bundle; temporary Litterbox uploads remain available, while privileged Catbox uploads and standalone update checks stay disabled there.",
+      "Choose before loading remote profile art by default, with clearer disclosure that an image host can observe the viewer's IP address and request time.",
+      "Keep direct-message deletion, clearing, and retention effective across account-data synchronization, and apply group history and retention settings to durable content.",
+      "Resist replay and flooding more predictably through bounded presence, typing, and activity processing, unverified quote and relay labels, and immediate account-switch shutdown.",
+      "Prevent runaway device media with aggregate storage quotas, transactional checks, and orphan cleanup.",
+    ],
+  },
+  {
     version: "0.28.1",
     date: "2026-08-29",
     title: "Quiet updates, clearer actions",

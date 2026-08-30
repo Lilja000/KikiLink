@@ -1712,7 +1712,12 @@ export class GroupChatPanel {
     item.dataset.messageKey = groupMessageKey(message);
     item.dataset.groupMemberNumber = String(message.senderNumber);
     const memberName = this.#memberName(group, message.senderNumber);
-    const author = message.direction === "outgoing" ? "You" : memberName;
+    const relayed = message.relayedByCreator === group.creatorNumber;
+    const author = message.direction === "outgoing"
+      ? "You"
+      : relayed
+        ? `Claimed ${memberName}`
+        : memberName;
     const authorTarget = this.#memberProfileTarget(
       { memberNumber: message.senderNumber, memberName },
       "kl-group-message-profile",
@@ -1727,7 +1732,19 @@ export class GroupChatPanel {
     timestamp.dateTime = new Date(message.sentAt).toISOString();
     timestamp.textContent = formatMessageTime(message.sentAt);
     const meta = node("header", "kl-group-message-meta");
-    meta.append(authorNode, timestamp);
+    meta.append(authorNode);
+    if (relayed) {
+      const creatorName = this.#memberName(group, group.creatorNumber);
+      const warning = node(
+        "span",
+        "kl-group-message-relay-warning",
+        `Relayed by ${creatorName} · original sender unverified`,
+      );
+      warning.title =
+        "The group creator delivered this relay; KikiLink cannot verify who originally wrote it.";
+      meta.append(warning);
+    }
+    meta.append(timestamp);
     const content = node("div", "kl-group-message-content");
     let rendered = false;
     if (this.options.renderMessageBody) {

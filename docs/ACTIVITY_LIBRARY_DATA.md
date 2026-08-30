@@ -2,8 +2,8 @@
 
 KikiLink stores user-created activities under the authenticated BC MemberNumber and registers
 them beside Bondage Club's vanilla activities at runtime. There is no public activity library or
-remote index; the private library is also included in that account's bounded `ExtensionSettings`
-snapshot so it can follow the same account to another device.
+remote index; the account-scoped library is also included in that account's bounded, unencrypted
+`ExtensionSettings` snapshot so it can follow the same account to another device.
 
 ## Local model
 
@@ -82,8 +82,9 @@ default. Legacy user-written room actions are preserved and converted with:
 - arousal off; and
 - legacy `{source}` changed to `{me}`.
 
-All processing remains local. Persistence is separated by MemberNumber and uses the private,
-bounded BC account snapshot described in `ACCOUNT_DATA.md` for same-account device transfer.
+All processing remains in Bondage Club's page. Persistence is separated by MemberNumber and uses the
+bounded BC account snapshot described in `ACCOUNT_DATA.md` for same-account device transfer. This is
+account scoping rather than a confidentiality boundary; see [`PRIVACY.md`](../PRIVACY.md).
 
 Schema 14 adds only profile, AFK, temporary-upload, and the former room-badge preferences. Existing custom
 activities remain intact. The former Cloudinary upload switch is reset to off once during migration

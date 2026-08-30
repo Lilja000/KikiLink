@@ -92,6 +92,14 @@ describe("cleanBeepMessageContent", () => {
     expect(cleanBeepMessageContent(oversizedLanguage)).toBe(oversizedLanguage);
   });
 
+  it("strips bidirectional formatting controls from visible message content", () => {
+    expect(
+      cleanBeepMessageContent(
+        "safe\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069text",
+      ),
+    ).toBe("safetext");
+  });
+
   it("applies the native 1000-character Beep display limit after removing trailers", () => {
     expect(cleanBeepMessageContent("a".repeat(1_001))).toHaveLength(1_000);
     expect(

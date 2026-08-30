@@ -284,7 +284,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 27;
+  schemaVersion: 28;
   ui: {
     accent: string;
     theme: ThemePreference;

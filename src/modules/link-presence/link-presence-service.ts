@@ -28,6 +28,11 @@ const FORCED_REQUEST_COOLDOWN_MS = 2_000;
 const REQUEST_QUEUE_INTERVAL_MS = 140;
 const MAX_QUEUED_REQUESTS = 60;
 const MAX_TRACKED_ONLINE_FRIENDS = 500;
+const MAX_TRACKED_REMOTE_SENDERS = 500;
+const INBOUND_LIVE_PACKET_RATE_WINDOW_MS = 10_000;
+const MAX_INBOUND_PRESENCE_PACKETS_PER_SENDER = 8;
+const MAX_INBOUND_TYPING_PACKETS_PER_SENDER = 12;
+const MAX_INBOUND_LIVE_PACKETS_AGGREGATE = 1_024;
 const RESPONSE_COOLDOWN_MS = 5_000;
 const PROFILE_RESPONSE_COOLDOWN_MS = 2_000;
 const TYPING_REFRESH_MS = 1_800;
@@ -87,6 +92,17 @@ interface PendingProfileRequest {
   bioReceived?: boolean;
 }
 
+interface InboundLivePacketRate {
+  windowStartedAt: number;
+  presencePackets: number;
+  typingPackets: number;
+}
+
+interface AcceptedPresenceUpdate {
+  sourceUpdatedAt: number;
+  receivedAt: number;
+}
+
 export interface OwnProfilePreferences {
   enabled: boolean;
   statusMessage: string;
@@ -126,6 +142,9 @@ export class LinkPresenceService {
   readonly #localTyping = new Map<number, { active: true; sentAt: number }>();
   readonly #remoteTypingUntil = new Map<number, number>();
   readonly #typingExpiryTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  readonly #trackedRemoteSenders = new Map<number, number>();
+  readonly #inboundLivePacketRates = new Map<number, InboundLivePacketRate>();
+  readonly #lastAcceptedPresenceUpdates = new Map<number, AcceptedPresenceUpdate>();
   readonly #unsubscribers: Array<() => void> = [];
   readonly #authenticatedOwnMemberNumber: number | undefined;
   #nativeTimer: ReturnType<typeof setInterval> | undefined;
@@ -135,6 +154,8 @@ export class LinkPresenceService {
   #lastEffectiveStatus: PresenceStatus = "online";
   #lastRoomName = "";
   #lastCapabilityBroadcastAt = 0;
+  #aggregateLivePacketWindowStartedAt: number | undefined;
+  #aggregateLivePacketCount = 0;
   #started = false;
   #identityInvalidated = false;
 
@@ -285,6 +306,11 @@ export class LinkPresenceService {
     this.#remoteTypingUntil.clear();
     for (const timer of this.#typingExpiryTimers.values()) clearTimeout(timer);
     this.#typingExpiryTimers.clear();
+    this.#trackedRemoteSenders.clear();
+    this.#inboundLivePacketRates.clear();
+    this.#lastAcceptedPresenceUpdates.clear();
+    this.#aggregateLivePacketWindowStartedAt = undefined;
+    this.#aggregateLivePacketCount = 0;
   }
 
   subscribe(listener: PresenceListener): () => void {
@@ -791,6 +817,16 @@ export class LinkPresenceService {
     const packet = parsePresencePacket(payload);
     if (!packet) return;
     const receivedAt = Date.now();
+    if (
+      (packet.t === "ps" || packet.t === "ty") &&
+      !this.#acceptInboundLivePacket(senderNumber, packet.t, receivedAt)
+    ) {
+      return;
+    }
+    if (packet.t === "ps" && this.#isStalePresenceUpdate(senderNumber, packet.u, receivedAt)) {
+      return;
+    }
+    this.#trackRemoteSender(senderNumber, receivedAt);
     const wasCompatible = this.hasCompatiblePeer(senderNumber, receivedAt);
     this.#compatiblePeers.set(senderNumber, receivedAt);
     if (packet.t === "ty") {
@@ -849,6 +885,7 @@ export class LinkPresenceService {
         if (!wasCompatible) this.#notify(senderNumber);
         return;
       }
+      if (pending.detailsReceived) return;
       pending.detailsReceived = true;
       if (!pending.expectsBio || pending.bioReceived) {
         this.#pendingProfileRequests.delete(senderNumber);
@@ -891,6 +928,7 @@ export class LinkPresenceService {
         if (!wasCompatible) this.#notify(senderNumber);
         return;
       }
+      if (pending.bioReceived) return;
       pending.bioReceived = true;
       if (pending.detailsReceived) this.#pendingProfileRequests.delete(senderNumber);
       const existing = this.#remoteProfileDetails.get(senderNumber);
@@ -911,6 +949,11 @@ export class LinkPresenceService {
       this.#groupCompatiblePeers.set(senderNumber, { seenAt: receivedAt, version: packet.g });
     }
     this.#remoteVersions.set(senderNumber, packet.v);
+    this.#lastAcceptedPresenceUpdates.delete(senderNumber);
+    this.#lastAcceptedPresenceUpdates.set(senderNumber, {
+      sourceUpdatedAt: packet.u,
+      receivedAt,
+    });
     const withdrawsProfile =
       packet.s === "offline" &&
       packet.m === undefined &&
@@ -943,6 +986,94 @@ export class LinkPresenceService {
       this.#cacheRemoteProfile(senderNumber, receivedAt);
     }
     this.#notify(senderNumber);
+  }
+
+  #acceptInboundLivePacket(
+    senderNumber: number,
+    packetType: "ps" | "ty",
+    receivedAt: number,
+  ): boolean {
+    const aggregateWindowStartedAt = this.#aggregateLivePacketWindowStartedAt;
+    if (
+      aggregateWindowStartedAt === undefined ||
+      receivedAt < aggregateWindowStartedAt ||
+      receivedAt - aggregateWindowStartedAt >= INBOUND_LIVE_PACKET_RATE_WINDOW_MS
+    ) {
+      this.#aggregateLivePacketWindowStartedAt = receivedAt;
+      this.#aggregateLivePacketCount = 0;
+    }
+
+    let rate = this.#inboundLivePacketRates.get(senderNumber);
+    if (
+      rate &&
+      (receivedAt < rate.windowStartedAt ||
+        receivedAt - rate.windowStartedAt >= INBOUND_LIVE_PACKET_RATE_WINDOW_MS)
+    ) {
+      rate = {
+        windowStartedAt: receivedAt,
+        presencePackets: 0,
+        typingPackets: 0,
+      };
+    }
+    const packetCount = packetType === "ps"
+      ? rate?.presencePackets ?? 0
+      : rate?.typingPackets ?? 0;
+    const perSenderLimit = packetType === "ps"
+      ? MAX_INBOUND_PRESENCE_PACKETS_PER_SENDER
+      : MAX_INBOUND_TYPING_PACKETS_PER_SENDER;
+    if (
+      packetCount >= perSenderLimit ||
+      this.#aggregateLivePacketCount >= MAX_INBOUND_LIVE_PACKETS_AGGREGATE
+    ) {
+      return false;
+    }
+
+    if (!rate) {
+      while (this.#inboundLivePacketRates.size >= MAX_TRACKED_REMOTE_SENDERS) {
+        const oldestSender = this.#inboundLivePacketRates.keys().next().value as
+          | number
+          | undefined;
+        if (oldestSender === undefined) break;
+        this.#inboundLivePacketRates.delete(oldestSender);
+      }
+      rate = {
+        windowStartedAt: receivedAt,
+        presencePackets: 0,
+        typingPackets: 0,
+      };
+    }
+    if (packetType === "ps") rate.presencePackets += 1;
+    else rate.typingPackets += 1;
+    this.#inboundLivePacketRates.delete(senderNumber);
+    this.#inboundLivePacketRates.set(senderNumber, rate);
+    this.#aggregateLivePacketCount += 1;
+    return true;
+  }
+
+  #isStalePresenceUpdate(
+    senderNumber: number,
+    sourceUpdatedAt: number,
+    receivedAt: number,
+  ): boolean {
+    const previous = this.#lastAcceptedPresenceUpdates.get(senderNumber);
+    return previous !== undefined &&
+      receivedAt - previous.receivedAt <= REMOTE_STATUS_TTL_MS &&
+      sourceUpdatedAt < previous.sourceUpdatedAt;
+  }
+
+  #trackRemoteSender(senderNumber: number, receivedAt: number): void {
+    if (!this.#trackedRemoteSenders.has(senderNumber)) {
+      while (this.#trackedRemoteSenders.size >= MAX_TRACKED_REMOTE_SENDERS) {
+        const oldestSender = this.#trackedRemoteSenders.keys().next().value as
+          | number
+          | undefined;
+        if (oldestSender === undefined) break;
+        this.#purgePeerState(oldestSender);
+      }
+    } else {
+      this.#trackedRemoteSenders.delete(senderNumber);
+    }
+    this.#trackedRemoteSenders.set(senderNumber, receivedAt);
   }
 
   #receiveTyping(senderNumber: number, active: boolean): void {
@@ -1150,6 +1281,9 @@ export class LinkPresenceService {
     changed = this.#lastProfileResponseAt.delete(memberNumber) || changed;
     changed = this.#queuedRequests.delete(memberNumber) || changed;
     changed = this.#reachableOnlineFriends.delete(memberNumber) || changed;
+    changed = this.#trackedRemoteSenders.delete(memberNumber) || changed;
+    changed = this.#inboundLivePacketRates.delete(memberNumber) || changed;
+    changed = this.#lastAcceptedPresenceUpdates.delete(memberNumber) || changed;
 
     const queueLength = this.#requestQueue.length;
     for (let index = this.#requestQueue.length - 1; index >= 0; index -= 1) {
@@ -1366,6 +1500,12 @@ export class LinkPresenceService {
         this.#pendingProfileRequests.delete(memberNumber);
       }
     }
+    for (const [memberNumber, lastTrackedAt] of this.#trackedRemoteSenders) {
+      if (now - lastTrackedAt <= REMOTE_STATUS_TTL_MS) continue;
+      this.#trackedRemoteSenders.delete(memberNumber);
+      this.#inboundLivePacketRates.delete(memberNumber);
+      this.#lastAcceptedPresenceUpdates.delete(memberNumber);
+    }
     try {
       this.profileCache?.prune(now);
     } catch {
@@ -1455,6 +1595,11 @@ export class LinkPresenceService {
     this.#remoteTypingUntil.clear();
     for (const timer of this.#typingExpiryTimers.values()) clearTimeout(timer);
     this.#typingExpiryTimers.clear();
+    this.#trackedRemoteSenders.clear();
+    this.#inboundLivePacketRates.clear();
+    this.#lastAcceptedPresenceUpdates.clear();
+    this.#aggregateLivePacketWindowStartedAt = undefined;
+    this.#aggregateLivePacketCount = 0;
     this.#lastRoomName = "";
     this.#lastCapabilityBroadcastAt = 0;
     this.#lastEffectiveStatus = "offline";
@@ -1671,7 +1816,8 @@ function parsePresencePacket(payload: string): PresencePacket | null {
     !isPresenceStatus(value.s) ||
     !("u" in value) ||
     typeof value.u !== "number" ||
-    !Number.isFinite(value.u) ||
+    !Number.isSafeInteger(value.u) ||
+    value.u < 0 ||
     !("v" in value) ||
     typeof value.v !== "string" ||
     value.v.length < 1 ||

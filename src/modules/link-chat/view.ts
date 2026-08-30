@@ -34,6 +34,7 @@ import {
   checkForKikiLinkUpdate,
   KIKILINK_USERSCRIPT_INSTALL_URL,
 } from "../../core/version-update-checker";
+import { KIKILINK_DISTRIBUTION } from "../../core/distribution";
 import { element } from "../../utils/dom";
 import { LinkActivitiesService } from "../link-activities/link-activities-service";
 import { CustomActivitiesView } from "../link-activities/custom-activities-view";
@@ -90,6 +91,7 @@ import {
   LitterboxImageUploader,
   MAX_PROFILE_BANNER_BYTES,
   normalizeLitterboxUploadConfig,
+  supportsLongLivedCatboxUploads,
   uploadPreparedImageToCatbox,
   prepareProfileBanner,
   uploadLocalRoomAudio,
@@ -206,7 +208,6 @@ interface RoomOperationTarget {
   roomSpace: string;
 }
 
-const KIKILINK_CREATOR_MEMBER_NUMBER = 0;
 const MAX_AUTO_REMOTE_IMAGE_LOADS = 4;
 const MAX_FALLBACK_AUTO_REMOTE_IMAGE_LOADS = 12;
 const MAX_RETAINED_REMOTE_IMAGE_PREVIEWS = 6;
@@ -866,6 +867,7 @@ export class LinkChatView {
     | undefined;
   #suppressLauncherClickUntil = 0;
   #presenceUnsubscribe: (() => void) | undefined;
+  #settingsUnsubscribe: (() => void) | undefined;
   #groupChatService: GroupChatService | undefined;
   #groupChatPanel: GroupChatPanel | undefined;
   #groupChatUnsubscribe: (() => void) | undefined;
@@ -957,6 +959,8 @@ export class LinkChatView {
   #musicObjectUrl: string | undefined;
   #localMusicTrackIds: Set<string> | undefined;
   #localMusicTrackIdsPromise: Promise<Set<string>> | undefined;
+  #localMusicReferenceSignature = "";
+  readonly #stagedLocalMusicTrackIds = new Set<string>();
   #musicSleepTimer: ReturnType<typeof setTimeout> | undefined;
   #musicStopAfterTrack = false;
   #roomPlaylistSyncEnabled = false;
@@ -1118,8 +1122,12 @@ export class LinkChatView {
       onAddGroupMember: (groupId, memberNumber) => service.addMember(groupId, memberNumber),
       onKickGroupMember: (groupId, memberNumber) => service.kickMember(groupId, memberNumber),
       onConvertLegacyGroup: (groupId) => service.convertLegacyGroup(groupId),
-      onPickGroupAvatar: (groupId, returnFocus) =>
-        this.#pickGroupAvatar(groupId, returnFocus),
+      ...(supportsLongLivedCatboxUploads()
+        ? {
+            onPickGroupAvatar: (groupId: string, returnFocus: HTMLElement) =>
+              this.#pickGroupAvatar(groupId, returnFocus),
+          }
+        : {}),
       onAttachImage: (groupId) => this.#openImageDialog("group", groupId),
       renderMessageBody: (message) =>
         this.#renderRichMessageBody(
@@ -1215,6 +1223,14 @@ export class LinkChatView {
     this.#presenceUnsubscribe = this.presence.subscribe((memberNumber) =>
       this.#schedulePresenceRender(memberNumber),
     );
+    this.#localMusicReferenceSignature = localMusicReferenceSignature(this.settings.get());
+    this.#settingsUnsubscribe = this.settings.subscribe((settings) => {
+      const signature = localMusicReferenceSignature(settings);
+      if (signature === this.#localMusicReferenceSignature) return;
+      this.#localMusicReferenceSignature = signature;
+      void this.#reconcileLocalMusicTracks(settings);
+    });
+    void this.#reconcileLocalMusicTracks(this.settings.get());
 
     void this.refresh();
   }
@@ -1279,6 +1295,8 @@ export class LinkChatView {
     document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
     this.#presenceUnsubscribe?.();
     this.#presenceUnsubscribe = undefined;
+    this.#settingsUnsubscribe?.();
+    this.#settingsUnsubscribe = undefined;
     this.#groupChatUnsubscribe?.();
     this.#groupChatUnsubscribe = undefined;
     this.#groupChatPanel?.destroy();
@@ -2067,7 +2085,7 @@ export class LinkChatView {
       updateLink,
     );
     this.#home.append(hero, this.#homeUpdate, sectionHeading, cards, privacy);
-    void this.#checkForAvailableUpdate();
+    if (KIKILINK_DISTRIBUTION !== "fusam") void this.#checkForAvailableUpdate();
   }
 
   async #checkForAvailableUpdate(): Promise<void> {
@@ -2547,14 +2565,14 @@ export class LinkChatView {
     );
 
     this.#profileImagePreviewSelect.replaceChildren(
-      selectOption("always", "Always show"),
       selectOption("ask", "Ask before loading"),
+      selectOption("always", "Always show"),
       selectOption("never", "Links only"),
     );
     this.#profileImagePreviewSelect.setAttribute("aria-label", "Profile image previews");
     const profileImagePreviews = this.#settingRow(
       "Profile avatars & banners",
-      "Always show is the KikiLink default. Ask restores the Show avatar and Show banner controls; Links only never loads remote profile art.",
+      "Ask is the privacy-first default. Loading remote art reveals your IP and request time to its host; Always show opts into that automatically.",
       this.#profileImagePreviewSelect,
     );
 
@@ -3084,13 +3102,6 @@ export class LinkChatView {
     aboutMark.alt = "";
     aboutMark.decoding = "async";
     aboutMark.draggable = false;
-    const creatorNumber = element(
-      "span",
-      {
-        className: "kl-about-creator-number",
-        text: `Member ${KIKILINK_CREATOR_MEMBER_NUMBER}`,
-      },
-    );
     const discord = element("a", {
       className: "kl-about-link kl-about-link--discord",
       text: "Join the KikiLink Discord",
@@ -3127,7 +3138,6 @@ export class LinkChatView {
         { className: "kl-about-creator" },
         element("span", { className: "kl-about-label", text: "CREATED BY" }),
         element("strong", { text: "Kiki" }),
-        creatorNumber,
       ),
       element(
         "dl",
@@ -3135,12 +3145,12 @@ export class LinkChatView {
         aboutFact("Version", this.version),
         aboutFact("Release channel", "Stable"),
         aboutFact("License", "MIT"),
-        aboutFact("Data", "Scoped to your signed-in BC account"),
+        aboutFact("Data", "Account-scoped; see Privacy"),
       ),
       element("div", { className: "kl-about-links" }, discord, repository),
       element("p", {
         className: "kl-about-note",
-        text: "KikiLink is an independent quality-of-life addon. It keeps account data separate and shares Presence only with compatible KikiLink users.",
+        text: "KikiLink is an independent quality-of-life addon. Account scoping prevents accidental mix-ups; co-installed page addons share the same browser trust boundary.",
       }),
     );
     const aboutSection = this.#createSettingsPanel(
@@ -3710,7 +3720,9 @@ export class LinkChatView {
         }),
         element("span", {
           className: "kl-custom-field-help",
-          text: "Upload converts the file to a metadata-free WebP and stores it on public, long-lived Catbox. Removing it here does not delete the old public file.",
+          text: supportsLongLivedCatboxUploads()
+            ? "Upload converts the file to a metadata-free WebP and stores it on public, long-lived Catbox. Removing it here does not delete the old public file."
+            : "FUSAM cannot upload to Catbox safely. Paste a direct HTTPS banner link instead.",
         }),
         this.#presenceBannerStatus,
       ),
@@ -4401,13 +4413,20 @@ export class LinkChatView {
     this.#presenceMessage.disabled = !enabled;
     this.#presenceBio.disabled = !enabled;
     this.#presenceBannerUrl.disabled = this.#profileBannerUploadBusy;
-    this.#presenceBannerUploadButton.textContent = this.#profileBannerUploadBusy
+    const canUploadToCatbox = supportsLongLivedCatboxUploads();
+    this.#presenceBannerUploadButton.textContent = !canUploadToCatbox
+      ? "Catbox unavailable in FUSAM"
+      : this.#profileBannerUploadBusy
       ? this.#profileBannerUploadController?.signal.aborted
         ? "Cancelling…"
         : "Cancel upload"
       : "Upload banner";
     this.#presenceBannerUploadButton.disabled =
-      this.#profileBannerUploadBusy && this.#profileBannerUploadController?.signal.aborted === true;
+      !canUploadToCatbox ||
+      (this.#profileBannerUploadBusy && this.#profileBannerUploadController?.signal.aborted === true);
+    this.#presenceBannerUploadButton.title = canUploadToCatbox
+      ? "Prepare and upload a public Catbox banner"
+      : "FUSAM cannot access Catbox's non-CORS upload API";
     this.#presenceBannerRemoveButton.disabled = this.#profileBannerUploadBusy;
     this.#presenceOutlineEnabled.disabled = this.#profileBannerUploadBusy;
     this.#presenceOutlineColor.disabled =
@@ -4504,6 +4523,10 @@ export class LinkChatView {
   }
 
   async #uploadPresenceBanner(file: File): Promise<void> {
+    if (!supportsLongLivedCatboxUploads()) {
+      this.#toast("Catbox uploads are unavailable in FUSAM. Paste a direct HTTPS link instead.", "error");
+      return;
+    }
     if (this.#profileBannerUploadBusy || !this.#presenceDialog.open) return;
     const token = ++this.#profileBannerUploadToken;
     const controller = new AbortController();
@@ -4683,10 +4706,12 @@ export class LinkChatView {
       ["litterbox", "status", "Litterbox", "Public link · expires automatically"],
     ] as const).map(([storage, icon, title, description]) => {
       const input = element("input") as HTMLInputElement;
+      const unavailable = storage === "catbox" && !supportsLongLivedCatboxUploads();
       input.type = "radio";
       input.name = "kikilink-gallery-storage";
       input.value = storage;
       input.checked = storage === "device";
+      input.disabled = unavailable;
       input.addEventListener("change", () => {
         if (input.checked) this.#setGalleryFileStorage(storage);
       });
@@ -4699,7 +4724,9 @@ export class LinkChatView {
           "span",
           { className: "kl-gallery-storage-copy" },
           element("strong", { text: title }),
-          element("small", { text: description }),
+          element("small", {
+            text: unavailable ? "Unavailable in FUSAM · use a direct link" : description,
+          }),
         ),
       );
       choice.dataset.storage = storage;
@@ -4968,7 +4995,9 @@ export class LinkChatView {
     this.#imageDestination = destination;
     this.#imageDialogTitle.textContent = destination === "gallery" ? "Add to Gallery" : "Send an image";
     this.#imageDialogSubtitle.textContent = destination === "gallery"
-      ? "Save a direct link, keep a prepared file private, or upload it to Catbox/Litterbox."
+      ? supportsLongLivedCatboxUploads()
+        ? "Save a direct link, keep a prepared file private, or upload it to Catbox/Litterbox."
+        : "Save a direct link, keep a prepared file private, or use expiring Litterbox storage."
       : destination === "group"
         ? "Share a direct image link with every current group member."
         : "A normal Beep link for everyone; an inline preview for KikiLink.";
@@ -4998,6 +5027,7 @@ export class LinkChatView {
   }
 
   #setGalleryFileStorage(storage: GalleryFileStorage): void {
+    if (storage === "catbox" && !supportsLongLivedCatboxUploads()) storage = "device";
     this.#galleryFileStorage = storage;
     for (const input of this.#galleryStorageOptions.querySelectorAll<HTMLInputElement>(
       "input[type='radio']",
@@ -5077,7 +5107,8 @@ export class LinkChatView {
     for (const input of this.#galleryStorageOptions.querySelectorAll<HTMLInputElement>(
       "input[type='radio']",
     )) {
-      input.disabled = this.#imageUploadBusy;
+      input.disabled = this.#imageUploadBusy ||
+        (input.value === "catbox" && !supportsLongLivedCatboxUploads());
     }
     this.#galleryRetentionSelect.disabled = this.#imageUploadBusy;
     this.#chooseImageFileButton.textContent = this.#preparedLocalImage
@@ -5473,6 +5504,10 @@ export class LinkChatView {
   }
 
   #pickGroupAvatar(groupId: string, returnFocus: HTMLElement): void {
+    if (!supportsLongLivedCatboxUploads()) {
+      this.#toast("Catbox uploads are unavailable in FUSAM. Use a direct HTTPS avatar link.", "error");
+      return;
+    }
     if (this.#groupAvatarUploadBusy) {
       this.#toast("Another group avatar is already uploading.", "error");
       return;
@@ -7475,7 +7510,9 @@ export class LinkChatView {
     this.#musicFileInput.multiple = true;
     this.#musicFileMode.replaceChildren(
       selectOption("local", "Keep only on this device"),
-      selectOption("catbox", "Upload to long-lived Catbox"),
+      ...(supportsLongLivedCatboxUploads()
+        ? [selectOption("catbox", "Upload to long-lived Catbox")]
+        : []),
     );
     this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
     this.#musicQueueSearch.type = "search";
@@ -7511,7 +7548,9 @@ export class LinkChatView {
       element("label", {}, element("span", { text: "File handling" }), this.#musicFileMode),
       element("p", {
         className: "kl-setting-help",
-        text: "Local files stay in this browser. Anonymous Catbox uploads are public bearer links and are retained until two years of inactivity; account-linked uploads would be permanent.",
+        text: supportsLongLivedCatboxUploads()
+          ? "Local files stay in this browser. Catbox files are public bearer links and may include embedded audio metadata. KikiLink sends no userhash, but a userscript manager may attach an existing Catbox session cookie; retention then depends on Catbox account state."
+          : "FUSAM keeps selected files on this device. For remote music, use a direct HTTPS link you trust; Catbox upload is unavailable.",
       }),
       this.#musicAddStatus,
       this.#musicAddButton,
@@ -7841,6 +7880,7 @@ export class LinkChatView {
     this.#musicAddButton.disabled = true;
     this.#musicAddStatus.textContent = "";
     const staged: MusicTrack[] = [];
+    const stagedLocalIds = new Set<string>();
     let committed = false;
     try {
       const trackCount = this.settings.get().linkMusic.playlists.reduce(
@@ -7859,6 +7899,9 @@ export class LinkChatView {
           let locator: string;
           let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
           if (this.#musicFileMode.value === "catbox") {
+            if (!supportsLongLivedCatboxUploads()) {
+              throw new Error("Catbox uploads are unavailable in FUSAM");
+            }
             this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to Catbox…`;
             locator = await uploadMusicToCatbox(file, undefined, (progress) => {
               if (controller.signal.aborted) return;
@@ -7871,6 +7914,8 @@ export class LinkChatView {
             this.#musicAddStatus.textContent = `Saving ${index + 1}/${files.length} on this device…`;
             const localTrackIds = await this.#getLocalMusicTrackIds();
             const stored = await this.musicStore.add(file);
+            this.#stagedLocalMusicTrackIds.add(stored.id);
+            stagedLocalIds.add(stored.id);
             if (controller.signal.aborted) throw new Error("The operation was cancelled");
             locator = stored.id;
             fallbackTitle = stored.name.replace(/\.[^.]+$/u, "");
@@ -7898,6 +7943,7 @@ export class LinkChatView {
       if (controller.signal.aborted) throw new Error("The operation was cancelled");
       this.#appendMusicTracks(staged);
       committed = true;
+      this.#releaseStagedLocalMusicTrackIds(stagedLocalIds);
       this.#musicTitleInput.value = "";
       this.#musicUrlInput.value = "";
       this.#musicFileInput.value = "";
@@ -7917,6 +7963,7 @@ export class LinkChatView {
       if (staged.length > 0 && !committed) {
         this.#appendMusicTracks(staged);
         committed = true;
+        this.#releaseStagedLocalMusicTrackIds(stagedLocalIds);
         this.#musicTitleInput.value = "";
         this.#musicUrlInput.value = "";
         this.#musicFileInput.value = "";
@@ -7927,6 +7974,10 @@ export class LinkChatView {
       }
       this.#toast(this.#musicAddStatus.textContent, "error");
     } finally {
+      if (!committed) {
+        this.#releaseStagedLocalMusicTrackIds(stagedLocalIds);
+        void this.#reconcileLocalMusicTracks(this.settings.get());
+      }
       if (this.#musicAddUploadController === controller) {
         this.#musicAddUploadController = undefined;
       }
@@ -8230,6 +8281,26 @@ export class LinkChatView {
     } finally {
       if (this.#localMusicTrackIdsPromise === load) this.#localMusicTrackIdsPromise = undefined;
     }
+  }
+
+  async #reconcileLocalMusicTracks(settings: KikiLinkSettings): Promise<void> {
+    if (!this.musicStore.reconcile) return;
+    const referenced = localMusicTrackIds(settings);
+    const protectedIds = new Set(this.#stagedLocalMusicTrackIds);
+    try {
+      const removed = await this.musicStore.reconcile(referenced, protectedIds);
+      for (const id of removed) {
+        this.#localMusicTrackIds?.delete(id);
+        this.#sharedRoomMusic.delete(id);
+      }
+    } catch {
+      // An unavailable device store must not interrupt the account-scoped settings lifecycle.
+    }
+  }
+
+  #releaseStagedLocalMusicTrackIds(ids: ReadonlySet<string>): void {
+    for (const id of ids) this.#stagedLocalMusicTrackIds.delete(id);
+    this.musicStore.releaseStaged?.(ids);
   }
 
   async #deleteOrphanedLocalTracks(tracks: MusicTrack[]): Promise<void> {
@@ -10373,17 +10444,25 @@ export class LinkChatView {
         "div",
         {
           className: "kl-message-reply",
-          ariaLabel: `Reply to ${reply.author}: ${reply.excerpt}`,
+          ariaLabel: `Unverified quote attributed to ${reply.author}: ${reply.excerpt}`,
         },
         kikiIcon("reply", "kl-message-reply-icon"),
         element(
           "span",
           { className: "kl-message-reply-copy" },
-          element("strong", { className: "kl-message-reply-author", text: reply.author }),
+          element("strong", {
+            className: "kl-message-reply-author",
+            text: `Quoted as ${reply.author}`,
+          }),
           element("span", { className: "kl-message-reply-excerpt", text: reply.excerpt }),
+          element("small", {
+            className: "kl-message-reply-warning",
+            text: "Unverified quote",
+          }),
         ),
       );
-      context.title = `${reply.author}: ${reply.excerpt}`;
+      context.title =
+        `Unverified quote attributed to ${reply.author}: ${reply.excerpt}`;
       context.setAttribute("role", "note");
       body.append(context);
       body.dataset.hasReply = "true";
@@ -12313,6 +12392,9 @@ export class LinkChatView {
     void this.#renderHome();
     this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView, settings));
     void this.service.prune();
+    void this.#groupChatService?.applyHistoryPolicy(
+      Date.now() - settings.linkChat.retentionDays * 24 * 60 * 60 * 1000,
+    );
     this.#toast(
       removedPlayers > 0
         ? `Settings saved. Forgot ${removedPlayers} old encounter${removedPlayers === 1 ? "" : "s"}.`
@@ -13314,6 +13396,20 @@ function activePlaylist(playlists: MusicPlaylist[], activeId: string): MusicPlay
   const playlist = playlists.find((candidate) => candidate.id === activeId) ?? playlists[0];
   if (!playlist) throw new Error("Create a playlist first");
   return playlist;
+}
+
+function localMusicTrackIds(settings: KikiLinkSettings): Set<string> {
+  return new Set(
+    settings.linkMusic.playlists.flatMap((playlist) =>
+      playlist.tracks
+        .filter((track) => track.source === "local")
+        .map((track) => track.locator),
+    ),
+  );
+}
+
+function localMusicReferenceSignature(settings: KikiLinkSettings): string {
+  return [...localMusicTrackIds(settings)].sort().join("\n");
 }
 
 function createLocalId(prefix: string): string {

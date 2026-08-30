@@ -20,10 +20,23 @@ const MAX_CLOUD_PAYLOAD_CHARS = 120_000;
 const MAX_CLOUD_CONVERSATIONS = 100;
 const MAX_CLOUD_MESSAGES = 600;
 const MAX_CLOUD_MESSAGES_PER_CONVERSATION = 100;
+const MAX_CHAT_DELETION_TOMBSTONES = 500;
+const MAX_PORTABLE_STATE_JSON_CHARS = 512_000;
 
 interface PortableChatState {
   conversations: ConversationMeta[];
   messages: LinkMessage[];
+}
+
+interface PortableChatPolicy {
+  /** Deletes every message at or before this time, including on another device. */
+  clearedAt: number;
+  /** Deletes messages strictly before this account-wide retention boundary. */
+  prunedBefore: number;
+  /** Per-conversation deletions remain monotonic so stale devices cannot restore old rows. */
+  deletedPeers: Array<[peerNumber: number, deletedAt: number]>;
+  /** Per-conversation trims remove rows strictly before the retained boundary. */
+  prunedPeers: Array<[peerNumber: number, prunedBefore: number]>;
 }
 
 interface PortableAccountState {
@@ -33,6 +46,7 @@ interface PortableAccountState {
   settings?: unknown;
   people?: unknown[];
   chats?: PortableChatState;
+  chatPolicy?: PortableChatPolicy;
 }
 
 /**
@@ -111,12 +125,23 @@ export class AccountDataStorage implements KeyValueStorage {
         owner: memberNumber,
         updatedAt: 0,
       };
+    const mergedPolicy = mergeChatPolicies(remote?.chatPolicy, mirror?.chatPolicy);
+    if (hasChatPolicy(mergedPolicy)) this.#state.chatPolicy = mergedPolicy;
     const chatClearMarker = parseChatClearMarker(this.#readLocalItem(CHAT_CLEAR_MARKER_KEY));
-    const chatClearMarkerApplied =
-      chatClearMarker !== undefined && chatClearMarker >= this.#state.updatedAt;
+    const chatClearMarkerApplied = chatClearMarker !== undefined &&
+      chatClearMarker > (this.#state.chatPolicy?.clearedAt ?? 0);
     if (chatClearMarkerApplied) {
-      this.#state.updatedAt = chatClearMarker;
+      this.#state.updatedAt = Math.max(this.#state.updatedAt, chatClearMarker);
       this.#state.chats = { conversations: [], messages: [] };
+      this.#state.chatPolicy = {
+        clearedAt: chatClearMarker,
+        prunedBefore: Math.max(
+          chatClearMarker + 1,
+          this.#state.chatPolicy?.prunedBefore ?? 0,
+        ),
+        deletedPeers: [],
+        prunedPeers: [],
+      };
     }
 
     if (selected) {
@@ -184,10 +209,14 @@ export class AccountDataStorage implements KeyValueStorage {
     if (key === PEOPLE_KEY) this.#removePortableValue("people");
   }
 
-  /** Imports a newer portable snapshot without clearing newer account-local history. */
+  /** Applies portable deletions before importing a bounded account snapshot. */
   async attachChatRepository(repository: ChatRepository): Promise<void> {
     this.#repository = repository;
-    const chats = this.#state.chats;
+    const policy = this.#state.chatPolicy;
+    if (policy) await applyChatPolicyToRepository(repository, policy);
+    const chats = applyChatPolicyToPortableChats(this.#state.chats, policy);
+    if (chats) this.#state.chats = chats;
+    else delete this.#state.chats;
     if (chats) {
       for (const message of chats.messages) await repository.addMessage(message);
       for (const remoteConversation of chats.conversations) {
@@ -197,6 +226,8 @@ export class AccountDataStorage implements KeyValueStorage {
         }
       }
     }
+
+    if (policy) await repairConversationPreviews(repository, policy);
 
     if (this.#chatDirty) this.#markDirty();
   }
@@ -213,16 +244,85 @@ export class AccountDataStorage implements KeyValueStorage {
     this.#markDirty();
   }
 
+  /** Records a per-peer deletion synchronously in the verified local mirror. */
+  commitConversationDelete(peerNumber: number, deletedAt = Date.now()): boolean {
+    if (this.#destroyed || !validMemberNumber(peerNumber) || !validTime(deletedAt)) return false;
+    const knownPortableTimestamp = Math.max(
+      ...((this.#state.chats?.messages ?? [])
+        .filter((message) => message.peerNumber === peerNumber)
+        .map((message) => message.sentAt)),
+      ...((this.#state.chats?.conversations ?? [])
+        .filter((conversation) => conversation.peerNumber === peerNumber)
+        .map((conversation) => conversation.lastMessageAt)),
+      0,
+    );
+    deletedAt = Math.max(deletedAt, knownPortableTimestamp);
+    const policy = this.#chatPolicy();
+    const deletedPeers = new Map(policy.deletedPeers);
+    deletedPeers.set(peerNumber, Math.max(deletedPeers.get(peerNumber) ?? 0, deletedAt));
+    policy.deletedPeers = trimDeletedPeerTombstones(deletedPeers);
+    this.#state.chatPolicy = policy;
+    const chats = applyChatPolicyToPortableChats(this.#state.chats, policy);
+    if (chats) this.#state.chats = chats;
+    else delete this.#state.chats;
+    return this.#commitChatPolicyMutation();
+  }
+
+  /** Records a monotonic retention boundary even if this device had no matching rows. */
+  commitChatPrune(prunedBefore: number): boolean {
+    if (this.#destroyed || !validTime(prunedBefore)) return false;
+    const policy = this.#chatPolicy();
+    if (prunedBefore <= policy.prunedBefore) return true;
+    policy.prunedBefore = prunedBefore;
+    this.#state.chatPolicy = policy;
+    const chats = applyChatPolicyToPortableChats(this.#state.chats, policy);
+    if (chats) this.#state.chats = chats;
+    else delete this.#state.chats;
+    return this.#commitChatPolicyMutation();
+  }
+
+  commitConversationPrune(peerNumber: number, prunedBefore: number): boolean {
+    if (this.#destroyed || !validMemberNumber(peerNumber) || !validTime(prunedBefore)) {
+      return false;
+    }
+    const policy = this.#chatPolicy();
+    const prunedPeers = new Map(policy.prunedPeers);
+    if (prunedBefore <= (prunedPeers.get(peerNumber) ?? 0)) return true;
+    prunedPeers.set(peerNumber, prunedBefore);
+    policy.prunedPeers = trimPeerTimestamps(prunedPeers);
+    this.#state.chatPolicy = policy;
+    const chats = applyChatPolicyToPortableChats(this.#state.chats, policy);
+    if (chats) this.#state.chats = chats;
+    else delete this.#state.chats;
+    return this.#commitChatPolicyMutation();
+  }
+
   /** Commits an explicit all-chat tombstone before a stale account mirror can be re-imported. */
-  async commitChatHistoryClear(): Promise<boolean> {
+  async commitChatHistoryClear(observedAt = Date.now()): Promise<boolean> {
     if (this.#destroyed) return false;
     this.#chatSnapshotGeneration += 1;
+    const clearedAt = Math.max(
+      Date.now(),
+      observedAt,
+      ...(this.#state.chats?.messages.map((message) => message.sentAt) ?? []),
+      ...(this.#state.chats?.conversations.map((conversation) => conversation.lastMessageAt) ?? []),
+    );
     this.#chatDirty = false;
     this.#state.chats = { conversations: [], messages: [] };
+    this.#state.updatedAt = Math.max(this.#state.updatedAt, clearedAt);
     this.#touch();
+    this.#state.chatPolicy = {
+      clearedAt,
+      prunedBefore: Math.max(
+        nextTimestamp(clearedAt),
+        this.#state.chatPolicy?.prunedBefore ?? 0,
+      ),
+      deletedPeers: [],
+      prunedPeers: [],
+    };
     const markerPersisted = this.#writeVerifiedLocal(
       CHAT_CLEAR_MARKER_KEY,
-      String(this.#state.updatedAt),
+      String(clearedAt),
     );
     const mirrorPersisted = this.#persistMirror();
     if (markerPersisted || mirrorPersisted) {
@@ -240,6 +340,26 @@ export class AccountDataStorage implements KeyValueStorage {
       // remains queued and can recover independently without turning the UI callback into a throw.
     }
     return markerPersisted || mirrorPersisted;
+  }
+
+  #chatPolicy(): PortableChatPolicy {
+    return this.#state.chatPolicy
+      ? structuredClone(this.#state.chatPolicy)
+      : { clearedAt: 0, prunedBefore: 0, deletedPeers: [], prunedPeers: [] };
+  }
+
+  #commitChatPolicyMutation(): boolean {
+    this.#chatSnapshotGeneration += 1;
+    this.#chatDirty = true;
+    this.#touch();
+    try {
+      this.#local.setItem(CHAT_DIRTY_KEY, "1");
+    } catch {
+      // The verified mirror or pending account sync can still retain the deletion policy.
+    }
+    const mirrorPersisted = this.#persistMirror();
+    this.#markDirty();
+    return mirrorPersisted;
   }
 
   flush(): Promise<void> {
@@ -340,6 +460,19 @@ export class AccountDataStorage implements KeyValueStorage {
     if (this.#generation === 0) return;
     const generation = this.#generation;
 
+    const latestRemotePolicy = this.#readRemoteState()?.chatPolicy;
+    if (latestRemotePolicy) {
+      const merged = mergeChatPolicies(this.#state.chatPolicy, latestRemotePolicy);
+      if (!chatPoliciesEqual(merged, this.#state.chatPolicy)) {
+        this.#state.chatPolicy = merged;
+        const chats = applyChatPolicyToPortableChats(this.#state.chats, merged);
+        if (chats) this.#state.chats = chats;
+        else delete this.#state.chats;
+        if (this.#repository) await applyChatPolicyToRepository(this.#repository, merged);
+        this.#chatDirty = true;
+      }
+    }
+
     if (this.#chatDirty && this.#repository) {
       if (!canSafelyCapturePortableSnapshot(this.#repository)) {
         this.#warnUnsafeChatSnapshot();
@@ -348,7 +481,10 @@ export class AccountDataStorage implements KeyValueStorage {
         const chatSnapshotGeneration = this.#chatSnapshotGeneration;
         this.#chatDirty = false;
         try {
-          const chats = await capturePortableChats(this.#repository);
+          const chats = await capturePortableChats(
+            this.#repository,
+            this.#state.chatPolicy,
+          );
           if (chatSnapshotGeneration === this.#chatSnapshotGeneration) {
             this.#state.chats = chats;
             captured = true;
@@ -484,19 +620,54 @@ export class AccountSyncedChatRepository implements ChatRepository {
   }
 
   async deleteConversation(peerNumber: number): Promise<void> {
+    let messages: LinkMessage[] = [];
+    let conversation: ConversationMeta | undefined;
+    try {
+      [messages, conversation] = await Promise.all([
+        this.repository.getMessages(peerNumber, Number.MAX_SAFE_INTEGER),
+        this.repository.getConversation(peerNumber),
+      ]);
+    } catch {
+      // The account mirror supplies another observed timestamp; still attempt the deletion.
+    }
+    const deletedAt = Math.max(
+      Date.now(),
+      conversation?.lastMessageAt ?? 0,
+      ...messages.map((message) => message.sentAt),
+    );
     await this.repository.deleteConversation(peerNumber);
-    this.account.markChatChanged();
+    this.account.commitConversationDelete(peerNumber, deletedAt);
   }
 
   async deleteMessagesOlderThan(timestamp: number): Promise<number> {
     const removed = await this.repository.deleteMessagesOlderThan(timestamp);
-    if (removed > 0) this.account.markChatChanged();
+    this.account.commitChatPrune(timestamp);
+    return removed;
+  }
+
+  async deleteMessagesForConversationAtOrBefore(
+    peerNumber: number,
+    timestamp: number,
+  ): Promise<number> {
+    const removed = await this.repository.deleteMessagesForConversationAtOrBefore(
+      peerNumber,
+      timestamp,
+    );
+    this.account.commitConversationDelete(peerNumber, timestamp);
     return removed;
   }
 
   async trimConversation(peerNumber: number, keepNewest: number): Promise<number> {
     const removed = await this.repository.trimConversation(peerNumber, keepNewest);
-    if (removed > 0) this.account.markChatChanged();
+    if (removed > 0) {
+      const retained = await this.repository.getMessages(peerNumber, keepNewest);
+      const prunedBefore = retained[0]?.sentAt;
+      if (prunedBefore !== undefined) {
+        this.account.commitConversationPrune(peerNumber, prunedBefore);
+      } else {
+        this.account.commitConversationDelete(peerNumber);
+      }
+    }
     return removed;
   }
 
@@ -505,10 +676,20 @@ export class AccountSyncedChatRepository implements ChatRepository {
   }
 
   async clearAllDurably(): Promise<boolean> {
+    let conversations: ConversationMeta[] = [];
+    try {
+      conversations = await this.repository.listConversations();
+    } catch {
+      // Clearing remains more important than deriving a future-skew-aware timestamp.
+    }
+    const observedAt = Math.max(
+      Date.now(),
+      ...conversations.map((conversation) => conversation.lastMessageAt),
+    );
     const repositoryDurable = this.repository.clearAllDurably
       ? await this.repository.clearAllDurably()
       : await this.repository.clearAll().then(() => true);
-    const accountDurable = await this.account.commitChatHistoryClear();
+    const accountDurable = await this.account.commitChatHistoryClear(observedAt);
     return repositoryDurable && accountDurable;
   }
 
@@ -526,7 +707,10 @@ export function accountChatDatabaseName(memberNumber: number): string {
   return `kikilink-account-${memberNumber}`;
 }
 
-async function capturePortableChats(repository: ChatRepository): Promise<PortableChatState> {
+async function capturePortableChats(
+  repository: ChatRepository,
+  policy?: PortableChatPolicy,
+): Promise<PortableChatState> {
   if (!canSafelyCapturePortableSnapshot(repository)) {
     throw new Error("KikiLink portable chat snapshot source is incomplete");
   }
@@ -552,13 +736,13 @@ async function capturePortableChats(repository: ChatRepository): Promise<Portabl
   if (!canSafelyCapturePortableSnapshot(repository)) {
     throw new Error("KikiLink portable chat snapshot source changed during capture");
   }
-  return {
+  return applyChatPolicyToPortableChats({
     conversations: conversations.map((conversation) => structuredClone(conversation)),
     messages: messages
       .slice(0, MAX_CLOUD_MESSAGES)
       .sort((left, right) => left.sentAt - right.sentAt)
       .map((message) => structuredClone(message)),
-  };
+  }, policy) ?? { conversations: [], messages: [] };
 }
 
 function canSafelyCapturePortableSnapshot(repository: ChatRepository): boolean {
@@ -577,16 +761,19 @@ function newestState(
 function parsePortableState(value: unknown, owner: number): PortableAccountState | undefined {
   let parsed: unknown = value;
   if (typeof value === "string") {
+    if (value.length > MAX_PORTABLE_STATE_JSON_CHARS) return undefined;
     try {
       if (value.startsWith(CLOUD_FORMAT_PREFIX)) {
         if (typeof LZString !== "object" || typeof LZString.decompressFromBase64 !== "function") {
           return undefined;
         }
         const json = LZString.decompressFromBase64(value.slice(CLOUD_FORMAT_PREFIX.length));
-        if (!json) return undefined;
+        if (!json || json.length > MAX_PORTABLE_STATE_JSON_CHARS) return undefined;
         parsed = JSON.parse(json) as unknown;
       } else if (value.startsWith(JSON_FORMAT_PREFIX)) {
-        parsed = JSON.parse(value.slice(JSON_FORMAT_PREFIX.length)) as unknown;
+        const json = value.slice(JSON_FORMAT_PREFIX.length);
+        if (json.length > MAX_PORTABLE_STATE_JSON_CHARS) return undefined;
+        parsed = JSON.parse(json) as unknown;
       } else {
         parsed = JSON.parse(value) as unknown;
       }
@@ -601,6 +788,8 @@ function parsePortableState(value: unknown, owner: number): PortableAccountState
   if (Array.isArray(parsed.people)) state.people = structuredClone(parsed.people);
   const chats = sanitizePortableChats(parsed.chats);
   if (chats) state.chats = chats;
+  const chatPolicy = sanitizePortableChatPolicy(parsed.chatPolicy);
+  if (hasChatPolicy(chatPolicy)) state.chatPolicy = chatPolicy;
   return state;
 }
 
@@ -620,6 +809,273 @@ function sanitizePortableChats(value: unknown): PortableChatState | undefined {
       (item): item is LinkMessage => item !== undefined && allowedPeers.has(item.peerNumber),
     );
   return { conversations, messages };
+}
+
+function sanitizePortableChatPolicy(value: unknown): PortableChatPolicy {
+  if (!isRecord(value)) {
+    return { clearedAt: 0, prunedBefore: 0, deletedPeers: [], prunedPeers: [] };
+  }
+  const clearedAt = validTime(value.clearedAt) ? value.clearedAt : 0;
+  const prunedBefore = validTime(value.prunedBefore) ? value.prunedBefore : 0;
+  const deleted = new Map<number, number>();
+  const pruned = new Map<number, number>();
+  if (Array.isArray(value.deletedPeers)) {
+    for (const candidate of value.deletedPeers.slice(-MAX_CHAT_DELETION_TOMBSTONES * 4)) {
+      if (
+        !Array.isArray(candidate) ||
+        candidate.length !== 2 ||
+        !validMemberNumber(candidate[0]) ||
+        !validTime(candidate[1]) ||
+        candidate[1] <= clearedAt
+      ) {
+        continue;
+      }
+      deleted.set(candidate[0], Math.max(deleted.get(candidate[0]) ?? 0, candidate[1]));
+    }
+  }
+  if (Array.isArray(value.prunedPeers)) {
+    for (const candidate of value.prunedPeers.slice(-MAX_CHAT_DELETION_TOMBSTONES * 4)) {
+      if (
+        !Array.isArray(candidate) ||
+        candidate.length !== 2 ||
+        !validMemberNumber(candidate[0]) ||
+        !validTime(candidate[1])
+      ) {
+        continue;
+      }
+      pruned.set(candidate[0], Math.max(pruned.get(candidate[0]) ?? 0, candidate[1]));
+    }
+  }
+  return {
+    clearedAt,
+    prunedBefore: Math.max(prunedBefore, clearedAt > 0 ? nextTimestamp(clearedAt) : 0),
+    deletedPeers: trimDeletedPeerTombstones(deleted),
+    prunedPeers: trimPeerTimestamps(pruned),
+  };
+}
+
+function mergeChatPolicies(
+  left: PortableChatPolicy | undefined,
+  right: PortableChatPolicy | undefined,
+): PortableChatPolicy {
+  const clearedAt = Math.max(left?.clearedAt ?? 0, right?.clearedAt ?? 0);
+  const deleted = new Map<number, number>();
+  const pruned = new Map<number, number>();
+  for (const policy of [left, right]) {
+    for (const [peerNumber, deletedAt] of policy?.deletedPeers ?? []) {
+      if (deletedAt <= clearedAt) continue;
+      deleted.set(peerNumber, Math.max(deleted.get(peerNumber) ?? 0, deletedAt));
+    }
+    for (const [peerNumber, prunedBefore] of policy?.prunedPeers ?? []) {
+      pruned.set(peerNumber, Math.max(pruned.get(peerNumber) ?? 0, prunedBefore));
+    }
+  }
+  return {
+    clearedAt,
+    prunedBefore: Math.max(
+      left?.prunedBefore ?? 0,
+      right?.prunedBefore ?? 0,
+      clearedAt > 0 ? nextTimestamp(clearedAt) : 0,
+    ),
+    deletedPeers: trimDeletedPeerTombstones(deleted),
+    prunedPeers: trimPeerTimestamps(pruned),
+  };
+}
+
+function hasChatPolicy(policy: PortableChatPolicy): boolean {
+  return policy.clearedAt > 0 ||
+    policy.prunedBefore > 0 ||
+    policy.deletedPeers.length > 0 ||
+    policy.prunedPeers.length > 0;
+}
+
+function chatPoliciesEqual(
+  left: PortableChatPolicy,
+  right: PortableChatPolicy | undefined,
+): boolean {
+  if (!right || left.clearedAt !== right.clearedAt || left.prunedBefore !== right.prunedBefore) {
+    return false;
+  }
+  if (
+    left.deletedPeers.length !== right.deletedPeers.length ||
+    left.prunedPeers.length !== right.prunedPeers.length
+  ) {
+    return false;
+  }
+  return left.deletedPeers.every(([peerNumber, deletedAt], index) => {
+    const candidate = right.deletedPeers[index];
+    return candidate?.[0] === peerNumber && candidate[1] === deletedAt;
+  }) && left.prunedPeers.every(([peerNumber, prunedBefore], index) => {
+    const candidate = right.prunedPeers[index];
+    return candidate?.[0] === peerNumber && candidate[1] === prunedBefore;
+  });
+}
+
+function trimDeletedPeerTombstones(deleted: Map<number, number>): Array<[number, number]> {
+  return trimPeerTimestamps(deleted);
+}
+
+function trimPeerTimestamps(values: Map<number, number>): Array<[number, number]> {
+  return [...values]
+    .sort((left, right) => right[1] - left[1] || left[0] - right[0])
+    .slice(0, MAX_CHAT_DELETION_TOMBSTONES)
+    .sort((left, right) => left[0] - right[0]);
+}
+
+function applyChatPolicyToPortableChats(
+  chats: PortableChatState | undefined,
+  policy: PortableChatPolicy | undefined,
+): PortableChatState | undefined {
+  if (!chats) return undefined;
+  if (!policy || !hasChatPolicy(policy)) return structuredClone(chats);
+  const deletedPeers = new Map(policy.deletedPeers);
+  const prunedPeers = new Map(policy.prunedPeers);
+  const messages = chats.messages.filter((message) => messageSurvivesPolicy(
+    message,
+    policy,
+    deletedPeers,
+    prunedPeers,
+  ));
+  const messagesByPeer = new Map<number, LinkMessage[]>();
+  for (const message of messages) {
+    const peerMessages = messagesByPeer.get(message.peerNumber) ?? [];
+    peerMessages.push(message);
+    messagesByPeer.set(message.peerNumber, peerMessages);
+  }
+
+  const conversations: ConversationMeta[] = [];
+  for (const candidate of chats.conversations) {
+    const peerDeletedAt = deletedPeers.get(candidate.peerNumber) ?? 0;
+    const peerPrunedBefore = prunedPeers.get(candidate.peerNumber) ?? 0;
+    const destructiveBoundary = Math.max(policy.clearedAt, peerDeletedAt);
+    const peerMessages = messagesByPeer.get(candidate.peerNumber) ?? [];
+    const newest = peerMessages.at(-1);
+    if (!newest && destructiveBoundary > 0 && candidate.lastMessageAt <= destructiveBoundary) {
+      continue;
+    }
+    if (newest && candidate.lastMessageAt <= destructiveBoundary) {
+      conversations.push(conversationWithPreview(candidate, peerMessages));
+      continue;
+    }
+    if (!newest && candidate.lastMessageAt < Math.max(policy.prunedBefore, peerPrunedBefore)) {
+      conversations.push(clearConversationPreview(candidate));
+      continue;
+    }
+    if (newest && candidate.lastMessageAt < Math.max(policy.prunedBefore, peerPrunedBefore)) {
+      conversations.push(conversationWithPreview(candidate, peerMessages));
+      continue;
+    }
+    conversations.push(structuredClone(candidate));
+  }
+  return {
+    conversations,
+    messages: messages.map((message) => structuredClone(message)),
+  };
+}
+
+function messageSurvivesPolicy(
+  message: LinkMessage,
+  policy: PortableChatPolicy,
+  deletedPeers = new Map(policy.deletedPeers),
+  prunedPeers = new Map(policy.prunedPeers),
+): boolean {
+  if (
+    message.sentAt <= policy.clearedAt ||
+    message.sentAt < policy.prunedBefore ||
+    message.sentAt < (prunedPeers.get(message.peerNumber) ?? 0)
+  ) {
+    return false;
+  }
+  return message.sentAt > (deletedPeers.get(message.peerNumber) ?? 0);
+}
+
+async function applyChatPolicyToRepository(
+  repository: ChatRepository,
+  policy: PortableChatPolicy,
+): Promise<void> {
+  if (policy.prunedBefore > 0) await repository.deleteMessagesOlderThan(policy.prunedBefore);
+  for (const [peerNumber, prunedBefore] of policy.prunedPeers) {
+    if (prunedBefore > 0) {
+      await repository.deleteMessagesForConversationAtOrBefore(
+        peerNumber,
+        previousTimestamp(prunedBefore),
+      );
+    }
+  }
+  for (const [peerNumber, deletedAt] of policy.deletedPeers) {
+    await repository.deleteMessagesForConversationAtOrBefore(peerNumber, deletedAt);
+  }
+  await repairConversationPreviews(repository, policy);
+}
+
+async function repairConversationPreviews(
+  repository: ChatRepository,
+  policy: PortableChatPolicy,
+): Promise<void> {
+  const deletedPeers = new Map(policy.deletedPeers);
+  const prunedPeers = new Map(policy.prunedPeers);
+  for (const conversation of await repository.listConversations()) {
+    const messages = await repository.getMessages(conversation.peerNumber, Number.MAX_SAFE_INTEGER);
+    const newest = messages.at(-1);
+    const destructiveBoundary = Math.max(
+      policy.clearedAt,
+      deletedPeers.get(conversation.peerNumber) ?? 0,
+    );
+    const pruneBoundary = Math.max(
+      policy.prunedBefore,
+      prunedPeers.get(conversation.peerNumber) ?? 0,
+    );
+    if (!newest && destructiveBoundary > 0 && conversation.lastMessageAt <= destructiveBoundary) {
+      await repository.deleteConversation(conversation.peerNumber);
+      continue;
+    }
+    if (newest && (
+      conversation.lastMessageAt <= destructiveBoundary ||
+      conversation.lastMessageAt < pruneBoundary
+    )) {
+      await repository.putConversation(conversationWithPreview(conversation, messages));
+      continue;
+    }
+    if (!newest && conversation.lastMessageAt < pruneBoundary) {
+      await repository.putConversation(clearConversationPreview(conversation));
+    }
+  }
+}
+
+function conversationWithPreview(
+  conversation: ConversationMeta,
+  messages: LinkMessage[],
+): ConversationMeta {
+  const newest = messages.at(-1);
+  if (!newest) return clearConversationPreview(conversation);
+  const visible = structuredClone(conversation);
+  delete visible.hiddenAt;
+  return {
+    ...visible,
+    peerName: newest.peerName || conversation.peerName,
+    lastMessage: cleanBeepMessageContent(newest.content),
+    lastMessageAt: newest.sentAt,
+    lastDirection: newest.direction,
+    unread: messages.filter((message) => message.direction === "incoming" && !message.read).length,
+  };
+}
+
+function clearConversationPreview(conversation: ConversationMeta): ConversationMeta {
+  return {
+    ...conversation,
+    lastMessage: "",
+    lastMessageAt: 0,
+    lastDirection: "incoming",
+    unread: 0,
+  };
+}
+
+function nextTimestamp(value: number): number {
+  return value >= Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : Math.floor(value) + 1;
+}
+
+function previousTimestamp(value: number): number {
+  return value <= 0 ? 0 : Math.max(0, Math.ceil(value) - 1);
 }
 
 function sanitizeConversation(value: unknown): ConversationMeta | undefined {

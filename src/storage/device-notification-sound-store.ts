@@ -1,5 +1,7 @@
 export const MAX_NOTIFICATION_SOUND_DURATION_MS = 5_000;
 export const MAX_NOTIFICATION_SOUND_BYTES = 10 * 1024 * 1024;
+export const MAX_NOTIFICATION_SOUNDS = 24;
+export const MAX_NOTIFICATION_SOUND_TOTAL_BYTES = 40 * 1024 * 1024;
 
 const DATABASE_VERSION = 1;
 const STORE_NAME = "sounds";
@@ -64,11 +66,23 @@ export class DeviceNotificationSoundStore implements NotificationSoundStore {
     };
     const database = await this.#database().catch(() => undefined);
     if (!database) {
+      assertNotificationSoundStorageCapacity(
+        this.#memory.size,
+        totalBlobBytes(this.#memory.values()),
+        record.blob.size,
+      );
       this.#memory.set(record.id, record);
       return record;
     }
     const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put(record);
+    const store = transaction.objectStore(STORE_NAME);
+    const existing = await requestResult(store.getAll()) as DeviceNotificationSound[];
+    assertNotificationSoundStorageCapacity(
+      existing.length,
+      totalBlobBytes(existing),
+      record.blob.size,
+    );
+    store.put(record);
     await transactionDone(transaction);
     return record;
   }
@@ -111,6 +125,19 @@ export function validateNotificationSoundFile(file: File): void {
   const audioName = /\.(?:aac|flac|m4a|mp3|oga|ogg|opus|wav|webm)$/iu.test(file.name);
   if (!audioMime && !audioName) {
     throw new Error("Choose an audio file supported by your browser");
+  }
+}
+
+export function assertNotificationSoundStorageCapacity(
+  existingCount: number,
+  existingBytes: number,
+  incomingBytes: number,
+): void {
+  if (existingCount >= MAX_NOTIFICATION_SOUNDS) {
+    throw new Error(`This device can hold up to ${MAX_NOTIFICATION_SOUNDS} custom sounds`);
+  }
+  if (existingBytes + incomingBytes > MAX_NOTIFICATION_SOUND_TOTAL_BYTES) {
+    throw new Error("Custom sounds can use up to 40 MB on this device");
   }
 }
 
@@ -181,6 +208,14 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
     transaction.onerror = () => reject(transaction.error ?? new Error("Local sound storage failed"));
     transaction.onabort = () => reject(transaction.error ?? new Error("Local sound storage was cancelled"));
   });
+}
+
+function totalBlobBytes(records: Iterable<{ blob?: unknown }>): number {
+  let total = 0;
+  for (const record of records) {
+    if (record.blob instanceof Blob) total += record.blob.size;
+  }
+  return total;
 }
 
 function sortSounds(sounds: DeviceNotificationSound[]): DeviceNotificationSound[] {

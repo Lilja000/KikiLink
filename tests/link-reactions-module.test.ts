@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter } from "../src/bc/adapter";
 import { EventBus } from "../src/core/event-bus";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
@@ -11,8 +11,18 @@ import type {
 import { LinkReactionsModule } from "../src/modules/link-reactions/link-reactions-module";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 
+beforeEach(() => {
+  vi.stubGlobal("Player", {
+    MemberNumber: 999,
+    Name: "Kiki",
+    FriendNames: new Map<number, string>(),
+  });
+  vi.stubGlobal("ServerIsLoggedIn", () => true);
+});
+
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("LinkReactionsModule", () => {
@@ -153,6 +163,106 @@ describe("LinkReactionsModule", () => {
     });
     module.stop();
   });
+
+  it("fails closed on Beep, friend, and room-timer paths immediately after an account switch", () => {
+    vi.useFakeTimers({ now: 1_000 });
+    let characters: RoomCharacter[] = [
+      { memberNumber: 123, memberName: "Reina", isFriend: true },
+    ];
+    const getRoomCharacters = vi.fn(() => characters);
+    const sendRoomEmote = vi.fn();
+    const adapter = reactionAdapter({
+      isInChatRoom: () => true,
+      getCurrentRoomName: () => "Moon Garden",
+      getRoomCharacters,
+      isKnownFriend: () => true,
+      canSendRoomEmote: () => true,
+      sendRoomEmote,
+    });
+    const { context, bus } = reactionContext(
+      adapter,
+      reactionRule({ trigger: "room-join", action: "room-emote", template: "hello" }),
+    );
+    context.settings.update((draft) => {
+      draft.linkReactions.quickAlerts.roomJoin = true;
+      draft.linkReactions.quickAlerts.friendOnline = true;
+      draft.linkReactions.sounds.enabled = true;
+      draft.linkReactions.rules = [
+        reactionRule({ id: "join", trigger: "room-join", action: "room-emote" }),
+        reactionRule({ id: "online", trigger: "friend-online" }),
+        reactionRule({ id: "beep", trigger: "beep-received" }),
+      ];
+    });
+    const fired = vi.fn();
+    const notified = vi.fn();
+    bus.on("link-reactions:fired", fired);
+    bus.on("link-reactions:notification", notified);
+    const module = new LinkReactionsModule();
+    module.start(context);
+    bus.emit("bc:online-friends", {
+      friends: [{ memberNumber: 123, memberName: "Reina", privateRoom: false }],
+      receivedAt: 1_000,
+    });
+    const roomReadsBeforeSwitch = getRoomCharacters.mock.calls.length;
+
+    globalThis.Player.MemberNumber = 1_000;
+    characters = [
+      ...characters,
+      { memberNumber: 456, memberName: "Mina", isFriend: false },
+    ];
+    bus.emit("beep:received", {
+      direction: "incoming",
+      peerNumber: 456,
+      peerName: "Mina",
+      content: "hello",
+      sentAt: 1_500,
+      includeRoom: false,
+    });
+    bus.emit("bc:online-friends", {
+      friends: [
+        { memberNumber: 123, memberName: "Reina", privateRoom: false },
+        { memberNumber: 456, memberName: "Mina", privateRoom: false },
+      ],
+      receivedAt: 1_500,
+    });
+    bus.emit("bc:ready", { memberNumber: 1_000 });
+    vi.advanceTimersByTime(2_000);
+
+    expect(getRoomCharacters).toHaveBeenCalledTimes(roomReadsBeforeSwitch);
+    expect(sendRoomEmote).not.toHaveBeenCalled();
+    expect(fired).not.toHaveBeenCalled();
+    expect(notified).not.toHaveBeenCalled();
+    module.stop();
+  });
+
+  it("does not publish a rule result if the account changes during evaluation", () => {
+    const adapter = reactionAdapter({
+      getOwnName: () => {
+        globalThis.Player.MemberNumber = 1_000;
+        return "Kiki";
+      },
+    });
+    const { context, bus } = reactionContext(
+      adapter,
+      reactionRule({ trigger: "beep-received", action: "notice" }),
+    );
+    const fired = vi.fn();
+    bus.on("link-reactions:fired", fired);
+    const module = new LinkReactionsModule();
+    module.start(context);
+
+    bus.emit("beep:received", {
+      direction: "incoming",
+      peerNumber: 123,
+      peerName: "Reina",
+      content: "hello",
+      sentAt: 4_000,
+      includeRoom: false,
+    });
+
+    expect(fired).not.toHaveBeenCalled();
+    module.stop();
+  });
 });
 
 function reactionContext(
@@ -172,6 +282,7 @@ function reactionContext(
       bus,
       repository: new MemoryChatRepository(),
       settings,
+      memberNumber: 999,
       version: "0.16.0",
     },
   };

@@ -145,12 +145,12 @@ describe("ProfileCacheRepository", () => {
     const now = Date.now();
     const storage = new MemoryKeyValueStorage();
     storage.setItem(PUBLIC_PROFILE_CACHE_KEY, JSON.stringify({
-      version: 1,
+      version: 2,
       records: [
         storedProfile(123, now - 2_000, { displayName: "Older", lastAccessedAt: now }),
         { memberNumber: -1, displayName: "Invalid", syncedAt: now, lastAccessedAt: now },
         storedProfile(123, now - 1_000, {
-          displayName: "Newer",
+          displayName: "  New\u202eer  ",
           lastAccessedAt: now - 500,
         }),
         storedProfile(456, now - MAX_CACHED_PUBLIC_PROFILE_AGE_MS - 1, {
@@ -163,10 +163,35 @@ describe("ProfileCacheRepository", () => {
     const repository = new ProfileCacheRepository(storage);
     expect(repository.list(now)).toMatchObject([{
       memberNumber: 123,
-      displayName: "Newer",
+      displayName: "New er",
       syncedAt: now - 1_000,
     }]);
     expect(repository.get(456, now)).toBeUndefined();
+    const canonical = JSON.parse(storage.getItem(PUBLIC_PROFILE_CACHE_KEY) ?? "null") as {
+      version: number;
+      records: CachedPublicProfileRecord[];
+    };
+    expect(canonical.version).toBe(2);
+    expect(canonical.records).toHaveLength(1);
+    expect(canonical.records[0]?.displayName).toBe("New er");
+  });
+
+  it("rewrites an oversized valid v2 row set to the bounded cache", () => {
+    const storage = new MemoryKeyValueStorage();
+    const now = Date.now();
+    storage.setItem(PUBLIC_PROFILE_CACHE_KEY, JSON.stringify({
+      version: 2,
+      records: Array.from({ length: MAX_CACHED_PUBLIC_PROFILES + 5 }, (_, index) =>
+        storedProfile(index + 1, now - index, { lastAccessedAt: now - index })),
+    }));
+
+    expect(new ProfileCacheRepository(storage).list(now)).toHaveLength(
+      MAX_CACHED_PUBLIC_PROFILES,
+    );
+    const persisted = JSON.parse(storage.getItem(PUBLIC_PROFILE_CACHE_KEY) ?? "null") as {
+      records: CachedPublicProfileRecord[];
+    };
+    expect(persisted.records).toHaveLength(MAX_CACHED_PUBLIC_PROFILES);
   });
 
   it("enforces the 200-record LRU bound and persists an access before later eviction", () => {

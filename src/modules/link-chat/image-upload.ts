@@ -1,5 +1,8 @@
 import { normalizeImageUrl } from "./media";
 import { uploadMultipartViaUserscriptBridge } from "../../userscript-upload-client";
+import { KIKILINK_DISTRIBUTION } from "../../core/distribution";
+
+export { supportsLongLivedCatboxUploads } from "../../core/distribution";
 
 export const MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_LOCAL_IMAGE_EDGE = 2_560;
@@ -16,10 +19,18 @@ const MAX_LOCAL_ANIMATION_PIXELS = 64 * 1024 * 1024;
 const PROFILE_BANNER_WEBP_QUALITIES = [0.88, 0.76, 0.64, 0.52, 0.4] as const;
 const IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
 const PROFILE_BANNER_UPLOAD_TIMEOUT_MS = 180_000;
+export const MAX_UPLOAD_RESPONSE_BYTES = 4 * 1024;
+const MAX_UPLOAD_RESPONSE_READS = 128;
 const TEMPORARY_UPLOAD_STATUSES = new Set([500, 502, 503, 504]);
 const LITTERBOX_UPLOAD_ENDPOINT =
   "https://litterbox.catbox.moe/resources/internals/api.php";
-const CATBOX_UPLOAD_ENDPOINT = "https://catbox.moe/user/api.php";
+const CATBOX_UPLOAD_ENDPOINT =
+  typeof __KIKILINK_DISTRIBUTION__ === "string" &&
+    __KIKILINK_DISTRIBUTION__ === "fusam"
+    ? ""
+    : "https://catbox.moe/user/api.php";
+const FUSAM_CATBOX_UPLOAD_ERROR =
+  "Long-lived Catbox uploads are unavailable in FUSAM. Use a temporary upload or install KikiLink as a userscript.";
 const CLOUD_NAME_PATTERN = /^[a-z0-9_-]{1,64}$/iu;
 const UPLOAD_PRESET_PATTERN = /^[a-z0-9_-]{1,128}$/iu;
 
@@ -118,6 +129,16 @@ export async function uploadPreparedImageToCatbox(
   onProgress?: UploadProgressListener,
   signal?: AbortSignal,
 ): Promise<string> {
+  // Keep this compile-time branch inside the exported entry point. The FUSAM UI does not expose
+  // this action, and esbuild can now discard the endpoint, form construction, and privileged
+  // userscript transport from the dedicated page-realm artifact altogether.
+  if (
+    typeof __KIKILINK_DISTRIBUTION__ === "string"
+      ? __KIKILINK_DISTRIBUTION__ === "fusam"
+      : KIKILINK_DISTRIBUTION === "fusam"
+  ) {
+    throw new Error(FUSAM_CATBOX_UPLOAD_ERROR);
+  }
   validatePreparedImage(image);
   const form = new FormData();
   form.append("reqtype", "fileupload");
@@ -184,6 +205,13 @@ export async function uploadMusicToCatbox(
   onProgress?: UploadProgressListener,
   signal?: AbortSignal,
 ): Promise<string> {
+  if (
+    typeof __KIKILINK_DISTRIBUTION__ === "string"
+      ? __KIKILINK_DISTRIBUTION__ === "fusam"
+      : KIKILINK_DISTRIBUTION === "fusam"
+  ) {
+    throw new Error(FUSAM_CATBOX_UPLOAD_ERROR);
+  }
   if (file.size <= 0) throw new Error("Choose a non-empty audio file");
   if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
   const extension = playlistAudioExtension(file);
@@ -1081,21 +1109,36 @@ async function uploadMultipartOnce(
   signal?: AbortSignal,
 ): Promise<MultipartUploadResponse> {
   if (signal?.aborted) throw new Error("The upload was cancelled");
-  if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request, signal);
-  const bridged = await uploadMultipartViaUserscriptBridge(
-    endpoint,
-    form,
-    timeoutMs,
-    onProgress,
-    signal,
-  );
-  if (bridged) return bridged;
-  if (typeof GM_xmlhttpRequest === "function") {
-    return uploadMultipartWithGmRequest(endpoint, form, timeoutMs, onProgress, signal);
+  if (
+    typeof __KIKILINK_DISTRIBUTION__ === "string"
+      ? __KIKILINK_DISTRIBUTION__ === "fusam"
+      : KIKILINK_DISTRIBUTION === "fusam"
+  ) {
+    if (endpoint !== LITTERBOX_UPLOAD_ENDPOINT) {
+      throw new Error(FUSAM_CATBOX_UPLOAD_ERROR);
+    }
+    const directRequest = currentFetch();
+    if (!directRequest) {
+      throw new Error("The temporary upload service is unavailable in this browser");
+    }
+    return uploadMultipartWithFetch(endpoint, form, timeoutMs, directRequest, signal);
+  } else {
+    if (request) return uploadMultipartWithFetch(endpoint, form, timeoutMs, request, signal);
+    const bridged = await uploadMultipartViaUserscriptBridge(
+      endpoint,
+      form,
+      timeoutMs,
+      onProgress,
+      signal,
+    );
+    if (bridged) return bridged;
+    if (typeof GM_xmlhttpRequest === "function") {
+      return uploadMultipartWithGmRequest(endpoint, form, timeoutMs, onProgress, signal);
+    }
+    throw new Error(
+      "KikiLink's local upload service is unavailable on this page. Reload Bondage Club and try again.",
+    );
   }
-  throw new Error(
-    "KikiLink's local upload service is unavailable on this page. Reload Bondage Club and try again.",
-  );
 }
 
 function uploadMultipartWithGmRequest(
@@ -1199,14 +1242,20 @@ async function uploadMultipartWithFetch(
     const response = await request(endpoint, {
       method: "POST",
       body: form,
+      mode: "cors",
       credentials: "omit",
+      cache: "no-store",
+      redirect: "error",
       referrerPolicy: "no-referrer",
       signal: controller.signal,
     });
+    const body = await readBoundedUploadResponse(response, controller.signal);
+    if (timedOut) throw new Error("The upload timed out");
+    if (signal?.aborted) throw new Error("The upload was cancelled");
     return {
       ok: response.ok,
       status: response.status,
-      body: await response.text().catch(() => ""),
+      body,
     };
   } catch (error) {
     if (timedOut) throw new Error("The upload timed out");
@@ -1221,6 +1270,83 @@ async function uploadMultipartWithFetch(
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", handleAbort);
+  }
+}
+
+function currentFetch(): typeof fetch | undefined {
+  try {
+    if (typeof globalThis.fetch !== "function") return undefined;
+    return (input, init) => globalThis.fetch(input, init);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readBoundedUploadResponse(
+  response: Response,
+  signal: AbortSignal,
+): Promise<string> {
+  const declaredLength = response.headers.get("content-length");
+  if (
+    declaredLength !== null &&
+    /^\d+$/u.test(declaredLength) &&
+    Number(declaredLength) > MAX_UPLOAD_RESPONSE_BYTES
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    return "";
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let reads = 0;
+  let complete = false;
+  const cancel = (): void => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+
+  try {
+    while (!signal.aborted && reads < MAX_UPLOAD_RESPONSE_READS) {
+      reads += 1;
+      const { done, value } = await reader.read();
+      if (done) {
+        complete = true;
+        break;
+      }
+      if (!(value instanceof Uint8Array)) {
+        await reader.cancel();
+        return "";
+      }
+      total += value.byteLength;
+      if (total > MAX_UPLOAD_RESPONSE_BYTES) {
+        await reader.cancel();
+        return "";
+      }
+      chunks.push(value);
+    }
+    if (signal.aborted || !complete) {
+      await reader.cancel().catch(() => undefined);
+      return "";
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    await reader.cancel().catch(() => undefined);
+    return "";
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    try {
+      reader.releaseLock();
+    } catch {
+      // The stream may already be detached after cancellation.
+    }
   }
 }
 

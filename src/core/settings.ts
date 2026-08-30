@@ -19,7 +19,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 27,
+  schemaVersion: 28,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -66,7 +66,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     status: "online",
     statusMessage: "",
     bio: "",
-    profileImagePreviews: "always",
+    profileImagePreviews: "ask",
     avatarUrl: "",
     bannerUrl: "",
     avatarFrame: "none",
@@ -181,7 +181,16 @@ export class SettingsStore {
     if (!raw) return structuredClone(DEFAULT_SETTINGS);
 
     try {
-      return sanitizeSettings(JSON.parse(raw) as unknown);
+      const settings = sanitizeSettings(JSON.parse(raw) as unknown);
+      const canonical = JSON.stringify(settings);
+      if (canonical !== raw) {
+        try {
+          this.#storage.setItem(SETTINGS_KEY, canonical);
+        } catch {
+          // The sanitized in-memory copy remains authoritative for this session.
+        }
+      }
+      return settings;
     } catch {
       return structuredClone(DEFAULT_SETTINGS);
     }
@@ -229,7 +238,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 27,
+    schemaVersion: 28,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -312,8 +321,11 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? cleanBoundedPublicBio(linkPresence.bio)
           : DEFAULT_SETTINGS.linkPresence.bio,
       profileImagePreviews:
-        linkPresence.profileImagePreviews === "ask" ||
-        linkPresence.profileImagePreviews === "never"
+        sourceSchema <= 27
+          ? "ask"
+          : linkPresence.profileImagePreviews === "always" ||
+              linkPresence.profileImagePreviews === "ask" ||
+              linkPresence.profileImagePreviews === "never"
           ? linkPresence.profileImagePreviews
           : DEFAULT_SETTINGS.linkPresence.profileImagePreviews,
       avatarUrl: sanitizeAvatarUrl(linkPresence.avatarUrl),

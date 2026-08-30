@@ -209,7 +209,19 @@ export class ProfileCacheRepository {
         this.#persistedAccessAt.set(record.memberNumber, record.lastAccessedAt);
       }
       const pruned = this.#pruneInMemory(now);
-      if (parsed.version === LEGACY_CACHE_FORMAT_VERSION || pruned.changed) this.#persist();
+      const canonical = this.#records.size === 0
+        ? null
+        : JSON.stringify({
+            version: CACHE_FORMAT_VERSION,
+            records: this.#orderedRecords(),
+          } satisfies StoredPublicProfileCache);
+      if (
+        parsed.version === LEGACY_CACHE_FORMAT_VERSION ||
+        pruned.changed ||
+        canonical !== raw
+      ) {
+        this.#persist();
+      }
     } catch {
       // Malformed or inaccessible old data must never block KikiLink startup.
     }

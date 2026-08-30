@@ -452,6 +452,10 @@ or the user explicitly clears it.
 - Every participant receives the group's membership and owner-supplied metadata. Membership and
   content traverse BC's transport and inherit its availability and privacy properties. Group avatar
   and message-image URLs additionally identify an external host that recipients may contact when
-  previewing the image.
+  previewing the image; that host sees the viewer's network IP address and request time.
 - There are no protocol acknowledgements. UI terms such as *handed off*, *relay target*, or
   *unreachable* deliberately avoid claiming remote delivery.
+
+Stored group state is account-prefixed but not encrypted, and it is not included in KikiLink's BC
+account mirror. Co-installed page-realm addons share the same trust boundary and may be able to read
+same-origin storage. See [`PRIVACY.md`](../PRIVACY.md) for retention and deletion limits.

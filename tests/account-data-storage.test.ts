@@ -13,6 +13,7 @@ import {
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 import { PeopleRepository } from "../src/storage/people-repository";
 import { ResilientChatRepository } from "../src/storage/resilient-chat-repository";
+import { ChatService } from "../src/modules/link-chat/chat-service";
 
 class ReadControlledStorage extends MemoryKeyValueStorage {
   readable = true;
@@ -534,6 +535,187 @@ describe("BC account-scoped KikiLink storage", () => {
 
     await afterReload.destroy();
     await beforeReload.destroy();
+  });
+
+  it("keeps a per-conversation deletion ahead of a stale cloud snapshot on immediate reload", async () => {
+    globalThis.Player = {
+      MemberNumber: 101,
+      Name: "DeletingKiki",
+      FriendNames: new Map(),
+      ExtensionSettings: {},
+    };
+    globalThis.ServerPlayerExtensionSettingsSync = vi.fn();
+    const browser = new MemoryKeyValueStorage();
+    const repository = new MemoryChatRepository();
+    const beforeReload = new AccountDataStorage(101, browser);
+    await beforeReload.attachChatRepository(repository);
+    const chats = new AccountSyncedChatRepository(repository, beforeReload);
+    await chats.addMessage(message());
+    await chats.putConversation(conversation());
+    await beforeReload.flush();
+    const staleCloud = globalThis.Player.ExtensionSettings?.KikiLink;
+
+    await chats.deleteConversation(303);
+    vi.clearAllTimers();
+    globalThis.Player.ExtensionSettings = { KikiLink: staleCloud };
+
+    const afterReload = new AccountDataStorage(101, browser);
+    await afterReload.attachChatRepository(repository);
+    expect(await repository.getConversation(303)).toBeUndefined();
+    expect(await repository.getMessages(303)).toEqual([]);
+
+    await afterReload.destroy();
+    await beforeReload.destroy();
+  });
+
+  it("applies a portable peer deletion to stale rows on another device", async () => {
+    globalThis.Player = {
+      MemberNumber: 101,
+      Name: "DeletingKiki",
+      FriendNames: new Map(),
+      ExtensionSettings: {},
+    };
+    globalThis.ServerPlayerExtensionSettingsSync = vi.fn();
+    const first = new AccountDataStorage(101, new MemoryKeyValueStorage());
+    const firstLocal = new MemoryChatRepository();
+    await first.attachChatRepository(firstLocal);
+    const firstChats = new AccountSyncedChatRepository(firstLocal, first);
+    await firstChats.addMessage(message());
+    await firstChats.putConversation(conversation());
+    await first.flush();
+    await firstChats.deleteConversation(303);
+    await first.flush();
+
+    const staleSecondLocal = new MemoryChatRepository();
+    await staleSecondLocal.addMessage(message());
+    await staleSecondLocal.putConversation(conversation());
+    const second = new AccountDataStorage(101, new MemoryKeyValueStorage());
+    await second.attachChatRepository(staleSecondLocal);
+
+    expect(await staleSecondLocal.getConversation(303)).toBeUndefined();
+    expect(await staleSecondLocal.getMessages(303)).toEqual([]);
+    second.markChatChanged();
+    await second.flush();
+    expect(readCloudChatState()).toEqual({ conversations: [], messages: [] });
+
+    await second.destroy();
+    await first.destroy();
+  });
+
+  it("applies a portable all-chat clear to stale rows on another device", async () => {
+    globalThis.Player = {
+      MemberNumber: 101,
+      Name: "ClearingKiki",
+      FriendNames: new Map(),
+      ExtensionSettings: {},
+    };
+    globalThis.ServerPlayerExtensionSettingsSync = vi.fn();
+    const first = new AccountDataStorage(101, new MemoryKeyValueStorage());
+    const firstLocal = new MemoryChatRepository();
+    await first.attachChatRepository(firstLocal);
+    const firstChats = new AccountSyncedChatRepository(firstLocal, first);
+    await firstChats.addMessage(message());
+    await firstChats.putConversation(conversation());
+    await first.flush();
+    await firstChats.clearAllDurably();
+
+    const staleSecondLocal = new MemoryChatRepository();
+    await staleSecondLocal.addMessage(message());
+    await staleSecondLocal.putConversation(conversation());
+    const second = new AccountDataStorage(101, new MemoryKeyValueStorage());
+    await second.attachChatRepository(staleSecondLocal);
+
+    expect(await staleSecondLocal.listConversations()).toEqual([]);
+    expect(await staleSecondLocal.getMessages(303)).toEqual([]);
+
+    await second.destroy();
+    await first.destroy();
+  });
+
+  it("keeps a per-conversation trim from being undone by stale device rows", async () => {
+    globalThis.Player = {
+      MemberNumber: 101,
+      Name: "TrimmingKiki",
+      FriendNames: new Map(),
+      ExtensionSettings: {},
+    };
+    globalThis.ServerPlayerExtensionSettingsSync = vi.fn();
+    const first = new AccountDataStorage(101, new MemoryKeyValueStorage());
+    const firstLocal = new MemoryChatRepository();
+    await first.attachChatRepository(firstLocal);
+    const firstChats = new AccountSyncedChatRepository(firstLocal, first);
+    const allMessages = Array.from({ length: 60 }, (_, index): LinkMessage => ({
+      ...message(),
+      id: `303:${index + 1}:trim`,
+      content: `Message ${index + 1}`,
+      sentAt: index + 1,
+    }));
+    for (const item of allMessages) await firstChats.addMessage(item);
+    await firstChats.putConversation({
+      ...conversation(),
+      lastMessage: "Message 60",
+      lastMessageAt: 60,
+    });
+    await first.flush();
+    expect(await firstChats.trimConversation(303, 50)).toBe(10);
+    await first.flush();
+
+    const staleSecondLocal = new MemoryChatRepository();
+    for (const item of allMessages) await staleSecondLocal.addMessage(item);
+    await staleSecondLocal.putConversation({
+      ...conversation(),
+      lastMessage: "Message 60",
+      lastMessageAt: 60,
+    });
+    const second = new AccountDataStorage(101, new MemoryKeyValueStorage());
+    await second.attachChatRepository(staleSecondLocal);
+
+    const retained = await staleSecondLocal.getMessages(303, 100);
+    expect(retained).toHaveLength(50);
+    expect(retained[0]?.content).toBe("Message 11");
+
+    await second.destroy();
+    await first.destroy();
+  });
+
+  it("removes expired message text from conversation previews and account sync", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    globalThis.Player = {
+      MemberNumber: 101,
+      Name: "PruningKiki",
+      FriendNames: new Map(),
+      ExtensionSettings: {},
+    };
+    globalThis.ServerPlayerExtensionSettingsSync = vi.fn();
+    const account = new AccountDataStorage(101, new MemoryKeyValueStorage());
+    const local = new MemoryChatRepository();
+    await account.attachChatRepository(local);
+    const repository = new AccountSyncedChatRepository(local, account);
+    const settings = new SettingsStore(account);
+    settings.update((draft) => {
+      draft.linkChat.retentionDays = 1;
+    });
+    const secret = "expired-private-preview";
+    const oldTime = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    await repository.addMessage({ ...message(), content: secret, sentAt: oldTime });
+    await repository.putConversation({
+      ...conversation(),
+      lastMessage: secret,
+      lastMessageAt: oldTime,
+    });
+
+    await new ChatService(repository, settings).prune();
+    await account.flush();
+
+    expect(await local.getMessages(303)).toEqual([]);
+    expect(await local.getConversation(303)).toMatchObject({
+      lastMessage: "",
+      lastMessageAt: 0,
+      unread: 0,
+    });
+    expect(globalThis.Player.ExtensionSettings?.KikiLink).not.toContain(secret);
+    await account.destroy();
   });
 
   it("does not let an older in-flight snapshot resurrect chats after an explicit clear", async () => {

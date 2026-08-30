@@ -714,6 +714,82 @@ describe("LinkPresenceService", () => {
     service.stop();
   });
 
+  it("consumes each correlated profile-details half once without replayed cache writes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-30T12:00:00Z"));
+    const storage = new MemoryKeyValueStorage();
+    const setItem = vi.spyOn(storage, "setItem");
+    const { bus, service, sendKikiLinkProtocol } = setup({ storage });
+    service.start();
+    const listener = vi.fn();
+    service.subscribe(listener);
+    setItem.mockClear();
+
+    const requestProfile = (memberNumber: number): string => {
+      expect(service.request(memberNumber, true, true)).toBe(true);
+      const query = JSON.parse(
+        sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
+      ) as Record<string, unknown>;
+      expect(typeof query.i).toBe("string");
+      return String(query.i);
+    };
+    const emit = (senderNumber: number, packet: Record<string, unknown>): void => {
+      bus.emit("bc:protocol", {
+        senderNumber,
+        channel: "beep",
+        payload: JSON.stringify(packet),
+      });
+    };
+    const cacheWriteCount = (): number => setItem.mock.calls.filter(
+      ([key]) => key === PUBLIC_PROFILE_CACHE_KEY,
+    ).length;
+
+    const detailsFirstId = requestProfile(123);
+    emit(123, {
+      t: "pf",
+      i: detailsFirstId,
+      h: "https://files.catbox.moe/first-details.webp",
+    });
+    emit(123, {
+      t: "pf",
+      i: detailsFirstId,
+      h: "https://files.catbox.moe/replayed-details.webp",
+    });
+    expect(service.get(123).bannerUrl).toBe(
+      "https://files.catbox.moe/first-details.webp",
+    );
+    expect(cacheWriteCount()).toBe(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    emit(123, { t: "pb", i: detailsFirstId, b: "First bio" });
+    emit(123, { t: "pb", i: detailsFirstId, b: "Replayed bio" });
+    emit(123, { t: "pf", i: detailsFirstId });
+    expect(service.get(123).bio).toBe("First bio");
+    expect(cacheWriteCount()).toBe(2);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    const bioFirstId = requestProfile(456);
+    emit(456, { t: "pb", i: bioFirstId, b: "Bio arrived first" });
+    emit(456, { t: "pb", i: bioFirstId, b: "Replayed early bio" });
+    expect(service.get(456).bio).toBe("Bio arrived first");
+    expect(cacheWriteCount()).toBe(3);
+    expect(listener).toHaveBeenCalledTimes(3);
+
+    emit(456, {
+      t: "pf",
+      i: bioFirstId,
+      h: "https://files.catbox.moe/bio-first-details.webp",
+    });
+    emit(456, { t: "pf", i: bioFirstId });
+    expect(service.get(456)).toMatchObject({
+      bio: "Bio arrived first",
+      bannerUrl: "https://files.catbox.moe/bio-first-details.webp",
+    });
+    expect(cacheWriteCount()).toBe(4);
+    expect(listener).toHaveBeenCalledTimes(4);
+    service.stop();
+  });
+
   it("registers an explicit profile request before a synchronous virtual peer replies", () => {
     const bus = new EventBus<KikiLinkEvents>();
     const settings = new SettingsStore(new MemoryKeyValueStorage());
@@ -1504,6 +1580,207 @@ describe("LinkPresenceService", () => {
       expect(service.hasCompatiblePeer(senderNumber)).toBe(false);
       expect(service.get(senderNumber)).toMatchObject({ status: "unknown", source: "unknown" });
     }
+    service.stop();
+  });
+
+  it("rejects stale presence without rolling back state, capabilities, or liveness", () => {
+    vi.useFakeTimers();
+    const baseTime = new Date("2026-08-30T12:00:00Z").getTime();
+    vi.setSystemTime(baseTime);
+    const { bus, service } = setup();
+    service.start();
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "dnd",
+        m: "Newest state",
+        a: "https://files.catbox.moe/newest.webp",
+        u: baseTime,
+        v: "0.28.1",
+        g: 3,
+      }),
+    });
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "offline",
+        u: baseTime - 1,
+        v: "0.1.0",
+        g: 1,
+      }),
+    });
+
+    expect(service.get(123)).toMatchObject({
+      status: "dnd",
+      statusMessage: "Newest state",
+      avatarUrl: "https://files.catbox.moe/newest.webp",
+      addonVersion: "0.28.1",
+      updatedAt: baseTime,
+    });
+    expect(service.hasGroupManagedPeer(123)).toBe(true);
+    expect(service.hasCachedProfile(123)).toBe(true);
+
+    vi.advanceTimersByTime(299_000);
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        u: baseTime - 1,
+        v: "0.1.0",
+        g: 1,
+      }),
+    });
+    vi.advanceTimersByTime(2_000);
+    expect(service.hasCompatiblePeer(123)).toBe(false);
+
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "idle",
+        u: baseTime - 2,
+        v: "0.28.2",
+      }),
+    });
+    expect(service.get(123)).toMatchObject({ status: "idle", addonVersion: "0.28.2" });
+    service.stop();
+  });
+
+  it("rate-limits presence and typing floods per sender while reopening a new window", () => {
+    vi.useFakeTimers();
+    const baseTime = new Date("2026-08-30T12:00:00Z").getTime();
+    vi.setSystemTime(baseTime);
+    const { bus, service } = setup();
+    service.start();
+
+    for (let index = 0; index < 8; index += 1) {
+      bus.emit("bc:protocol", {
+        senderNumber: 123,
+        channel: "beep",
+        payload: JSON.stringify({
+          t: "ps",
+          s: "online",
+          u: baseTime + index,
+          v: `0.28.${index}`,
+        }),
+      });
+    }
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "dnd",
+        u: baseTime + 8,
+        v: "0.28.8",
+      }),
+    });
+    expect(service.get(123)).toMatchObject({
+      status: "online",
+      addonVersion: "0.28.7",
+    });
+
+    for (let index = 0; index < 12; index += 1) {
+      bus.emit("bc:protocol", {
+        senderNumber: 456,
+        channel: "beep",
+        payload: JSON.stringify({ t: "ty", a: 1 }),
+      });
+    }
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({ t: "ty", a: 0 }),
+    });
+    expect(service.isTyping(456)).toBe(true);
+
+    vi.advanceTimersByTime(10_001);
+    bus.emit("bc:protocol", {
+      senderNumber: 123,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "dnd",
+        u: baseTime + 10_001,
+        v: "0.28.9",
+      }),
+    });
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({ t: "ty", a: 1 }),
+    });
+    expect(service.isTyping(456)).toBe(true);
+    bus.emit("bc:protocol", {
+      senderNumber: 456,
+      channel: "beep",
+      payload: JSON.stringify({ t: "ty", a: 0 }),
+    });
+    expect(service.get(123)).toMatchObject({ status: "dnd", addonVersion: "0.28.9" });
+    expect(service.isTyping(456)).toBe(false);
+    service.stop();
+  });
+
+  it("caps tracked inbound senders and rejects packets beyond the aggregate flood limit", () => {
+    vi.useFakeTimers();
+    const baseTime = new Date("2026-08-30T12:00:00Z").getTime();
+    vi.setSystemTime(baseTime);
+    const { bus, service, settings } = setup();
+    settings.update((draft) => {
+      draft.linkPresence.enabled = false;
+    });
+    service.start();
+
+    const firstSender = 10_000;
+    for (let index = 0; index < 1_024; index += 1) {
+      bus.emit("bc:protocol", {
+        senderNumber: firstSender + index,
+        channel: "beep",
+        payload: JSON.stringify({
+          t: "ps",
+          s: "online",
+          u: baseTime,
+          v: "0.28.1",
+        }),
+      });
+    }
+
+    expect(service.hasCompatiblePeer(firstSender + 523)).toBe(false);
+    expect(service.hasCompatiblePeer(firstSender + 524)).toBe(true);
+    expect(service.hasCompatiblePeer(firstSender + 1_023)).toBe(true);
+
+    const rejectedSender = firstSender + 1_024;
+    bus.emit("bc:protocol", {
+      senderNumber: rejectedSender,
+      channel: "beep",
+      payload: JSON.stringify({
+        t: "ps",
+        s: "online",
+        u: baseTime,
+        v: "0.28.1",
+      }),
+    });
+    expect(service.hasCompatiblePeer(rejectedSender)).toBe(false);
+
+    vi.advanceTimersByTime(10_001);
+    const firstTypingSender = 20_000;
+    for (let index = 0; index < 501; index += 1) {
+      bus.emit("bc:protocol", {
+        senderNumber: firstTypingSender + index,
+        channel: "beep",
+        payload: JSON.stringify({ t: "ty", a: 1 }),
+      });
+    }
+    expect(service.isTyping(firstTypingSender)).toBe(false);
+    expect(service.isTyping(firstTypingSender + 500)).toBe(true);
     service.stop();
   });
 

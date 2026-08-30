@@ -37,7 +37,7 @@ export class LinkChatModule implements KikiLinkModule {
     this.#activities.start();
     this.#roster = new LinkRosterService(
       context.adapter,
-      new PeopleRepository(context.accountStorage),
+      new PeopleRepository(accountStorage),
       context.settings,
     );
     this.#presence = new LinkPresenceService(
@@ -64,6 +64,7 @@ export class LinkChatModule implements KikiLinkModule {
       {
         hasManagedPeer: (memberNumber) =>
           this.#presence?.hasGroupManagedPeer(memberNumber) === true,
+        shouldPersistHistory: () => context.settings.get().linkChat.saveHistory,
       },
     );
     this.#view = new LinkChatView(
@@ -79,10 +80,14 @@ export class LinkChatModule implements KikiLinkModule {
     this.#view.mount();
 
     if (typeof window !== "undefined") {
-      const flushGroupsOnPageHide = () => this.#view?.flushGroupStateForPageHide();
-      window.addEventListener("pagehide", flushGroupsOnPageHide);
+      const flushStateOnPageHide = () => {
+        this.#view?.flushGroupStateForPageHide();
+        const storage = context.accountStorage as { flush?: () => Promise<void> } | undefined;
+        if (typeof storage?.flush === "function") void storage.flush();
+      };
+      window.addEventListener("pagehide", flushStateOnPageHide);
       this.#unsubscribers.push(() =>
-        window.removeEventListener("pagehide", flushGroupsOnPageHide),
+        window.removeEventListener("pagehide", flushStateOnPageHide),
       );
     }
 
@@ -105,6 +110,10 @@ export class LinkChatModule implements KikiLinkModule {
     );
     this.#view.setConnectionState(context.adapter.isReady() ? "ready" : "connecting");
     void this.#service.prune();
+    const chatSettings = context.settings.get().linkChat;
+    void this.#groups.applyHistoryPolicy(
+      Date.now() - chatSettings.retentionDays * 24 * 60 * 60 * 1000,
+    );
     this.#syncRoster();
     this.#rosterTimer = setInterval(() => this.#syncRoster(), 2_000);
   }
@@ -135,6 +144,7 @@ export class LinkChatModule implements KikiLinkModule {
   }
 
   open(): void {
+    if (!this.#isCurrentAccount()) return;
     void this.#view?.open();
   }
 
@@ -143,19 +153,22 @@ export class LinkChatModule implements KikiLinkModule {
   }
 
   openChat(memberNumber: number, memberName?: string): void {
+    if (!this.#isCurrentAccount()) return;
     void this.#view?.openChat(memberNumber, memberName);
   }
 
   openRoster(): void {
+    if (!this.#isCurrentAccount()) return;
     this.#view?.openRoster();
   }
 
   openActivities(): void {
+    if (!this.#isCurrentAccount()) return;
     this.#view?.openActivities();
   }
 
   async #capture(event: BeepEvent): Promise<void> {
-    if (!this.#service || !this.#view || !this.#context) return;
+    if (!this.#service || !this.#view || !this.#context || !this.#isCurrentAccount()) return;
     const automaticReply =
       event.direction === "incoming" ? this.#afkAutoReply?.handleIncoming(event) : undefined;
     try {
@@ -173,7 +186,7 @@ export class LinkChatModule implements KikiLinkModule {
   }
 
   async #captureGroupProtocol(event: { senderNumber: number; payload: string }): Promise<void> {
-    if (!this.#groups) return;
+    if (!this.#groups || !this.#isCurrentAccount()) return;
     try {
       await this.#groups.receiveProtocol(event, this.#view?.getActiveGroupId());
     } catch (error) {
@@ -182,7 +195,7 @@ export class LinkChatModule implements KikiLinkModule {
   }
 
   #syncRoster(): void {
-    if (!this.#roster || !this.#view || !this.#context) return;
+    if (!this.#roster || !this.#view || !this.#context || !this.#isCurrentAccount()) return;
     if (!this.#context.settings.get().linkRoster.enabled) {
       this.#view.onRosterSync({ changed: false, presentCount: 0, joined: [], left: [] });
       return;
@@ -195,7 +208,7 @@ export class LinkChatModule implements KikiLinkModule {
   }
 
   async #importRecentBeeps(): Promise<void> {
-    if (!this.#service || !this.#view || !this.#context) return;
+    if (!this.#service || !this.#view || !this.#context || !this.#isCurrentAccount()) return;
     try {
       for (const event of this.#context.adapter.getRecentBeeps()) {
         if (this.#context.settings.get().linkRoster.enabled) {
@@ -209,5 +222,11 @@ export class LinkChatModule implements KikiLinkModule {
     } catch (error) {
       this.#logger.error("Failed to import recent Beeps", error);
     }
+  }
+
+  #isCurrentAccount(): boolean {
+    const expected = this.#context?.memberNumber;
+    if (expected === undefined || typeof Player !== "object" || Player === null) return true;
+    return Player.MemberNumber === expected;
   }
 }

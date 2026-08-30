@@ -97,6 +97,10 @@ describe("KikiLink startup", () => {
     globalThis.Player.MemberNumber = 222;
     globalThis.Player.Name = "SecondAccount";
     globalThis.Player.ExtensionSettings = {};
+    const boundary = new Event("pointerdown", { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(boundary);
+    expect(boundary.defaultPrevented).toBe(true);
+    expect(firstHost?.hidden).toBe(true);
     await vi.advanceTimersByTimeAsync(1_000);
 
     const secondHost = document.querySelector<HTMLElement>("#kikilink-root");

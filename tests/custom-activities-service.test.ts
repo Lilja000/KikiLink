@@ -678,6 +678,76 @@ describe("native Custom Activities", () => {
     expect(effect).toHaveBeenCalledOnce();
   });
 
+  it("honors the enabled setting and rate-limits incoming arousal per sender", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const effect = vi.fn();
+    globalThis.ActivityEffectFlat = effect;
+    const firstSource = { MemberNumber: 999, Name: "Kiki" };
+    const secondSource = { MemberNumber: 777, Name: "Lua" };
+    globalThis.Player = {
+      MemberNumber: 123,
+      Name: "Reina",
+      FriendNames: new Map(),
+    };
+    globalThis.ChatRoomCharacter = [firstSource, secondSource, globalThis.Player];
+    const adapter = {
+      getOwnMemberNumber: () => 123,
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update((draft) => {
+      draft.linkActivities.enabled = false;
+    });
+    const service = new LinkActivitiesService(adapter, settings);
+    const incoming = (sender: number, nonce: string) => ({
+      Type: "Action",
+      Content: "KikiLinkCustomActivity",
+      Sender: sender,
+      Dictionary: [
+        { Tag: "SourceCharacter", MemberNumber: sender, Text: `Member ${sender}` },
+        { Tag: "TargetCharacter", MemberNumber: 123, Text: "Reina" },
+        { ActivityName: "Caress", KikiLinkArousalFallback: true },
+        { ActivityCounter: 1, KikiLinkArousalFallback: true },
+        {
+          Tag: "KikiLinkActivityMeta",
+          Text: JSON.stringify({
+            v: 2,
+            source: sender,
+            target: 123,
+            group: "ItemArms",
+            arousal: 5,
+            nonce,
+            fallbackActivity: "Caress",
+            fallbackCount: 1,
+          }),
+        },
+      ],
+    });
+
+    service.onRoomMessage(incoming(999, "nonce-disabled"));
+    expect(effect).not.toHaveBeenCalled();
+
+    settings.update((draft) => {
+      draft.linkActivities.enabled = true;
+    });
+    for (let index = 0; index < 5; index += 1) {
+      service.onRoomMessage(incoming(999, `nonce-rate-${index}`));
+    }
+    const limited = incoming(999, "nonce-rate-5");
+    service.onRoomMessage(limited);
+    expect(effect).toHaveBeenCalledTimes(5);
+    expect(limited.Dictionary).not.toContainEqual(
+      expect.objectContaining({ KikiLinkArousalFallback: true }),
+    );
+
+    service.onRoomMessage(incoming(777, "nonce-other-1"));
+    expect(effect).toHaveBeenCalledTimes(6);
+
+    vi.advanceTimersByTime(10_001);
+    service.onRoomMessage(incoming(999, "nonce-reset-1"));
+    expect(effect).toHaveBeenCalledTimes(7);
+  });
+
   it("keeps the native BC fallback intact when the exact target-side effect is unavailable", () => {
     const source = { MemberNumber: 999, Name: "Kiki" };
     globalThis.Player = {

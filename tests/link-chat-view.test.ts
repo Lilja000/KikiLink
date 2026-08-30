@@ -86,7 +86,7 @@ describe("LinkChatView", () => {
     expect(
       shadow?.querySelector<HTMLSelectElement>('select[aria-label="Profile image previews"]')
         ?.value,
-    ).toBe("always");
+    ).toBe("ask");
     expect(shadow?.querySelector<HTMLElement>(".kl-home-update")?.hidden).toBe(true);
     expect(shadow?.querySelector<HTMLAnchorElement>(".kl-home-update-button")?.href).toBe(
       "https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js",
@@ -187,7 +187,12 @@ describe("LinkChatView", () => {
     );
     await vi.waitFor(() => {
       const replyRow = shadow?.querySelector<HTMLElement>(".kl-message-row:last-child");
-      expect(replyRow?.querySelector(".kl-message-reply-author")?.textContent).toBe("Kiki");
+      expect(replyRow?.querySelector(".kl-message-reply-author")?.textContent).toBe(
+        "Quoted as Kiki",
+      );
+      expect(replyRow?.querySelector(".kl-message-reply-warning")?.textContent).toBe(
+        "Unverified quote",
+      );
       expect(replyRow?.querySelector(".kl-message-reply-excerpt")?.textContent).toBe(
         "Hello from KikiLink",
       );
@@ -1231,6 +1236,7 @@ describe("LinkChatView", () => {
     const settings = new SettingsStore(new MemoryKeyValueStorage());
     settings.update((draft) => {
       draft.linkChat.imagePreviews = "always";
+      draft.linkPresence.profileImagePreviews = "always";
     });
     const presenceBus = new EventBus<KikiLinkEvents>();
     const presence = new LinkPresenceService(adapter, settings, presenceBus, "0.25.0");
@@ -1359,6 +1365,7 @@ describe("LinkChatView", () => {
     const settings = new SettingsStore(new MemoryKeyValueStorage());
     settings.update((draft) => {
       draft.linkChat.imagePreviews = "always";
+      draft.linkPresence.profileImagePreviews = "always";
     });
     const chats = new ChatService(new MemoryChatRepository(), settings);
     for (const memberNumber of peerNumbers) {
@@ -1969,7 +1976,7 @@ describe("LinkChatView", () => {
     const about = shadow?.querySelector<HTMLElement>("#kikilink-settings-panel-about");
     expect(about?.hidden).toBe(false);
     expect(about?.textContent).toContain("Kiki");
-    expect(about?.textContent).toContain("Member 0");
+    expect(about?.textContent).not.toMatch(/Member \d+/u);
     expect(about?.textContent).toContain("0.21.1");
     expect(about?.textContent).not.toMatch(/artificial intelligence|\bAI\b/iu);
     expect(about?.querySelector<HTMLImageElement>(".kl-about-watermark")?.src).toContain(

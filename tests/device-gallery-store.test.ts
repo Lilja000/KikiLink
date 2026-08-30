@@ -9,13 +9,13 @@ import {
 
 describe("DeviceGalleryStore", () => {
   it("uses a different durable IndexedDB database for every BC account", () => {
-    expect(deviceGalleryDatabaseName(0)).toBe("kikilink-device-gallery-0");
+    expect(deviceGalleryDatabaseName(123456)).toBe("kikilink-device-gallery-123456");
     expect(deviceGalleryDatabaseName(211876)).toBe("kikilink-device-gallery-211876");
-    expect(deviceGalleryDatabaseName(0)).not.toBe(deviceGalleryDatabaseName(211876));
+    expect(deviceGalleryDatabaseName(123456)).not.toBe(deviceGalleryDatabaseName(211876));
   });
 
   it("does not pretend a Gallery save is permanent when IndexedDB is unavailable", async () => {
-    const store = new DeviceGalleryStore(0);
+    const store = new DeviceGalleryStore(123456);
     await expect(store.add({
       blob: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/webp" }),
       width: 640,

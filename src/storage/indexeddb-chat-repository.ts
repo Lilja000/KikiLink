@@ -99,6 +99,26 @@ export class IndexedDbChatRepository implements ChatRepository {
     return removed;
   }
 
+  async deleteMessagesForConversationAtOrBefore(
+    peerNumber: number,
+    timestamp: number,
+  ): Promise<number> {
+    const database = await this.#database();
+    const transaction = database.transaction(MESSAGE_STORE, "readwrite");
+    const done = transactionDone(transaction);
+    const index = transaction.objectStore(MESSAGE_STORE).index(PEER_TIME_INDEX);
+    const range = IDBKeyRange.bound([peerNumber, 0], [peerNumber, timestamp]);
+    let removed = 0;
+
+    const cursor = iterateCursor(index.openCursor(range), (cursor) => {
+      cursor.delete();
+      removed += 1;
+      return true;
+    });
+    await Promise.all([cursor, done]);
+    return removed;
+  }
+
   async trimConversation(peerNumber: number, keepNewest: number): Promise<number> {
     const database = await this.#database();
     const transaction = database.transaction(MESSAGE_STORE, "readwrite");

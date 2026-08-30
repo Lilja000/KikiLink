@@ -35,6 +35,20 @@ export class KikiLinkApp {
   #transitionPromise: Promise<void> | undefined;
   #versionBadge: HTMLSpanElement | undefined;
   #started = false;
+  readonly #handleAccountBoundary = (event?: Event): void => {
+    const memberNumber = authenticatedMemberNumber();
+    const mismatch = memberNumber !== this.#activeMemberNumber ||
+      memberNumber !== this.#desiredMemberNumber;
+    if (mismatch) {
+      const host = document.querySelector<HTMLElement>("#kikilink-root");
+      if (host) host.hidden = true;
+      if (event?.type === "pointerdown" || event?.type === "keydown") {
+        if (event.cancelable) event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }
+    this.#monitorAccount();
+  };
 
   constructor(private readonly version: string) {
     this.#adapter = new BCAdapter(this.#bus, version);
@@ -65,6 +79,10 @@ export class KikiLinkApp {
     this.#desiredMemberNumber = authenticatedMemberNumber();
     await this.#runAccountTransitions();
     if (!this.#started) return;
+    window.addEventListener("focus", this.#handleAccountBoundary);
+    window.addEventListener("pageshow", this.#handleAccountBoundary);
+    document.addEventListener("pointerdown", this.#handleAccountBoundary, true);
+    document.addEventListener("keydown", this.#handleAccountBoundary, true);
     // Account changes are rare and already have an immediate startup boundary. A one-second
     // monitor avoids four permanent checks per second without making an in-page switch feel slow.
     this.#accountMonitorTimer = setInterval(() => this.#monitorAccount(), ACCOUNT_MONITOR_MS);
@@ -73,6 +91,10 @@ export class KikiLinkApp {
   async destroy(): Promise<void> {
     if (!this.#started) return;
     this.#started = false;
+    window.removeEventListener("focus", this.#handleAccountBoundary);
+    window.removeEventListener("pageshow", this.#handleAccountBoundary);
+    document.removeEventListener("pointerdown", this.#handleAccountBoundary, true);
+    document.removeEventListener("keydown", this.#handleAccountBoundary, true);
     if (this.#accountMonitorTimer !== undefined) clearInterval(this.#accountMonitorTimer);
     this.#accountMonitorTimer = undefined;
     this.#desiredMemberNumber = undefined;
@@ -160,7 +182,7 @@ export class KikiLinkApp {
     });
     const host = document.querySelector<HTMLElement>("#kikilink-root");
     if (host) host.hidden = false;
-    this.#logger.info(`KikiLink ${this.version} ready for account ${memberNumber}`);
+    this.#logger.info(`KikiLink ${this.version} ready`);
   }
 
   async #deactivateAccount(): Promise<void> {

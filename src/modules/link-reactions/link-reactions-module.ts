@@ -29,10 +29,15 @@ export class LinkReactionsModule implements KikiLinkModule {
 
   start(context: KikiLinkContext): void {
     this.#context = context;
-    this.#service = new LinkReactionsService(context.adapter, context.settings);
+    this.#service = new LinkReactionsService(
+      context.adapter,
+      context.settings,
+      () => this.#isCurrentAccount(),
+    );
     this.#unsubscribers.push(
       context.bus.on("bc:ready", () => this.#resetBaselines()),
       context.bus.on("beep:received", (event) => {
+        if (!this.#isCurrentAccount()) return;
         this.#notify(
           "chat",
           `New Beep from ${event.peerName}.`,
@@ -40,11 +45,14 @@ export class LinkReactionsModule implements KikiLinkModule {
           event.peerNumber,
           event.sentAt,
         );
+        if (!this.#isCurrentAccount()) return;
+        const isFriend = context.adapter.isKnownFriend(event.peerNumber);
+        if (!this.#isCurrentAccount()) return;
         this.#run({
           trigger: "beep-received",
           memberNumber: event.peerNumber,
           memberName: event.peerName,
-          isFriend: context.adapter.isKnownFriend(event.peerNumber),
+          isFriend,
           occurredAt: event.sentAt,
           content: event.content,
           ...(event.roomName ? { roomName: event.roomName } : {}),
@@ -70,6 +78,7 @@ export class LinkReactionsModule implements KikiLinkModule {
   }
 
   #resetBaselines(): void {
+    if (!this.#isCurrentAccount()) return;
     this.#roomMembers.clear();
     this.#roomName = undefined;
     this.#onlineMembers = undefined;
@@ -78,19 +87,23 @@ export class LinkReactionsModule implements KikiLinkModule {
 
   #syncRoom(): void {
     const context = this.#context;
-    if (!context) return;
-    if (!context.adapter.isInChatRoom()) {
+    if (!context || !this.#isCurrentAccount()) return;
+    const isInChatRoom = context.adapter.isInChatRoom();
+    if (!this.#isCurrentAccount()) return;
+    if (!isInChatRoom) {
       this.#roomMembers.clear();
       this.#roomName = undefined;
       return;
     }
 
     const roomName = context.adapter.getCurrentRoomName() ?? "Unnamed room";
+    if (!this.#isCurrentAccount()) return;
     const current = new Map(
       context.adapter
         .getRoomCharacters()
         .map((character) => [character.memberNumber, character] as const),
     );
+    if (!this.#isCurrentAccount()) return;
     if (this.#roomName !== roomName) {
       this.#roomName = roomName;
       this.#replaceRoomMembers(current);
@@ -106,6 +119,7 @@ export class LinkReactionsModule implements KikiLinkModule {
     this.#replaceRoomMembers(current);
     const occurredAt = Date.now();
     for (const character of joined) {
+      if (!this.#isCurrentAccount()) return;
       const event = roomEvent("room-join", character, roomName, occurredAt);
       this.#notify(
         "room-join",
@@ -117,6 +131,7 @@ export class LinkReactionsModule implements KikiLinkModule {
       this.#run(event);
     }
     for (const character of left) {
+      if (!this.#isCurrentAccount()) return;
       this.#run(roomEvent("room-leave", character, roomName, occurredAt));
     }
   }
@@ -129,12 +144,14 @@ export class LinkReactionsModule implements KikiLinkModule {
   }
 
   #syncOnlineFriends(friends: OnlineFriend[], occurredAt: number): void {
+    if (!this.#isCurrentAccount()) return;
     const current = new Set(friends.map((friend) => friend.memberNumber));
     const previous = this.#onlineMembers;
     this.#onlineMembers = current;
     if (!previous) return;
 
     for (const friend of friends) {
+      if (!this.#isCurrentAccount()) return;
       if (previous.has(friend.memberNumber)) continue;
       const event: LinkReactionEvent = {
         trigger: "friend-online",
@@ -163,7 +180,7 @@ export class LinkReactionsModule implements KikiLinkModule {
     occurredAt: number,
   ): void {
     const context = this.#context;
-    if (!context) return;
+    if (!context || !this.#isCurrentAccount()) return;
     const settings = context.settings.get().linkReactions;
     const enabled =
       kind === "chat"
@@ -172,6 +189,7 @@ export class LinkReactionsModule implements KikiLinkModule {
           ? settings.quickAlerts.friendOnline
           : settings.quickAlerts.roomJoin;
     if (!enabled) return;
+    if (!this.#isCurrentAccount()) return;
     context.bus.emit("link-reactions:notification", {
       kind,
       message,
@@ -184,12 +202,31 @@ export class LinkReactionsModule implements KikiLinkModule {
   #run(event: LinkReactionEvent): void {
     const context = this.#context;
     const service = this.#service;
-    if (!context || !service) return;
+    if (!context || !service || !this.#isCurrentAccount()) return;
     try {
       const fired = service.react(event);
-      if (fired) context.bus.emit("link-reactions:fired", fired);
+      if (fired && this.#isCurrentAccount()) context.bus.emit("link-reactions:fired", fired);
     } catch (error) {
       this.#logger.error("Failed to run a reaction rule", error);
+    }
+  }
+
+  #isCurrentAccount(): boolean {
+    const expectedMemberNumber = this.#context?.memberNumber;
+    if (typeof expectedMemberNumber !== "number" || !Number.isSafeInteger(expectedMemberNumber)) {
+      return false;
+    }
+    if (expectedMemberNumber <= 0) return false;
+    try {
+      if (typeof ServerIsLoggedIn === "function" && !ServerIsLoggedIn()) return false;
+      if (typeof Player !== "object" || Player === null) return false;
+      const currentMemberNumber = Player.MemberNumber;
+      return (
+        Number.isSafeInteger(currentMemberNumber) &&
+        currentMemberNumber === expectedMemberNumber
+      );
+    } catch {
+      return false;
     }
   }
 }

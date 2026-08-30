@@ -1,38 +1,42 @@
 # KikiLink
 
-KikiLink is a standalone, modular quality-of-life addon for Bondage Club. It is
+KikiLink is a self-contained, modular quality-of-life addon for Bondage Club. It is
 not connected to Velvet District or any previous Kiki project.
 
 ## Install
 
-[**Install KikiLink**](https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js)
+### FUSAM Loader
+
+Install [FUSAM Loader](https://gitlab.com/Sidiousious/bc-addon-loader), then enable KikiLink from its
+addon list. FUSAM owns update discovery for this distribution. If KikiLink has not reached the public
+FUSAM manifest yet, use the standalone userscript below.
+
+FUSAM can use device-local files, direct HTTPS links, and supported temporary Litterbox uploads.
+Long-lived Catbox uploads are unavailable because Catbox does not allow the required cross-origin page
+request; those controls are disabled rather than silently failing.
+
+### Standalone userscript
+
+[**Install KikiLink.user.js**](https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js)
 
 Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
-installation, then reload Bondage Club. The userscript checks this same address
-for future KikiLink updates.
+installation, then reload Bondage Club. When Home is opened, the userscript checks the official raw
+package metadata for a newer KikiLink version. Do not enable both distributions at once.
 
-Version `0.28.1` runs all Bondage Club and ModSDK integration in the page realm without reading
-`unsafeWindow`. Only structured upload fields cross into the DOM-only userscript sandbox for the narrowly
-granted Catbox/Litterbox request. This patch keeps update discovery local to the bounded Home check,
-formats matched action spans in direct and group chat, enlarges the desktop Custom Activity Blossom,
-and makes the desktop character/body-slot map scrollable without changing its mobile behavior.
-It does not change the proven
-Blossom integration: the flower still joins the same BC-native status-icon boundary as Echo and WCE
-exactly once and sits directly below Echo's clothing icon, clear of the chat edge. It is
-shown only for the authenticated character and protocol-confirmed KikiLink peers, independently of
-optional Presence profile sharing. KikiLink never wraps BCX's outer overlay or polls the character
-draw loop during normal play. If BC is still decoding the SVG, a cached vector copy renders the
-Blossom immediately in the same canvas frame.
-The running version remains visible as tiny translucent digits in the
-lower-left corner.
+Both builds run KikiLink's application in Bondage Club's page realm. The standalone wrapper keeps
+only its bounded cross-origin upload request privilege in the userscript sandbox. Read the
+[privacy model](PRIVACY.md) and [security policy](SECURITY.md), especially before combining KikiLink
+with other page-realm addons. The running version appears as tiny translucent digits in the lower-left
+corner.
 
 ## Link Deck
 
 - The floating emblem opens a clear feature home instead of dropping straight into chat
 - Guided Home surfaces one useful next step: read unread Beeps, begin a first chat, view
   the current room, or continue the most recent conversation
-- Home performs one small, bounded official version check and shows an Update button only when a newer
-  strict release exists; it never polls in the background
+- In the standalone userscript, Home performs one small, bounded official version check and shows an
+  Update button only when a newer strict release exists; FUSAM owns updates for its build, and neither
+  distribution polls in the background
 - Action-first cards use familiar names and visible verbs for Chat, Players, Custom Activities,
   Gallery, and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
@@ -70,9 +74,10 @@ lower-left corner.
 - Presence dots and KikiLink status labels in player lists and detail cards
 - Visible player lists discover compatible KikiLink Presence through a quiet rate-limited queue that
   targets only current-room players or reachable online BC friends
-- Profile avatars and banners default to `Always show` under their own Players preference. `Ask first`
-  restores per-image reveal controls, while `Links only` keeps initials and decorative frames without
-  requesting remote art; chat-message previews remain a separate preference
+- Profile avatars and banners default to `Ask before loading` under their own Players preference.
+  `Always show` opts into contacting remote image hosts automatically, while `Links only` keeps
+  initials and decorative frames without requesting remote art; chat-message previews remain a
+  separate privacy preference
 - Account-derived Friend, Owner, Sub, Lover, Whitelist, Blacklist, and Ghosted badges
 - `Whisper`, `Beep`, `Profile`, and `Copy ID` actions without retyping member numbers
 - KikiLink profile cards opened from compatible avatars or player action menus, with name, presence,
@@ -92,8 +97,9 @@ lower-left corner.
   a strict custom HEX outline; and an optional contrast-aware two-color profile gradient
 - Room and Players list/detail avatars are keyboard-focusable KikiLink profile buttons, clickable
   avatars expose a pointer cursor, and the presence dot stays above every decoration
-- A clearly separated `Only visible to you` section for the private note, tags, last recorded room,
-  and encounter count
+- A clearly separated `Only visible to you` section for the note, tags, last recorded room, and
+  encounter count; this means KikiLink does not send those fields to other players, not that same-page
+  code or the BC account mirror is cryptographically isolated
 - Private notes and searchable tags for individual players
 - Favorites that remain easy to find after leaving the room
 - Per-account last-seen time, last room, and encounter count
@@ -103,9 +109,10 @@ lower-left corner.
 - Configurable cleanup of old encounter-only records while notes, tags, and favorites stay protected
 - Responsive two-pane desktop view and compact phone layout inside the main Link Deck
 
-LinkRoster notes, tags, favorites, and encounter history belong only to the current BC MemberNumber.
-They are kept in an account-scoped browser copy and included in KikiLink's bounded BC account mirror
-so they can follow that same account to another device.
+LinkRoster notes, tags, favorites, and encounter history are keyed to the current BC MemberNumber.
+They are stored readably in an account-scoped browser copy and included in KikiLink's bounded,
+unencrypted BC `ExtensionSettings` mirror so they can follow that account to another device. See
+[Privacy](PRIVACY.md) for the page-realm trust boundary.
 
 ## LinkChat
 
@@ -179,7 +186,7 @@ so they can follow that same account to another device.
 - Compact `Reply` and `Copy` icons beside messages, with plain-text quotes compatible with native Beeps
 - Matched `*action*` spans render as italics in direct and group chats without treating unmatched
   markers as formatting or weakening the existing safe link, image-preview, and Reply parsing
-- Private local nicknames for chats that never change outgoing content or another player's view
+- Account-scoped nicknames for chats that never change outgoing content or another player's view
 - Remove one conversation from KikiLink recents and local history without unfriending the player
   or changing Bondage Club's native Beep log; a genuinely new message brings the chat back
 - Enter-to-send with Shift+Enter for a new line, or an optional classic multiline mode
@@ -207,8 +214,9 @@ so they can follow that same account to another device.
   messages already on screen
 - Softly grouped incoming and outgoing bubbles with a very light one-pixel top gradient
 - Responsive desktop and mobile interface
-- Configurable history retention and a durability-aware clear-history action that warns when browser
-  storage could clear only the current session
+- Configurable direct/group history retention and a durability-aware clear-history action that warns
+  when browser storage could clear only the current session; clearing cannot retract other players'
+  copies, BC-native logs, or already uploaded media
 
 ## Room Tools & Media Gallery
 
@@ -235,7 +243,7 @@ so they can follow that same account to another device.
 - A lazy all-chat gallery deduplicates direct and group images across saved conversations and labels Catbox/Litterbox media
 - A visible Gallery Home card and labeled Chat button open the library without adding another main tab
 - Direct image links can be saved without sending a chat message; privacy-prepared local additions are
-  either kept indefinitely in account-isolated IndexedDB on that device, uploaded to public Catbox
+  either kept in account-named IndexedDB on that device, uploaded to public Catbox
   without automatic expiry, or uploaded to public Litterbox for a chosen 1–72 hour lifetime
 - Gallery Remove permanently deletes device-local images; removing a linked/chat card leaves its chat
   and remote file untouched
@@ -247,7 +255,8 @@ so they can follow that same account to another device.
 - A lacquer-and-gold now-playing card with a searchable queue, seek bar, previous/next, shuffle,
   repeat-one/repeat-all, independent volume, mute, playback speed, and a sleep timer
 - Rename, duplicate, clear, and delete playlists; rename, reorder, open, or remove individual tracks
-- Select several local files in one pass and see live progress during sequential Catbox uploads
+- In the standalone userscript, select several local files in one pass and see live progress during
+  sequential Catbox uploads; FUSAM disables Catbox upload choices
 - Browser/OS Media Session controls for play, pause, seeking, and previous/next where supported
 - Direct HTTPS tracks, local browser-only files up to 80 MB, or explicitly uploaded long-lived
   Catbox tracks with generic filenames
@@ -255,7 +264,7 @@ so they can follow that same account to another device.
   Catbox account token, so it does not describe those uploads as strictly permanent
 - Playlist actions live in one compact Manage menu, and the library/player switch to a single
   scrollable column before controls can overlap on medium or narrow screens
-- Local blobs stay in an account-isolated IndexedDB on the current device; playlist metadata and
+- Local blobs stay in account-named IndexedDB on the current device; playlist metadata and
   remote URLs follow the signed-in BC account within KikiLink's bounded settings mirror
 - Missing local files are clearly marked after moving to another device instead of silently failing
 - A session-only Room switch lets an administrator make compatible remote or device-local MP3/MP4
@@ -265,7 +274,7 @@ so they can follow that same account to another device.
 ## About
 
 - A translucent KikiLink wolf emblem and compact project card inside Settings
-- Creator Kiki (`Member 0`), the current stable version, MIT license, and account-data scope
+- Creator Kiki, the current stable version, MIT license, and account-data scope
 - Official repository and KikiLink Discord: <https://discord.gg/6sgGTnptht>
 
 ## Custom Activities
@@ -355,10 +364,11 @@ the game's native activity registry and action path. Image messages are ordinary
 do not need KikiLink to open them. Optional local-file sharing sends a privacy-prepared WebP
 directly to Litterbox only after `Upload & send`; it never passes through a KikiLink server.
 Manually added Gallery files stay device-local by default; Catbox and Litterbox require an explicit
-public-storage choice and final upload action. Profile avatars are user-supplied direct HTTPS links. No remote KikiLink server is
-used. Full data is stored locally under the authenticated MemberNumber; a bounded portable snapshot
-is stored in that same player's Bondage Club `ExtensionSettings` so settings, activities, profile
-preferences, notebook data, and recent chats can follow the account to another device. Presence uses
+public-storage choice and final upload action. Profile avatars are user-supplied direct HTTPS links.
+No remote KikiLink server or telemetry service is used. KikiLink stores account-prefixed browser data;
+a bounded, readable and unencrypted portable snapshot is stored in the same player's Bondage Club
+`ExtensionSettings` so settings, activities, profile preferences, notebook data, and recent direct
+chats can follow the account to another device. Presence uses
 small validated compatibility packets through Bondage Club: a hidden room handshake on entry,
 a compact hidden presence heartbeat for late-loading peers, and a point-to-point request for an
 opened chat—never a background Beep broadcast to every friend. Expanded banner and outline details use
@@ -366,9 +376,16 @@ a separate bounded response requested only when a compatible profile is explicit
 chats use direct validated packets where BC provides a route; otherwise an authored packet may take one
 best-effort hop through the online group creator. KikiLink has no group server or offline relay queue.
 
+Remote media hosts still receive the viewer's network IP address and request time. Chat and profile
+art default to `Ask before loading`; `Links only` avoids preview requests. Uploaded Catbox/Litterbox
+files are public bearer links, and audio may retain embedded metadata. Full details and deletion limits
+are in [PRIVACY.md](PRIVACY.md).
+
 ## Account data and switching
 
-- Every localStorage key and IndexedDB database is derived from the authenticated BC MemberNumber.
+- KikiLink's persistent localStorage keys and IndexedDB databases are derived from the authenticated
+  BC MemberNumber. They separate KikiLink accounts but are not encrypted or hidden from trusted
+  same-origin page code.
 - Logout removes the entire KikiLink interface and stops its timers, hooks, and repositories.
 - Switching accounts without reloading tears down the old instance before creating the new one.
 - Legacy unscoped KikiLink data is quarantined, not silently assigned to whichever account logs in first.
@@ -376,8 +393,8 @@ best-effort hop through the online group creator. KikiLink has no group server o
   recent chats are trimmed before notebook data if the account approaches that safety bound.
 - Group chats use a separate account-scoped browser record bounded to 30 groups, 500 messages per
   group, 3,000 group messages overall, and 512 small removal/revocation tombstones.
-- Cloud-mirror writes are batched, and a temporary sync failure leaves the complete local copy and
-  pending changes available for a later retry.
+- BC `ExtensionSettings` mirror writes are batched, and a temporary sync failure leaves the complete
+  local copy and pending changes available for a later retry.
 - The complete local account copy remains available even when BC account sync is temporarily unavailable.
 
 ## Architecture
@@ -415,10 +432,12 @@ Build output:
 
 ```text
 dist/KikiLink.user.js
+dist/KikiLink.fusam.js
 ```
 
 Install that file through Tampermonkey or Violentmonkey while developing
-locally. The public build is available through the installation link above.
+locally. The FUSAM bundle is loaded by FUSAM and should not be installed as a userscript. Public
+installation paths are listed above.
 
 ## Public API
 
@@ -437,8 +456,9 @@ KikiLink.getVersion();
 
 - Per-conversation notification controls and configurable hotkeys
 - Import/export of remaining settings
-- Stable/dev release channels and FUSAM listing
+- Stable/dev release channels
 
 ## License
 
-MIT. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.
+MIT. See `LICENSE` and `THIRD_PARTY_NOTICES.md`. Also read [Privacy](PRIVACY.md) and
+[Security](SECURITY.md).

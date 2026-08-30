@@ -15,6 +15,9 @@ const ACTION_CONTENT = "KikiLinkCustomActivity";
 const META_TAG = "KikiLinkActivityMeta";
 const NATIVE_AROUSAL_FALLBACK_MARKER = "KikiLinkArousalFallback";
 const MAX_SEEN_NONCES = 120;
+const MAX_AROUSAL_EFFECTS_PER_WINDOW = 5;
+const AROUSAL_RATE_WINDOW_MS = 10_000;
+const MAX_AROUSAL_RATE_SENDERS = 120;
 const REGISTRY_MONITOR_INTERVAL_MS = 500;
 const SAFE_ASSET_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
 const NATIVE_ACTIVITY_MARK_MOBILE_SIZE_PX = 12;
@@ -118,6 +121,10 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   readonly #runtimeActivities = new Map<string, CustomActivityDefinition>();
   readonly #injectedActivities = new Map<string, BCActivity>();
   readonly #seenNonces: string[] = [];
+  readonly #arousalRateBySender = new Map<
+    number,
+    { windowStartedAt: number; count: number; lastSeenAt: number }
+  >();
   #bodySlotsCache: ActivityBodySlot[] | undefined;
   #registeredActivities: BCActivity[] | undefined;
   #registeredOrdering: string[] | undefined;
@@ -231,6 +238,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     this.#injectedActivities.clear();
     this.#bodySlotsCache = undefined;
     this.#seenNonces.splice(0);
+    this.#arousalRateBySender.clear();
   }
 
   syncFromSettings(): void {
@@ -548,6 +556,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   }
 
   onRoomMessage(message: BCChatRoomMessage): void {
+    if (this.settings && !this.settings.get().linkActivities.enabled) return;
     const meta = parseActivityMeta(message);
     if (!meta || meta.arousal <= 0 || meta.target !== this.adapter.getOwnMemberNumber()) return;
     if (message.Sender !== meta.source) return;
@@ -559,7 +568,10 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       return;
     }
     const fingerprint = `${meta.source}:${meta.nonce}`;
-    if (this.#seenNonces.includes(fingerprint)) return;
+    if (this.#seenNonces.includes(fingerprint)) {
+      removeNativeArousalFallback(message.Dictionary, meta);
+      return;
+    }
     if (typeof ActivityEffectFlat !== "function") return;
     const player = typeof Player === "object" && Player !== null ? Player : undefined;
     if (!player || player.MemberNumber !== meta.target) return;
@@ -571,10 +583,49 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
           : undefined;
     if (!source) return;
 
+    this.#rememberNonce(fingerprint);
+    if (!this.#allowArousalEffect(meta.source, Date.now())) {
+      removeNativeArousalFallback(message.Dictionary, meta);
+      return;
+    }
     ActivityEffectFlat(source, player, meta.arousal, meta.group, 1);
+    removeNativeArousalFallback(message.Dictionary, meta);
+  }
+
+  #rememberNonce(fingerprint: string): void {
     this.#seenNonces.push(fingerprint);
     if (this.#seenNonces.length > MAX_SEEN_NONCES) this.#seenNonces.shift();
-    removeNativeArousalFallback(message.Dictionary, meta);
+  }
+
+  #allowArousalEffect(sender: number, now: number): boolean {
+    const existing = this.#arousalRateBySender.get(sender);
+    if (
+      existing &&
+      now >= existing.windowStartedAt &&
+      now - existing.windowStartedAt < AROUSAL_RATE_WINDOW_MS
+    ) {
+      existing.lastSeenAt = now;
+      if (existing.count >= MAX_AROUSAL_EFFECTS_PER_WINDOW) return false;
+      existing.count += 1;
+      return true;
+    }
+
+    if (!existing && this.#arousalRateBySender.size >= MAX_AROUSAL_RATE_SENDERS) {
+      let oldestSender: number | undefined;
+      let oldestSeenAt = Number.POSITIVE_INFINITY;
+      for (const [memberNumber, rate] of this.#arousalRateBySender) {
+        if (rate.lastSeenAt >= oldestSeenAt) continue;
+        oldestSender = memberNumber;
+        oldestSeenAt = rate.lastSeenAt;
+      }
+      if (oldestSender !== undefined) this.#arousalRateBySender.delete(oldestSender);
+    }
+    this.#arousalRateBySender.set(sender, {
+      windowStartedAt: now,
+      count: 1,
+      lastSeenAt: now,
+    });
+    return true;
   }
 
   #ensureRegistryInjection(): void {

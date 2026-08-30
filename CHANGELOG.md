@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.29.0 - 2026-08-30
+
+- Added a dedicated page-realm FUSAM distribution. It does not install the privileged userscript
+  upload bridge or perform KikiLink's standalone update check; temporary uploads use bounded,
+  credential-free Litterbox requests, while persistent Catbox uploads are unavailable in FUSAM.
+- Changed remote profile artwork to consent-first loading for new and migrated settings. The UI and
+  privacy documentation now explain that opening remote media can disclose the viewer's IP address
+  and request time to its host.
+- Made direct-message deletion, clearing, and retention durable across account-data synchronization,
+  including monotonic deletion/pruning markers and conversation-preview repair so an older mirror
+  cannot restore deleted text. Account imports are size bounded and reapply the same policies.
+- Enforced group history and retention settings on durable state while preserving the active session,
+  and kept replay tombstones without retaining message bodies. Creator-relayed messages now identify
+  the relay and visibly treat the claimed original sender as unverified.
+- Hardened account switching, protocol parsing, and abuse resistance: account-bound work fails closed,
+  stale presence cannot overwrite newer state, presence/typing/activity effects are rate limited with
+  bounded sender tracking, bidi controls are stripped, and quoted sender labels are marked unverified.
+- Bounded device-local media storage and cleanup, canonicalized migrated settings and caches, removed
+  identifying release metadata from the UI/logs, and documented the page-realm trust boundary.
+- Hardened the release pipeline with pinned CI actions, read-only workflow permissions, dependency
+  auditing, deterministic checks for both distributions, narrow game routes, `@noframes`, and the
+  complete bundled Mod SDK license notice.
+
 ## 0.28.1 - 2026-08-29
 
 - Removed addon-authored update Beeps and their peer-notice service entirely. KikiLink no longer sends

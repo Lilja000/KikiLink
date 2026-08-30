@@ -327,7 +327,36 @@ export class ChatService {
     const config = this.settings.get().linkChat;
     if (!config.saveHistory) return 0;
     const cutoff = Date.now() - config.retentionDays * DAY_MS;
-    return this.#enqueueGlobalMutation(() => this.repository.deleteMessagesOlderThan(cutoff));
+    return this.#enqueueGlobalMutation(async () => {
+      const removed = await this.repository.deleteMessagesOlderThan(cutoff);
+      for (const conversation of await this.repository.listConversations()) {
+        if (conversation.lastMessageAt >= cutoff) continue;
+        const messages = await this.repository.getMessages(
+          conversation.peerNumber,
+          config.maxMessagesPerConversation,
+        );
+        const newest = messages.at(-1);
+        await this.repository.putConversation(newest
+          ? {
+              ...conversation,
+              peerName: newest.peerName || conversation.peerName,
+              lastMessage: newest.content,
+              lastMessageAt: newest.sentAt,
+              lastDirection: newest.direction,
+              unread: messages.filter(
+                (message) => message.direction === "incoming" && !message.read,
+              ).length,
+            }
+          : {
+              ...conversation,
+              lastMessage: "",
+              lastMessageAt: 0,
+              lastDirection: "incoming",
+              unread: 0,
+            });
+      }
+      return removed;
+    });
   }
 
   async clearHistory(): Promise<boolean> {

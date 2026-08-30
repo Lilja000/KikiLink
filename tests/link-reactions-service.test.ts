@@ -27,7 +27,7 @@ describe("LinkReactionsService", () => {
       canSendRoomEmote: () => true,
       sendRoomEmote: vi.fn(),
     } as unknown as BCAdapter;
-    const service = new LinkReactionsService(adapter, settings);
+    const service = new LinkReactionsService(adapter, settings, () => true);
     const event = reactionEvent({ content: "URGENT\nplease look" });
 
     expect(service.react(event, 1_000)).toMatchObject({
@@ -59,7 +59,7 @@ describe("LinkReactionsService", () => {
       canSendRoomEmote: () => true,
       sendRoomEmote,
     } as unknown as BCAdapter;
-    const service = new LinkReactionsService(adapter, settings);
+    const service = new LinkReactionsService(adapter, settings, () => true);
     const event = reactionEvent({
       trigger: "room-join",
       content: "PRIVATE SECRET",
@@ -88,10 +88,57 @@ describe("LinkReactionsService", () => {
       sendRoomEmote: vi.fn(),
     } as unknown as BCAdapter;
 
-    expect(new LinkReactionsService(adapter, settings).react(reactionEvent(), 1_000)).toMatchObject({
+    expect(
+      new LinkReactionsService(adapter, settings, () => true).react(reactionEvent(), 1_000),
+    ).toMatchObject({
       ruleId: "fallback",
       message: "fallback for Reina",
     });
+  });
+
+  it("rechecks the account boundary immediately before sending a room emote", () => {
+    let currentAccount = true;
+    const sendRoomEmote = vi.fn();
+    const settings = settingsWithRules([
+      reactionRule({ trigger: "room-join", action: "room-emote", template: "hello" }),
+    ]);
+    const adapter = {
+      getOwnName: () => "Kiki",
+      canSendRoomEmote: () => {
+        currentAccount = false;
+        return true;
+      },
+      sendRoomEmote,
+    } as unknown as BCAdapter;
+
+    const result = new LinkReactionsService(
+      adapter,
+      settings,
+      () => currentAccount,
+    ).react(reactionEvent({ trigger: "room-join" }), 1_000);
+
+    expect(result).toBeUndefined();
+    expect(sendRoomEmote).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the account boundary before returning a notice action", () => {
+    let currentAccount = true;
+    const settings = settingsWithRules([reactionRule({ action: "notice" })]);
+    const adapter = {
+      getOwnName: () => {
+        currentAccount = false;
+        return "Kiki";
+      },
+      canSendRoomEmote: () => true,
+      sendRoomEmote: vi.fn(),
+    } as unknown as BCAdapter;
+
+    expect(
+      new LinkReactionsService(adapter, settings, () => currentAccount).react(
+        reactionEvent(),
+        1_000,
+      ),
+    ).toBeUndefined();
   });
 });
 

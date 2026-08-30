@@ -1,8 +1,10 @@
 # Player notebook data
 
-KikiLink keeps the Player notebook private to the authenticated BC MemberNumber. Manual JSON
-backup remains available, while 0.20.5 also includes the notebook in KikiLink's bounded private BC
-account snapshot for same-account device transfer. There is no public notebook or search index.
+KikiLink keys the Player notebook to the authenticated BC MemberNumber. Manual JSON backup remains
+available, and the notebook is also included in KikiLink's bounded, unencrypted BC
+`ExtensionSettings` snapshot for same-account device transfer. There is no public notebook or search
+index, but the data is readable to Bondage Club and trusted same-origin page code as described in
+[`PRIVACY.md`](../PRIVACY.md).
 
 ## Backup format
 
