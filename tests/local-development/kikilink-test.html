@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KikiLink · FUSAM Local Development</title>
+<style>
+  * { box-sizing: border-box; } body { margin: 0; background: #131316; color: #eee; font: 14px system-ui; }
+  header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #38383c; }
+  button, select { font: inherit; color: inherit; padding: 7px 12px; background: #26262c; border: 1px solid #444; border-radius: 7px; }
+  #clients { height: calc(100dvh - 60px); } iframe { display: block; border: 0; width: 100%; height: 100%; } iframe[hidden] { display: none; }
+  #clients[data-mobile="true"] { width: 390px; max-width: 100%; margin: auto; }
+  #transport { color: #aaa; font-size: 12px; }
+</style>
+<header><strong>FUSAM Local Development</strong><label>Client <select id="client"><option value="910001">Kiki · Lobby</option><option value="910002">Reina · Moon Garden</option><option value="910003">Mina · Lounge</option></select></label>
+<button id="mobile">Phone viewport</button><button id="owner">Take Kiki offline</button><span id="transport" role="status">Local synthetic BC transport · 0 packets</span></header>
+<main id="clients"></main>
+<script>
+  const people = [{ id: 910001, name: 'Kiki', room: '' }, { id: 910002, name: 'Reina', room: 'Moon Garden' }, { id: 910003, name: 'Mina', room: 'Lounge' }];
+  const frames = new Map(); let ownerOnline = true; let packets = 0; let refused = 0;
+  for (const person of people) {
+    const frame = document.createElement('iframe'); frame.title = person.name + ' BC client'; frame.id = 'client-' + person.id;
+    frame.src = '/kikilink-client.html?member=' + person.id + '&fusam=' + encodeURIComponent(location.origin + '/KikiLink.fusam.js') + '&fusamType=script';
+    frame.hidden = person.id !== 910001; frames.set(person.id, frame); document.getElementById('clients').append(frame);
+  }
+  document.getElementById('client').onchange = (event) => { for (const [id, frame] of frames) frame.hidden = id !== Number(event.target.value); };
+  document.getElementById('mobile').onclick = () => { const box = document.getElementById('clients'); box.dataset.mobile = String(box.dataset.mobile !== 'true'); };
+  document.getElementById('owner').onclick = (event) => { ownerOnline = !ownerOnline; event.target.textContent = ownerOnline ? 'Take Kiki offline' : 'Bring Kiki online'; for (const frame of frames.values()) frame.contentWindow.postMessage({ type: 'refresh-friends' }, location.origin); };
+  window.addEventListener('message', (event) => {
+    if (event.origin !== location.origin) return;
+    const source = people.find((person) => frames.get(person.id).contentWindow === event.source); if (!source) return;
+    const message = event.data;
+    if (message.type === 'friends') {
+      const friends = people.filter((p) => p.id !== source.id && (p.id === 910001 || source.id === 910001) && (ownerOnline || p.id !== 910001));
+      event.source.postMessage({ type: 'friends-result', friends }, location.origin); return;
+    }
+    if (message.type !== 'packet') return;
+    const target = Number(message.data.MemberNumber ?? message.data.Target);
+    if (!frames.has(target) || source.id === target || (!ownerOnline && (source.id === 910001 || target === 910001))) return;
+    // Same friendship restriction as the tested BC route: Reina and Mina cannot beep each other.
+    if (source.id !== 910001 && target !== 910001) { refused++; return; }
+    packets++;
+    document.getElementById('transport').textContent = `Local synthetic BC transport · ${packets} packets · ${refused} rejected non-friend routes`;
+    frames.get(target).contentWindow.postMessage({ type: 'beep', data: { ...message.data, MemberNumber: source.id, MemberName: source.name } }, location.origin);
+  });
+</script></html>

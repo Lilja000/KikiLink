@@ -9,6 +9,19 @@ export interface KikiLinkNewsRelease {
 /** A compact, curated changelog for the in-addon News page. */
 export const KIKILINK_NEWS: readonly KikiLinkNewsRelease[] = [
   {
+    version: "0.30.0",
+    date: "2026-09-15",
+    title: "More ways to connect and express yourself",
+    summary: "Meet your community, make activities your own, and enjoy a smoother KikiLink. Thanks for using KikiLink ♥",
+    highlights: [
+      "Explore Feed with posts, comments, reactions, and richer Cloud profiles that stay with your account.",
+      "Enjoy cleaner Groups with familiar Reply and Copy controls, typing, easier management, and pinned messages.",
+      "Create timed expression and pose sequences, clone activities, and use clothing Wear, Remove, Transfer, and Swap.",
+      "Make rooms feel like home with background previews, map-aware presets, and clearer Lobbies.",
+      "Benefit from steadier profile loading, quieter background traffic, and reliability improvements throughout the addon.",
+    ],
+  },
+  {
     version: "0.29.0",
     date: "2026-08-30",
     title: "FUSAM release and privacy hardening",

@@ -1,5 +1,6 @@
 import type { BeepEvent, KikiLinkContext, KikiLinkModule, KikiLinkSettings } from "../../core/types";
 import { Logger } from "../../core/logger";
+import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
 import { ChatService } from "./chat-service";
 import { LinkChatView } from "./view";
 import { LinkActivitiesService } from "../link-activities/link-activities-service";
@@ -10,6 +11,7 @@ import { AfkAutoReplyService } from "./afk-auto-reply-service";
 import { GroupChatService } from "./group-chat-service";
 import { MemoryKeyValueStorage } from "../../core/settings";
 import { ProfileCacheRepository } from "../../storage/profile-cache-repository";
+import { CloudClient, KIKILINK_CLOUD_ORIGIN, cloudMemberEnabled } from "../../cloud/client";
 
 export class LinkChatModule implements KikiLinkModule {
   readonly id = "link-chat";
@@ -23,6 +25,7 @@ export class LinkChatModule implements KikiLinkModule {
   #afkAutoReply: AfkAutoReplyService | undefined;
   #groups: GroupChatService | undefined;
   #view: LinkChatView | undefined;
+  #cloud: CloudClient | undefined;
   #rosterTimer: ReturnType<typeof setInterval> | undefined;
 
   isEnabled(settings: KikiLinkSettings): boolean {
@@ -51,7 +54,7 @@ export class LinkChatModule implements KikiLinkModule {
     this.#presence.start();
     this.#afkAutoReply = new AfkAutoReplyService(context.adapter, {
       getStatus: () => this.#presence?.getOwnStatus() ?? "online",
-      getConfig: () => context.settings.get().linkPresence.afkAutoReply,
+      getConfig: () => context.settings.getSection("linkPresence").afkAutoReply,
     });
     this.#afkAutoReply.syncStatus();
     this.#unsubscribers.push(
@@ -64,7 +67,11 @@ export class LinkChatModule implements KikiLinkModule {
       {
         hasManagedPeer: (memberNumber) =>
           this.#presence?.hasGroupManagedPeer(memberNumber) === true,
-        shouldPersistHistory: () => context.settings.get().linkChat.saveHistory,
+        isPeerReachable: (memberNumber) =>
+          context.adapter.isMemberInCurrentRoom(memberNumber) ||
+          (nativeFriendSnapshotIsFresh(context.adapter) && Boolean(context.adapter.getOnlineFriend(memberNumber))) ||
+          !context.adapter.hasOnlineFriendSnapshot(),
+        shouldPersistHistory: () => context.settings.getSection("linkChat").saveHistory,
       },
     );
     this.#view = new LinkChatView(
@@ -77,6 +84,32 @@ export class LinkChatModule implements KikiLinkModule {
       this.#presence,
     );
     this.#view.attachGroupChatService(this.#groups);
+    if (KIKILINK_CLOUD_ORIGIN && context.memberNumber !== undefined && cloudMemberEnabled(context.memberNumber)) {
+      try {
+        this.#cloud = new CloudClient({
+          origin: KIKILINK_CLOUD_ORIGIN,
+          memberNumber: context.memberNumber,
+          getMemberNumber: () => {
+            try {
+              if (typeof ServerIsLoggedIn === "function" && !ServerIsLoggedIn()) return undefined;
+              return context.adapter.getOwnMemberNumber();
+            } catch { return undefined; }
+          },
+          isBlocked: member => {
+            try {
+              const relationships = context.adapter.getPlayerRelationships(member);
+              return relationships.includes("blacklist") || relationships.includes("ghosted");
+            } catch { return true; }
+          },
+          sendProof: (target, payload) => { context.adapter.sendKikiLinkProtocol(target, payload, "beep"); },
+        });
+        this.#view.attachCloud(this.#cloud, accountStorage);
+        // Cloud connects independently; native features never wait for it or require a chat room.
+        void this.#cloud.connect(true).catch(() => {});
+      } catch {
+        this.#logger.warn("Optional Cloud integration is unavailable; native KikiLink continues");
+      }
+    }
     this.#view.mount();
 
     if (typeof window !== "undefined") {
@@ -96,6 +129,7 @@ export class LinkChatModule implements KikiLinkModule {
         this.#view?.setConnectionState(state, message),
       ),
       context.bus.on("bc:ready", () => {
+        void this.#cloud?.connect(true).catch(() => {});
         this.#activities?.syncFromSettings();
         void this.#importRecentBeeps();
         this.#syncRoster();
@@ -110,7 +144,7 @@ export class LinkChatModule implements KikiLinkModule {
     );
     this.#view.setConnectionState(context.adapter.isReady() ? "ready" : "connecting");
     void this.#service.prune();
-    const chatSettings = context.settings.get().linkChat;
+    const chatSettings = context.settings.getSection("linkChat");
     void this.#groups.applyHistoryPolicy(
       Date.now() - chatSettings.retentionDays * 24 * 60 * 60 * 1000,
     );
@@ -123,6 +157,7 @@ export class LinkChatModule implements KikiLinkModule {
     this.#rosterTimer = undefined;
     for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
     this.#view?.destroy();
+    this.#cloud = undefined;
     this.#view = undefined;
     const groups = this.#groups;
     this.#groups = undefined;
@@ -172,7 +207,7 @@ export class LinkChatModule implements KikiLinkModule {
     const automaticReply =
       event.direction === "incoming" ? this.#afkAutoReply?.handleIncoming(event) : undefined;
     try {
-      if (this.#context.settings.get().linkRoster.enabled) {
+      if (this.#context.settings.getSection("linkRoster").enabled) {
         this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
       }
       const active = this.#view.isActiveConversation(event.peerNumber);
@@ -196,7 +231,7 @@ export class LinkChatModule implements KikiLinkModule {
 
   #syncRoster(): void {
     if (!this.#roster || !this.#view || !this.#context || !this.#isCurrentAccount()) return;
-    if (!this.#context.settings.get().linkRoster.enabled) {
+    if (!this.#context.settings.getSection("linkRoster").enabled) {
       this.#view.onRosterSync({ changed: false, presentCount: 0, joined: [], left: [] });
       return;
     }
@@ -211,7 +246,7 @@ export class LinkChatModule implements KikiLinkModule {
     if (!this.#service || !this.#view || !this.#context || !this.#isCurrentAccount()) return;
     try {
       for (const event of this.#context.adapter.getRecentBeeps()) {
-        if (this.#context.settings.get().linkRoster.enabled) {
+        if (this.#context.settings.getSection("linkRoster").enabled) {
           this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
         }
         await this.#service.captureRecent(event);

@@ -53,6 +53,8 @@ export type MusicTrackSource = "url" | "catbox" | "local";
 export type MusicRepeatMode = "off" | "all" | "one";
 
 export interface RoomPresetData {
+  /** Absent only in legacy presets, which keep the destination room's map. */
+  mapData?: import("./room-map").RoomMapData;
   name: string;
   description: string;
   background: string;
@@ -103,6 +105,8 @@ export interface OnlineFriend {
   roomName?: string;
   roomSpace?: string;
   privateRoom: boolean;
+  /** False for malformed metadata; an empty/omitted native room still means Lobby. */
+  locationKnown?: boolean;
   /** Native BC relationship category when this is more specific than a normal friend. */
   relationship?: "sub" | "lover";
 }
@@ -128,6 +132,8 @@ export interface PresenceSnapshot {
   profileOutlineColor?: string;
   profileGradient?: ProfileGradient;
   addonVersion?: string;
+  /** Fresh protocol capability, never inferred from a saved avatar or old profile. */
+  addonInstalled?: boolean;
   /** Public profile fields came wholly or partly from the bounded account-local cache. */
   profileFromCache?: boolean;
   /** Last successful receipt of the cached public profile fields. */
@@ -155,6 +161,25 @@ export interface RoomActivity {
 }
 
 export type CustomActivityTargetMode = "other" | "self" | "both";
+export type CustomActivityTransferDirection = "self-to-target" | "target-to-self" | "swap";
+
+export interface CustomActivityStep {
+  delayMs: number;
+  durationMs: number;
+  expressions: Array<{ group: string; value: string | null }>;
+  poses: string[];
+  removeClothing: string[];
+  /** Full native item bundles captured on the editor's character. */
+  wearClothing?: import("./appearance-template").ClothingTemplate[];
+  /** Live slots only: no item template is saved for transfers. */
+  transferClothing?: { direction: CustomActivityTransferDirection; slots: string[] };
+}
+
+export interface CustomActivityEffects {
+  subject: "actor" | "target";
+  restore: boolean;
+  steps: CustomActivityStep[];
+}
 
 /** A user-created activity registered beside Bondage Club's native activities. */
 export interface CustomActivityDefinition {
@@ -167,6 +192,8 @@ export interface CustomActivityDefinition {
   image: string;
   /** Base arousal amount handed to Bondage Club's preference-aware effect. Zero disables it. */
   arousal: number;
+  /** Optional, bounded sequence. Names are resolved against the running BC client. */
+  effects?: CustomActivityEffects;
 }
 
 export interface ReactionRule {
@@ -273,6 +300,8 @@ export interface ConversationMeta {
 export interface KikiLinkEvents {
   "bc:status": { state: BCConnectionState; message?: string };
   "bc:ready": { memberNumber: number };
+  "bc:reconnected": { memberNumber: number };
+  "bc:room-changed": Record<string, never>;
   "beep:received": BeepEvent;
   "beep:sent": BeepEvent;
   "bc:online-friends": { friends: OnlineFriend[]; receivedAt: number };
@@ -284,7 +313,7 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 28;
+  schemaVersion: 29;
   ui: {
     accent: string;
     theme: ThemePreference;
@@ -293,6 +322,9 @@ export interface KikiLinkSettings {
     homeLayout: HomeLayoutPreference;
     launcherSide: "left" | "right";
     launcherOpen: LauncherOpenPreference;
+    launcherSize: number;
+    /** Zero enables alerts, -1 mutes until resumed, otherwise a Unix timestamp in ms. */
+    notificationsMutedUntil: number;
     launcherPosition: { x: number; y: number } | null;
     panelPosition: { x: number; y: number } | null;
     roomBadge: {
@@ -398,6 +430,7 @@ export interface KikiLinkModule {
 
 export interface KikiLinkPublicApi {
   readonly name: "KikiLink";
+  readonly networkAudit?: typeof import("../bc/traffic-audit").bcTrafficAudit;
   open(): void;
   openChat(memberNumber: number, memberName?: string): void;
   openRoster(): void;

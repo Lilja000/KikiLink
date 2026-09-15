@@ -1,4 +1,6 @@
 import type { BCAdapter } from "../../bc/adapter";
+import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
+import { focusedElement as getFocusedElement } from "../../utils/dom";
 import type { PresenceSnapshot } from "../../core/types";
 import type { LinkPresenceService } from "../link-presence/link-presence-service";
 import { kikiIcon } from "./icons";
@@ -29,7 +31,7 @@ const GROUP_MENU_CLICK_SUPPRESSION_MS = 700;
 export type GroupChatPanelAdapter = Pick<
   BCAdapter,
   "getKnownContacts" | "getMemberName" | "getOwnMemberNumber" | "isKnownFriend"
->;
+> & Partial<Pick<BCAdapter, "isMemberInCurrentRoom" | "getOnlineFriend" | "hasOnlineFriendSnapshot" | "getOnlineFriendsUpdatedAt" | "isReady">>;
 
 export type GroupChatPanelPresence = Pick<
   LinkPresenceService,
@@ -197,6 +199,7 @@ export class GroupChatPanel {
   #detailsGroupId: string | undefined;
   #detailsReturnFocus: HTMLElement | undefined;
   #detailsRenderSignature: string | undefined;
+  #detailsPendingFocus: HTMLElement | undefined;
   #detailsLifecycleToken = 0;
 
   constructor(
@@ -582,6 +585,7 @@ export class GroupChatPanel {
         this.#contacts
           .filter((contact) => this.#isKnownFriend(contact.memberNumber))
           .map((contact) => contact.memberNumber),
+        { interactive: true },
       );
     } catch {
       // Discovery may be unavailable during BC startup; already-detected peers remain selectable.
@@ -903,6 +907,16 @@ export class GroupChatPanel {
     ]);
     if (this.#detailsRenderSignature === signature) return;
     this.#detailsRenderSignature = signature;
+    const focused = getFocusedElement(this.groupDetailsDialog);
+    const active = focused && this.groupDetailsDialog.contains(focused) ? focused : this.#detailsPendingFocus;
+    const action = active?.dataset.groupDetailsAction;
+    const member = active?.closest<HTMLElement>(".kl-group-manage-member")?.dataset.memberNumber;
+    const controlSelector = action ? `[data-group-details-action="${CSS.escape(action)}"]`
+      : active?.classList[0] ? `.${CSS.escape(active.classList[0])}` : undefined;
+    const restoreSelector = controlSelector && (member
+      ? `.kl-group-manage-member[data-member-number="${CSS.escape(member)}"] ${controlSelector}`
+      : controlSelector);
+    if (restoreSelector) active?.blur();
     const isCreator = this.#isGroupCreator(group);
     const managed = group.protocolVersion === 2;
     this.#groupDetailsTitle.textContent = isCreator && managed
@@ -961,6 +975,13 @@ export class GroupChatPanel {
     actions.append(close);
     this.#groupDetailsActions.replaceChildren(actions);
     if (this.#detailsActionBusy) this.#setGroupDetailsDisabled(true);
+    if (restoreSelector && this.groupDetailsDialog.open) {
+      const next = this.groupDetailsDialog.querySelector<HTMLElement>(restoreSelector) ?? close;
+      if (next) {
+        if (this.#detailsActionBusy) this.#detailsPendingFocus = next;
+        else next.focus({ preventScroll: true });
+      }
+    }
   }
 
   #renderManagedGroupFields(group: GroupConversation, notice: HTMLElement): HTMLElement {
@@ -1211,6 +1232,8 @@ export class GroupChatPanel {
     const lifecycleToken = this.#detailsLifecycleToken;
     const wasActive = this.#currentGroupId === groupId;
     const returnFocus = this.#detailsReturnFocus;
+    const active = getFocusedElement(this.groupDetailsDialog);
+    this.#detailsPendingFocus = active && this.groupDetailsDialog.contains(active) ? active : undefined;
     this.#detailsActionBusy = true;
     this.#setGroupDetailsDisabled(true);
     const notice = this.#groupDetailsBody.querySelector<HTMLElement>(".kl-group-manage-notice");
@@ -1274,6 +1297,8 @@ export class GroupChatPanel {
     } finally {
       this.#detailsActionBusy = false;
       this.#setGroupDetailsDisabled(false);
+      if (this.groupDetailsDialog.open && this.#detailsPendingFocus?.isConnected) this.#detailsPendingFocus.focus({ preventScroll: true });
+      this.#detailsPendingFocus = undefined;
     }
   }
 
@@ -1294,6 +1319,7 @@ export class GroupChatPanel {
   }
 
   #closeGroupDetails(restoreFocus: boolean): void {
+    this.#detailsPendingFocus = undefined;
     const returnFocus = restoreFocus ? this.#detailsReturnFocus : undefined;
     this.#detailsGroupId = undefined;
     this.#detailsReturnFocus = undefined;
@@ -1333,10 +1359,9 @@ export class GroupChatPanel {
       `${aggregateUnread} unread group message${plural(aggregateUnread)}`,
     );
     const groups = allGroups.filter((group) => this.#matchesGroupQuery(group));
-    const root = this.#groupList.getRootNode() as Document | ShadowRoot;
-    const focusedGroupId = root.activeElement instanceof HTMLElement &&
-      this.#groupList.contains(root.activeElement)
-      ? root.activeElement.dataset.groupId
+    const active = getFocusedElement(this.#groupList);
+    const focusedGroupId = active && this.#groupList.contains(active)
+      ? active.dataset.groupId
       : undefined;
     const existingEntries = new Map<string, HTMLElement>();
     for (const entry of this.#groupList.querySelectorAll<HTMLElement>(".kl-group-list-entry")) {
@@ -1713,11 +1738,7 @@ export class GroupChatPanel {
     item.dataset.groupMemberNumber = String(message.senderNumber);
     const memberName = this.#memberName(group, message.senderNumber);
     const relayed = message.relayedByCreator === group.creatorNumber;
-    const author = message.direction === "outgoing"
-      ? "You"
-      : relayed
-        ? `Claimed ${memberName}`
-        : memberName;
+    const author = message.direction === "outgoing" ? "You" : memberName;
     const authorTarget = this.#memberProfileTarget(
       { memberNumber: message.senderNumber, memberName },
       "kl-group-message-profile",
@@ -1738,7 +1759,7 @@ export class GroupChatPanel {
       const warning = node(
         "span",
         "kl-group-message-relay-warning",
-        `Relayed by ${creatorName} · original sender unverified`,
+        `via ${creatorName} · unverified`,
       );
       warning.title =
         "The group creator delivered this relay; KikiLink cannot verify who originally wrote it.";
@@ -1910,29 +1931,27 @@ export class GroupChatPanel {
       this.#report({
         tone: "error",
         message: unreachable.length > 0
-          ? `Message not sent. ${unreachable.length} group member${plural(unreachable.length)} had no direct or creator-relay route.`
-          : "Message not sent. KikiLink could not hand it to Bondage Club for any group member.",
+          ? `Message not sent. ${unreachable.length} member${plural(unreachable.length)} unavailable; keep the group creator online and try again.`
+          : "Message not sent. Check your connection and try again. Your draft is kept.",
         ...deliveryDetails,
       });
       return;
     }
-    const directText = `${result.handedOffTo.length} direct local handoff${plural(result.handedOffTo.length)}`;
-    const relayText = relayTargets.length > 0 && result.relayViaCreator !== undefined
-      ? ` ${relayTargets.length} non-friend or out-of-room participant${plural(relayTargets.length)} routed via the group creator (#${result.relayViaCreator}); the creator must be online with KikiLink active.`
-      : "";
+    const group = this.service.getGroup(groupId);
+    const deliveryText = relayTargets.length > 0 && result.relayViaCreator !== undefined
+      ? `Passed to ${group ? this.#memberName(group, result.relayViaCreator) : "the group creator"} for forwarding.`
+      : "Passed to Bondage Club.";
     if (unreachable.length > 0) {
       this.#report({
         tone: "warning",
-        message: `Message saved after ${directText}.${relayText} ${unreachable.length} participant${plural(unreachable.length)} remain${unreachable.length === 1 ? "s" : ""} unreachable. Delivery is not confirmed.`
-          .replace(/\s+/gu, " "),
+        message: `${deliveryText} ${unreachable.length} member${plural(unreachable.length)} unavailable. Delivery is not confirmed.`,
         ...deliveryDetails,
       });
       return;
     }
     this.#report({
       tone: "success",
-      message: `Message saved after ${directText}.${relayText} Delivery is not confirmed.`
-        .replace(/\s+/gu, " "),
+      message: `${deliveryText} Delivery is not confirmed.`,
       ...deliveryDetails,
     });
   }
@@ -2154,7 +2173,7 @@ export class GroupChatPanel {
     const help = node(
       "p",
       "kl-group-dialog-help",
-      "Choose 2–4 friends with current managed-group support. Your group will have 3–5 members including you. Compatibility is checked again before sending.",
+      "Choose 2–4 online friends with KikiLink, from any room or the Lobby. They do not need to be friends with each other. Stay online with KikiLink to connect the group.",
     );
     const selection = node("p", "kl-group-selection-status");
     selection.setAttribute("aria-live", "polite");
@@ -2179,7 +2198,13 @@ export class GroupChatPanel {
       if (!this.#validSelection()) return;
       this.#renderConfirmationStage();
     });
-    this.#dialogActions.replaceChildren(cancel, review);
+    const refresh = button("kl-group-dialog-refresh", "Refresh friends");
+    refresh.addEventListener("click", () => {
+      this.#contacts = this.#knownContacts();
+      this.presence.requestMany(this.#contacts.map((contact) => contact.memberNumber), { interactive: true });
+      this.#renderContactOptions();
+    });
+    this.#dialogActions.replaceChildren(cancel, refresh, review);
     this.#renderContactOptions();
   }
 
@@ -2217,14 +2242,14 @@ export class GroupChatPanel {
         }
       }
     }
-    const visible = compatible.filter((contact) =>
+    const visible = this.#contacts.filter((contact) =>
       !normalizedQuery ||
       contact.memberName.toLocaleLowerCase().includes(normalizedQuery) ||
       String(contact.memberNumber).includes(normalizedQuery),
-    );
-    const root = list.getRootNode() as Document | ShadowRoot;
-    const focusedElement = root.activeElement instanceof HTMLElement && list.contains(root.activeElement)
-      ? root.activeElement
+    ).sort((left, right) => Number(this.#isCompatible(right.memberNumber)) - Number(this.#isCompatible(left.memberNumber)));
+    const active = getFocusedElement(list);
+    const focusedElement = active && list.contains(active)
+      ? active
       : undefined;
     const focusedMember = focusedElement?.dataset.memberNumber ??
       focusedElement?.dataset.groupMemberNumber;
@@ -2232,12 +2257,14 @@ export class GroupChatPanel {
     list.replaceChildren();
     if (visible.length === 0) {
       const message = compatible.length === 0
-        ? "No managed-group-compatible contacts detected yet. Keep this window open while KikiLink checks current versions."
-        : "No managed-group-compatible contacts match this search.";
+        ? "No friends found yet. Refresh once Bondage Club has loaded your online friends."
+        : "No friends match this search.";
       list.append(node("p", "kl-group-contact-empty", message));
     } else {
       for (const contact of visible) {
         const selected = this.#selectedMembers.has(contact.memberNumber);
+        const available = this.#isCompatible(contact.memberNumber);
+        const snapshot = this.#presenceSnapshot(contact.memberNumber);
         const member = {
           memberNumber: contact.memberNumber,
           memberName: contact.memberName,
@@ -2245,12 +2272,14 @@ export class GroupChatPanel {
         const contactButton = button("kl-group-contact", "");
         contactButton.dataset.memberNumber = String(contact.memberNumber);
         contactButton.setAttribute("aria-pressed", String(selected));
-        contactButton.disabled = !selected && this.#selectedMembers.size >= GROUP_MAX_REMOTE_MEMBERS;
+        contactButton.disabled = !available || (!selected && this.#selectedMembers.size >= GROUP_MAX_REMOTE_MEMBERS);
         const name = node("span", "kl-group-contact-name", contact.memberName);
         const detail = node(
           "span",
           "kl-group-contact-detail",
-          `#${contact.memberNumber} · ${presenceLabel(this.#presenceSnapshot(contact.memberNumber))}`,
+          available
+            ? `${snapshot?.roomName || presenceLabel(snapshot)} · KikiLink`
+            : !this.#isOnline(contact.memberNumber) ? "Offline" : "KikiLink not detected yet · Refresh to check",
         );
         contactButton.append(name, detail);
         contactButton.addEventListener("click", () => {
@@ -2264,6 +2293,7 @@ export class GroupChatPanel {
         const listItem = node("div", "kl-group-contact-item");
         listItem.setAttribute("role", "listitem");
         listItem.dataset.selected = String(selected);
+        listItem.dataset.available = String(available);
         listItem.append(
           this.#memberProfileTarget(member, "kl-group-contact-profile"),
           contactButton,
@@ -2317,7 +2347,7 @@ export class GroupChatPanel {
     const notice = node(
       "p",
       "kl-group-confirm-notice",
-      "No invitations have been sent yet. Confirming will send one private KikiLink packet to each selected member.",
+      "Your friends can chat here from different rooms. Keep KikiLink running while the group chats through you.",
     );
     this.#dialogBody.replaceChildren(summary, memberCount, memberList, notice);
 
@@ -2352,8 +2382,8 @@ export class GroupChatPanel {
       await this.activate(result.group.groupId);
       if (result.failed.length > 0) {
         const message = result.handedOffTo.length > 0
-          ? `Group created. Handed ${result.handedOffTo.length} invitation${plural(result.handedOffTo.length)} to the local Bondage Club client; ${result.failed.length} local handoff${plural(result.failed.length)} failed.`
-          : "Group created locally, but no invitation could be handed to Bondage Club.";
+          ? `Group created. ${result.handedOffTo.length} invitation${plural(result.handedOffTo.length)} passed to Bondage Club; ${result.failed.length} could not be sent.`
+          : "Group saved, but invitations could not be sent. Check your connection.";
         this.#report({
           tone: result.handedOffTo.length > 0 ? "warning" : "error",
           message,
@@ -2364,7 +2394,7 @@ export class GroupChatPanel {
       } else {
         this.#report({
           tone: "success",
-          message: `Group created. Handed ${result.handedOffTo.length} invitation${plural(result.handedOffTo.length)} to the local Bondage Club client. Delivery is not confirmed.`,
+          message: `Group created. Invitations passed to Bondage Club. Delivery is not confirmed.`,
           groupId: result.group.groupId,
           handedOffTo: [...result.handedOffTo],
           failed: [],
@@ -2433,7 +2463,8 @@ export class GroupChatPanel {
         if (
           !Number.isSafeInteger(contact.memberNumber) ||
           contact.memberNumber <= 0 ||
-          contact.memberNumber === ownMemberNumber
+          contact.memberNumber === ownMemberNumber ||
+          !this.#isKnownFriend(contact.memberNumber)
         ) {
           continue;
         }
@@ -2451,6 +2482,7 @@ export class GroupChatPanel {
   #isCompatible(memberNumber: number): boolean {
     try {
       return this.#isKnownFriend(memberNumber) &&
+        this.#isOnline(memberNumber) &&
         this.presence.hasGroupChatPeer(memberNumber) &&
         typeof this.presence.hasGroupManagedPeer === "function" &&
         this.presence.hasGroupManagedPeer(memberNumber);
@@ -2462,6 +2494,16 @@ export class GroupChatPanel {
   #isKnownFriend(memberNumber: number): boolean {
     try {
       return this.adapter.isKnownFriend(memberNumber);
+    } catch {
+      return false;
+    }
+  }
+
+  #isOnline(memberNumber: number): boolean {
+    try {
+      if (this.adapter.isMemberInCurrentRoom?.(memberNumber)) return true;
+      if (this.adapter.hasOnlineFriendSnapshot?.()) return nativeFriendSnapshotIsFresh(this.adapter) && Boolean(this.adapter.getOnlineFriend?.(memberNumber));
+      return this.#presenceSnapshot(memberNumber)?.status !== "offline";
     } catch {
       return false;
     }

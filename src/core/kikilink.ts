@@ -1,3 +1,4 @@
+import { bcTrafficAudit, resetBCTrafficAudit } from "../bc/traffic-audit";
 import { BCAdapter } from "../bc/adapter";
 import { LinkChatModule } from "../modules/link-chat/link-chat-module";
 import { LinkReactionsModule } from "../modules/link-reactions/link-reactions-module";
@@ -33,6 +34,8 @@ export class KikiLinkApp {
   #activeMemberNumber: number | undefined;
   #desiredMemberNumber: number | undefined;
   #transitionPromise: Promise<void> | undefined;
+  #destroyPromise: Promise<void> | undefined;
+  #startupFailure: { memberNumber: number | undefined; attempts: number; retryAt: number } | undefined;
   #versionBadge: HTMLSpanElement | undefined;
   #started = false;
   readonly #handleAccountBoundary = (event?: Event): void => {
@@ -59,6 +62,7 @@ export class KikiLinkApp {
   publicApi(): KikiLinkPublicApi {
     return {
       name: "KikiLink",
+      ...(typeof __KIKILINK_TRAFFIC_AUDIT__ !== "undefined" && __KIKILINK_TRAFFIC_AUDIT__ ? { networkAudit: bcTrafficAudit } : {}),
       open: () => this.#linkChat.open(),
       openChat: (memberNumber, memberName) => this.#linkChat.openChat(memberNumber, memberName),
       openRoster: () => this.#linkChat.openRoster(),
@@ -77,8 +81,6 @@ export class KikiLinkApp {
     if (!this.#started) return;
 
     this.#desiredMemberNumber = authenticatedMemberNumber();
-    await this.#runAccountTransitions();
-    if (!this.#started) return;
     window.addEventListener("focus", this.#handleAccountBoundary);
     window.addEventListener("pageshow", this.#handleAccountBoundary);
     document.addEventListener("pointerdown", this.#handleAccountBoundary, true);
@@ -86,9 +88,11 @@ export class KikiLinkApp {
     // Account changes are rare and already have an immediate startup boundary. A one-second
     // monitor avoids four permanent checks per second without making an in-page switch feel slow.
     this.#accountMonitorTimer = setInterval(() => this.#monitorAccount(), ACCOUNT_MONITOR_MS);
+    await this.#runAccountTransitions();
   }
 
   async destroy(): Promise<void> {
+    if (this.#destroyPromise) return this.#destroyPromise;
     if (!this.#started) return;
     this.#started = false;
     window.removeEventListener("focus", this.#handleAccountBoundary);
@@ -98,12 +102,17 @@ export class KikiLinkApp {
     if (this.#accountMonitorTimer !== undefined) clearInterval(this.#accountMonitorTimer);
     this.#accountMonitorTimer = undefined;
     this.#desiredMemberNumber = undefined;
-    await this.#transitionPromise;
-    await this.#deactivateAccount();
-    this.#versionBadge?.remove();
-    this.#versionBadge = undefined;
-    this.#bus.clear();
-    this.#logger.info("Stopped");
+    const teardown = (async () => {
+      await this.#transitionPromise;
+      await this.#deactivateAccount();
+      this.#versionBadge?.remove();
+      this.#versionBadge = undefined;
+      this.#bus.clear();
+      this.#logger.info("Stopped");
+    })();
+    this.#destroyPromise = teardown;
+    try { await teardown; }
+    finally { this.#destroyPromise = undefined; }
   }
 
   #monitorAccount(): void {
@@ -122,18 +131,33 @@ export class KikiLinkApp {
 
   #runAccountTransitions(): Promise<void> {
     if (this.#transitionPromise) return this.#transitionPromise;
+    const startupFailure = this.#startupFailure;
+    if (startupFailure && startupFailure.memberNumber === this.#desiredMemberNumber &&
+        Date.now() < startupFailure.retryAt) return Promise.resolve();
+    let failed = false;
+    let attemptedMember = this.#desiredMemberNumber;
     const transition = (async () => {
       while (this.#started && this.#desiredMemberNumber !== this.#activeMemberNumber) {
         const target = this.#desiredMemberNumber;
+        attemptedMember = target;
         await this.#deactivateAccount();
-        if (!this.#started || target === undefined) continue;
-        if (authenticatedMemberNumber() !== target) continue;
+        if (!this.#started) break;
+        const currentMember = authenticatedMemberNumber();
+        if (currentMember !== target) { this.#desiredMemberNumber = currentMember; continue; }
+        if (target === undefined) continue;
         await this.#activateAccount(target);
       }
     })();
-    this.#transitionPromise = transition.finally(() => {
+    this.#transitionPromise = transition.catch((error: unknown) => {
+      failed = true;
+      const previousFailure = this.#startupFailure;
+      const attempts = previousFailure && previousFailure.memberNumber === attemptedMember
+        ? previousFailure.attempts + 1 : 1;
+      this.#startupFailure = { memberNumber: attemptedMember, attempts, retryAt: Date.now() + Math.min(30_000, 1_000 * 2 ** Math.min(attempts - 1, 5)) };
+      this.#logger.error("Account startup failed; a delayed retry is scheduled", error);
+    }).finally(() => {
       this.#transitionPromise = undefined;
-      if (this.#started && this.#desiredMemberNumber !== this.#activeMemberNumber) {
+      if (!failed && this.#started && this.#desiredMemberNumber !== this.#activeMemberNumber) {
         void this.#runAccountTransitions();
       }
     });
@@ -141,7 +165,10 @@ export class KikiLinkApp {
   }
 
   async #activateAccount(memberNumber: number): Promise<void> {
+    if (typeof __KIKILINK_TRAFFIC_AUDIT__ !== "undefined" && __KIKILINK_TRAFFIC_AUDIT__) bcTrafficAudit.start();
     const accountStorage = new AccountDataStorage(memberNumber);
+    // Own partially initialized resources too, so a failed start is cleaned on retry/destroy.
+    this.#accountStorage = accountStorage;
     const settings = new SettingsStore(accountStorage);
     const localRepository: ChatRepository =
       typeof indexedDB === "undefined"
@@ -150,6 +177,7 @@ export class KikiLinkApp {
             new IndexedDbChatRepository(accountChatDatabaseName(memberNumber)),
             new MemoryChatRepository(),
           );
+    this.#repository = localRepository;
     await accountStorage.attachChatRepository(localRepository);
 
     if (
@@ -159,6 +187,8 @@ export class KikiLinkApp {
     ) {
       localRepository.close();
       await accountStorage.destroy();
+      this.#repository = undefined;
+      this.#accountStorage = undefined;
       return;
     }
 
@@ -177,6 +207,7 @@ export class KikiLinkApp {
     });
 
     this.#activeMemberNumber = memberNumber;
+    this.#startupFailure = undefined;
     this.#adapterStart = this.#adapter.start().catch((error: unknown) => {
       this.#logger.error("Bondage Club connection failed", error);
     });
@@ -186,6 +217,7 @@ export class KikiLinkApp {
   }
 
   async #deactivateAccount(): Promise<void> {
+    resetBCTrafficAudit();
     if (
       this.#activeMemberNumber === undefined &&
       !this.#settings &&

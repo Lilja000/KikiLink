@@ -1,6 +1,10 @@
 import { normalizeImageUrl } from "./media";
 import { uploadMultipartViaUserscriptBridge } from "../../userscript-upload-client";
-import { KIKILINK_DISTRIBUTION } from "../../core/distribution";
+import {
+  KIKILINK_CATBOX_RELAY_URL,
+  KIKILINK_DISTRIBUTION,
+} from "../../core/distribution";
+import { CatboxRelayClient } from "./catbox-relay-client";
 
 export { supportsLongLivedCatboxUploads } from "../../core/distribution";
 
@@ -47,6 +51,8 @@ interface MultipartUploadResponse {
   status: number;
   body: string;
 }
+
+let defaultCatboxRelayClient: CatboxRelayClient | undefined;
 
 export type LitterboxRetention = "1h" | "12h" | "24h" | "72h";
 
@@ -137,7 +143,18 @@ export async function uploadPreparedImageToCatbox(
       ? __KIKILINK_DISTRIBUTION__ === "fusam"
       : KIKILINK_DISTRIBUTION === "fusam"
   ) {
-    throw new Error(FUSAM_CATBOX_UPLOAD_ERROR);
+    validatePreparedImage(image);
+    const file = preparedImageFile(image);
+    const url = await catboxRelayClient(request).upload(file, {
+      kind: "image",
+      extension: "webp",
+      timeoutMs: PROFILE_BANNER_UPLOAD_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
+    });
+    if (!isExpectedCatboxImageUrl(url)) {
+      throw new Error("The Catbox relay returned an unexpected image link");
+    }
+    return url;
   }
   validatePreparedImage(image);
   const form = new FormData();
@@ -210,7 +227,23 @@ export async function uploadMusicToCatbox(
       ? __KIKILINK_DISTRIBUTION__ === "fusam"
       : KIKILINK_DISTRIBUTION === "fusam"
   ) {
-    throw new Error(FUSAM_CATBOX_UPLOAD_ERROR);
+    if (file.size <= 0) throw new Error("Choose a non-empty audio file");
+    if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
+    const extension = playlistAudioExtension(file);
+    if (!extension) throw new Error("Choose an MP3, MP4, M4A, OGG, WAV, FLAC, AAC, or WebM track");
+    const relayFile = new File([file], `kikilink-track.${extension}`, {
+      type: relayAudioMimeType(extension),
+      lastModified: 0,
+    });
+    const url = await catboxRelayClient(request).upload(relayFile, {
+      kind: "audio",
+      extension,
+      timeoutMs: 300_000,
+      ...(signal ? { signal } : {}),
+    });
+    const normalized = normalizeCatboxAudioUrl(url);
+    if (!normalized) throw new Error("The Catbox relay returned an unexpected track link");
+    return normalized;
   }
   if (file.size <= 0) throw new Error("Choose a non-empty audio file");
   if (file.size > MAX_CATBOX_MUSIC_BYTES) throw new Error("Choose a track up to 80 MB");
@@ -1038,6 +1071,22 @@ function playlistAudioExtension(file: File): string | undefined {
   return mime ? byMime[mime] : undefined;
 }
 
+function relayAudioMimeType(extension: string): string {
+  const byExtension: Record<string, string> = {
+    aac: "audio/aac",
+    flac: "audio/flac",
+    m4a: "audio/mp4",
+    mp3: "audio/mpeg",
+    mp4: "video/mp4",
+    oga: "audio/ogg",
+    ogg: "audio/ogg",
+    opus: "audio/opus",
+    wav: "audio/wav",
+    webm: "audio/webm",
+  };
+  return byExtension[extension] ?? "application/octet-stream";
+}
+
 function normalizeCatboxAudioUrl(value: string): string | undefined {
   try {
     const url = new URL(value);
@@ -1077,6 +1126,13 @@ function preparedImageFile(image: PreparedLocalImage): File {
     type: "image/webp",
     lastModified: 0,
   });
+}
+
+function catboxRelayClient(request?: typeof fetch): CatboxRelayClient {
+  if (request) return new CatboxRelayClient(KIKILINK_CATBOX_RELAY_URL, request);
+  defaultCatboxRelayClient ??= new CatboxRelayClient();
+  if (!defaultCatboxRelayClient.available) throw new Error(FUSAM_CATBOX_UPLOAD_ERROR);
+  return defaultCatboxRelayClient;
 }
 
 async function uploadMultipart(

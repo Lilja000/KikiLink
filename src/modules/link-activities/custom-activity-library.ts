@@ -1,4 +1,5 @@
 import type { CustomActivityDefinition, RoomActivity } from "../../core/types";
+import { sanitizeActivityEffects } from "./activity-effects-definition";
 
 export const MAX_CUSTOM_ACTIVITIES = 100;
 export const DEFAULT_CUSTOM_ACTIVITY_GROUP = "ItemArms";
@@ -82,6 +83,7 @@ function sanitizeCustomActivity(value: unknown, index: number): CustomActivityDe
   const sourceId = cleanId(value.id) || `activity-${index + 1}`;
   const targetGroup = safeAssetName(value.targetGroup, DEFAULT_CUSTOM_ACTIVITY_GROUP);
   const image = safeAssetName(value.image, DEFAULT_CUSTOM_ACTIVITY_IMAGE);
+  const effects = sanitizeActivityEffects(value.effects);
   return {
     id: sourceId,
     name,
@@ -91,6 +93,7 @@ function sanitizeCustomActivity(value: unknown, index: number): CustomActivityDe
     template,
     image,
     arousal: integerInRange(value.arousal, 0, 20, 0),
+    ...(effects ? { effects } : {}),
   };
 }
 

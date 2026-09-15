@@ -1,3 +1,4 @@
+import { withBCNetworkReason } from "../bc/traffic-audit";
 import { cleanBeepMessageContent } from "../bc/message-content";
 import {
   MemoryKeyValueStorage,
@@ -527,7 +528,7 @@ export class AccountDataStorage implements KeyValueStorage {
       Player.ExtensionSettings ??= {};
       Player.ExtensionSettings[CLOUD_EXTENSION_KEY] = encoded;
       if (typeof ServerPlayerExtensionSettingsSync !== "function") return;
-      ServerPlayerExtensionSettingsSync(CLOUD_EXTENSION_KEY);
+      withBCNetworkReason("account-settings-sync", () => ServerPlayerExtensionSettingsSync(CLOUD_EXTENSION_KEY));
       if (generation === this.#generation) this.#generation = 0;
     } catch (error) {
       console.warn("[KikiLink:storage] BC account sync unavailable; local account data is safe", error);

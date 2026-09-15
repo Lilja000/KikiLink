@@ -65,7 +65,7 @@ export class ChatService {
       draft: previous?.draft ?? "",
     };
 
-    const config = this.settings.get().linkChat;
+    const config = this.settings.getSection("linkChat");
     if (config.saveHistory) {
       await this.repository.addMessage(message);
       await this.repository.putConversation(conversation);
@@ -254,6 +254,15 @@ export class ChatService {
     });
   }
 
+  /** Shares the global mutation barrier with incoming messages and history changes. */
+  async markAllRead(): Promise<void> {
+    await this.#enqueueGlobalMutation(async () => {
+      for (const conversation of await this.listConversations()) {
+        if (conversation.unread > 0) await this.#saveConversation({ ...conversation, unread: 0 });
+      }
+    });
+  }
+
   async setPeerName(peerNumber: number, peerName: string): Promise<void> {
     const name = peerName.trim();
     if (!name) return;
@@ -324,7 +333,7 @@ export class ChatService {
   }
 
   async prune(): Promise<number> {
-    const config = this.settings.get().linkChat;
+    const config = this.settings.getSection("linkChat");
     if (!config.saveHistory) return 0;
     const cutoff = Date.now() - config.retentionDays * DAY_MS;
     return this.#enqueueGlobalMutation(async () => {
@@ -418,7 +427,7 @@ export class ChatService {
   }
 
   async #saveConversation(conversation: ConversationMeta): Promise<void> {
-    if (this.settings.get().linkChat.saveHistory) {
+    if (this.settings.getSection("linkChat").saveHistory) {
       await this.repository.putConversation(conversation);
       this.#ephemeralConversations.delete(conversation.peerNumber);
     } else {

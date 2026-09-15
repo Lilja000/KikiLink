@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/core/distribution", () => ({
+  KIKILINK_CATBOX_RELAY_URL: "https://uploads.kikilink.example",
   KIKILINK_DISTRIBUTION: "fusam",
-  supportsLongLivedCatboxUploads: () => false,
+  supportsLongLivedCatboxUploads: () => true,
 }));
 
 import { checkForKikiLinkUpdate } from "../src/core/version-update-checker";
@@ -21,6 +22,12 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   Reflect.deleteProperty(globalThis, "GM_xmlhttpRequest");
+});
+
+beforeEach(() => {
+  (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL(
+    "https://www.bondageprojects.com/R104/BondageClub",
+  );
 });
 
 describe("FUSAM page-realm runtime", () => {
@@ -65,23 +72,47 @@ describe("FUSAM page-realm runtime", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
-  it("rejects every long-lived Catbox upload before any network transport", async () => {
+  it("routes every long-lived Catbox upload only through the fixed relay", async () => {
     const pageFetch = vi.fn<typeof fetch>();
-    const injectedFetch = vi.fn<typeof fetch>();
+    const injectedFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      const kind = new Headers(init?.headers).get("X-KikiLink-Upload-Kind");
+      return Response.json({
+        url: kind === "image"
+          ? "https://files.catbox.moe/fusam-image.webp"
+          : "https://files.catbox.moe/fusam-track.mp3",
+      });
+    });
     const gmRequest = vi.fn();
     vi.stubGlobal("fetch", pageFetch);
     globalThis.GM_xmlhttpRequest = gmRequest;
+    mockRelayAuthorization();
 
-    expect(supportsLongLivedCatboxUploads()).toBe(false);
+    expect(supportsLongLivedCatboxUploads()).toBe(true);
     await expect(uploadPreparedImageToCatbox(
       preparedImage(),
       injectedFetch,
-    )).rejects.toThrow("Long-lived Catbox uploads are unavailable in FUSAM");
+    )).resolves.toBe("https://files.catbox.moe/fusam-image.webp");
     await expect(uploadMusicToCatbox(
       new File([new Uint8Array([1])], "track.mp3", { type: "audio/mpeg" }),
       injectedFetch,
-    )).rejects.toThrow("Long-lived Catbox uploads are unavailable in FUSAM");
-    expect(injectedFetch).not.toHaveBeenCalled();
+    )).resolves.toBe("https://files.catbox.moe/fusam-track.mp3");
+
+    expect(injectedFetch).toHaveBeenCalledTimes(2);
+    for (const [url, init] of injectedFetch.mock.calls) {
+      expect(url).toBe("https://uploads.kikilink.example/v1/upload");
+      expect(init).toEqual(expect.objectContaining({
+        method: "POST",
+        mode: "cors",
+        credentials: "omit",
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+        body: expect.any(File),
+      }));
+      expect(init).not.toHaveProperty("cache");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("Authorization")).toMatch(/^Bearer [A-Za-z0-9_-]{43}$/u);
+      expect(["image", "audio"]).toContain(headers.get("X-KikiLink-Upload-Kind"));
+    }
     expect(pageFetch).not.toHaveBeenCalled();
     expect(gmRequest).not.toHaveBeenCalled();
   });
@@ -104,4 +135,28 @@ function preparedImage(): PreparedLocalImage {
     height: 2,
     sourceBytes: 3,
   };
+}
+
+function mockRelayAuthorization(): void {
+  vi.spyOn(window, "open").mockImplementation((value) => {
+    const popup = {
+      closed: false,
+      close: vi.fn(),
+    } as unknown as Window;
+    const authorizeUrl = new URL(String(value));
+    const state = new URLSearchParams(authorizeUrl.hash.slice(1)).get("state");
+    queueMicrotask(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        origin: authorizeUrl.origin,
+        source: popup,
+        data: {
+          type: "kikilink:catbox-relay-session:v1",
+          state,
+          token: "A".repeat(43),
+          expiresAt: Date.now() + 10 * 60_000,
+        },
+      }));
+    });
+    return popup;
+  });
 }

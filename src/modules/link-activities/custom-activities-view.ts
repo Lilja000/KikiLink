@@ -3,6 +3,8 @@ import type { CustomActivityDefinition, CustomActivityTargetMode } from "../../c
 import type { SettingsStore } from "../../core/settings";
 import { element } from "../../utils/dom";
 import { BLOSSOM_ICON_DATA_URL } from "../link-chat/blossom";
+import { activityEffectsEditor } from "./activity-effects-editor";
+import { MAX_SEQUENCE_TIME_MS, sanitizeActivityEffects } from "./activity-effects-definition";
 import {
   activityImageUrl,
   canonicalVanillaActivityImage,
@@ -50,7 +52,7 @@ export class CustomActivitiesView {
 
   #renderLibrary(): void {
     this.#editingId = undefined;
-    const activities = this.settings.get().linkActivities.customActivities;
+    const activities = this.settings.getSection("linkActivities").customActivities;
     const create = element("button", {
       className: "kl-text-button kl-text-button--primary kl-custom-activity-create",
       type: "button",
@@ -64,6 +66,10 @@ export class CustomActivitiesView {
       create,
     );
     const body = element("div", { className: "kl-custom-activities-body" });
+    if (this.service.sequenceRunning) body.append(element("button", {
+      className: "kl-text-button kl-sequence-stop", type: "button", text: "Stop active sequence",
+      onClick: () => { this.service.stopSequence(); this.showToast("Sequence stopped. Unchanged temporary states restored."); this.#renderLibrary(); },
+    }));
     if (activities.length === 0) {
       const blossom = element("img", {
         className: "kl-custom-empty-blossom",
@@ -123,13 +129,8 @@ export class CustomActivitiesView {
     );
     const arousal = activity.arousal > 0 ? ` · Arousal +${activity.arousal}` : "";
     const card = element(
-      "button",
-      {
-        className: "kl-custom-activity-card",
-        type: "button",
-        ariaLabel: `Edit ${activity.name}`,
-        onClick: () => this.#openEditor(activity.id),
-      },
+      "article",
+      { className: "kl-custom-activity-card" },
       iconWrap,
       element(
         "div",
@@ -137,30 +138,49 @@ export class CustomActivitiesView {
         element("div", { className: "kl-custom-activity-card-name", text: activity.name }),
         element("div", {
           className: "kl-custom-activity-card-meta",
-          text: `${this.#slotLabel(activity.targetGroup)}${arousal}`,
+          text: `${this.#slotLabel(activity.targetGroup)}${arousal}${activity.effects ? ` · ${activity.effects.steps.length} steps` : ""}`,
         }),
         element("div", {
           className: "kl-custom-activity-card-template",
           text: activity.template,
         }),
       ),
-      element("span", { className: "kl-custom-activity-edit-label", text: "Edit" }),
+      element("div", { className: "kl-custom-activity-card-actions" },
+        element("button", { className: "kl-text-button", type: "button", text: "Edit", ariaLabel: `Edit ${activity.name}`, onClick: () => this.#openEditor(activity.id) }),
+        element("button", { className: "kl-text-button", type: "button", text: "Clone", ariaLabel: `Clone ${activity.name}`, onClick: () => this.#clone(activity.id) })),
     );
     card.dataset.activityId = activity.id;
     return card;
   }
 
+  #clone(activityId: string): void {
+    try {
+      const id = createCustomActivityId();
+      this.settings.update(draft => {
+        const source = draft.linkActivities.customActivities.find(activity => activity.id === activityId);
+        if (!source) throw new Error("Activity is no longer available.");
+        if (draft.linkActivities.customActivities.length >= MAX_CUSTOM_ACTIVITIES) throw new Error(`You can keep up to ${MAX_CUSTOM_ACTIVITIES} activities.`);
+        const copy = structuredClone(source);
+        copy.id = id;
+        copy.name = `${source.name.slice(0, 33)} (copy)`;
+        draft.linkActivities.customActivities.push(copy);
+      }, { requirePersistence: true });
+      this.service.syncFromSettings(); this.onChanged(); this.#openEditor(id);
+      this.showToast("Activity cloned.");
+    } catch (error) { this.showToast(error instanceof Error ? error.message : "Could not clone activity.", "error"); }
+  }
+
   #openEditor(activityId?: string): void {
     const existing = activityId
       ? this.settings
-          .get()
-          .linkActivities.customActivities.find((activity) => activity.id === activityId)
+          .getSection("linkActivities")
+          .customActivities.find((activity) => activity.id === activityId)
       : undefined;
     if (activityId && !existing) {
       this.#renderLibrary();
       return;
     }
-    if (!existing && this.settings.get().linkActivities.customActivities.length >= MAX_CUSTOM_ACTIVITIES) {
+    if (!existing && this.settings.getSection("linkActivities").customActivities.length >= MAX_CUSTOM_ACTIVITIES) {
       this.showToast(`You can keep up to ${MAX_CUSTOM_ACTIVITIES} custom activities.`, "error");
       return;
     }
@@ -467,20 +487,13 @@ export class CustomActivitiesView {
       selectOption("both", "Others and myself"),
     );
     targetMode.value = draft.targetMode;
-    const advanced = element(
-      "details",
-      { className: "kl-custom-activity-advanced" },
-      element("summary", { text: "Advanced" }),
-      this.#field("Who can be targeted", "Choose whether this action can appear on others, yourself, or both.", targetMode),
-    );
-
     const form = element(
       "section",
       { className: "kl-custom-activity-form" },
-      this.#field("Activity name", "Short and recognizable in the native menu.", name),
+      this.#field("Activity name", "", name),
       this.#field(
         "Action text",
-        "Tap a variable to insert it. Everyone in the room sees only the finished sentence.",
+        "Tap a variable to insert it.",
         template,
         tokenRow,
       ),
@@ -492,7 +505,7 @@ export class CustomActivitiesView {
       ),
       this.#field(
         "Vanilla picture",
-        "This is the picture shown beside normal Bondage Club activities.",
+        "",
         imageSearch,
         imageGallery,
       ),
@@ -505,13 +518,14 @@ export class CustomActivitiesView {
           element("div", { className: "kl-custom-field-label", text: "Trigger arousal" }),
           element("div", {
             className: "kl-custom-field-help",
-            text: "Off by default. Bondage Club applies this base amount using the recipient's preferences.",
+            text: "Uses the recipient’s BC preferences.",
           }),
         ),
         arousalSwitch,
         arousalOptions,
       ),
-      advanced,
+      this.#field("Who can be targeted", "", targetMode),
+      activityEffectsEditor(draft, () => this.service.getEffectCapabilities()),
     );
 
     const characterStage = element(
@@ -583,6 +597,11 @@ export class CustomActivitiesView {
           this.showToast("Add a name, action text, and body slot before saving.", "error");
           return;
         }
+        if ((draft.effects?.steps.reduce((sum, step) => sum + step.delayMs + step.durationMs, 0) ?? 0) > MAX_SEQUENCE_TIME_MS) {
+          this.showToast("Keep the sequence within 120 seconds before saving.", "error");
+          return;
+        }
+        const effects = sanitizeActivityEffects(draft.effects);
         const saved: CustomActivityDefinition = {
           id: draft.id,
           name: activityName,
@@ -591,6 +610,7 @@ export class CustomActivitiesView {
           template: activityTemplate,
           image: canonicalVanillaActivityImage(draft.image),
           arousal: arousalToggle.checked ? Number(arousalRange.value) : 0,
+          ...(effects ? { effects } : {}),
         };
         this.settings.update((settingsDraft) => {
           const index = settingsDraft.linkActivities.customActivities.findIndex(
@@ -676,7 +696,7 @@ export class CustomActivitiesView {
       "div",
       { className: "kl-custom-field" },
       element("span", { className: "kl-custom-field-label", text: name }),
-      element("span", { className: "kl-custom-field-help", text: help }),
+      help ? element("span", { className: "kl-custom-field-help", text: help }) : undefined,
       control,
       extra,
     );

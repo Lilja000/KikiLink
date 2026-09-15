@@ -181,7 +181,7 @@ export class LinkReactionsModule implements KikiLinkModule {
   ): void {
     const context = this.#context;
     if (!context || !this.#isCurrentAccount()) return;
-    const settings = context.settings.get().linkReactions;
+    const settings = context.settings.getSection("linkReactions");
     const enabled =
       kind === "chat"
         ? settings.sounds.enabled

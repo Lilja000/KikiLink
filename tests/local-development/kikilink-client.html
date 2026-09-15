@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KikiLink local BC client</title>
+<style>body { margin: 0; background: radial-gradient(ellipse at top, #22212b, #111116); color: #ddd; font: 14px system-ui; min-height: 100vh; } main { padding: 22px; max-width: 440px; } button { padding: 9px 14px; background: #33313d; border: 1px solid #555; color: #fff; border-radius: 7px; cursor: pointer; } p { color: #aaa; line-height: 1.5; }</style>
+<main><h2 id="identity"></h2><p id="loader-status" role="status">Starting FUSAM Local Development…</p><button id="inject-beep">Receive a test Beep</button><p>Synthetic BC client. No live game messages or account credentials are used. The original FUSAM Local Development loader loads the local KikiLink.fusam.js.</p></main>
+<script src="/kikilink-client.js"></script>
+<script type="module">
+  import { updateManifest, getAddon } from '/manifest.js';
+  try {
+    await updateManifest(); const addon = getAddon('localdev');
+    if (!addon) throw new Error('FUSAM Local Development entry missing');
+    await addon.load(addon.versions[0]);
+    document.getElementById('loader-status').textContent = `${addon.name} by ${addon.author} · KikiLink.fusam.js loaded`;
+  } catch (error) { document.getElementById('loader-status').textContent = 'FAILED: ' + error.message; }
+</script></html>

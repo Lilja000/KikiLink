@@ -8,12 +8,14 @@ not connected to Velvet District or any previous Kiki project.
 ### FUSAM Loader
 
 Install [FUSAM Loader](https://gitlab.com/Sidiousious/bc-addon-loader), then enable KikiLink from its
-addon list. FUSAM owns update discovery for this distribution. If KikiLink has not reached the public
-FUSAM manifest yet, use the standalone userscript below.
+addon list. FUSAM owns update discovery for this distribution.
 
 FUSAM can use device-local files, direct HTTPS links, and supported temporary Litterbox uploads.
 Long-lived Catbox uploads are unavailable because Catbox does not allow the required cross-origin page
-request; those controls are disabled rather than silently failing.
+request; those controls are disabled rather than silently failing. A consent-gated Cloudflare relay is
+being prepared for the four explicit long-lived actions (profile banners, managed-group avatars,
+Gallery Catbox files, and playlist music), but it is not deployed or enabled. It will remain disabled
+unless Catbox gives explicit written permission and any required whitelisting.
 
 ### Standalone userscript
 
@@ -37,12 +39,11 @@ corner.
 - In the standalone userscript, Home performs one small, bounded official version check and shows an
   Update button only when a newer strict release exists; FUSAM owns updates for its build, and neither
   distribution polls in the background
-- Action-first cards use familiar names and visible verbs for Chat, Players, Custom Activities,
-  Gallery, and Settings
+- Action-first cards offer Chat, Feed, Players, Custom Activities, Gallery and Settings
 - Current connection, room, unread-chat, and room-player context at a glance
 - Your avatar, name, presence, custom status, and local time remain visible in the top bar
 - A News tab beside the KikiLink brand keeps the current release and recent changelog inside the addon
-- Six clear primary destinations: Home, Chat, Players, Room, Music, and Custom Activities
+- Clear primary destinations for Home, Chat, Players, Room, Music and Custom Activities, plus a direct Feed entry
 - Persistent feature rail on desktop and a focused six-item bottom bar on phones
 - Players and Custom Activities stay inside the workspace instead of opening blocking dialogs
 - Settings is a full workspace with Appearance, Navigation, Chat, Players, Activities, Alerts, and About categories
@@ -60,6 +61,9 @@ corner.
 - A visible `Find` control in the top bar, available from every KikiLink workspace
 - Local search across destinations, recent chats, current and recorded players, known contacts,
   saved activities, and all seven Settings categories
+- Cloud also offers `Cloud Feed`, `Cloud Groups`, and `My Cloud profile`
+  destinations. Finder matches these shortcuts locally; opening one uses the existing Cloud
+  connection screen or the selected tab. Feed is also suggested before typing.
 - Useful suggestions before typing, prioritized unread/recent conversations, and immediate
   result refinement while typing
 - Direct member-number actions such as `#12345` even when no conversation exists yet
@@ -74,8 +78,8 @@ corner.
 - Presence dots and KikiLink status labels in player lists and detail cards
 - Visible player lists discover compatible KikiLink Presence through a quiet rate-limited queue that
   targets only current-room players or reachable online BC friends
-- Profile avatars and banners default to `Ask before loading` under their own Players preference.
-  `Always show` opts into contacting remote image hosts automatically, while `Links only` keeps
+- Profile avatars and banners default to `Always show` under their own Players preference.
+  `Ask before loading` requires a reveal first, while `Links only` keeps
   initials and decorative frames without requesting remote art; chat-message previews remain a
   separate privacy preference
 - Account-derived Friend, Owner, Sub, Lover, Whitelist, Blacklist, and Ghosted badges
@@ -114,7 +118,30 @@ They are stored readably in an account-scoped browser copy and included in KikiL
 unencrypted BC `ExtensionSettings` mirror so they can follow that account to another device. See
 [Privacy](PRIVACY.md) for the page-realm trust boundary.
 
+## KikiLink Cloud
+
+- Automatic verification with the signed-in BC account; remembered browsers reconnect without a BC password prompt
+- Public profiles with bio, custom status, decorations, gradients and supported avatar/banner images
+- Feed posts, comments and reactions, with owner controls, blocking and scoped reporting
+- Persistent groups with explicit invitations, owner/admin roles, ownership transfer and pinned messages
+- Cached profiles and stable loading states, targeted refresh and bounded requests
+
+Existing public profile settings synchronize on first connection; native chat histories,
+private notes, Gallery and Music files do not. Cloud messages use server encryption,
+not end-to-end encryption. Sign out to pause automatic connection on this browser.
+See [Cloud privacy information](cloud/PRIVACY.md) for retention and deletion controls.
+
 ## LinkChat
+
+- Direct / Groups / Unread filters include both chat types in Unread
+- Shared Reply and Copy actions, composer reply state and compact quote previews
+- Group participant headers, author avatars, own messages on the right and live typing
+- Group Pin/Mute shortcuts and compact pinned-message navigation
+
+### Existing BC groups
+
+These compatibility features remain available for existing BC-transport groups;
+Cloud groups use the server-backed membership and history model described above.
 
 - Conversation list instead of one isolated Beep at a time
 - One chronological, searchable conversation list for direct Beeps and separate 3–5-member addon
@@ -158,6 +185,8 @@ unencrypted BC `ExtensionSettings` mirror so they can follow that account to ano
 - Every group packet stays within its validated versioned bound (700 UTF-16 characters for legacy,
   700 UTF-8 bytes for managed), including worst-case escaping; managed state uses monotonic revisions
   and a fresh epoch whenever membership changes
+### Direct chat and shared controls
+
 - Native recent Beeps imported from the current game session without duplicates
 - Persistent message history in a separate local database for each BC account
 - A bounded mirror of up to 600 recent messages follows the same BC account to another device
@@ -256,7 +285,8 @@ unencrypted BC `ExtensionSettings` mirror so they can follow that account to ano
   repeat-one/repeat-all, independent volume, mute, playback speed, and a sleep timer
 - Rename, duplicate, clear, and delete playlists; rename, reorder, open, or remove individual tracks
 - In the standalone userscript, select several local files in one pass and see live progress during
-  sequential Catbox uploads; FUSAM disables Catbox upload choices
+  sequential Catbox uploads; FUSAM still disables Catbox upload choices while the prepared relay awaits
+  Catbox's explicit written permission and any required whitelisting
 - Browser/OS Media Session controls for play, pause, seeking, and previous/next where supported
 - Direct HTTPS tracks, local browser-only files up to 80 MB, or explicitly uploaded long-lived
   Catbox tracks with generic filenames
@@ -357,29 +387,52 @@ Club emote path and are visible to everyone in the room.
 The wolf emblem and Blossom marker are both bundled inside the userscript, so KikiLink does not
 fetch branding assets from a remote server while the game is running.
 
-KikiLink's own Beeps use Bondage Club's `ServerSendBeepMessage` path, while its history listener
-captures normal `AccountBeep` sends from native BC and messenger addons such as LianChat. LinkRoster
-uses the game's native Whisper and profile controls, and Custom Activities extend
-the game's native activity registry and action path. Image messages are ordinary HTTPS links, so other players
-do not need KikiLink to open them. Optional local-file sharing sends a privacy-prepared WebP
-directly to Litterbox only after `Upload & send`; it never passes through a KikiLink server.
-Manually added Gallery files stay device-local by default; Catbox and Litterbox require an explicit
-public-storage choice and final upload action. Profile avatars are user-supplied direct HTTPS links.
-No remote KikiLink server or telemetry service is used. KikiLink stores account-prefixed browser data;
-a bounded, readable and unencrypted portable snapshot is stored in the same player's Bondage Club
-`ExtensionSettings` so settings, activities, profile preferences, notebook data, and recent direct
-chats can follow the account to another device. Presence uses
-small validated compatibility packets through Bondage Club: a hidden room handshake on entry,
-a compact hidden presence heartbeat for late-loading peers, and a point-to-point request for an
-opened chat—never a background Beep broadcast to every friend. Expanded banner and outline details use
-a separate bounded response requested only when a compatible profile is explicitly opened. Addon group
-chats use direct validated packets where BC provides a route; otherwise an authored packet may take one
-best-effort hop through the online group creator. KikiLink has no group server or offline relay queue.
+KikiLink's own Beeps use Bondage Club's native send path, while its history listener
+captures native Beeps and compatible messenger sends. Custom Activities use native BC
+activity and appearance paths. Direct-chat local-file sharing prepares an image before
+an explicit Litterbox upload; Gallery files stay device-local unless a public-storage
+option is chosen. Cloud profiles and Feed use authenticated, managed media storage.
+
+The official build connects to KikiLink Cloud for verified profiles, Feed and groups.
+There is no analytics service. The separate prepared FUSAM Catbox relay remains disabled.
+Account-prefixed browser storage and a bounded unencrypted BC ExtensionSettings mirror
+retain settings, activities, profile preferences, notebook data and recent direct chats.
+BC compatibility presence is event-driven with a separate four-minute liveness refresh,
+not a broadcast on every friend-list poll. Typing and detailed lookups are targeted.
+Legacy BC groups retain their bounded direct/creator-relay transport; Cloud groups have
+server-backed history and do not require the creator to remain online.
 
 Remote media hosts still receive the viewer's network IP address and request time. Chat and profile
-art default to `Ask before loading`; `Links only` avoids preview requests. Uploaded Catbox/Litterbox
+art default to `Always show`; `Ask before loading` requires a reveal and `Links only` avoids preview requests. Uploaded Catbox/Litterbox
 files are public bearer links, and audio may retain embedded metadata. Full details and deletion limits
 are in [PRIVACY.md](PRIVACY.md).
+
+### Prepared FUSAM Catbox relay (disabled)
+
+The proposed FUSAM path uses Cloudflare Turnstile and a Worker, then issues a short-lived bearer token
+kept only in page memory. The Worker admits only exact Bondage Club origins, recognized file types and
+sizes, and bounded request/byte quotas. It constructs the fixed anonymous Catbox upload itself, never
+forwards a Catbox `userhash`, account cookie, arbitrary destination, or caller-supplied provider form,
+and streams the accepted bytes without storing them.
+
+This design does not make the transfer private. Cloudflare can transiently observe the uploader's IP,
+Bondage Club origin, request timing, and file bytes; Catbox receives the file, timing, and the Worker
+connection and may also receive the uploader IP in
+[Cloudflare-added forwarding headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests).
+The relay is
+not an IP-anonymity service. Images are re-encoded to metadata-free WebP before the relay, while audio is not re-encoded
+and may retain tags, artwork, or other embedded metadata. The returned Catbox URL is a public bearer
+link, and anonymous retention is not guaranteed: Catbox's
+[FAQ](https://catbox.moe/faq.php) says an anonymous file may be removed after two years without a
+download.
+
+The relay remains deliberately disabled. Catbox's [Terms](https://catbox.moe/legal.php) prohibit
+reselling or otherwise supplying its service to others, and Catbox's
+[April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
+restricted anonymous uploads from datacenter/proxy networks. KikiLink will not enable or advertise the
+relay without Catbox's explicit written permission and any required whitelisting. The standalone
+userscript's direct Catbox path and every temporary Litterbox path are unchanged. See
+[the upload privacy review](docs/LOCAL_IMAGE_UPLOADS.md) for the complete proposed flow.
 
 ## Account data and switching
 
@@ -413,6 +466,7 @@ src/
 design/branding/       Shipping KikiLink wolf emblem and Blossom marker
 design/references/     Full-resolution KikiLink visual reference
 docs/                  UX principles, accessibility decisions, and protocol notes
+worker/                Disabled-by-default FUSAM Catbox relay and isolated checks
 ```
 
 KikiLink listens to the native Bondage Club socket for Beeps and friend presence, and uses
@@ -421,10 +475,14 @@ application logic, storage, UI, and module contracts are original.
 
 ## Development
 
-Requirements: Node.js 20 or newer.
+The add-on build requires Node.js 20 or newer. Use Node.js 24 or newer to check the optional relay.
 
 ```bash
-npm install
+npm ci
+npm run check
+
+cd worker
+npm ci
 npm run check
 ```
 

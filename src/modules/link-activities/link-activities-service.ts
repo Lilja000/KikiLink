@@ -1,3 +1,4 @@
+import { withBCNetworkReason } from "../../bc/traffic-audit";
 import type {
   BCAdapter,
   BCCustomActivityIntegration,
@@ -9,6 +10,8 @@ import type {
 } from "../../core/types";
 import type { SettingsStore } from "../../core/settings";
 import { BLOSSOM_ICON_DATA_URL } from "../link-chat/blossom";
+import { activityCapabilities, currentPlayer, hiddenActivityChoice, type ActivityCapabilities } from "./activity-capabilities";
+import { ActivitySequence } from "./activity-sequence";
 
 const ACTIVITY_PREFIX = "KikiLinkCustom_";
 const ACTION_CONTENT = "KikiLinkCustomActivity";
@@ -118,6 +121,16 @@ interface NativeActivityRegistry {
 }
 
 export class LinkActivitiesService implements BCCustomActivityIntegration {
+  readonly #sequence = new ActivitySequence();
+  #activitySettingsSignature: string | undefined;
+
+  getEffectCapabilities(): ActivityCapabilities { return activityCapabilities(); }
+  stopSequence(): void { this.#sequence.cancel(); }
+  get sequenceRunning(): boolean { return this.#sequence.running; }
+  onActivityStart(actor: BCCharacter): void { if (actor === currentPlayer()) this.#sequence.cancel(); }
+  onCharacterStateChange(character: BCCharacter, kind: "expression" | "pose" | "appearance", group?: string): void {
+    this.#sequence.externalChange(character, kind, group);
+  }
   readonly #runtimeActivities = new Map<string, CustomActivityDefinition>();
   readonly #injectedActivities = new Map<string, BCActivity>();
   readonly #seenNonces: string[] = [];
@@ -221,6 +234,8 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   }
 
   stop(): void {
+    this.#sequence.cancel();
+    this.#activitySettingsSignature = undefined;
     if (this.#registryMonitor !== undefined) {
       clearInterval(this.#registryMonitor);
       this.#registryMonitor = undefined;
@@ -242,15 +257,23 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   }
 
   syncFromSettings(): void {
+    const settings = this.settings?.getSection("linkActivities");
+    const owner = currentMemberNumber(this.adapter);
+    const signature = JSON.stringify([owner, settings]);
+    if (signature === this.#activitySettingsSignature) {
+      this.#ensureRegistryInjection();
+      this.#syncOpenNativeDialog();
+      return;
+    }
+    this.#sequence.cancel();
+    this.#activitySettingsSignature = signature;
     this.#bodySlotsCache = undefined;
     this.#detachFromRegistries();
     this.#runtimeActivities.clear();
     this.#injectedActivities.clear();
-    const settings = this.settings?.get();
-    if (!settings?.linkActivities.enabled) return;
+    if (!settings?.enabled) return;
 
-    const owner = currentMemberNumber(this.adapter);
-    for (const definition of settings.linkActivities.customActivities) {
+    for (const definition of settings.customActivities) {
       const runtimeName = runtimeActivityName(owner, definition.id);
       this.#runtimeActivities.set(runtimeName, definition);
     }
@@ -341,7 +364,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
     }
     const slots = AssetGroup.filter(
       (group) =>
-        group.Category === "Item" &&
+        group.Category === "Item" && !hiddenActivityChoice(group) &&
         Array.isArray(group.Zone) &&
         group.Zone.length > 0 &&
         (nativeTargets.size === 0 || nativeTargets.has(group.Name)),
@@ -477,6 +500,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
       pronouns: characterPronouns(acted),
     }).slice(0, 1000);
     if (!text) return true;
+    this.#sequence.cancel();
 
     if (typeof ChatRoomPublishCustomAction === "function") {
       const fallbackActivity = canonicalVanillaActivityImage(definition.image);
@@ -511,10 +535,20 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
         { Tag: `MISSING TEXT IN \"Interface.csv\": ${ACTION_CONTENT}`, Text: text },
         { Tag: META_TAG, Text: JSON.stringify(meta) },
       );
-      ChatRoomPublishCustomAction(ACTION_CONTENT, false, dictionary);
+      withBCNetworkReason("custom-activity", () => ChatRoomPublishCustomAction(ACTION_CONTENT, false, dictionary));
     } else {
       this.adapter.sendRoomEmote(text);
     }
+    // Only a local native activity invocation can start a sequence. Incoming chat dictionaries
+    // never carry executable effects or change another client's character state.
+    try {
+      if (definition.effects && actor === currentPlayer() &&
+          (acted !== actor || definition.targetMode !== "other") &&
+          (acted === actor || definition.targetMode !== "self") &&
+          typeof InventoryGroupIsBlocked === "function" && !InventoryGroupIsBlocked(acted, targetGroup.Name, true)) {
+        this.#sequence.start(actor, acted, definition.effects);
+      }
+    } catch { this.#sequence.cancel(); }
     return true;
   }
 
@@ -556,7 +590,7 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   }
 
   onRoomMessage(message: BCChatRoomMessage): void {
-    if (this.settings && !this.settings.get().linkActivities.enabled) return;
+    if (this.settings && !this.settings.getField("linkActivities", "enabled")) return;
     const meta = parseActivityMeta(message);
     if (!meta || meta.arousal <= 0 || meta.target !== this.adapter.getOwnMemberNumber()) return;
     if (message.Sender !== meta.source) return;

@@ -135,9 +135,9 @@ character-loop hook.
   and a 5 MiB limit before exposing only a local blob URL to the image element. It permits at most
   four active fetches and 32 active-plus-queued requests, applies a 15-second deadline across queueing
   and transfer, and cancels work when its last consumer closes or replaces the image. Profile art has
-  a dedicated preference and defaults to `Ask before loading`, which keeps initials or the built-in
-  banner until the user reveals that exact member-and-normalized-URL pair for the session; a changed
-  URL asks again. `Always show` opts into contacting each art host automatically;
+  a dedicated preference and defaults to `Always show`, contacting art hosts automatically.
+  Optional `Ask before loading` keeps initials or the built-in banner until the user reveals that
+  exact member-and-normalized-URL pair for the session; a changed URL asks again.
   `Links only` never requests it. Frames, card styles, and outline colors contain no remote image URL
   and can render without loading remote pixels. The two optional gradient colors follow the same
   explicit-open boundary as the banner and outline and are never included in room broadcasts.

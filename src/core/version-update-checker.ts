@@ -1,4 +1,4 @@
-import { KIKILINK_DISTRIBUTION } from "./distribution";
+import { KIKILINK_DEV_TEST, KIKILINK_DISTRIBUTION } from "./distribution";
 
 export const KIKILINK_RELEASE_PACKAGE_URL =
   "https://raw.githubusercontent.com/Lilja000/KikiLink/main/package.json";
@@ -51,7 +51,7 @@ export async function checkForKikiLinkUpdate(
   options: KikiLinkUpdateCheckOptions = {},
 ): Promise<string | undefined> {
   try {
-    if (KIKILINK_DISTRIBUTION === "fusam") return undefined;
+    if (KIKILINK_DEV_TEST || KIKILINK_DISTRIBUTION === "fusam") return undefined;
     const current = parseSemVer(currentVersion);
     if (!current) return undefined;
 

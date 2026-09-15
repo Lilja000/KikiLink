@@ -1180,6 +1180,24 @@ describe("BCAdapter", () => {
     );
   });
 
+  it("sends Cloud proofs over the same silent route in the lobby and a shared room", () => {
+    const send = vi.fn();
+    globalThis.ServerSend = send;
+    globalThis.Player = {MemberNumber:101,Name:"Tester",FriendList:[],FriendNames:new Map()};
+    globalThis.ChatRoomCharacter = [globalThis.Player,{MemberNumber:909,Name:"Verifier"}];
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(),"0.29.0");
+    for (const screen of ["ChatSearch","MainHall","ChatRoom"]) {
+      globalThis.CurrentScreen = screen;
+      expect(adapter.sendKikiLinkProtocol(909,'{"t":"cloud-verify","v":1}',"beep")).toBe("beep");
+    }
+    expect(send).toHaveBeenCalledTimes(3);
+    for (const [event,data] of send.mock.calls) {
+      expect(event).toBe("AccountBeep");
+      expect(data).toMatchObject({MemberNumber:909,BeepType:"KikiLink",IsSecret:true});
+      expect(data).not.toHaveProperty("ChatRoomName");
+    }
+  });
+
   it("captures null-type incoming Beeps and native online friends before BC mutates them", async () => {
     globalThis.Player = {
       MemberNumber: 999,
@@ -1491,7 +1509,7 @@ describe("BCAdapter", () => {
       await adapter.start();
       adapter.stop();
 
-      expect(off).toHaveBeenCalledTimes(3);
+      expect(off).toHaveBeenCalledTimes(6);
       expect(removeListener).toHaveBeenCalledOnce();
       expect(removeListener).toHaveBeenCalledWith("AccountBeep", expect.any(Function));
       expect(warning).toHaveBeenCalledWith(
@@ -1597,7 +1615,7 @@ describe("BCAdapter", () => {
     };
     globalThis.ServerSocket = replacementSocket as unknown as BCServerSocket;
     vi.advanceTimersByTime(2_001);
-    expect(socket.off).toHaveBeenCalledTimes(3);
+    expect(socket.off).toHaveBeenCalledTimes(6);
     for (const listener of replacementListeners.get("AccountBeep") ?? []) {
       listener({
         MemberNumber: 123,
@@ -1609,7 +1627,7 @@ describe("BCAdapter", () => {
     expect(incoming).toHaveBeenCalledTimes(2);
 
     adapter.stop();
-    expect(replacementSocket.off).toHaveBeenCalledTimes(3);
+    expect(replacementSocket.off).toHaveBeenCalledTimes(6);
   });
 
   it("continues removing socket listeners and ModSDK hooks after individual cleanup failures", async () => {
@@ -1667,8 +1685,11 @@ describe("BCAdapter", () => {
         "AccountBeep",
         "AccountQueryResult",
         "ChatRoomMessage",
+        "ChatRoomSync",
+        "connect",
+        "disconnect",
       ]);
-      expect(socket.off).toHaveBeenCalledTimes(3);
+      expect(socket.off).toHaveBeenCalledTimes(6);
       expect(removals.length).toBeGreaterThanOrEqual(5);
       for (const { remove } of removals) expect(remove).toHaveBeenCalledOnce();
       expect(unload).toHaveBeenCalledOnce();

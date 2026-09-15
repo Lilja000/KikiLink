@@ -215,6 +215,8 @@ export interface GroupChatServiceOptions {
   persistenceDelayMs?: number;
   /** Capability is checked again at the service boundary, never only in the picker UI. */
   hasManagedPeer?: (memberNumber: number) => boolean;
+  /** Native online/room state. Unknown is allowed until the first friend snapshot arrives. */
+  isPeerReachable?: (memberNumber: number) => boolean;
   /** Message bodies and drafts stay session-only while this returns false. */
   shouldPersistHistory?: () => boolean;
 }
@@ -452,6 +454,7 @@ export class GroupChatService {
   readonly #now: () => number;
   readonly #idFactory: (prefix: "group" | "gmsg") => string;
   readonly #hasManagedPeer: ((memberNumber: number) => boolean) | undefined;
+  readonly #isPeerReachable: ((memberNumber: number) => boolean) | undefined;
   readonly #shouldPersistHistory: () => boolean;
   readonly #persistenceDelayMs: number;
   readonly #accountMemberNumber: number;
@@ -477,6 +480,7 @@ export class GroupChatService {
     // Creator authority and membership generations must never fall back to timestamp IDs.
     this.#idFactory = options.idFactory ?? ((prefix) => createSecureId(prefix));
     this.#hasManagedPeer = options.hasManagedPeer;
+    this.#isPeerReachable = options.isPeerReachable;
     this.#shouldPersistHistory = options.shouldPersistHistory ?? (() => true);
     this.#persistenceDelayMs = integerInRange(
       options.persistenceDelayMs,
@@ -624,6 +628,11 @@ export class GroupChatService {
       const members = canonicalMembers([ownMemberNumber, ...selectedMemberNumbers]);
       assertMemberCount(members);
       this.#assertManagedMembers(members, ownMemberNumber);
+      for (const memberNumber of members) {
+        if (memberNumber !== ownMemberNumber && !this.#canDirectSend(memberNumber)) {
+          throw new Error(`Member ${memberNumber} is unavailable. Choose online friends and try again.`);
+        }
+      }
       const createdAt = safeNow(this.#now);
       const memberNames = this.#memberNames(members);
       const group: GroupConversation = {
@@ -1043,6 +1052,11 @@ export class GroupChatService {
       this.#notify({ kind: "group-updated", groupId, group: cloneGroup(group) });
       return draft;
     });
+  }
+
+  async markAllRead(): Promise<void> {
+    this.#assertOpen();
+    await Promise.all(this.listGroups().map((group) => this.markRead(group.groupId)));
   }
 
   async togglePinned(groupId: string): Promise<boolean> {
@@ -1804,6 +1818,11 @@ export class GroupChatService {
   }
 
   #canDirectSend(memberNumber: number): boolean {
+    try {
+      if (this.#isPeerReachable?.(memberNumber) === false) return false;
+    } catch {
+      return false;
+    }
     try {
       if (this.transport.isMemberInCurrentRoom?.(memberNumber) === true) return true;
     } catch {

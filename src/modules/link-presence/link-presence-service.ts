@@ -1,4 +1,6 @@
+import { withBCNetworkReason } from "../../bc/traffic-audit";
 import type { BCAdapter } from "../../bc/adapter";
+import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
 import type { EventBus } from "../../core/event-bus";
 import type { SettingsStore } from "../../core/settings";
 import type {
@@ -18,7 +20,11 @@ import type { ProfileCacheRepository } from "../../storage/profile-cache-reposit
 import { normalizeImageUrl } from "../link-chat/media";
 
 const NATIVE_REFRESH_MS = 30_000;
-const CAPABILITY_REFRESH_MS = 2 * 60_000;
+const BACKGROUND_NATIVE_REFRESH_MS = 5 * 60_000;
+// One liveness refresh at 80% of the protocol TTL, independently of native friend polling.
+const PRESENCE_KEEPALIVE_MS = 4 * 60_000;
+const RECOVERY_COOLDOWN_MS = 2_000;
+const PROFILE_PENDING_MS = 10_000;
 const STATUS_CHECK_MS = 15_000;
 const REMOTE_STATUS_TTL_MS = 5 * 60_000;
 const RECENT_PACKET_ONLINE_MS = 90_000;
@@ -138,6 +144,7 @@ export class LinkPresenceService {
   readonly #pendingProfileRequests = new Map<number, PendingProfileRequest>();
   readonly #requestQueue: number[] = [];
   readonly #queuedRequests = new Set<number>();
+  readonly #interactiveRequests = new Set<number>();
   readonly #reachableOnlineFriends = new Set<number>();
   readonly #localTyping = new Map<number, { active: true; sentAt: number }>();
   readonly #remoteTypingUntil = new Map<number, number>();
@@ -148,12 +155,17 @@ export class LinkPresenceService {
   readonly #unsubscribers: Array<() => void> = [];
   readonly #authenticatedOwnMemberNumber: number | undefined;
   #nativeTimer: ReturnType<typeof setInterval> | undefined;
+  #keepaliveTimer: ReturnType<typeof setTimeout> | undefined;
+  #keepaliveDueAt: number | undefined;
+  #nativeFriendsVisible = false;
+  #lastNativeRefreshAt: number | undefined;
+  #lastRoomDiscoveryAt: number | undefined;
+  #lastPublishedPresence = "";
   #statusTimer: ReturnType<typeof setInterval> | undefined;
   #requestTimer: ReturnType<typeof setTimeout> | undefined;
   #lastInteractionAt = Date.now();
   #lastEffectiveStatus: PresenceStatus = "online";
   #lastRoomName = "";
-  #lastCapabilityBroadcastAt = 0;
   #aggregateLivePacketWindowStartedAt: number | undefined;
   #aggregateLivePacketCount = 0;
   #started = false;
@@ -172,14 +184,25 @@ export class LinkPresenceService {
   };
 
   readonly #onVisibilityChange = (): void => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      for (const peer of this.#localTyping.keys()) this.setTyping(peer, false, true);
+      return;
+    }
     if (
       this.#hasAuthenticatedIdentity() &&
       typeof document !== "undefined" &&
       document.visibilityState === "visible"
     ) {
       this.#onInteraction();
-      this.#refreshNativeFriends();
-      this.#syncRoom(true);
+      this.#refreshNativeFriends(true);
+      this.#syncRoom(false);
+      // Mobile browsers can suspend timers past remote expiry. Recover liveness
+      // once on return; a successful send replaces the overdue timer.
+      if (this.#keepaliveDueAt !== undefined && Date.now() >= this.#keepaliveDueAt) {
+        if (this.settings.getSection("linkPresence").enabled) {
+          this.#publishOwnPresence(undefined, false, true, "presence-keepalive", true);
+        } else this.#sendCapability();
+      }
     }
   };
 
@@ -245,9 +268,15 @@ export class LinkPresenceService {
         this.#notify();
       }),
       this.bus.on("bc:ready", () => {
-        this.#refreshNativeFriends();
+        this.#refreshNativeFriends(true);
         this.#syncRoom(true);
       }),
+      this.bus.on("bc:reconnected", () => {
+        this.#lastNativeRefreshAt = undefined;
+        this.#refreshNativeFriends(true);
+        this.#syncRoom(true);
+      }),
+      this.bus.on("bc:room-changed", () => this.#syncRoom(false)),
     );
 
     if (typeof window !== "undefined") {
@@ -259,14 +288,13 @@ export class LinkPresenceService {
     }
 
     this.#nativeTimer = setInterval(() => {
-      if (typeof document === "undefined" || document.visibilityState === "visible") {
-        this.#refreshNativeFriends();
-      }
+      this.#refreshNativeFriends();
+      // Fallback for older adapter hosts; this only sends when the room actually changes.
       this.#syncRoom(false);
       this.#prune();
     }, NATIVE_REFRESH_MS);
     this.#statusTimer = setInterval(() => this.#checkOwnStatus(), STATUS_CHECK_MS);
-    this.#refreshNativeFriends();
+    this.#refreshNativeFriends(true);
     this.#syncRoom(true);
   }
 
@@ -275,12 +303,19 @@ export class LinkPresenceService {
     this.#requestTimer = undefined;
     this.#requestQueue.splice(0);
     this.#queuedRequests.clear();
+    this.#interactiveRequests.clear();
     this.#reachableOnlineFriends.clear();
     if (!this.#started) return;
     for (const memberNumber of this.#localTyping.keys()) {
       this.setTyping(memberNumber, false, true);
     }
     this.#started = false;
+    this.#cancelKeepalive();
+    this.#lastPublishedPresence = "";
+    this.#lastRoomName = "";
+    this.#lastRoomDiscoveryAt = undefined;
+    this.#lastNativeRefreshAt = undefined;
+    this.#nativeFriendsVisible = false;
     if (this.#nativeTimer !== undefined) clearInterval(this.#nativeTimer);
     if (this.#statusTimer !== undefined) clearInterval(this.#statusTimer);
     this.#nativeTimer = undefined;
@@ -323,40 +358,47 @@ export class LinkPresenceService {
     return () => this.#listeners.delete(listener);
   }
 
+  /** Call on relevant workspace transitions, never on every render. Cached rows stay visible. */
+  setNativeFriendsVisible(visible: boolean): void {
+    if (this.#nativeFriendsVisible === visible) return;
+    this.#nativeFriendsVisible = visible;
+    if (visible && this.#started) this.#refreshNativeFriends(true);
+  }
+
   getOwnStatus(): PresenceStatus {
     return this.#hasAuthenticatedIdentity() ? this.#configuredOwnStatus() : "offline";
   }
 
   getOwnStatusMessage(): string {
-    return this.#hasAuthenticatedIdentity() ? this.settings.get().linkPresence.statusMessage : "";
+    return this.#hasAuthenticatedIdentity() ? this.settings.getSection("linkPresence").statusMessage : "";
   }
 
   getOwnAvatarUrl(): string {
-    return this.#hasAuthenticatedIdentity() ? this.settings.get().linkPresence.avatarUrl : "";
+    return this.#hasAuthenticatedIdentity() ? this.settings.getSection("linkPresence").avatarUrl : "";
   }
 
   getOwnBannerUrl(): string {
-    return this.#hasAuthenticatedIdentity() ? this.settings.get().linkPresence.bannerUrl : "";
+    return this.#hasAuthenticatedIdentity() ? this.settings.getSection("linkPresence").bannerUrl : "";
   }
 
   getOwnBio(): string {
-    return this.#hasAuthenticatedIdentity() ? this.settings.get().linkPresence.bio : "";
+    return this.#hasAuthenticatedIdentity() ? this.settings.getSection("linkPresence").bio : "";
   }
 
   getOwnProfileOutlineColor(): string {
     return this.#hasAuthenticatedIdentity()
-      ? this.settings.get().linkPresence.profileOutlineColor
+      ? this.settings.getSection("linkPresence").profileOutlineColor
       : "";
   }
 
   getOwnProfileGradient(): ProfileGradient | undefined {
     if (!this.#hasAuthenticatedIdentity()) return undefined;
-    const gradient = this.settings.get().linkPresence.profileGradient;
+    const gradient = this.settings.getSection("linkPresence").profileGradient;
     return gradient.enabled ? gradient : undefined;
   }
 
   hasCachedProfile(memberNumber: number, now = Date.now()): boolean {
-    if (!this.#hasAuthenticatedIdentity() || !this.settings.get().linkPresence.enabled) {
+    if (!this.#hasAuthenticatedIdentity() || !this.settings.getSection("linkPresence").enabled) {
       return false;
     }
     if (
@@ -382,7 +424,7 @@ export class LinkPresenceService {
 
   setEnabled(enabled: boolean): void {
     if (!this.#hasAuthenticatedIdentity()) return;
-    const previous = this.settings.get().linkPresence.enabled;
+    const previous = this.settings.getSection("linkPresence").enabled;
     if (previous === enabled) return;
     this.settings.update((draft) => {
       draft.linkPresence.enabled = enabled;
@@ -404,7 +446,7 @@ export class LinkPresenceService {
 
   setOwnProfile(profile: OwnProfilePreferences): void {
     if (!this.#hasAuthenticatedIdentity()) return;
-    const previousEnabled = this.settings.get().linkPresence.enabled;
+    const previousEnabled = this.settings.getSection("linkPresence").enabled;
     const next = this.settings.update((draft) => {
       draft.linkPresence.enabled = profile.enabled;
       draft.linkPresence.statusMessage = profile.statusMessage;
@@ -458,7 +500,7 @@ export class LinkPresenceService {
       return { memberNumber, status: "unknown", source: "unknown", updatedAt: 0 };
     }
     if (memberNumber === this.#authenticatedOwnMemberNumber) {
-      const config = this.settings.get().linkPresence;
+      const config = this.settings.getSection("linkPresence");
       return {
         memberNumber,
         status: this.#configuredOwnStatus(),
@@ -477,13 +519,14 @@ export class LinkPresenceService {
           ? { profileGradient: config.profileGradient }
           : {}),
         addonVersion: this.version,
+        addonInstalled: true,
       };
     }
     if (!isPositiveMemberNumber(memberNumber) || this.#rejectPeerForRelationship(memberNumber)) {
       return { memberNumber, status: "unknown", source: "unknown", updatedAt: 0 };
     }
 
-    const cached = this.settings.get().linkPresence.enabled
+    const cached = this.settings.getSection("linkPresence").enabled
       ? this.#cachedProfile(memberNumber, now)
       : undefined;
     const remote = this.#remote.get(memberNumber);
@@ -515,17 +558,18 @@ export class LinkPresenceService {
         : typeof this.adapter.getOnlineFriends === "function"
           ? this.adapter.getOnlineFriends().find((friend) => friend.memberNumber === memberNumber)
           : undefined;
-      if (onlineFriend) {
+      if (onlineFriend && nativeFriendSnapshotIsFresh(this.adapter, now)) {
         if (onlineFriend.memberNumber !== memberNumber) throw new Error("Mismatched friend record");
-        if (typeof onlineFriend.roomName === "string" && onlineFriend.roomName.trim()) {
-          onlineFriendRoomName = onlineFriend.roomName;
-        }
+        onlineFriendRoomName = onlineFriend.privateRoom ? "Private room"
+          : onlineFriend.locationKnown === false ? undefined : onlineFriend.roomName?.trim() || "Lobby";
         onlineFriendPresent = true;
       }
     } catch {
       // Treat a denied online-friend object as unavailable instead of rejecting a UI handler.
     }
-    const observableRoomName = onlineFriendRoomName ?? currentRoomName;
+    // The currently visible room is fresher than the periodic friend-list snapshot.
+    const observableRoomName = currentRoomName ?? onlineFriendRoomName;
+    const addonInstalled = this.hasCompatiblePeer(memberNumber, now);
     const liveProfileDetails = remoteProfileDetails &&
       now - remoteProfileDetails.receivedAt <= REMOTE_STATUS_TTL_MS
       ? remoteProfileDetails
@@ -541,6 +585,7 @@ export class LinkPresenceService {
         memberNumber,
         status: remote.status,
         source: "kikilink",
+        addonInstalled,
         updatedAt: remote.remoteUpdatedAt,
         ...(remote.statusMessage ? { statusMessage: remote.statusMessage } : {}),
         ...(remote.avatarUrl ? { avatarUrl: remote.avatarUrl } : {}),
@@ -562,6 +607,7 @@ export class LinkPresenceService {
         memberNumber,
         status: "online",
         source: "room",
+        addonInstalled,
         updatedAt: now,
         ...(currentRoomName ? { roomName: currentRoomName } : {}),
         ...nonRemotePublicProfileFields(cached, liveProfileDetails),
@@ -574,6 +620,7 @@ export class LinkPresenceService {
         memberNumber,
         status: "online",
         source: "friend-list",
+        addonInstalled,
         updatedAt: now,
         ...(onlineFriendRoomName ? { roomName: onlineFriendRoomName } : {}),
         ...nonRemotePublicProfileFields(cached, liveProfileDetails),
@@ -586,6 +633,7 @@ export class LinkPresenceService {
         typeof this.adapter.hasOnlineFriendSnapshot === "function" &&
         typeof this.adapter.isKnownFriend === "function" &&
         this.adapter.hasOnlineFriendSnapshot() &&
+        nativeFriendSnapshotIsFresh(this.adapter, now) &&
         this.adapter.isKnownFriend(memberNumber);
     } catch {
       // Native friend lists may be guarded during account/screen transitions.
@@ -595,6 +643,7 @@ export class LinkPresenceService {
         memberNumber,
         status: "offline",
         source: "friend-list",
+        addonInstalled,
         updatedAt: now,
         ...nonRemotePublicProfileFields(cached, liveProfileDetails),
       };
@@ -603,6 +652,7 @@ export class LinkPresenceService {
       memberNumber,
       status: "unknown",
       source: "unknown",
+      addonInstalled,
       updatedAt: 0,
       ...nonRemotePublicProfileFields(cached, liveProfileDetails),
     };
@@ -618,9 +668,14 @@ export class LinkPresenceService {
       return false;
     }
     if (this.#rejectPeerForRelationship(memberNumber)) return false;
-    const requestProfile = includeProfile && this.settings.get().linkPresence.enabled;
+    const requestProfile = includeProfile && this.settings.getSection("linkPresence").enabled;
     if (includeProfile && !requestProfile) this.#pendingProfileRequests.delete(memberNumber);
     const now = Date.now();
+    const pending = this.#pendingProfileRequests.get(memberNumber);
+    if (pending && now - pending.requestedAt < PROFILE_PENDING_MS) return false;
+    // A richer profile request also satisfies simultaneous capability/presence consumers.
+    const lastAnyRequest = this.#lastRequestAt.get(memberNumber);
+    if (force && !requestProfile && lastAnyRequest !== undefined && now - lastAnyRequest < FORCED_REQUEST_COOLDOWN_MS) return false;
     const previousRequestAt = requestProfile
       ? this.#lastProfileRequestAt.get(memberNumber)
       : force
@@ -671,7 +726,7 @@ export class LinkPresenceService {
    * Quietly discovers KikiLink presence for a visible player list without bursting BC's socket.
    * Repeated renders are cheap: queued members and the normal request cooldown are deduplicated.
    */
-  requestMany(memberNumbers: Iterable<number>): number {
+  requestMany(memberNumbers: Iterable<number>, options: { interactive?: boolean } = {}): number {
     if (!this.#hasAuthenticatedIdentity()) return 0;
     const ownMemberNumber = this.#authenticatedOwnMemberNumber;
     const now = Date.now();
@@ -682,16 +737,17 @@ export class LinkPresenceService {
         !Number.isSafeInteger(memberNumber) ||
         memberNumber <= 0 ||
         memberNumber === ownMemberNumber ||
-        this.hasCompatiblePeer(memberNumber, now) ||
+        (options.interactive ? this.hasGroupManagedPeer(memberNumber, now) : this.hasCompatiblePeer(memberNumber, now)) ||
         this.#queuedRequests.has(memberNumber) ||
         now - (this.#lastRequestAt.get(memberNumber) ?? 0) <
-          BACKGROUND_REQUEST_COOLDOWN_MS ||
+          (options.interactive ? FORCED_REQUEST_COOLDOWN_MS : this.#remoteVersions.has(memberNumber) ? REQUEST_COOLDOWN_MS : BACKGROUND_REQUEST_COOLDOWN_MS) ||
         !this.#isBackgroundRouteReachable(memberNumber)
       ) {
         continue;
       }
       this.#requestQueue.push(memberNumber);
       this.#queuedRequests.add(memberNumber);
+      if (options.interactive) this.#interactiveRequests.add(memberNumber);
       added += 1;
     }
     if (this.#requestQueue.length > 0 && this.#requestTimer === undefined) {
@@ -749,7 +805,7 @@ export class LinkPresenceService {
       return false;
     }
     if (this.#rejectPeerForRelationship(memberNumber)) return false;
-    if (!this.settings.get().linkChat.typingIndicators && !(force && !active)) return false;
+    if (!this.settings.getSection("linkChat").typingIndicators && !(force && !active)) return false;
 
     const previous = this.#localTyping.get(memberNumber);
     const now = Date.now();
@@ -760,7 +816,8 @@ export class LinkPresenceService {
     const packet: PresencePacket = { t: "ty", a: active ? 1 : 0 };
     if (!this.#hasAuthenticatedIdentity()) return false;
     try {
-      this.adapter.sendKikiLinkProtocol(memberNumber, JSON.stringify(packet));
+      withBCNetworkReason(active ? (previous ? "typing-refresh" : "typing-start") : "typing-stop",
+        () => this.adapter.sendKikiLinkProtocol(memberNumber, JSON.stringify(packet)));
       if (active) this.#localTyping.set(memberNumber, { active: true, sentAt: now });
       return true;
     } catch {
@@ -784,18 +841,19 @@ export class LinkPresenceService {
       const memberNumber = this.#requestQueue.shift();
       if (memberNumber === undefined) break;
       this.#queuedRequests.delete(memberNumber);
+      const interactive = this.#interactiveRequests.delete(memberNumber);
       const now = Date.now();
       if (
         !isPositiveMemberNumber(memberNumber) ||
         memberNumber === this.#authenticatedOwnMemberNumber ||
-        this.hasCompatiblePeer(memberNumber, now) ||
+        (interactive ? this.hasGroupManagedPeer(memberNumber, now) : this.hasCompatiblePeer(memberNumber, now)) ||
         now - (this.#lastRequestAt.get(memberNumber) ?? 0) <
-          BACKGROUND_REQUEST_COOLDOWN_MS ||
+          (interactive ? FORCED_REQUEST_COOLDOWN_MS : this.#remoteVersions.has(memberNumber) ? REQUEST_COOLDOWN_MS : BACKGROUND_REQUEST_COOLDOWN_MS) ||
         !this.#isBackgroundRouteReachable(memberNumber)
       ) {
         continue;
       }
-      sent = this.request(memberNumber);
+      sent = this.request(memberNumber, interactive);
     }
     if (this.#requestQueue.length > 0) {
       this.#requestTimer = setTimeout(
@@ -830,7 +888,7 @@ export class LinkPresenceService {
     const wasCompatible = this.hasCompatiblePeer(senderNumber, receivedAt);
     this.#compatiblePeers.set(senderNumber, receivedAt);
     if (packet.t === "ty") {
-      if (!this.settings.get().linkChat.typingIndicators) {
+      if (!this.settings.getSection("linkChat").typingIndicators) {
         if (!wasCompatible) this.#notify(senderNumber);
         return;
       }
@@ -842,13 +900,18 @@ export class LinkPresenceService {
       const lastResponseAt = this.#lastResponseAt.get(senderNumber);
       if (lastResponseAt === undefined || receivedAt - lastResponseAt >= RESPONSE_COOLDOWN_MS) {
         this.#lastResponseAt.set(senderNumber, receivedAt);
-        if (this.settings.get().linkPresence.enabled) this.#sendPresence(senderNumber, packet.i);
+        if (this.settings.getSection("linkPresence").enabled) this.#sendPresence(senderNumber, packet.i);
         else this.#sendCapability(senderNumber);
+        // A query proves KikiLink is present but carries no group capability. Complete the
+        // handshake in both directions, including when our first query preceded their hooks.
+        if (!this.#groupCompatiblePeers.has(senderNumber) && this.#isBackgroundRouteReachable(senderNumber)) {
+          this.request(senderNumber, true);
+        }
       }
       const lastProfileResponseAt = this.#lastProfileResponseAt.get(senderNumber);
       if (
         packet.p === 1 &&
-        this.settings.get().linkPresence.enabled &&
+        this.settings.getSection("linkPresence").enabled &&
         (lastProfileResponseAt === undefined ||
           receivedAt - lastProfileResponseAt >= PROFILE_RESPONSE_COOLDOWN_MS)
       ) {
@@ -863,15 +926,17 @@ export class LinkPresenceService {
       return;
     }
     if (packet.t === "pc") {
+      const capabilityChanged = this.#remoteVersions.get(senderNumber) !== packet.v ||
+        (packet.g !== undefined && this.#groupCompatiblePeers.get(senderNumber)?.version !== packet.g);
       this.#remoteVersions.set(senderNumber, packet.v);
       if (packet.g !== undefined) {
         this.#groupCompatiblePeers.set(senderNumber, { seenAt: receivedAt, version: packet.g });
       }
-      if (!wasCompatible) this.#notify(senderNumber);
+      if (!wasCompatible || capabilityChanged) this.#notify(senderNumber);
       return;
     }
     if (packet.t === "pf") {
-      if (!this.settings.get().linkPresence.enabled) {
+      if (!this.settings.getSection("linkPresence").enabled) {
         this.#pendingProfileRequests.delete(senderNumber);
         if (!wasCompatible) this.#notify(senderNumber);
         return;
@@ -913,7 +978,7 @@ export class LinkPresenceService {
       return;
     }
     if (packet.t === "pb") {
-      if (!this.settings.get().linkPresence.enabled) {
+      if (!this.settings.getSection("linkPresence").enabled) {
         this.#pendingProfileRequests.delete(senderNumber);
         if (!wasCompatible) this.#notify(senderNumber);
         return;
@@ -963,7 +1028,7 @@ export class LinkPresenceService {
     if (withdrawsProfile) this.#pendingProfileRequests.delete(senderNumber);
     // Capability and profile sharing are deliberately separate. A valid packet proves the addon
     // is installed (and enables Blossom), while disabled Presence still withholds remote profiles.
-    if (!this.settings.get().linkPresence.enabled) {
+    if (!this.settings.getSection("linkPresence").enabled) {
       if (withdrawsProfile) this.profileCache?.remove(senderNumber);
       if (!wasCompatible) this.#notify(senderNumber);
       return;
@@ -1226,6 +1291,7 @@ export class LinkPresenceService {
     } catch {
       // Try the native online-friend route below.
     }
+    if (!nativeFriendSnapshotIsFresh(this.adapter)) return false;
     try {
       if (typeof this.adapter.getOnlineFriend === "function") {
         return this.adapter.getOnlineFriend(memberNumber)?.memberNumber === memberNumber;
@@ -1279,6 +1345,7 @@ export class LinkPresenceService {
     changed = this.#lastProfileRequestAt.delete(memberNumber) || changed;
     changed = this.#lastResponseAt.delete(memberNumber) || changed;
     changed = this.#lastProfileResponseAt.delete(memberNumber) || changed;
+    this.#interactiveRequests.delete(memberNumber);
     changed = this.#queuedRequests.delete(memberNumber) || changed;
     changed = this.#reachableOnlineFriends.delete(memberNumber) || changed;
     changed = this.#trackedRemoteSenders.delete(memberNumber) || changed;
@@ -1307,7 +1374,7 @@ export class LinkPresenceService {
 
   #sendPresence(target: number, requestId?: string): void {
     if (!this.#hasAuthenticatedIdentity()) return;
-    const config = this.settings.get().linkPresence;
+    const config = this.settings.getSection("linkPresence");
     const packet: PresencePacket = {
       t: "ps",
       ...(requestId ? { i: requestId } : {}),
@@ -1335,7 +1402,7 @@ export class LinkPresenceService {
     supportsBio: boolean,
   ): void {
     if (!this.#hasAuthenticatedIdentity()) return;
-    const config = this.settings.get().linkPresence;
+    const config = this.settings.getSection("linkPresence");
     const packet: Extract<PresencePacket, { t: "pf" }> = {
       t: "pf",
       i: requestId,
@@ -1368,79 +1435,85 @@ export class LinkPresenceService {
 
   #sendCapability(target?: number): void {
     if (!this.#hasAuthenticatedIdentity()) return;
-    const payload = JSON.stringify({
-      t: "pc",
-      v: this.version,
-      g: GROUP_CAPABILITY_VERSION,
-    } satisfies PresencePacket);
+    const payload = JSON.stringify({ t: "pc", v: this.version, g: GROUP_CAPABILITY_VERSION } satisfies PresencePacket);
     try {
-      if (!this.#hasAuthenticatedIdentity()) return;
-      if (target === undefined) this.adapter.broadcastKikiLinkProtocol(payload);
-      else this.adapter.sendKikiLinkProtocol(target, payload);
-    } catch {
-      // Discovery is best-effort; the room/player can disappear between native frames.
-    }
+      if (target === undefined) {
+        if (this.adapter.broadcastKikiLinkProtocol(payload)) this.#scheduleKeepalive();
+      } else this.adapter.sendKikiLinkProtocol(target, payload);
+    } catch { /* Discovery stays best effort during native transitions. */ }
   }
 
   #publishOwnPresence(
     statusOverride?: PresenceStatus,
     force = false,
     includeProfile = true,
+    reason = "presence-update",
+    reannounce = false,
   ): void {
     if (!this.#hasAuthenticatedIdentity()) return;
-    if (!force && !this.settings.get().linkPresence.enabled) return;
-    const config = this.settings.get().linkPresence;
+    if (!force && !this.settings.getSection("linkPresence").enabled) return;
+    const config = this.settings.getSection("linkPresence");
     const packet: PresencePacket = {
-      t: "ps",
-      s: statusOverride ?? this.getOwnStatus(),
+      t: "ps", s: statusOverride ?? this.getOwnStatus(),
       ...(includeProfile && config.statusMessage ? { m: config.statusMessage } : {}),
       ...(includeProfile && config.avatarUrl ? { a: config.avatarUrl } : {}),
       ...(includeProfile ? { f: config.avatarFrame, c: config.profileStyle } : {}),
-      u: Date.now(),
-      v: this.version,
-      g: GROUP_CAPABILITY_VERSION,
+      u: Date.now(), v: this.version, g: GROUP_CAPABILITY_VERSION,
     };
     try {
+      // Ignore the timestamp when comparing actual advertised state.
+      const signature = serializePresencePacket({ ...packet, u: 0 });
+      if (!reannounce && signature === this.#lastPublishedPresence) return;
+      if (withBCNetworkReason(reason, () => this.adapter.broadcastKikiLinkProtocol(serializePresencePacket(packet)))) {
+        this.#lastPublishedPresence = signature;
+        this.#scheduleKeepalive();
+      }
+    } catch { /* An unavailable transport must not break profile controls. */ }
+  }
+
+  #cancelKeepalive(): void {
+    if (this.#keepaliveTimer !== undefined) clearTimeout(this.#keepaliveTimer);
+    this.#keepaliveTimer = undefined;
+    this.#keepaliveDueAt = undefined;
+  }
+
+  #scheduleKeepalive(): void {
+    this.#cancelKeepalive();
+    if (!this.#started || !this.#lastRoomName) return;
+    this.#keepaliveDueAt = Date.now() + PRESENCE_KEEPALIVE_MS;
+    this.#keepaliveTimer = setTimeout(() => {
+      this.#keepaliveTimer = undefined;
       if (!this.#hasAuthenticatedIdentity()) return;
-      this.adapter.broadcastKikiLinkProtocol(serializePresencePacket(packet));
-    } catch {
-      // A malformed or unexpectedly oversized local preference must never break profile controls.
-    }
+      this.#syncRoom(false);
+      // A room transition just sent its immediate announcement and reset the one timer.
+      if (!this.#lastRoomName || this.#keepaliveTimer !== undefined) return;
+      if (this.settings.getSection("linkPresence").enabled) {
+        this.#publishOwnPresence(undefined, false, true, "presence-keepalive", true);
+      } else this.#sendCapability();
+      // Retry a failed refresh only at the next rare liveness interval; never spin on a timer.
+      if (this.#keepaliveTimer === undefined) this.#scheduleKeepalive();
+    }, PRESENCE_KEEPALIVE_MS);
   }
 
   #syncRoom(force: boolean): void {
     if (!this.#hasAuthenticatedIdentity()) return;
-    let roomName = "";
+    let roomName: string;
     try {
-      roomName = this.adapter.isInChatRoom() ? this.adapter.getCurrentRoomName() ?? "?" : "";
-    } catch {
-      return;
-    }
+      roomName = this.adapter.getCurrentRoomKey?.() ??
+        (this.adapter.isInChatRoom() ? this.adapter.getCurrentRoomName() ?? "?" : "");
+    } catch { return; }
     const roomChanged = roomName !== this.#lastRoomName;
     this.#lastRoomName = roomName;
-    if (!roomName) return;
-
-    // A peer can join after our first room announcement or can finish loading its addon later.
-    // The query runs on entry; enabled profiles use the existing heartbeat while disabled profiles
-    // send only a much slower capability refresh. Neither produces visible chat noise.
-    if (force || roomChanged) {
-      if (!this.#hasAuthenticatedIdentity()) return;
-      const query: PresencePacket = { t: "pq", i: createId("room").slice(-18), b: 1 };
-      try {
-        this.adapter.broadcastKikiLinkProtocol(JSON.stringify(query));
-      } catch {
-        // Guarded or temporarily unavailable native transport must not abort service startup.
-      }
-    }
-    if (this.settings.get().linkPresence.enabled) {
-      this.#publishOwnPresence();
-      return;
-    }
+    if (!roomName) { this.#lastPublishedPresence = ""; this.#cancelKeepalive(); return; }
     const now = Date.now();
-    if (force || roomChanged || now - this.#lastCapabilityBroadcastAt >= CAPABILITY_REFRESH_MS) {
-      this.#lastCapabilityBroadcastAt = now;
-      this.#sendCapability();
-    }
+    if (!roomChanged && (!force || (this.#lastRoomDiscoveryAt !== undefined && now - this.#lastRoomDiscoveryAt < RECOVERY_COOLDOWN_MS))) return;
+    this.#lastRoomDiscoveryAt = now;
+    this.#lastPublishedPresence = "";
+    const query: PresencePacket = { t: "pq", i: createId("room").slice(-18), b: 1 };
+    try { this.adapter.broadcastKikiLinkProtocol(JSON.stringify(query)); } catch { /* Native reconnect can race the room state. */ }
+    if (this.settings.getSection("linkPresence").enabled) this.#publishOwnPresence();
+    else this.#sendCapability();
+    if (this.#keepaliveTimer === undefined) this.#scheduleKeepalive();
   }
 
   #checkOwnStatus(): void {
@@ -1470,6 +1543,12 @@ export class LinkPresenceService {
       this.#compatiblePeers.delete(memberNumber);
       this.#groupCompatiblePeers.delete(memberNumber);
       this.#remoteVersions.delete(memberNumber);
+      // Allow one fresh discovery for a previously confirmed peer. Otherwise deleting
+      // its version here applies the unknown-player backoff and hides the flower for
+      // another ten minutes. An unanswered retry returns to the normal long backoff.
+      if (now - (this.#lastRequestAt.get(memberNumber) ?? 0) >= REQUEST_COOLDOWN_MS) {
+        this.#lastRequestAt.delete(memberNumber);
+      }
       changed.add(memberNumber);
     }
     for (const [memberNumber, capability] of this.#groupCompatiblePeers) {
@@ -1525,7 +1604,7 @@ export class LinkPresenceService {
   }
 
   #configuredOwnStatus(): PresenceStatus {
-    const config = this.settings.get().linkPresence;
+    const config = this.settings.getSection("linkPresence");
     if (config.status !== "online" || config.autoIdleMinutes === 0) return config.status;
     return Date.now() - this.#lastInteractionAt >= config.autoIdleMinutes * 60_000
       ? "idle"
@@ -1569,6 +1648,7 @@ export class LinkPresenceService {
     this.#statusTimer = undefined;
     this.#requestQueue.splice(0);
     this.#queuedRequests.clear();
+    this.#interactiveRequests.clear();
     this.#reachableOnlineFriends.clear();
 
     for (const unsubscribe of this.#unsubscribers.splice(0).reverse()) unsubscribe();
@@ -1601,7 +1681,10 @@ export class LinkPresenceService {
     this.#aggregateLivePacketWindowStartedAt = undefined;
     this.#aggregateLivePacketCount = 0;
     this.#lastRoomName = "";
-    this.#lastCapabilityBroadcastAt = 0;
+    this.#cancelKeepalive();
+    this.#lastPublishedPresence = "";
+    this.#lastNativeRefreshAt = undefined;
+    this.#lastRoomDiscoveryAt = undefined;
     this.#lastEffectiveStatus = "offline";
 
     // Let the old view discard cached voluntary fields before its normal teardown runs.
@@ -1615,9 +1698,16 @@ export class LinkPresenceService {
       : -1;
   }
 
-  #refreshNativeFriends(): void {
+  #refreshNativeFriends(interactive = false): void {
     if (!this.#hasAuthenticatedIdentity()) return;
+    const now = Date.now();
+    const visible = typeof document === "undefined" || document.visibilityState === "visible";
+    const interval = interactive || (visible && this.#nativeFriendsVisible) ? NATIVE_REFRESH_MS : BACKGROUND_NATIVE_REFRESH_MS;
     try {
+      // Native BC/another addon may already have obtained a newer result; reuse that too.
+      const latest = Math.max(this.#lastNativeRefreshAt ?? 0, this.adapter.getOnlineFriendsUpdatedAt?.() ?? 0);
+      if (latest > 0 && now - latest < interval) return;
+      this.#lastNativeRefreshAt = now;
       this.adapter.refreshOnlineFriends();
     } catch {
       // Native online-friend state is best effort during account and screen transitions.

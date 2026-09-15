@@ -1,4 +1,6 @@
 node_modules/
+node_modules
+.local-dev/
 dist/*
 !dist/KikiLink.user.js
 !dist/KikiLink.fusam.js

@@ -94,14 +94,14 @@ describe("SettingsStore", () => {
     }));
 
     const settings = new SettingsStore(storage).get();
-    expect(settings.schemaVersion).toBe(28);
-    expect(settings.linkPresence.profileImagePreviews).toBe("ask");
+    expect(settings.schemaVersion).toBe(29);
+    expect(settings.linkPresence.profileImagePreviews).toBe("always");
 
     const persisted = JSON.parse(storage.getItem(SETTINGS_KEY) ?? "null") as Record<
       string,
       unknown
     >;
-    expect(persisted.schemaVersion).toBe(28);
+    expect(persisted.schemaVersion).toBe(29);
     expect(persisted).not.toHaveProperty("unknownRootField");
     expect(JSON.stringify(persisted)).not.toContain("legacy-cloud-name");
     expect(JSON.stringify(persisted)).not.toContain("legacy-upload-preset");
@@ -127,7 +127,7 @@ describe("SettingsStore", () => {
     expect(settings.ui.accent).toBe(DEFAULT_SETTINGS.ui.accent);
     expect(settings.ui.theme).toBe(DEFAULT_SETTINGS.ui.theme);
     expect(settings.ui.launcherSide).toBe("right");
-    expect(settings.ui.launcherOpen).toBe("home");
+    expect(settings.ui.launcherOpen).toBe("last");
     expect(settings.ui.launcherPosition).toBeNull();
     expect(settings.ui.density).toBe("comfortable");
     expect(settings.ui.textScale).toBe("normal");
@@ -191,7 +191,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(28);
+    expect(settings.schemaVersion).toBe(29);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -315,7 +315,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(28);
+    expect(settings.schemaVersion).toBe(29);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -323,7 +323,7 @@ describe("SettingsStore", () => {
       trackEncounters: true,
       retentionDays: 365,
     });
-    expect(settings.ui.launcherOpen).toBe("home");
+    expect(settings.ui.launcherOpen).toBe("last");
   });
 
   it("adds comfort preferences to 0.6 settings without changing existing choices", () => {
@@ -339,7 +339,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(28);
+    expect(settings.schemaVersion).toBe(29);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -379,7 +379,7 @@ describe("SettingsStore", () => {
       status: "dnd",
       statusMessage: "In a scene",
       bio: "",
-      profileImagePreviews: "ask",
+      profileImagePreviews: "always",
       avatarUrl: "",
       bannerUrl: "",
       avatarFrame: "none",
@@ -391,15 +391,15 @@ describe("SettingsStore", () => {
     });
   });
 
-  it("defaults profile art to consent-first previews while bounding public bio", () => {
+  it("defaults profile art to automatic previews while preserving opt-outs and bounding public bio", () => {
     const defaults = sanitizeSettings({ schemaVersion: 26, linkPresence: {} });
-    expect(defaults.linkPresence.profileImagePreviews).toBe("ask");
+    expect(defaults.linkPresence.profileImagePreviews).toBe("always");
 
     for (const legacyPreference of ["always", "ask", "never"] as const) {
       expect(sanitizeSettings({
         schemaVersion: 27,
         linkPresence: { profileImagePreviews: legacyPreference },
-      }).linkPresence.profileImagePreviews).toBe("ask");
+      }).linkPresence.profileImagePreviews).toBe(legacyPreference === "never" ? "never" : "always");
     }
 
     const customized = sanitizeSettings({
@@ -416,7 +416,7 @@ describe("SettingsStore", () => {
     expect(sanitizeSettings({
       schemaVersion: 28,
       linkPresence: { profileImagePreviews: "remote-css" },
-    }).linkPresence.profileImagePreviews).toBe("ask");
+    }).linkPresence.profileImagePreviews).toBe("always");
   });
 
   it("migrates profile decoration details into schema 26 and accepts only safe values", () => {
@@ -424,7 +424,7 @@ describe("SettingsStore", () => {
       schemaVersion: 23,
       linkPresence: { status: "dnd" },
     });
-    expect(legacy.schemaVersion).toBe(28);
+    expect(legacy.schemaVersion).toBe(29);
     expect(legacy.linkPresence).toMatchObject({
       avatarFrame: "none",
       profileStyle: "classic",
@@ -529,7 +529,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(28);
+    expect(settings.schemaVersion).toBe(29);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -705,7 +705,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(28);
+    expect(settings.schemaVersion).toBe(29);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -833,7 +833,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(28);
+    expect(settings.schemaVersion).toBe(29);
     expect(settings.linkRoom.favoriteRoomNames).toEqual(["Moon Garden", "Golden Hall"]);
     expect(settings.linkRoom.presets[0]).toMatchObject({
       id: "moon_room",

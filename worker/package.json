@@ -1,0 +1,21 @@
+{
+  "name": "kikilink-catbox-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bundle": "wrangler deploy --dry-run",
+    "check": "npm run typecheck && npm test && npm run bundle",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "wrangler": "^4.36.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

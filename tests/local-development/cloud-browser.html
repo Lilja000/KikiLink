@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KikiLink · проверка браузерного ключа</title>
+<style>
+  body { margin: 0; padding: 28px; background: #17171d; color: #eee; font: 16px/1.55 system-ui; }
+  main { max-width: 760px; margin: auto; }
+  h1 { font-size: 25px; } p { color: #c7c7d2; }
+  button { padding: 12px 18px; border: 1px solid #787099; border-radius: 8px; background: #443760; color: white; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #result { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .pass { color: #90ddb0; } .fail { color: #ffa6ac; }
+</style>
+<main>
+  <h1>Проверка браузерного ключа KikiLink</h1>
+  <p>Локальная модель входа в BC и настоящий Cloud API с временной базой.
+    FUSAM загружает dev-сборку; браузер хранит ключ в IndexedDB.
+    Проверка дважды перезагрузит страницу. Оставьте эту вкладку открытой.</p>
+  <p>Аккаунты и сеть BC, VPS, пароли и игровые сообщения здесь не используются.
+    Этот отчёт не подтверждает живой вход в BC или внешнее HTTPS-подключение.</p>
+  <button id="start" disabled>Начать проверку</button>
+  <button id="stop" disabled>Закрыть тестовый сервер</button>
+  <p id="status" role="status">Подготовка…</p>
+  <ol id="checks"></ol>
+  <pre id="result"></pre>
+</main>
+<script type="module" src="/cloud-browser.js"></script>
+</html>

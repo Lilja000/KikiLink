@@ -32,7 +32,7 @@ function setup(options: {
     ? undefined
     : options.relationshipReader ?? (() => []);
   const sendKikiLinkProtocol = vi.fn((_memberNumber: number, _payload: string) => "beep" as const);
-  const broadcastKikiLinkProtocol = vi.fn((_payload: string) => false);
+  const broadcastKikiLinkProtocol = vi.fn((_payload: string) => inRoom);
   const adapter = {
     getOwnMemberNumber,
     getMemberName: (memberNumber: number) => memberNumber === 123 ? "Reina" : `Member ${memberNumber}`,
@@ -83,6 +83,71 @@ describe("LinkPresenceService", () => {
     expect(service.get(123)).toMatchObject({ status: "online", source: "friend-list" });
     expect(service.get(456)).toMatchObject({ status: "offline", source: "friend-list" });
     expect(service.get(777)).toMatchObject({ status: "unknown", source: "unknown" });
+  });
+
+  it("treats stale native snapshots as unknown, including previously offline friends", () => {
+    const { service, adapter } = setup(); const now = Date.now();
+    adapter.getOnlineFriendsUpdatedAt = () => now;
+    expect(service.get(123, now).status).toBe("online"); expect(service.get(456, now).status).toBe("offline");
+    expect(service.get(123, now + 90_001)).toMatchObject({ status: "unknown", source: "unknown" });
+    expect(service.get(123, now + 90_001).roomName).toBeUndefined();
+    expect(service.get(456, now + 90_001).status).toBe("unknown");
+    adapter.isMemberInCurrentRoom = () => true; adapter.getCurrentRoomName = () => "Cards";
+    expect(service.get(123, now + 90_001)).toMatchObject({ status: "online", roomName: "Cards" });
+  });
+
+  it("keeps fresh addon proof independent of native online status and expires it", () => {
+    const { bus, service } = setup({ getOnlineFriendNumbers: () => [] });
+    service.start();
+    try {
+      const now = Date.now();
+      for (const senderNumber of [123, 777]) {
+        bus.emit("bc:protocol", { senderNumber, channel: "beep", payload: JSON.stringify({ t: "pc", v: "0.29.0", g: 3 }) });
+      }
+      expect(service.get(123)).toMatchObject({ status: "offline", addonInstalled: true });
+      expect(service.get(777)).toMatchObject({ status: "unknown", addonInstalled: true });
+      expect(service.get(123, now + 5 * 60_000 + 100).addonInstalled).toBe(false);
+      expect(service.get(777, now + 5 * 60_000 + 100).addonInstalled).toBe(false);
+    } finally { service.stop(); }
+  });
+
+  it("notifies visible selectors when a detected peer confirms group capabilities", () => {
+    const { bus, service } = setup(); service.start();
+    try {
+      const changed = vi.fn(); service.subscribe(changed);
+      const packet = (g?: number) => bus.emit("bc:protocol", { senderNumber: 123, channel: "beep", payload: JSON.stringify({ t: "pc", v: "0.29.0", ...(g !== undefined ? { g } : {}) }) });
+      packet(); expect(service.hasGroupManagedPeer(123)).toBe(false);
+      changed.mockClear(); packet(3);
+      expect(service.hasGroupManagedPeer(123)).toBe(true);
+      expect(changed).toHaveBeenCalledWith(123);
+      changed.mockClear(); packet(3); expect(changed).not.toHaveBeenCalled();
+    } finally { service.stop(); }
+  });
+
+  it("permits one rediscovery after confirmed presence expires without spamming unknown peers", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-07T12:00:00Z"));
+    const { bus, service } = setup({ getOnlineFriendNumbers: () => [123, 456] });
+    service.start();
+    try {
+      expect(service.requestMany([123, 456])).toBe(2); vi.advanceTimersByTime(200);
+      bus.emit("bc:protocol", { senderNumber: 123, channel: "beep", payload: JSON.stringify({ t: "pc", v: "0.29.0", g: 3 }) });
+      vi.advanceTimersByTime(6 * 60_000);
+      expect(service.hasCompatiblePeer(123)).toBe(false);
+      expect(service.requestMany([123])).toBe(1);
+      expect(service.requestMany([456])).toBe(0);
+      vi.advanceTimersByTime(20_000);
+      expect(service.requestMany([123])).toBe(0);
+    } finally { service.stop(); }
+  });
+
+  it("distinguishes native Lobby, malformed location metadata, and private room names", () => {
+    const { service, adapter } = setup();
+    adapter.getOnlineFriend = () => ({ memberNumber: 123, memberName: "Reina", privateRoom: false });
+    expect(service.get(123).roomName).toBe("Lobby");
+    adapter.getOnlineFriend = () => ({ memberNumber: 123, memberName: "Reina", privateRoom: false, locationKnown: false });
+    expect(service.get(123)).toMatchObject({ status: "online" }); expect(service.get(123).roomName).toBeUndefined();
+    adapter.getOnlineFriend = () => ({ memberNumber: 123, memberName: "Reina", roomName: "Secret room", privateRoom: true });
+    expect(service.get(123).roomName).toBe("Private room");
   });
 
   it("answers compatible presence queries and accepts remote DND state", () => {
@@ -699,6 +764,8 @@ describe("LinkPresenceService", () => {
     });
 
     vi.advanceTimersByTime(2_001);
+    expect(service.request(456, true, true)).toBe(false); // missing bio is still in flight
+    vi.advanceTimersByTime(8_000);
     expect(service.request(456, true, true)).toBe(true);
     const clearQuery = JSON.parse(
       sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
@@ -1127,6 +1194,7 @@ describe("LinkPresenceService", () => {
   });
 
   it("never sends or accepts profile details while Presence is disabled", () => {
+    vi.useFakeTimers();
     const { bus, service, settings, sendKikiLinkProtocol } = setup();
     settings.update((draft) => {
       draft.linkPresence.enabled = false;
@@ -1150,6 +1218,13 @@ describe("LinkPresenceService", () => {
     expect(payloads.some((payload) => payload.includes('"t":"pc"'))).toBe(true);
     expect(payloads.some((payload) => payload.includes('"t":"pf"'))).toBe(false);
 
+    // The reciprocal capability query shares the forced-query cooldown, without profile fields.
+    const reciprocalQuery = JSON.parse(sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}");
+    expect(reciprocalQuery).toMatchObject({ t: "pq" });
+    expect(reciprocalQuery).not.toHaveProperty("p");
+    expect(reciprocalQuery).not.toHaveProperty("e");
+    expect(service.request(123, true, true)).toBe(false);
+    vi.advanceTimersByTime(2_001);
     expect(service.request(123, true, true)).toBe(true);
     const disabledQuery = JSON.parse(
       sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}",
@@ -1784,7 +1859,7 @@ describe("LinkPresenceService", () => {
     service.stop();
   });
 
-  it("reannounces presence in an unchanged room so late-loading peers get Blossom", () => {
+  it("keeps unchanged presence alive before its TTL without a 30-second heartbeat", () => {
     vi.useFakeTimers();
     const { service, broadcastKikiLinkProtocol } = setup({ inRoom: true });
     service.start();
@@ -1792,6 +1867,8 @@ describe("LinkPresenceService", () => {
     expect(initialPackets).toBeGreaterThanOrEqual(2);
 
     vi.advanceTimersByTime(30_000);
+    expect(broadcastKikiLinkProtocol).toHaveBeenCalledTimes(initialPackets);
+    vi.advanceTimersByTime(4 * 60_000 - 30_000);
     expect(broadcastKikiLinkProtocol).toHaveBeenCalledTimes(initialPackets + 1);
     expect(broadcastKikiLinkProtocol.mock.calls.at(-1)?.[0]).toContain('"t":"ps"');
     service.stop();
@@ -1821,10 +1898,14 @@ describe("LinkPresenceService", () => {
       payload: JSON.stringify({ t: "pq", i: "capability-only" }),
     });
     expect(service.hasCompatiblePeer(123)).toBe(true);
-    expect(sendKikiLinkProtocol).toHaveBeenLastCalledWith(
+    expect(sendKikiLinkProtocol).toHaveBeenCalledWith(
       123,
       JSON.stringify({ t: "pc", v: "0.11.0", g: 3 }),
     );
+    const reciprocalQuery = JSON.parse(sendKikiLinkProtocol.mock.calls.at(-1)?.[1] ?? "{}");
+    expect(reciprocalQuery).toMatchObject({ t: "pq" });
+    expect(reciprocalQuery).not.toHaveProperty("p");
+    expect(reciprocalQuery).not.toHaveProperty("e");
     expect(service.requestMany([123])).toBe(0);
 
     bus.emit("bc:protocol", {

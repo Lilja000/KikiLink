@@ -7,7 +7,7 @@ import type {
   PlayerNotebookImportResult,
 } from "../../storage/people-repository";
 
-export type RosterScope = "current" | "known" | "favorites";
+export type RosterScope = "current" | "friends" | "known" | "favorites";
 
 export interface RosterSyncResult {
   changed: boolean;
@@ -51,7 +51,7 @@ export class LinkRosterService {
       .map((character) => character.memberNumber);
     const left = [...this.#present.keys()].filter((memberNumber) => !currentNumbers.has(memberNumber));
     const heartbeat = now - this.#lastHeartbeatAt >= HEARTBEAT_MS;
-    const tracking = this.settings.get().linkRoster.trackEncounters;
+    const tracking = this.settings.getSection("linkRoster").trackEncounters;
     const updates: PersonRecord[] = [];
 
     if (tracking) {
@@ -107,20 +107,26 @@ export class LinkRosterService {
     const current = new Map(
       this.adapter.getRoomCharacters().map((character) => [character.memberNumber, character] as const),
     );
+    const friends = new Map(
+      scope === "friends" && typeof this.adapter.getKnownContacts === "function" && typeof this.adapter.isKnownFriend === "function"
+        ? this.adapter.getKnownContacts().filter((contact) => this.adapter.isKnownFriend(contact.memberNumber))
+          .map((contact) => [contact.memberNumber, contact.memberName] as const)
+        : [],
+    );
     const memberNumbers =
       scope === "current"
         ? [...current.keys()]
-        : [...new Set([...records.keys(), ...current.keys()])];
+        : [...new Set([...records.keys(), ...current.keys(), ...friends.keys()])];
 
     return memberNumbers
       .map((memberNumber): RosterEntry => {
         const character = current.get(memberNumber);
         const record =
           records.get(memberNumber) ??
-          emptyPerson(memberNumber, character?.memberName ?? `Member ${memberNumber}`);
+          emptyPerson(memberNumber, character?.memberName ?? friends.get(memberNumber) ?? `Member ${memberNumber}`);
         return {
           ...record,
-          displayName: character?.memberName ?? record.displayName,
+          displayName: character?.memberName ?? friends.get(memberNumber) ?? record.displayName,
           present: character !== undefined,
           isFriend:
             character?.isFriend === true ||
@@ -133,6 +139,7 @@ export class LinkRosterService {
         };
       })
       .filter((entry) => scope !== "favorites" || entry.favorite)
+      .filter((entry) => scope !== "friends" || entry.isFriend)
       .filter(
         (entry) =>
           !normalizedQuery ||
@@ -190,7 +197,7 @@ export class LinkRosterService {
 
   prune(now = Date.now()): number {
     return this.repository.pruneEncounterHistory(
-      this.settings.get().linkRoster.retentionDays,
+      this.settings.getSection("linkRoster").retentionDays,
       now,
     );
   }

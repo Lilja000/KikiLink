@@ -2,10 +2,11 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { version as releaseVersion } from "../package.json";
 
 const USER_SCRIPT = readFileSync(
-  resolve(process.cwd(), "dist/KikiLink.user.js"),
+  resolve(process.cwd(), process.env.KIKILINK_TEST_DIST ?? "dist", "KikiLink.user.js"),
   "utf8",
 );
 const TEST_MEMBER_NUMBER = 999_001;
@@ -69,6 +70,16 @@ const GLOBAL_KEYS = [
   "ServerSocket",
   "unsafeWindow",
 ] as const;
+
+beforeEach(() => {
+  // Bundle tests also run with Cloud compiled in. They must
+  // exercise offline fallback without sending synthetic accounts to a real API.
+  const offline = async () => new Response(JSON.stringify({ error: "fixture_offline" }), {
+    status: 503, headers: { "Content-Type": "application/json" },
+  });
+  vi.spyOn(globalThis, "fetch").mockImplementation(offline);
+  vi.spyOn(window, "fetch").mockImplementation(offline);
+});
 
 afterEach(async () => {
   const api = (window as unknown as { KikiLink?: { destroy(): Promise<void> } }).KikiLink;
@@ -577,8 +588,8 @@ describe("published userscript runtime", () => {
       priority: 10,
     });
     expect(pageWindow.KikiLink).toBe(api);
-    expect(api.getVersion()).toBe("0.29.0");
-    expect(version?.textContent).toBe("0.29.0");
+    expect(api.getVersion()).toBe(releaseVersion);
+    expect(version?.textContent).toBe(releaseVersion);
     expect(version?.style.opacity).toBe("0.18");
     expect(version?.style.left).toBe("3px");
     expect(blossom?.hidden).toBe(true);

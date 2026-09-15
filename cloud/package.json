@@ -1,0 +1,29 @@
+{
+  "name": "@kikilink/cloud",
+  "version": "0.1.0-dev.1",
+  "private": true,
+  "type": "module",
+  "description": "Isolated, unreleased KikiLink Cloud service",
+  "engines": {
+    "node": ">=24.19.0 <25"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "migrate": "node ops/admin.mjs migrate",
+    "backup": "node ops/admin.mjs backup",
+    "cleanup": "node ops/admin.mjs cleanup",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "check": "node --check src/server.mjs && npm test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1128.0",
+    "fastify": "5.12.3",
+    "sharp": "0.35.4",
+    "socket.io-client": "4.8.3",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "prettier": "3.9.6",
+    "socket.io": "4.8.3"
+  }
+}

@@ -1,5 +1,13 @@
 type Child = Node | string | null | undefined | false;
 
+/** Focus can disappear during native screen transitions or replacement of a shadow-root child. */
+export function focusedElement(root: Node): HTMLElement | undefined {
+  try {
+    const active = (root.getRootNode() as Document | ShadowRoot).activeElement;
+    return active instanceof HTMLElement && active.isConnected ? active : undefined;
+  } catch { return undefined; }
+}
+
 export function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   options: {

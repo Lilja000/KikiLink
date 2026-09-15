@@ -6,6 +6,27 @@ import { LinkRosterService } from "../src/modules/link-roster/link-roster-servic
 import { PeopleRepository } from "../src/storage/people-repository";
 
 describe("LinkRosterService", () => {
+  it("includes every actual BC friend without recording unseen people or treating other contacts as friends", () => {
+    const storage = new MemoryKeyValueStorage();
+    const repository = new PeopleRepository(storage);
+    const adapter = {
+      getRoomCharacters: () => [],
+      getKnownContacts: () => [
+        { memberNumber: 1, memberName: "Remote friend" },
+        { memberNumber: 2, memberName: "Offline friend" },
+        { memberNumber: 3, memberName: "Other contact" },
+      ],
+      isKnownFriend: (member: number) => member === 1 || member === 2,
+    } as unknown as BCAdapter;
+    const service = new LinkRosterService(adapter, repository, new SettingsStore(new MemoryKeyValueStorage()));
+    expect(service.list("friends").map(entry => entry.memberNumber).sort()).toEqual([1, 2]);
+    expect(service.list("known")).toEqual([]);
+    expect(repository.list()).toEqual([]);
+    service.saveNotebook(1, "Remote friend", "Existing private note", ["trusted"]);
+    expect(service.list("friends").find(entry => entry.memberNumber === 1)?.note).toBe("Existing private note");
+    expect(service.list("known")).toHaveLength(1);
+  });
+
   it("tracks room encounters and combines them with favorites, tags, and private notes", () => {
     let inRoom = true;
     let roomName = "Moon Garden";

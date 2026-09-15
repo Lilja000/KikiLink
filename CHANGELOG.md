@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased
+
+- Prepared, but did not deploy or enable, a consent-gated Cloudflare relay for FUSAM's four explicit
+  long-lived Catbox actions: profile banners, managed-group avatars, a selected Gallery Catbox target,
+  and playlist music. The standalone userscript's direct Catbox path and all temporary Litterbox paths
+  remain unchanged.
+- The proposed relay uses Cloudflare Turnstile, an exact Bondage Club origin allowlist, a short-lived
+  bearer kept only in page memory, file signature/type/size validation, and bounded concurrency and
+  request/byte quotas. It streams admitted bytes without retaining them and never forwards a Catbox
+  `userhash`, account cookie, arbitrary destination, or caller-supplied provider form.
+- Documented the relay's privacy boundary: Cloudflare can transiently see uploader IP, origin, timing,
+  and file bytes; Catbox sees the file and timing and may receive the uploader IP in Cloudflare-added
+  forwarding headers as well as the Worker connection; returned URLs are public bearer links;
+  image metadata is removed by WebP re-encoding while audio metadata may remain; and anonymous Catbox
+  files may be removed after two years without a download.
+- Kept the relay kill switch off pending Catbox's explicit written permission and any required
+  whitelisting. Catbox's [Terms](https://catbox.moe/legal.php) prohibit supplying its service to others,
+  and its
+  [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
+  restricts anonymous uploads from datacenter/proxy networks.
+
+## 0.30.0 - 2026-09-15
+
+### New
+
+- KikiLink Cloud profiles, Feed posts, comments, reactions and persistent group conversations,
+  with native BC identity verification and remembered devices for returning users.
+- Group roles, invitations, ownership transfer, pinned messages and quick Pin/Mute actions.
+- Custom Activity expression and pose sequences, Delay/Duration sliders, optional restoration
+  of the previous state and independent activity cloning.
+- Clothing Wear templates and live Remove/Transfer actions, including Self → Target,
+  Target → Self and Swap. Transfer and Swap use the items worn at execution time.
+- Expanded Room Manager with native room options, member lists, background previews and
+  presets that preserve map configuration.
+- A Feed entry on Home and Support KikiLink in About.
+
+### Improved
+
+- Direct / Groups / Unread navigation, group headers, participant avatars, typing,
+  left/right message layout, group settings and compact pinned-message previews.
+- Shared Direct/Groups message actions and reply previews, drafts and cancellation.
+- Bounded profile caches, request deduplication, background refresh and stable loading states.
+  Existing public profile fields synchronize to Cloud; unknown members get a default profile.
+- Compact activity tiles, visible targeting, Eyes and Tears / Drool categories,
+  native-capability Hogtied selection and clothing cards with safe text truncation.
+- Locked lobby indicators align with Favorites without changing card height.
+- Room backgrounds default to Fill & crop while retaining an explicitly selected mode.
+- Notification quick controls reflect mute state; dense layouts and Home typography are clearer.
+
+### Fixed
+
+- Stale session/profile updates and retained image observers during account changes and navigation.
+- Room preset loading and preservation of background/map state.
+- Clothing validation, final appearance synchronization and rollback on synchronous failure.
+- Duplicate runtime initialization during overlapping addon reload cleanup.
+- Unnecessary presence publication during friend refresh, duplicate targeted lookups and
+  reconnect work; typing remains responsive and bounded.
+
+### Security & Stability
+
+- Server-side identity, membership, ownership, role and moderation enforcement for Cloud,
+  with bounded inputs, media, storage and requests.
+- Account isolation, compatible reads of existing data and non-destructive migration paths.
+- Expanded coverage for Cloud races, permissions, replies, clothing, presets and lifecycle cleanup.
+- Production configuration is pinned to the official service and excludes development fixtures
+  and traffic instrumentation. The prepared Catbox relay remains disabled.
+
 ## 0.29.0 - 2026-08-30
 
 - Added a dedicated page-realm FUSAM distribution. It does not install the privileged userscript

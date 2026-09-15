@@ -23,6 +23,29 @@ afterEach(() => {
 });
 
 describe("CustomActivitiesView", () => {
+  it.each(["target-to-self", "swap"] as const)("clones every saved trigger with %s into a separately editable activity beside Edit", direction => {
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update(draft => { draft.linkActivities.customActivities = [{ id: "original", name: "Hat transfer", template: "{me} helps {target}.",
+      targetGroup: "ItemHead", targetMode: "both", image: "Caress", arousal: 5,
+      effects: { subject: "target", restore: false, steps: [{ delayMs: 100, durationMs: 200, expressions: [{ group: "Blush", value: "Low" }],
+        poses: ["Hogtied"], removeClothing: [], transferClothing: { direction, slots: ["Hat"] } },
+        { delayMs: 0, durationMs: 0, expressions: [], poses: [], removeClothing: [], wearClothing: [{ Group: "Hat", Name: "Cap", Property: { Rotation: 3 }, Color: "#123456" }] }] } }]; });
+    const original = settings.get().linkActivities.customActivities[0]!;
+    const adapter = { getOwnName: () => "Fixture" } as BCAdapter;
+    const service = new LinkActivitiesService(adapter, settings), root = document.createElement("div"); document.body.append(root);
+    const toast = vi.fn(), changed = vi.fn();
+    const view = new CustomActivitiesView(root, adapter, settings, service, changed, toast);
+    view.open();
+    const edit = root.querySelector('[aria-label="Edit Hat transfer"]')!, clone = root.querySelector<HTMLButtonElement>('[aria-label="Clone Hat transfer"]')!;
+    expect(clone.parentElement).toBe(edit.parentElement); clone.click();
+    const saved = settings.get().linkActivities.customActivities;
+    expect(saved).toHaveLength(2); expect(saved[0]).toEqual(original);
+    expect(saved[1]).toEqual({ ...original, id: expect.any(String), name: "Hat transfer (copy)" });
+    expect(saved[1]!.id).not.toBe(original.id); expect(changed).toHaveBeenCalled();
+    settings.update(draft => { draft.linkActivities.customActivities[1]!.effects!.steps[1]!.wearClothing![0]!.Property!.Rotation = 9; });
+    expect(settings.get().linkActivities.customActivities[0]).toEqual(original);
+    service.stop();
+  });
   it("keeps the selected body slot compact, expands all choices, and keeps images canonical", async () => {
     globalThis.ActivityFemale3DCG = [
       {

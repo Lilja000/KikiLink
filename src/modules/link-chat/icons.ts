@@ -1,6 +1,11 @@
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
 export type KikiLinkIconName =
+  | "direct-add"
+  | "group-add"
+  | "read-all"
+  | "feed"
+  | "add-reaction"
   | "activities"
   | "appearance"
   | "back"
@@ -11,6 +16,7 @@ export type KikiLinkIconName =
   | "edit"
   | "external"
   | "home"
+  | "heart"
   | "id"
   | "image"
   | "location"
@@ -21,6 +27,8 @@ export type KikiLinkIconName =
   | "next"
   | "note"
   | "pin"
+  | "notifications"
+  | "muted"
   | "play"
   | "pause"
   | "previous"
@@ -46,6 +54,31 @@ type Shape = readonly [ShapeName, Readonly<Record<string, string>>, fillable?: b
 // KikiLink's icons deliberately use the same rounded, slightly asymmetrical line language.
 // They are drawn here from simple geometry so the addon owns the set and ships no icon library.
 const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
+  notifications: [["path", { d: "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" }]],
+  muted: [["path", { d: "M18 12V8a6 6 0 0 0-9-5M6 6v2c0 7-3 7-3 9h14M10 21h4M3 3l18 18" }]],
+  heart: [["path", { d: "M20.3 5.6a5.1 5.1 0 0 0-7.2 0L12 6.7l-1.1-1.1a5.1 5.1 0 0 0-7.2 7.2L12 21l8.3-8.2a5.1 5.1 0 0 0 0-7.2Z" }, true]],
+  "direct-add": [
+    ["circle", { cx: "9", cy: "7", r: "3.3" }],
+    ["path", { d: "M3 20v-2.5a6 6 0 0 1 10.5-4M18 12v8M14 16h8" }],
+  ],
+  "group-add": [
+    ["circle", { cx: "8", cy: "7", r: "3" }],
+    ["path", { d: "M14 4a3 3 0 0 1 0 6M2 20v-2a6 6 0 0 1 10-4M18 12v8M14 16h8" }],
+  ],
+  "read-all": [
+    ["path", { d: "M3 12l4 4L17 6M11 16l2 2L23 8M3 20h6" }],
+  ],
+  feed: [
+    ["rect", { x: "4", y: "3.5", width: "16", height: "17", rx: "2.5" }],
+    ["rect", { x: "7.5", y: "7", width: "4", height: "4", rx: "1" }],
+    ["path", { d: "M14.5 7.5H17M14.5 10.5H17M7.5 14.5H17M7.5 17.5H14" }],
+  ],
+  "add-reaction": [
+    ["path", { d: "M13 3.6a8.3 8.3 0 1 0 7.4 8.4" }],
+    ["circle", { cx: "8.6", cy: "10", r: ".75" }, true],
+    ["circle", { cx: "14.4", cy: "10", r: ".75" }, true],
+    ["path", { d: "M7.8 14a4.3 4.3 0 0 0 7.4 0M18.5 2.5v6M15.5 5.5h6" }],
+  ],
   activities: [
     ["path", { d: "M12 3.2c.5 3.1 2.1 4.7 5.2 5.2-3.1.5-4.7 2.1-5.2 5.2-.5-3.1-2.1-4.7-5.2-5.2 3.1-.5 4.7-2.1 5.2-5.2Z" }, true],
     ["path", { d: "M18.2 14.2c.25 1.55 1.05 2.35 2.6 2.6-1.55.25-2.35 1.05-2.6 2.6-.25-1.55-1.05-2.35-2.6-2.6 1.55-.25 2.35-1.05 2.6-2.6Z" }, true],

@@ -241,7 +241,7 @@ describe("GroupChatPanel group creation", () => {
     expect(() => harness.panel.openNewGroupDialog()).not.toThrow();
     expect(harness.panel.newGroupDialog.open).toBe(true);
     expect(harness.panel.newGroupDialog.querySelectorAll(".kl-group-contact")).toHaveLength(0);
-    expect(harness.panel.newGroupDialog.textContent).toContain("No managed-group-compatible contacts");
+    expect(harness.panel.newGroupDialog.textContent).toContain("No friends found yet");
   });
 
   it("selects only detected peers, caps selection, and sends only after final confirmation", async () => {
@@ -257,8 +257,8 @@ describe("GroupChatPanel group creation", () => {
 
     harness.panel.openNewGroupDialog();
     expect(harness.panel.newGroupDialog.open).toBe(true);
-    expect(harness.panel.newGroupDialog.querySelector("[data-member-number='70']")).toBeNull();
-    expect(harness.panel.newGroupDialog.querySelectorAll(".kl-group-contact")).toHaveLength(5);
+    expect(required<HTMLButtonElement>(harness.panel.newGroupDialog, "[data-member-number='70']").disabled).toBe(true);
+    expect(harness.panel.newGroupDialog.querySelectorAll(".kl-group-contact:not(:disabled)")).toHaveLength(5);
 
     click(harness.panel.newGroupDialog, "[data-member-number='20']");
     click(harness.panel.newGroupDialog, "[data-member-number='30']");
@@ -281,7 +281,7 @@ describe("GroupChatPanel group creation", () => {
     click(harness.panel.newGroupDialog, "[data-review='true']");
     expect(harness.sent).toHaveLength(0);
     expect(harness.service.listGroups()).toHaveLength(0);
-    expect(harness.panel.newGroupDialog.textContent).toContain("No invitations have been sent yet");
+    expect(harness.panel.newGroupDialog.textContent).toContain("Your friends can chat here from different rooms");
 
     click(harness.panel.newGroupDialog, "[data-confirm-create='true']");
     await vi.waitFor(() => expect(harness.service.listGroups()).toHaveLength(1));
@@ -300,8 +300,30 @@ describe("GroupChatPanel group creation", () => {
       failed: [{ memberNumber: 30 }],
     });
     expect(harness.panel.chatPane.textContent).toContain(
-      "Handed 1 invitation to the local Bondage Club client; 1 local handoff failed",
+      "1 invitation passed to Bondage Club; 1 could not be sent",
     );
+  });
+
+  it("requires a fresh native snapshot for cross-room eligibility and recovers on refresh", () => {
+    const harness = setup();
+    let updatedAt = Date.now() - 90_001;
+    harness.adapter.hasOnlineFriendSnapshot = () => true;
+    harness.adapter.getOnlineFriendsUpdatedAt = () => updatedAt;
+    harness.adapter.isReady = () => true;
+    harness.adapter.getOnlineFriend = (memberNumber) => ({
+      memberNumber, memberName: names.get(memberNumber) ?? "Friend", privateRoom: false,
+    });
+    harness.panel.openNewGroupDialog();
+    expect(required<HTMLButtonElement>(harness.panel.newGroupDialog, "[data-member-number='20']").disabled).toBe(true);
+
+    updatedAt = Date.now();
+    harness.panel.refresh();
+    expect(required<HTMLButtonElement>(harness.panel.newGroupDialog, "[data-member-number='20']").disabled).toBe(false);
+
+    harness.adapter.isReady = () => false;
+    harness.panel.refresh();
+    expect(required<HTMLButtonElement>(harness.panel.newGroupDialog, "[data-member-number='20']").disabled).toBe(true);
+    harness.panel.destroy();
   });
 
   it("never offers a detected current-room non-friend that would reject the invitation", () => {
@@ -311,7 +333,7 @@ describe("GroupChatPanel group creation", () => {
     harness.panel.openNewGroupDialog();
 
     expect(harness.panel.newGroupDialog.querySelector("[data-member-number='60']")).toBeNull();
-    expect(harness.panel.newGroupDialog.textContent).toContain("friends with current managed-group support");
+    expect(harness.panel.newGroupDialog.textContent).toContain("online friends with KikiLink");
   });
 
   it("offers only managed peers for new groups and fails closed without g3 discovery", () => {
@@ -319,15 +341,15 @@ describe("GroupChatPanel group creation", () => {
     harness.managedCompatible.delete(60);
     harness.panel.openNewGroupDialog();
 
-    expect(harness.panel.newGroupDialog.querySelector("[data-member-number='60']")).toBeNull();
-    expect(harness.panel.newGroupDialog.textContent).toContain("managed-group support");
+    expect(required<HTMLButtonElement>(harness.panel.newGroupDialog, "[data-member-number='60']").disabled).toBe(true);
+    expect(harness.panel.newGroupDialog.textContent).toContain("online friends with KikiLink");
 
     harness.panel.newGroupDialog.close();
     delete harness.presence.hasGroupManagedPeer;
     harness.panel.openNewGroupDialog();
 
-    expect(harness.panel.newGroupDialog.querySelectorAll(".kl-group-contact")).toHaveLength(0);
-    expect(harness.panel.newGroupDialog.textContent).toContain("No managed-group-compatible contacts");
+    expect(harness.panel.newGroupDialog.querySelectorAll(".kl-group-contact:not(:disabled)")).toHaveLength(0);
+    expect(harness.panel.newGroupDialog.textContent).toContain("KikiLink not detected yet");
   });
 
   it("shows profile-capable avatars beside selection and confirmation controls without nesting buttons", async () => {
@@ -531,7 +553,7 @@ describe("GroupChatPanel conversation pane", () => {
     await vi.waitFor(() => expect(harness.service.getMessages(creation.group.groupId)).toHaveLength(2));
     expect(composer.value).toBe("");
     expect(required(harness.panel.chatPane, ".kl-group-feedback").textContent)
-      .toContain("1 participant remains unreachable");
+      .toContain("1 member unavailable");
     expect(new Set([...harness.panel.chatPane.querySelectorAll(".kl-group-message-author")]
       .map((element) => element.textContent))).toEqual(new Set(["Reina", "You"]));
     expect(harness.feedback.at(-1)).toMatchObject({
@@ -831,9 +853,9 @@ describe("GroupChatPanel conversation pane", () => {
 
     await harness.panel.activate(creation.group.groupId);
     expect(required(harness.panel.chatPane, ".kl-group-message-author").textContent)
-      .toBe("Claimed Reina");
+      .toBe("Reina");
     expect(required(harness.panel.chatPane, ".kl-group-message-relay-warning").textContent)
-      .toContain("original sender unverified");
+      .toContain("via Kiki · unverified");
   });
 
   it("bounds the initial transcript and loads older messages without recreating visible nodes", async () => {
@@ -945,8 +967,7 @@ describe("GroupChatPanel conversation pane", () => {
       relayViaCreator: 20,
       relayTargets: [30],
     });
-    expect(harness.feedback[0]?.message).toContain("routed via the group creator (#20)");
-    expect(harness.feedback[0]?.message).toContain("creator must be online with KikiLink active");
+    expect(harness.feedback[0]?.message).toContain("Passed to Reina for forwarding");
     expect(harness.feedback[0]?.message).toContain("Delivery is not confirmed");
     expect(harness.feedback[0]?.message).not.toContain("failed");
 
@@ -963,7 +984,7 @@ describe("GroupChatPanel conversation pane", () => {
     await vi.waitFor(() => expect(harness.feedback).toHaveLength(2));
 
     expect(harness.feedback[1]).toMatchObject({ tone: "warning", unreachable: [30] });
-    expect(harness.feedback[1]?.message).toContain("1 participant remains unreachable");
+    expect(harness.feedback[1]?.message).toContain("1 member unavailable");
   });
 
   it("refreshes only the changed member's visible avatars and presence indicators", async () => {
@@ -1451,6 +1472,30 @@ describe("GroupChatPanel actions and managed details", () => {
       ".kl-group-manage-title",
     )).toBe(title);
     expect(title.value).toBe("Unsaved name in progress");
+  });
+
+  it.each([
+    ["rename", ".kl-group-manage-title", "Changed name", "title"],
+    ["set-outline", ".kl-group-manage-outline", "#ae2378", "outlineColor"],
+  ] as const)("restores the exact group editor action after %s replaces its controls", async (action, inputSelector, value, field) => {
+    const harness = setup();
+    const creation = await harness.service.createManagedGroup([20, 30], "Original name");
+    harness.panel.openGroupDetails(creation.group.groupId);
+    const input = required<HTMLInputElement>(harness.panel.groupDetailsDialog, inputSelector);
+    input.value = value;
+    const saveSelector = `[data-group-details-action='${action}']`;
+    const save = required<HTMLButtonElement>(harness.panel.groupDetailsDialog, saveSelector);
+    save.focus();
+    save.click();
+    await vi.waitFor(() => {
+      expect(harness.service.getGroup(creation.group.groupId)?.[field]).toBe(value);
+      const next = required<HTMLButtonElement>(harness.panel.groupDetailsDialog, saveSelector);
+      expect(next).not.toBe(save);
+      expect(next.disabled).toBe(false);
+      expect(document.activeElement).toBe(next);
+    });
+    harness.panel.destroy();
+    await harness.service.destroy();
   });
 
   it("delegates image composition and safe message-body rendering to the host", async () => {

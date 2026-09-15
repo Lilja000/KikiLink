@@ -20,7 +20,7 @@ export class LinkReactionsService {
 
   react(event: LinkReactionEvent, now = Date.now()): LinkReactionFired | undefined {
     if (!this.#canAct()) return undefined;
-    const settings = this.settings.get().linkReactions;
+    const settings = this.settings.getSection("linkReactions");
     if (!this.#canAct()) return undefined;
     if (!settings.enabled) return undefined;
 

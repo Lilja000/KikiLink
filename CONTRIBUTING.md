@@ -14,8 +14,14 @@ KikiLink is intentionally developed as an original implementation.
 
 ## Development
 
+The add-on build requires Node.js 20 or newer. Relay checks require Node.js 24 or newer.
+
 ```bash
-npm install
+npm ci
+npm run check
+
+cd worker
+npm ci
 npm run check
 ```
 

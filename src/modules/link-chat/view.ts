@@ -34,8 +34,21 @@ import {
   checkForKikiLinkUpdate,
   KIKILINK_USERSCRIPT_INSTALL_URL,
 } from "../../core/version-update-checker";
-import { KIKILINK_DISTRIBUTION } from "../../core/distribution";
-import { element } from "../../utils/dom";
+import {
+  KIKILINK_DEV_TEST,
+  KIKILINK_DISTRIBUTION,
+  usesCatboxUploadRelay,
+} from "../../core/distribution";
+import { element, focusedElement } from "../../utils/dom";
+import { InteractiveList } from "../../utils/interactive-list";
+import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
+import {
+  isOnline, playerLocation, playerRoom, roomKey, selectPeople, selectRooms,
+  type DirectoryPlayer, type PeopleFilters, type RoomDirectoryFilter,
+} from "./social-directory";
+import { RoomManager } from "./room-manager";
+import { waitForRoomSettings } from "./room-update";
+import { copyRoomMap } from "../../core/room-map";
 import { LinkActivitiesService } from "../link-activities/link-activities-service";
 import { CustomActivitiesView } from "../link-activities/custom-activities-view";
 import {
@@ -77,11 +90,10 @@ import {
 } from "../link-reactions/notification-sounds";
 import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
-import {
-  formatInlineReplyPrefix,
-  parseInlineReplyContext,
-  stripInlineReplyDraft,
-} from "./message-reply";
+import { parseInlineReplyContext } from "./message-reply";
+import { messageActions, copyMessageText as copyText, shouldSendMessage } from "./message-controls";
+import { ReplyComposer, replyPreview } from "./reply-composer";
+import { MessageInteraction } from "./message-interaction";
 import { appendActionFormattedText } from "./message-actions";
 import {
   RemoteImageLoader,
@@ -103,6 +115,7 @@ import {
 } from "./image-upload";
 import { kikiIcon, type KikiLinkIconName } from "./icons";
 import { RoomBlossomBadge } from "./blossom";
+import { LauncherMenu, notificationsAreMuted } from "./launcher-menu";
 import { KIKILINK_NEWS } from "./news";
 import {
   GroupChatPanel,
@@ -114,12 +127,40 @@ import type {
   GroupChatUpdate,
 } from "./group-chat-service";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/branding/kikilink-emblem.webp";
+import KIKILINK_BLOSSOM_DATA_URL from "../../../design/branding/kikilink-blossom.png";
+import { CloudClient } from "../../cloud/client";
+import { CloudPanel, type CloudDestination } from "../../cloud/panel";
+import { CloudProfileEditor } from "../../cloud/profile-editor";
+import type { CloudProfile } from "../../cloud/types";
+import { CloudPresence } from "../../cloud/presence";
+import { withCloudProfile } from "../../cloud/profile-data";
+import { CLOUD_STYLES } from "../../cloud/styles";
+import type { KeyValueStorage } from "../../core/settings";
 
-type WorkspaceView = "home" | "news" | "chat" | "gallery" | "roster" | "room" | "music" | "activities" | "settings";
+type WorkspaceView = "home" | "news" | "chat" | "gallery" | "roster" | "room" | "music" | "activities" | "settings" | "cloud";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
 type RoomSubView = "current" | "lobbies" | "presets";
 type GalleryFileStorage = "device" | "catbox" | "litterbox";
 type KnownContact = ReturnType<BCAdapter["getKnownContacts"]>[number];
+interface SocialViewContext {
+  workspace: "room" | "roster";
+  roomView: RoomSubView;
+  roomQuery: string;
+  roomFilter: RoomDirectoryFilter;
+  roomScroll: number;
+  roomSource: BCLobbyRoom[];
+  roomSpace: string;
+  roomUpdatedAt: number;
+  roomLoaded: boolean;
+  roomError: string;
+  playerQuery: string;
+  playerScope: RosterScope;
+  playerInitialized: boolean;
+  playerFilters: PeopleFilters;
+  playerRoom: string | undefined;
+  playerScroll: number;
+  selectedPlayer: number | undefined;
+}
 type FeatureTarget = WorkspaceView;
 type HomeAction =
   | { kind: "new-chat" }
@@ -132,6 +173,7 @@ type FinderResultKind = "destination" | "conversation" | "player" | "activity" |
 type MessageGroupPosition = "single" | "start" | "middle" | "end";
 type FinderAction =
   | { kind: "workspace"; target: FeatureTarget }
+  | { kind: "cloud"; destination: CloudDestination }
   | { kind: "new-chat" }
   | { kind: "presence" }
   | { kind: "conversation"; peerNumber: number; peerName: string }
@@ -203,6 +245,14 @@ interface SharedRoomMusic {
   expiresAt: number;
 }
 
+interface PreparedGroupAvatarUpload {
+  groupId: string;
+  returnFocus: HTMLElement;
+  image: PreparedLocalImage;
+  ownMemberNumber: number;
+  startingAvatarUrl: string;
+}
+
 interface RoomOperationTarget {
   roomName: string;
   roomSpace: string;
@@ -241,13 +291,76 @@ const WORKSPACE_TITLES: Record<WorkspaceView, string> = {
   chat: "Chat",
   gallery: "Media Gallery",
   roster: "Players",
-  room: "Room Tools",
+  room: "Rooms",
   music: "Music",
   activities: "Custom Activities",
   settings: "Settings",
+  cloud: "Feed & Cloud",
 };
 
 export class LinkChatView {
+  #cloud: CloudPanel | undefined;
+  #cloudProfile: CloudProfileEditor | undefined;
+  #cloudPresence: CloudPresence | undefined;
+  attachCloud(client: CloudClient, storage: KeyValueStorage): void {
+    this.#cloudPresence = new CloudPresence(client, () => {
+      if (!this.settings.getSection("linkPresence").enabled) return "offline";
+      const status = this.presence.get(client.memberNumber).status;
+      return status === "online" || status === "idle" || status === "dnd" ? status : "offline";
+    });
+    this.#cloudProfile = new CloudProfileEditor(client, () => this.settings.get(),
+      () => this.adapter.getOwnName(), profile => { if (this.#mounted) { this.#renderOwnPresence(); this.#cloud?.profileUpdated(profile); } }, storage, true);
+    this.#cloud = new CloudPanel(client, {
+      settings: () => this.settings.get(),
+      ownName: () => this.adapter.getMemberName(client.memberNumber),
+      storage,
+      legacyGroups: () => this.#groupChatService?.listGroups() ?? [],
+      isBlocked: member => {
+        try {
+          const relationships = this.adapter.getPlayerRelationships(member);
+          return relationships.includes("blacklist") || relationships.includes("ghosted");
+        } catch { return true; }
+      },
+      openProfile: (member, name) => void this.#openAddonProfile(member, name),
+      openOwnProfile: () => this.#openPresenceDialog(),
+      openGroups: () => this.#showWorkspace("chat", true, "groups"),
+      openFeed: () => this.#showWorkspace("cloud", true, "feed"),
+      openDirectChats: () => { this.#chatFilter = "all"; this.#showWorkspace("chat"); void this.#renderConversations(); },
+      enterToSend: () => this.settings.getSection("linkChat").enterToSend,
+      embeddedGroups: true,
+      groupSelection: selected => {
+        this.#cloudChatSelected = selected;
+        this.#stopLocalTyping();
+        if (selected && this.#chatFilter === "unread") this.#showWorkspace("chat");
+        this.#panel.dataset.mobileView = selected ? "chat" : "list";
+      },
+      canReadGroup: () => !this.#panel.hidden && this.#workspaceView === "chat" && (this.#chatFilter === "groups" || this.#cloudChatSelected) &&
+        (!this.#isMobileLayout() || this.#panel.dataset.mobileView === "chat"),
+      groupIncoming: (group, message) => {
+        if (!this.#mounted || this.#notificationsMuted()) return;
+        this.onNotification({ kind: "chat", showToast: true, memberNumber: message.sender, occurredAt: message.createdAt,
+          message: `${group.title} · ${messagePreview(message.text ?? "")}` });
+      },
+      groupsChanged: () => {
+        if (!this.#mounted) return;
+        const filter = this.#shadow.querySelector<HTMLButtonElement>('[data-chat-filter="groups"]');
+        const count = this.#cloud?.inbox.unreadGroups ?? 0;
+        if (filter) { filter.dataset.unread = String(count > 0); filter.setAttribute("aria-label", count ? `Groups · ${count} with unread messages` : "Groups"); }
+        void this.#updateUnreadBadge(false);
+      },
+      relatedMembers: () => { try { return new Set(this.adapter.getKnownContacts().map(contact => contact.memberNumber)); } catch { return new Set(); } },
+    });
+    client.subscribe(kind => {
+      const member = this.#addonProfileTarget?.memberNumber;
+      if (!this.#mounted || this.#panel.hidden || !this.#addonProfileDialog.open || member === undefined) return;
+      if (kind !== `profile:${member}` && kind !== "profiles-cleared") return;
+      if (client.isProfileBlocked(member)) { this.#addonProfileDialog.close(); return; }
+      const profile = client.peekProfile(member);
+      if (JSON.stringify(profile) === JSON.stringify(this.#addonProfileCloud)) return;
+      this.#addonProfileCloud = profile;
+      void this.#renderAddonProfile();
+    });
+  }
   readonly #host = document.createElement("div");
   readonly #shadow = this.#host.attachShadow({ mode: "open" });
   readonly #launcher = element("button", {
@@ -275,6 +388,9 @@ export class LinkChatView {
     ariaLabel: "KikiLink news and changelog",
   });
   readonly #chatLayout = element("div", { className: "kl-layout" });
+  #chatMain: HTMLElement | undefined;
+  #cloudChatSelected = false;
+  #chatQueries = { all: "", unread: "", groups: "" };
   readonly #contextTitle = element("div", { className: "kl-topbar-context", text: "Home" });
   readonly #newsTrigger = element("button", {
     className: "kl-text-button kl-news-trigger",
@@ -309,8 +425,8 @@ export class LinkChatView {
   readonly #roomNavButton = element("button", {
     className: "kl-nav-item kl-room-button",
     type: "button",
-    title: "Room tools",
-    ariaLabel: "Open room tools",
+    title: "Rooms",
+    ariaLabel: "Open Rooms",
   });
   readonly #musicNavButton = element("button", {
     className: "kl-nav-item kl-music-button",
@@ -397,6 +513,8 @@ export class LinkChatView {
     ariaLabel: "Typing status",
   });
   readonly #composer = element("textarea", { className: "kl-composer-input" });
+  readonly #reply = new ReplyComposer(this.#composer, 1000);
+  #messageInteraction: MessageInteraction | undefined;
   readonly #sendButton = element("button", {
     className: "kl-text-button kl-text-button--primary kl-send",
     type: "button",
@@ -419,9 +537,11 @@ export class LinkChatView {
   readonly #galleryGrid = element("div", { className: "kl-gallery-grid" });
   readonly #roomPage = element("section", {
     className: "kl-feature-page kl-room-page",
-    ariaLabel: "Room tools",
+    ariaLabel: "Rooms",
   });
   readonly #roomAdminStatus = element("div", { className: "kl-room-admin-status" });
+  #roomManager: RoomManager | undefined;
+  #roomApplyController: AbortController | undefined;
   readonly #roomImageUrl = element("input", { className: "kl-search" }) as HTMLInputElement;
   readonly #roomMusicUrl = element("input", { className: "kl-search" }) as HTMLInputElement;
   readonly #roomSizeMode = element("select", { className: "kl-select" }) as HTMLSelectElement;
@@ -451,6 +571,10 @@ export class LinkChatView {
   });
   readonly #lobbyStatus = element("div", { className: "kl-room-directory-status" });
   readonly #lobbyList = element("div", { className: "kl-lobby-list" });
+  readonly #currentRoomCard = element("div", { className: "kl-current-room-summary" });
+  readonly #lobbyFilters = element("div", { className: "kl-directory-filters kl-lobby-filters" });
+  readonly #lobbyEmpty = element("div", { className: "kl-gallery-empty" });
+  readonly #roomBack = element("button", { className: "kl-text-button kl-social-back", type: "button", text: "Back to Players" });
   readonly #presetName = element("input", { className: "kl-search kl-preset-name" }) as HTMLInputElement;
   readonly #saveRoomPresetButton = element("button", {
     className: "kl-text-button kl-text-button--primary",
@@ -596,6 +720,10 @@ export class LinkChatView {
   });
   readonly #rosterSubtitle = element("p", { className: "kl-feature-page-subtitle" });
   readonly #rosterScopes = element("div", { className: "kl-roster-scopes" });
+  readonly #rosterFilters = element("div", { className: "kl-directory-filters kl-roster-filters" });
+  readonly #rosterRoomContext = element("div", { className: "kl-roster-room-context" });
+  readonly #rosterEmpty = element("div", { className: "kl-roster-empty" });
+  readonly #rosterBack = element("button", { className: "kl-text-button kl-social-back", type: "button", text: "Back to Rooms" });
   readonly #rosterSearch = element("input", {
     className: "kl-search kl-roster-search",
   }) as HTMLInputElement;
@@ -816,9 +944,25 @@ export class LinkChatView {
   #selectedRosterMember: number | undefined;
   #rosterScope: RosterScope = "current";
   #workspaceView: WorkspaceView = "home";
-  #roomSubView: RoomSubView = "current";
+  #roomSubView: RoomSubView = "lobbies";
   #lobbyRooms: BCLobbyRoom[] = [];
-  #lastWorkspaceView: PrimaryWorkspaceView = "home";
+  #lobbyFilter: RoomDirectoryFilter = "all";
+  #lobbyHasLoaded = false;
+  #lobbyUpdatedAt = 0;
+  #lobbyError = "";
+  #rosterRoomFilter: string | undefined;
+  #peopleFilters: PeopleFilters = { favorites: false, online: false, addon: false };
+  #socialTrail: SocialViewContext[] = [];
+  #rosterInitialized = false;
+  #rosterRows: InteractiveList<DirectoryPlayer> | undefined;
+  #lobbyRows: InteractiveList<BCLobbyRoom> | undefined;
+  #rosterDetailSignature = "";
+  #lastWorkspaceView: WorkspaceView = "home";
+  #hasOpenedPanel = false;
+  #chatFilter: "all" | "unread" | "groups" = "all";
+  #ignoreLauncherClick = false;
+  #launcherHoldTimer: ReturnType<typeof setTimeout> | undefined;
+  #notificationResumeTimer: ReturnType<typeof setTimeout> | undefined;
   #settingsReturnView: PrimaryWorkspaceView = "home";
   #settingsSection: SettingsSection = "appearance";
   #presentCount = 0;
@@ -927,6 +1071,7 @@ export class LinkChatView {
   #addonProfileOpenToken = 0;
   #addonProfilePresenceSignature = "";
   #addonProfileTarget: ProfileTarget | undefined;
+  #addonProfileCloud: CloudProfile | undefined;
   #addonProfileReturnFocus: HTMLElement | undefined;
   #addonProfileReturnMemberNumber: number | undefined;
   #aliasTarget: { memberNumber: number; nativeName: string } | undefined;
@@ -946,8 +1091,10 @@ export class LinkChatView {
   #groupAvatarUploadTarget:
     | { groupId: string; returnFocus: HTMLElement }
     | undefined;
+  #preparedGroupAvatar: PreparedGroupAvatarUpload | undefined;
   #groupAvatarUploadController: AbortController | undefined;
   #profileBannerUploadBusy = false;
+  #preparedProfileBanner: PreparedLocalImage | undefined;
   #profileBannerUploadToken = 0;
   #profileBannerUploadController: AbortController | undefined;
   #profileBannerUploadStartedAt = 0;
@@ -1018,6 +1165,12 @@ export class LinkChatView {
       presence ??
       new LinkPresenceService(adapter, settings, new EventBus(), version);
     this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence);
+    this.#launcherMenu = new LauncherMenu(settings, async () => {
+      await Promise.all([this.service.markAllRead(), this.#groupChatService?.markAllRead(), this.#cloud?.inbox.markAllRead()]);
+      if (!this.#mounted) return;
+      await this.refresh();
+      this.#shadow.querySelectorAll(".kl-toast").forEach((toast) => toast.remove());
+    }, () => this.presence.getOwnStatus() === "dnd");
     this.#notificationSounds = new NotificationSoundService(async (id) =>
       (await this.soundStore.get(id))?.blob,
     );
@@ -1051,7 +1204,7 @@ export class LinkChatView {
     this.#groupAvatarFileInput.accept = "image/jpeg,image/png,image/webp";
     this.#groupAvatarFileInput.hidden = true;
     this.#groupAvatarFileInput.addEventListener("change", () => {
-      void this.#uploadSelectedGroupAvatar();
+      void this.#prepareSelectedGroupAvatar();
     });
     this.#groupAvatarFileInput.addEventListener("cancel", () => {
       this.#clearPendingGroupAvatarPicker(true);
@@ -1060,6 +1213,7 @@ export class LinkChatView {
 
   private readonly presence: LinkPresenceService;
   readonly #roomBadge: RoomBlossomBadge;
+  readonly #launcherMenu: LauncherMenu;
   readonly #notificationSounds: NotificationSoundService;
 
   attachGroupChatService(service: GroupChatService): void {
@@ -1114,7 +1268,7 @@ export class LinkChatView {
           void this.#openAddonProfile(member.memberNumber, member.memberName, target);
         });
       },
-      getEnterToSend: () => this.settings.get().linkChat.enterToSend,
+      getEnterToSend: () => this.settings.getSection("linkChat").enterToSend,
       onRenameGroup: (groupId, title) => service.renameGroup(groupId, title),
       onSetGroupAvatar: (groupId, url) => service.setGroupAvatar(groupId, url),
       onSetGroupOutlineColor: (groupId, color) =>
@@ -1177,7 +1331,7 @@ export class LinkChatView {
     this.#host.id = "kikilink-root";
 
     const style = document.createElement("style");
-    style.textContent = LINK_CHAT_STYLES;
+    style.textContent = LINK_CHAT_STYLES + (this.#cloud ? CLOUD_STYLES : "");
     this.#applyTheme(this.settings.get());
     this.#buildLauncher();
     this.#buildPanel();
@@ -1201,6 +1355,7 @@ export class LinkChatView {
       this.#aliasDialog,
       this.#removeChatDialog,
       this.#profileMenuLayer,
+      this.#launcherMenu.element,
     );
     if (this.#groupChatPanel) {
       this.#shadow.append(
@@ -1225,18 +1380,31 @@ export class LinkChatView {
     );
     this.#localMusicReferenceSignature = localMusicReferenceSignature(this.settings.get());
     this.#settingsUnsubscribe = this.settings.subscribe((settings) => {
+      this.#applyTheme(settings);
+      this.#syncNotificationState();
       const signature = localMusicReferenceSignature(settings);
       if (signature === this.#localMusicReferenceSignature) return;
       this.#localMusicReferenceSignature = signature;
       void this.#reconcileLocalMusicTracks(settings);
     });
     void this.#reconcileLocalMusicTracks(this.settings.get());
+    this.#syncNotificationState();
 
     void this.refresh();
   }
 
   destroy(): void {
+    this.presence.setNativeFriendsVisible?.(false);
+    this.#messageInteraction?.destroy();
+    this.#reply.destroy();
+    this.#cloudPresence?.destroy();
+    this.#cloudProfile?.destroy();
+    this.#cloud?.destroy();
     this.#mounted = false;
+    this.#cancelLauncherHold();
+    this.#launcherMenu.destroy();
+    if (this.#notificationResumeTimer !== undefined) clearTimeout(this.#notificationResumeTimer);
+    this.#notificationResumeTimer = undefined;
     this.#updateCheckToken += 1;
     this.#directSelectionIntent += 1;
     this.#invalidateGalleryRender();
@@ -1293,6 +1461,8 @@ export class LinkChatView {
     this.#closeProfileMenu();
     window.removeEventListener("resize", this.#handleViewportResize);
     document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
+    this.#roomApplyController?.abort();
+    this.#roomManager?.destroy();
     this.#presenceUnsubscribe?.();
     this.#presenceUnsubscribe = undefined;
     this.#settingsUnsubscribe?.();
@@ -1312,6 +1482,9 @@ export class LinkChatView {
     this.#pendingRoomMusicUploads.clear();
     this.#releaseGalleryObjectUrls();
     this.#roomBadge.destroy();
+    this.#rosterRows?.destroy();
+    this.#lobbyRows?.destroy();
+    this.#lobbyRenderToken += 1;
     this.#host.remove();
     void this.#notificationSounds.destroy();
     this.soundStore.close();
@@ -1324,6 +1497,7 @@ export class LinkChatView {
     return (
       !this.#panel.hidden &&
       this.#workspaceView === "chat" &&
+      !(this.#cloud && (this.#chatFilter === "groups" || this.#cloudChatSelected)) &&
       !this.#chatLayout.hidden &&
       !this.#chat.hidden &&
       this.getActiveGroupId() === undefined &&
@@ -1348,7 +1522,11 @@ export class LinkChatView {
     if (this.#newChatDialog.open) this.#renderKnownContacts();
     if (this.#workspaceView === "activities") this.#renderActivitiesPage();
     if (this.#workspaceView === "roster") this.#renderRoster();
-    if (this.#workspaceView === "room") void this.#renderRoomTools(true);
+    if (this.#workspaceView === "room") {
+      if (this.#roomSubView === "lobbies") this.#renderLobbies();
+      else if (this.#roomSubView === "presets") this.#renderRoomPresets();
+      else void this.#renderRoomTools(false);
+    }
     if (this.#workspaceView === "music") void this.#renderMusicPage();
   }
 
@@ -1359,8 +1537,8 @@ export class LinkChatView {
   ): Promise<void> {
     if (
       incoming &&
-      this.presence.getOwnStatus() !== "dnd" &&
-      this.settings.get().linkChat.openOnIncoming
+      !this.#notificationsMuted() &&
+      this.settings.getSection("linkChat").openOnIncoming
     ) {
       await this.openChat(peerNumber, this.adapter.getMemberName(peerNumber));
       return;
@@ -1374,7 +1552,7 @@ export class LinkChatView {
   }
 
   onReaction(reaction: LinkReactionFired): void {
-    if (this.presence.getOwnStatus() === "dnd") return;
+    if (this.#notificationsMuted()) return;
     this.#toast(
       reaction.action === "room-emote"
         ? `Reaction “${reaction.ruleLabel}” sent: ${reaction.message}`
@@ -1383,9 +1561,9 @@ export class LinkChatView {
   }
 
   onNotification(notification: LinkNotification): void {
-    if (this.presence.getOwnStatus() === "dnd") return;
+    if (this.#notificationsMuted()) return;
     if (notification.showToast) this.#toast(notification.message);
-    const sounds = this.settings.get().linkReactions.sounds;
+    const sounds = this.settings.getSection("linkReactions").sounds;
     if (!sounds.enabled) return;
     const preset =
       notification.kind === "chat"
@@ -1427,7 +1605,7 @@ export class LinkChatView {
     if (this.#workspaceView === "home") {
       void this.#renderHome(this.#cachedDirectConversations);
     }
-    if (this.presence.getOwnStatus() === "dnd") return;
+    if (this.#notificationsMuted()) return;
 
     if (update.kind === "group-added" && update.incoming) {
       this.#toast(`${update.group.title} was added to your group chats.`);
@@ -1443,7 +1621,7 @@ export class LinkChatView {
     const group = this.#groupChatService?.getGroup(update.groupId);
     const title = group?.title ?? "Group chat";
     this.#toast(`${title} · ${update.message.senderName}: ${messagePreview(update.message.content)}`);
-    const sounds = this.settings.get().linkReactions.sounds;
+    const sounds = this.settings.getSection("linkReactions").sounds;
     if (sounds.enabled) {
       void this.#notificationSounds.play(sounds.chat, { volume: sounds.volume });
     }
@@ -1453,19 +1631,32 @@ export class LinkChatView {
     const settings = this.settings.get();
     const preference = settings.ui.launcherOpen;
     const requested =
-      preference === "chat" ? "chat" : preference === "last" ? this.#lastWorkspaceView : "home";
+      !this.#hasOpenedPanel ? "home" :
+        preference === "chat" ? "chat" : preference === "last" ? this.#lastWorkspaceView : "home";
     await this.#openPanel(this.#availableWorkspace(requested, settings));
   }
 
   async #openPanel(view: WorkspaceView): Promise<void> {
+    this.#hasOpenedPanel = true;
+    this.#launcherMenu.close(false);
     this.#panel.hidden = false;
     this.#positionPanel();
     this.#launcher.setAttribute("aria-expanded", "true");
     this.#showWorkspace(view);
+    if (view === "roster") this.#renderRoster();
+    if (view === "room") this.#showRoomSubView(this.#roomSubView);
     await this.refresh();
   }
 
   close(): void {
+    if (this.#presenceDialog.open && this.#profileBannerUploadBusy) {
+      this.#toast(
+        "Use Cancel upload in the profile dialog first, then wait for the final upload status before closing.",
+        "error",
+      );
+      this.#presenceBannerUploadButton.focus({ preventScroll: true });
+      return;
+    }
     this.#cancelProfileBannerUpload();
     this.#cancelImageOperation();
     this.#resetLocalImage();
@@ -1489,19 +1680,26 @@ export class LinkChatView {
     this.#invalidateGalleryRender();
     this.#cancelAllRemoteImageLoads();
     this.#panel.hidden = true;
+    this.presence.setNativeFriendsVisible?.(false);
+    this.#cloud?.setVisible(false);
     this.#launcher.setAttribute("aria-expanded", "false");
   }
 
   #availableWorkspace(
-    view: PrimaryWorkspaceView,
+    view: WorkspaceView,
     settings = this.settings.get(),
-  ): PrimaryWorkspaceView {
+  ): WorkspaceView {
     if (view === "roster" && !settings.linkRoster.enabled) return "home";
     if (view === "activities" && !settings.linkActivities.enabled) return "home";
     return view;
   }
 
   async openChat(memberNumber: number, memberName?: string): Promise<void> {
+    if (this.#cloud) {
+      this.#cloudChatSelected = false;
+      this.#chatQueries[this.#chatFilter] = this.#search.value;
+      this.#chatFilter = "all"; this.#search.value = this.#chatQueries.all;
+    }
     const intent = ++this.#directSelectionIntent;
     if (this.#groupChatPanel?.activeGroupId) this.#groupChatPanel.closeActive();
     const existing = await this.service.getConversation(memberNumber);
@@ -1545,6 +1743,10 @@ export class LinkChatView {
       this.presence.requestMany(result.joined);
     }
     if (this.#workspaceView === "roster" && result.changed) this.#renderRoster();
+    if (this.#workspaceView === "room" && result.changed) {
+      if (this.#roomSubView === "lobbies") this.#renderLobbies();
+      else if (this.#roomSubView === "current") void this.#renderRoomTools(false);
+    }
   }
 
   async refresh(): Promise<void> {
@@ -1564,6 +1766,7 @@ export class LinkChatView {
     this.#launcher.append(this.#emblem("kl-launcher-emblem"), this.#badge);
     this.#launcher.setAttribute("aria-expanded", "false");
     this.#launcher.addEventListener("click", () => {
+      if (this.#ignoreLauncherClick) { this.#ignoreLauncherClick = false; return; }
       if (Date.now() < this.#suppressLauncherClickUntil) return;
       if (this.#panel.hidden) void this.open();
       else this.close();
@@ -1572,6 +1775,18 @@ export class LinkChatView {
     this.#launcher.addEventListener("pointermove", (event) => this.#moveLauncher(event));
     this.#launcher.addEventListener("pointerup", (event) => this.#finishLauncherDrag(event));
     this.#launcher.addEventListener("pointercancel", (event) => this.#cancelLauncherDrag(event));
+    this.#launcher.setAttribute("aria-haspopup", "dialog");
+    this.#launcher.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      this.#cancelLauncherHold();
+      this.#launcherMenu.open(this.#launcher);
+    });
+    this.#launcher.addEventListener("keydown", (event) => {
+      if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+        event.preventDefault();
+        this.#launcherMenu.open(this.#launcher);
+      }
+    });
   }
 
   #buildPanel(): void {
@@ -1590,7 +1805,7 @@ export class LinkChatView {
       element(
         "div",
         { className: "kl-brand-copy" },
-        element("div", { className: "kl-brand-title", text: "KikiLink" }),
+        element("div", { className: "kl-brand-title", text: KIKILINK_DEV_TEST ? "KikiLink - DevTest" : "KikiLink" }),
         element(
           "div",
           { className: "kl-brand-subtitle" },
@@ -1666,6 +1881,8 @@ export class LinkChatView {
     this.#search.placeholder = "Search direct and group chats";
     this.#search.autocomplete = "off";
     this.#search.addEventListener("input", () => {
+      this.#chatQueries[this.#chatFilter] = this.#search.value;
+      if (this.#cloud && this.#chatFilter !== "all") { this.#cloud.inbox.search(this.#search.value); if (this.#chatFilter === "groups") return; }
       void this.#renderConversations();
     });
     this.#galleryButton.append(
@@ -1679,8 +1896,10 @@ export class LinkChatView {
       title: "New Beep chat",
       ariaLabel: "New Beep chat",
       onClick: () => this.#openNewChat(),
-    }, kikiIcon("plus"));
-    const newGroupButton = this.#groupChatPanel?.newGroupButton;
+    }, kikiIcon("direct-add"));
+    const newGroupButton = this.#cloud
+      ? element("button", { type: "button", onClick: () => this.#cloud?.createGroup() })
+      : this.#groupChatPanel?.newGroupButton;
     if (newGroupButton) {
       newGroupButton.classList.add(
         "kl-sidebar-new-chat",
@@ -1689,25 +1908,55 @@ export class LinkChatView {
       );
       newGroupButton.title = "Create group chat (3–5 people)";
       newGroupButton.setAttribute("aria-label", "Create group chat with 3–5 people");
-      newGroupButton.replaceChildren(kikiIcon("users"));
+      newGroupButton.replaceChildren(kikiIcon("group-add"));
     }
+    const filters = element("div", { className: "kl-chat-filters", ariaLabel: "Filter chats" });
+    filters.setAttribute("role", "group");
+    const chatFilters = this.#cloud ? [["all", "Direct"], ["groups", "Groups"], ["unread", "Unread"]] as const
+      : [["all", "All"], ["unread", "Unread"], ["groups", "Groups"]] as const;
+    for (const [value, label] of chatFilters) {
+      const filter = element("button", {
+        className: "kl-chat-filter", type: "button", text: label,
+        onClick: () => {
+          this.#chatQueries[this.#chatFilter] = this.#search.value;
+          this.#chatFilter = value;
+          if (value === "all") this.#cloudChatSelected = false;
+          this.#search.value = this.#chatQueries[value];
+          for (const button of filters.querySelectorAll("button")) button.setAttribute("aria-pressed", String(button === filter));
+          if (this.#cloud) { this.#showWorkspace("chat"); if (value === "groups") return; }
+          void this.#renderConversations(this.#cachedDirectConversations);
+        },
+      });
+      filter.dataset.chatFilter = value;
+      filter.setAttribute("aria-pressed", String(value === "all"));
+      filters.append(filter);
+    }
+    const markRead = element("button", { type: "button", className: "kl-sidebar-new-chat kl-sidebar-read-all", title: "Mark all chats as read", ariaLabel: "Mark all chats as read",
+      onClick: () => {
+        markRead.disabled = true;
+        void Promise.all([this.service.markAllRead(), this.#cloud?.inbox.markAllRead(), this.#groupChatService?.markAllRead()])
+          .then(() => this.refresh()).catch(() => this.#toast("Could not mark every chat as read. Try again.", "error"))
+          .finally(() => { markRead.disabled = false; });
+      },
+    }, kikiIcon("read-all"));
+    markRead.hidden = true;
     const sidebar = element(
       "aside",
       { className: "kl-sidebar" },
-      element("div", { className: "kl-search-wrap" }, this.#search),
+      element("div", { className: "kl-search-wrap" }, this.#search, filters),
       element(
         "div",
         { className: "kl-sidebar-heading" },
-        element("span", { text: "Chats" }),
+        element("span", { className: "kl-sidebar-section-name", text: "Chats" }),
         element(
           "div",
           { className: "kl-sidebar-heading-actions" },
           this.#galleryButton,
           newGroupButton,
-          newChatButton,
+          newChatButton, markRead,
         ),
       ),
-      this.#conversationList,
+      element("div", { className: "kl-chat-inbox" }, this.#conversationList, this.#cloud?.inbox.element),
     );
 
     this.#empty.append(
@@ -1733,6 +1982,7 @@ export class LinkChatView {
       this.#chat,
       this.#groupChatPanel?.chatPane,
     );
+    this.#chatMain = main;
     this.#chatLayout.append(sidebar, main);
     this.#buildRosterPage();
     this.#buildGalleryPage();
@@ -1753,6 +2003,10 @@ export class LinkChatView {
     );
     const shell = element("div", { className: "kl-shell" }, this.#featureNav, this.#workspace);
     this.#panel.append(topbar, shell);
+    if (this.#cloud) {
+      this.#workspace.append(this.#cloud.element);
+      this.#panel.dataset.cloud = "true";
+    }
     this.#showWorkspace("home", false);
     this.#panel.addEventListener("keydown", (event) => {
       const target = event.target;
@@ -1797,7 +2051,7 @@ export class LinkChatView {
     this.#configureNavButton(this.#homeNavButton, "home", "Home", "home");
     this.#configureNavButton(this.#chatNavButton, "chat", "Chat", "chat");
     this.#configureNavButton(this.#rosterButton, "users", "Players", "roster");
-    this.#configureNavButton(this.#roomNavButton, "location", "Room", "room");
+    this.#configureNavButton(this.#roomNavButton, "location", "Rooms", "room");
     this.#configureNavButton(this.#musicNavButton, "music", "Music", "music");
     this.#configureNavButton(this.#activitiesButton, "activities", "Custom", "activities");
     this.#configureNavButton(this.#settingsNavButton, "settings", "Settings", "settings");
@@ -1812,6 +2066,11 @@ export class LinkChatView {
       this.#activitiesButton,
       this.#settingsNavButton,
     );
+    if (this.#cloud) {
+      const button = element("button", { className: "kl-nav-item", type: "button", title: "Feed and KikiLink Cloud" });
+      this.#configureNavButton(button, "feed", "Feed", "cloud");
+      this.#homeNavButton.after(button);
+    }
   }
 
   #configureNavButton(
@@ -1829,6 +2088,7 @@ export class LinkChatView {
   }
 
   #activateFeature(target: FeatureTarget): void {
+    if (target === "cloud") { this.#showWorkspace("cloud"); return; }
     if (target === "home" || target === "chat" || target === "news") {
       this.#showWorkspace(target);
       if (target !== "news") void this.refresh();
@@ -1843,7 +2103,8 @@ export class LinkChatView {
       return;
     }
     if (target === "room") {
-      void this.#openRoomTools();
+      this.#showWorkspace("room");
+      this.#showRoomSubView("lobbies");
       return;
     }
     if (target === "music") {
@@ -2053,6 +2314,12 @@ export class LinkChatView {
       this.#homeGalleryCard,
       settingsCard,
     );
+    if (this.#cloud) {
+      const feedCard = element("button", { type: "button", className: "kl-feature-card kl-home-feed", title: "Open Feed", onClick: () => this.#activateFeature("cloud") });
+      this.#fillFeatureCard(feedCard, "feed", "KEEP IN TOUCH", "Feed", "Share a moment, catch up on posts, and join the conversation.",
+        element("span", { className: "kl-feature-card-metric", text: "Your KikiLink community" }), element("span", { className: "kl-feature-card-action", text: "Open Feed" }));
+      chatCard.after(feedCard);
+    }
     const privacy = element(
       "div",
       { className: "kl-home-privacy" },
@@ -2154,30 +2421,64 @@ export class LinkChatView {
     this.#activateFeature(action.kind);
   }
 
-  #showWorkspace(view: WorkspaceView, remember = true): void {
+  #showWorkspace(view: WorkspaceView, remember = true, cloudDestination?: CloudDestination): void {
+    if (this.#cloud && cloudDestination === "groups") {
+      this.#chatQueries[this.#chatFilter] = this.#search.value;
+      view = "chat"; this.#chatFilter = "groups"; this.#search.value = this.#chatQueries.groups;
+      this.#panel.dataset.mobileView = "list";
+    }
+    const cloudGroups = Boolean(this.#cloud && view === "chat" && (this.#chatFilter === "groups" || (this.#chatFilter === "unread" && this.#cloudChatSelected)));
     if (this.#workspaceView === "roster" && view !== "roster") this.#saveNotebook(false);
     if (this.#workspaceView === "gallery" && view !== "gallery") {
       this.#invalidateGalleryRender();
     }
+    if (view !== "chat") this.#stopLocalTyping();
     this.#workspaceView = view;
-    if (remember && view !== "settings") this.#lastWorkspaceView = view;
+    this.presence.setNativeFriendsVisible?.(!this.#panel.hidden && ["chat", "roster", "room"].includes(view));
+    if (remember) this.#lastWorkspaceView = view;
     this.#panel.dataset.workspace = view;
     this.#home.hidden = view !== "home";
     this.#newsPage.hidden = view !== "news";
     this.#chatLayout.hidden = view !== "chat";
+    this.#chatLayout.dataset.cloudGroups = String(cloudGroups);
+    this.#conversationList.hidden = Boolean(this.#cloud && this.#chatFilter === "groups");
+    if (this.#cloud) {
+      this.#cloud.inbox.element.hidden = this.#chatFilter === "all";
+      this.#cloud.inbox.unreadOnly(this.#chatFilter === "unread");
+      this.#cloud.inbox.search(this.#search.value);
+      const inbox = this.#shadow.querySelector<HTMLElement>(".kl-chat-inbox");
+      if (inbox) inbox.dataset.unread = String(this.#chatFilter === "unread");
+      const parent = cloudGroups ? this.#chatMain : this.#workspace;
+      if (parent && this.#cloud.element.parentElement !== parent) parent.append(this.#cloud.element);
+      this.#cloud.element.dataset.embedded = String(cloudGroups);
+      const heading = this.#shadow.querySelector<HTMLElement>(".kl-sidebar-section-name");
+      if (heading) heading.textContent = this.#chatFilter === "groups" ? "Groups" : this.#chatFilter === "unread" ? "Unread chats" : "Direct chats";
+      const newGroup = this.#shadow.querySelector<HTMLButtonElement>(".kl-sidebar-new-group");
+      const newChat = this.#shadow.querySelector<HTMLButtonElement>(".kl-sidebar-new-chat:not(.kl-sidebar-new-group):not(.kl-sidebar-read-all)");
+      if (newGroup) newGroup.hidden = this.#chatFilter !== "groups";
+      if (newChat) newChat.hidden = this.#chatFilter !== "all";
+      const markRead = this.#shadow.querySelector<HTMLButtonElement>(".kl-sidebar-read-all");
+      if (markRead) markRead.hidden = this.#chatFilter !== "unread";
+      this.#search.placeholder = this.#chatFilter === "groups" ? "Search groups" : this.#chatFilter === "unread" ? "Search unread chats" : "Search direct chats";
+    }
     this.#galleryPage.hidden = view !== "gallery";
     this.#rosterPage.hidden = view !== "roster";
     this.#roomPage.hidden = view !== "room";
     this.#musicPage.hidden = view !== "music";
     this.#activitiesPage.hidden = view !== "activities";
     this.#settingsPage.hidden = view !== "settings";
-    if (view === "chat" && this.#groupChatPanel?.activeGroupId) {
+    this.#cloud?.setVisible(view === "cloud" || cloudGroups, cloudGroups ? "groups" : view === "cloud" ? cloudDestination ?? "feed" : undefined, view === "chat");
+    for (const filter of this.#shadow.querySelectorAll<HTMLButtonElement>("[data-chat-filter]"))
+      filter.setAttribute("aria-pressed", String(filter.dataset.chatFilter === this.#chatFilter));
+    if (view === "chat" && this.#groupChatPanel?.activeGroupId &&
+      (!this.#isMobileLayout() || this.#panel.dataset.mobileView === "chat")) {
       void this.#groupChatPanel.markVisibleActiveRead();
     }
-    if (view === "chat" && this.#activePeer === undefined) {
+    if (view === "chat" && !cloudGroups && this.#activePeer === undefined && !this.#groupChatPanel?.activeGroupId) {
       this.#panel.dataset.mobileView = "list";
     }
     this.#contextTitle.textContent = WORKSPACE_TITLES[view];
+    this.#updateSocialBack();
     this.#updateNavigation();
   }
 
@@ -2264,7 +2565,7 @@ export class LinkChatView {
         : { memberNumber: this.#activePeer, displayName: this.#activeName },
     );
 
-    this.#composer.maxLength = 1000;
+    this.#messageInteraction = new MessageInteraction(this.#chat, this.#messages);
     this.#composer.rows = 1;
     this.#composer.addEventListener("input", () => {
       this.#resizeComposer();
@@ -2273,19 +2574,15 @@ export class LinkChatView {
         this.#scheduleDirectDraft(
           this.#activePeer,
           this.#activeNativeName,
-          this.#composer.value,
+          this.#reply.value,
         );
         this.#updateLocalTyping();
       }
     });
     this.#composer.addEventListener("blur", () => this.#stopLocalTyping());
     this.#composer.addEventListener("keydown", (event) => {
-      const enterToSend = this.settings.get().linkChat.enterToSend;
-      if (
-        event.key === "Enter" &&
-        !event.isComposing &&
-        ((event.ctrlKey || event.metaKey) || (enterToSend && !event.shiftKey && !event.altKey))
-      ) {
+      const enterToSend = this.settings.getSection("linkChat").enterToSend;
+      if (shouldSendMessage(event, enterToSend)) {
         event.preventDefault();
         void this.#send();
       }
@@ -2309,6 +2606,7 @@ export class LinkChatView {
       { className: "kl-composer" },
       this.#typingIndicator,
       this.#quickActions,
+      this.#reply.element,
       element(
         "div",
         { className: "kl-composer-row" },
@@ -2447,7 +2745,7 @@ export class LinkChatView {
     this.#launcherOpenSelect.setAttribute("aria-label", "Launcher opens");
     const launcherOpen = this.#settingRow(
       "Launcher opens",
-      "Choose what happens when you tap the floating emblem.",
+      "Reopen where you left off. Reloading the website always starts at Home.",
       this.#launcherOpenSelect,
     );
 
@@ -2572,7 +2870,7 @@ export class LinkChatView {
     this.#profileImagePreviewSelect.setAttribute("aria-label", "Profile image previews");
     const profileImagePreviews = this.#settingRow(
       "Profile avatars & banners",
-      "Ask is the privacy-first default. Loading remote art reveals your IP and request time to its host; Always show opts into that automatically.",
+      "Show pictures automatically, ask first, or use links only. Remote images connect to their image host.",
       this.#profileImagePreviewSelect,
     );
 
@@ -3110,6 +3408,14 @@ export class LinkChatView {
     discord.target = "_blank";
     discord.rel = "noopener noreferrer nofollow";
     discord.append(kikiIcon("external", "kl-about-link-icon"));
+    const support = element("a", {
+      className: "kl-about-link",
+      text: "Support KikiLink",
+    });
+    support.href = "https://www.patreon.com/KikiLink";
+    support.target = "_blank";
+    support.rel = "noopener noreferrer nofollow";
+    support.prepend(kikiIcon("heart", "kl-about-link-icon"));
     const repository = element("a", {
       className: "kl-about-link",
       text: "Open source repository",
@@ -3147,7 +3453,7 @@ export class LinkChatView {
         aboutFact("License", "MIT"),
         aboutFact("Data", "Account-scoped; see Privacy"),
       ),
-      element("div", { className: "kl-about-links" }, discord, repository),
+      element("div", { className: "kl-about-links" }, discord, support, repository),
       element("p", {
         className: "kl-about-note",
         text: "KikiLink is an independent quality-of-life addon. Account scoping prevents accidental mix-ups; co-installed page addons share the same browser trust boundary.",
@@ -3352,6 +3658,10 @@ export class LinkChatView {
   }
 
   #buildFinderDialog(): void {
+    // The existing local finder must not send navigation keys through to BC gameplay.
+    for (const type of ["keydown", "keyup", "keypress"] as const) {
+      this.#finderDialog.addEventListener(type, (event) => event.stopPropagation());
+    }
     const title = element("div", { className: "kl-dialog-title", text: "Find anything" });
     title.id = "kikilink-finder-title";
     this.#finderDialog.setAttribute("aria-labelledby", title.id);
@@ -3372,7 +3682,9 @@ export class LinkChatView {
         title,
         element("div", {
           className: "kl-dialog-subtitle",
-          text: "Jump to a chat, player, activity, or setting.",
+          text: this.#cloud
+            ? "Jump to Cloud, a chat, player, activity, or setting."
+            : "Jump to a chat, player, activity, or setting.",
         }),
       ),
       close,
@@ -3382,7 +3694,9 @@ export class LinkChatView {
     this.#finderResults.setAttribute("role", "listbox");
     this.#finderResults.setAttribute("aria-label", "KikiLink search results");
     this.#finderQuery.type = "search";
-    this.#finderQuery.placeholder = "Search chats, players, activities, settings…";
+    this.#finderQuery.placeholder = this.#cloud
+      ? "Search Cloud, chats, players, activities, settings…"
+      : "Search chats, players, activities, settings…";
     this.#finderQuery.autocomplete = "off";
     this.#finderQuery.spellcheck = false;
     this.#finderQuery.setAttribute("role", "combobox");
@@ -3392,6 +3706,8 @@ export class LinkChatView {
     this.#finderQuery.setAttribute("aria-expanded", "false");
     this.#finderQuery.addEventListener("input", () => this.#renderFinderResults());
     this.#finderQuery.addEventListener("keydown", (event) => {
+      if (event.isComposing) return;
+      if (event.key === "Escape") { event.preventDefault(); this.#finderDialog.close(); return; }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         this.#moveFinderSelection(event.key === "ArrowDown" ? 1 : -1);
@@ -3518,7 +3834,7 @@ export class LinkChatView {
     this.#presenceAvatarUrl.autocomplete = "off";
     this.#presenceAvatarUrl.spellcheck = false;
     this.#presenceAvatarUrl.setAttribute("aria-label", "Direct profile avatar URL");
-    this.#presenceAvatarUrl.addEventListener("input", () => this.#renderOwnAvatarPreview());
+    this.#presenceAvatarUrl.addEventListener("input", () => { this.#cloudProfile?.sourceChanged("avatar"); this.#renderOwnAvatarPreview(); });
     this.#presenceAvatarFrame.replaceChildren(
       selectOption("none", "None"),
       selectOption("blossom", "Sakura blossoms"),
@@ -3556,14 +3872,19 @@ export class LinkChatView {
     this.#presenceBannerUrl.setAttribute("aria-label", "Direct profile banner URL");
     this.#presenceBannerStatus.setAttribute("role", "status");
     this.#presenceBannerStatus.setAttribute("aria-live", "polite");
-    this.#presenceBannerUrl.addEventListener("input", () => this.#renderOwnBannerPreview());
+    this.#presenceBannerUrl.addEventListener("input", () => { this.#cloudProfile?.sourceChanged("banner"); this.#renderOwnBannerPreview(); });
     this.#presenceBannerFileInput.type = "file";
     this.#presenceBannerFileInput.accept = ".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp";
     this.#presenceBannerFileInput.hidden = true;
     this.#presenceBannerUploadButton.addEventListener("click", () => {
+      if (this.#cloudProfile) { if (!this.#cloudProfile.busy) this.#presenceBannerFileInput.click(); return; }
       if (this.#profileBannerUploadBusy) {
         this.#cancelProfileBannerUpload();
         this.#renderPresenceDialog();
+        return;
+      }
+      if (usesCatboxUploadRelay() && this.#preparedProfileBanner) {
+        void this.#uploadPresenceBanner();
         return;
       }
       this.#presenceBannerFileInput.click();
@@ -3571,10 +3892,13 @@ export class LinkChatView {
     this.#presenceBannerFileInput.addEventListener("change", () => {
       const file = this.#presenceBannerFileInput.files?.[0];
       this.#presenceBannerFileInput.value = "";
-      if (file) void this.#uploadPresenceBanner(file);
+      if (file && this.#cloudProfile) this.#cloudProfile.choose("banner", file);
+      else if (file) void this.#uploadPresenceBanner(file, usesCatboxUploadRelay());
     });
     this.#presenceBannerRemoveButton.addEventListener("click", () => {
+      if (this.#cloudProfile) { this.#cloudProfile.remove("banner"); return; }
       if (this.#profileBannerUploadBusy) return;
+      this.#preparedProfileBanner = undefined;
       this.#presenceBannerUrl.value = "";
       this.#presenceBannerStatus.textContent = "Banner removed from this profile draft.";
       this.#presenceBannerStatus.dataset.tone = "warning";
@@ -3720,9 +4044,13 @@ export class LinkChatView {
         }),
         element("span", {
           className: "kl-custom-field-help",
-          text: supportsLongLivedCatboxUploads()
-            ? "Upload converts the file to a metadata-free WebP and stores it on public, long-lived Catbox. Removing it here does not delete the old public file."
-            : "FUSAM cannot upload to Catbox safely. Paste a direct HTTPS banner link instead.",
+          text: this.#cloudProfile
+            ? "Your selected banner is stored with your KikiLink profile when you save. PNG, JPEG or WebP · up to 5 MiB."
+            : supportsLongLivedCatboxUploads()
+            ? usesCatboxUploadRelay()
+              ? "Upload first prepares a metadata-free WebP locally. Verify & upload then uses the KikiLink relay to send it to public Catbox. The relay does not retain the file, and removing it here does not delete the public copy; Catbox retention applies."
+              : "Upload converts the file to a metadata-free WebP and stores it on public, long-lived Catbox. Removing it here does not delete the old public file; Catbox retention applies."
+            : "The reviewed Catbox relay is not enabled in this FUSAM build. Paste a direct HTTPS banner link instead.",
         }),
         this.#presenceBannerStatus,
       ),
@@ -3764,7 +4092,20 @@ export class LinkChatView {
         "Appear Offline changes KikiLink only. Bondage Club can still show your native online state.",
       ),
     );
-    this.#presenceSaveButton.addEventListener("click", () => this.#savePresencePreferences());
+    if (this.#cloudProfile) {
+      body.prepend(this.#cloudProfile.element);
+      const avatarInput = document.createElement("input");
+      avatarInput.type = "file"; avatarInput.accept = "image/png,image/jpeg,image/webp"; avatarInput.hidden = true;
+      avatarInput.setAttribute("aria-label", "Choose profile avatar");
+      avatarInput.addEventListener("change", () => { const file = avatarInput.files?.[0]; avatarInput.value = ""; if (file) this.#cloudProfile?.choose("avatar", file); });
+      const avatarActions = element("div", { className: "kl-profile-banner-actions" },
+        element("button", { type: "button", className: "kl-text-button", text: "Choose avatar", onClick: () => avatarInput.click() }),
+        element("button", { type: "button", className: "kl-text-button", text: "Remove avatar", onClick: () => this.#cloudProfile?.remove("avatar") }), avatarInput);
+      body.querySelector(".kl-profile-avatar-field .kl-presence-field")?.append(avatarActions);
+      const avatarHelp = body.querySelector(".kl-profile-avatar-field .kl-custom-field-help");
+      if (avatarHelp) avatarHelp.textContent = "Choose PNG, JPEG or WebP, up to 2 MiB. A pasted image link is copied into KikiLink when you save.";
+    }
+    this.#presenceSaveButton.addEventListener("click", () => void this.#savePresencePreferences());
     this.#presenceDialog.append(
       header,
       body,
@@ -3780,14 +4121,22 @@ export class LinkChatView {
         this.#presenceSaveButton,
       ),
     );
-    this.#presenceDialog.addEventListener("cancel", () => {
+    this.#presenceDialog.addEventListener("cancel", (event) => {
+      if (this.#cloudProfile?.busy) { event.preventDefault(); return; }
       if (!this.#profileBannerUploadBusy) return;
-      this.#cancelProfileBannerUpload();
+      event.preventDefault();
+      this.#toast(
+        "Use Cancel upload first, then wait for the final upload status before closing.",
+        "error",
+      );
+      this.#presenceBannerUploadButton.focus({ preventScroll: true });
     });
     this.#presenceDialog.addEventListener("close", () => {
+      this.#cloudProfile?.close();
       this.#cancelProfileBannerUpload();
       this.#profileBannerUploadToken += 1;
       this.#profileBannerUploadBusy = false;
+      this.#preparedProfileBanner = undefined;
       this.#presenceBannerStatus.textContent = "";
       this.#presenceBannerStatus.dataset.tone = "";
       this.#cancelRemoteImageLoadsWithin(this.#presenceBannerPreview);
@@ -3818,6 +4167,7 @@ export class LinkChatView {
       this.#addonProfileBody,
     );
     this.#addonProfileDialog.addEventListener("close", () => {
+      this.#addonProfileCloud = undefined;
       const returnFocus = this.#addonProfileReturnFocus;
       const returnMemberNumber = this.#addonProfileReturnMemberNumber;
       this.#cancelRemoteImageLoadsWithin(this.#addonProfileBody);
@@ -3895,7 +4245,9 @@ export class LinkChatView {
     this.#addonProfileReturnMemberNumber = memberNumber;
     this.#addonProfileTarget = undefined;
     this.#addonProfilePresenceSignature = "";
-    this.#addonProfileBody.replaceChildren(
+    const cachedCloudProfile = this.#cloud?.client.peekProfile?.(memberNumber);
+    this.#addonProfileCloud = cachedCloudProfile;
+    if (!cachedCloudProfile || this.#addonProfileBody.dataset.member !== String(memberNumber)) this.#addonProfileBody.replaceChildren(
       element("div", {
         className: "kl-addon-profile-loading",
         text: "Checking KikiLink profile…",
@@ -3911,6 +4263,22 @@ export class LinkChatView {
     }
 
     let own = false;
+    if (this.#cloud?.client.connected) {
+      if (cachedCloudProfile) {
+        this.#addonProfileTarget = { memberNumber, displayName: cachedCloudProfile.isDefault ? displayName : cachedCloudProfile.displayName };
+        await this.#renderAddonProfile();
+        // The client refreshes stale data quietly; an unchanged snapshot never rebuilds the card.
+      }
+      const profile = await this.#cloud.client.profile(memberNumber).catch(() => undefined);
+      if (operation !== this.#addonProfileOpenToken || !this.#mounted || this.#panel.hidden || !this.#addonProfileDialog.open) return;
+      if (profile) {
+        if (cachedCloudProfile && JSON.stringify(profile) === JSON.stringify(cachedCloudProfile)) return;
+        this.#addonProfileCloud = profile;
+        this.#addonProfileTarget = { memberNumber, displayName: profile.isDefault ? displayName : profile.displayName };
+        await this.#renderAddonProfile();
+        return;
+      }
+    }
     try {
       own = memberNumber === this.adapter.getOwnMemberNumber();
     } catch {
@@ -3953,7 +4321,7 @@ export class LinkChatView {
     } catch {
       // Wait below remains fail-closed.
     }
-    if (!compatible) compatible = await this.#waitForAddonProfilePeer(memberNumber, operation);
+    if (!compatible && !this.#cloud) compatible = await this.#waitForAddonProfilePeer(memberNumber, operation);
     if (
       operation !== this.#addonProfileOpenToken ||
       !this.#mounted ||
@@ -3962,7 +4330,7 @@ export class LinkChatView {
     ) {
       return;
     }
-    if (!compatible) {
+    if (!compatible && !this.#cloud) {
       this.#addonProfileBody.replaceChildren(
         element("div", {
           className: "kl-addon-profile-loading kl-addon-profile-unavailable",
@@ -4053,9 +4421,13 @@ export class LinkChatView {
       // The known conversation/display name below still keeps the profile usable.
     }
     const nativeName = conversation?.peerName || target.displayName || adapterName;
-    const shownName = conversation ? conversationDisplayName(conversation) : nativeName;
-    const snapshot = this.presence.get(target.memberNumber);
-    this.#addonProfilePresenceSignature = profilePresenceSignature(snapshot);
+    const cloudProfile = this.#addonProfileCloud?.memberNumber === target.memberNumber && this.#cloud?.client.connected ? this.#addonProfileCloud : undefined;
+    this.#addonProfileBody.dataset.member = String(target.memberNumber);
+    const shownName = conversation?.localAlias ? conversationDisplayName(conversation) : cloudProfile && !cloudProfile.isDefault ? cloudProfile.displayName : nativeName;
+    const nativeSnapshot = this.presence.get(target.memberNumber);
+    const snapshot = cloudProfile ? withCloudProfile(nativeSnapshot, cloudProfile,
+      target.memberNumber === this.#cloud?.client.memberNumber && this.#cloudProfile?.preserveLegacyAppearance) : nativeSnapshot;
+    this.#addonProfilePresenceSignature = profilePresenceSignature(nativeSnapshot);
     const notebook = this.roster.get(target.memberNumber, nativeName);
     let relationships: PlayerRelationship[] = [];
     let inRoom = false;
@@ -4089,8 +4461,13 @@ export class LinkChatView {
     const frame = snapshot.avatarFrame ?? "none";
 
     const avatar = element("div", { className: "kl-avatar kl-addon-profile-avatar" });
+    if (cloudProfile?.avatarId && this.#cloud) {
+      const media = this.#cloud.profileImage(cloudProfile.avatarId, "avatar");
+      avatar.append(media);
+      if (media.dataset.state === "hidden") avatar.prepend(document.createTextNode(avatarText(shownName)));
+      media.addEventListener("cloud-image-error", () => avatar.prepend(document.createTextNode(avatarText(shownName))), { once: true });
+    } else this.#renderAvatar(avatar, shownName, target.memberNumber);
     avatar.dataset.avatarFrame = frame;
-    this.#renderAvatar(avatar, shownName, target.memberNumber);
     const avatarShell = element(
       "div",
       { className: "kl-addon-profile-avatar-shell" },
@@ -4124,12 +4501,12 @@ export class LinkChatView {
       );
     }
 
-    const avatarPolicy = this.settings.get().linkPresence.profileImagePreviews;
+    const avatarPolicy = this.settings.getSection("linkPresence").profileImagePreviews;
     const avatarRevealed = Boolean(
       snapshot.avatarUrl &&
       this.#revealedAvatarUrls.has(avatarRevealKey(target.memberNumber, snapshot.avatarUrl)),
     );
-    const hiddenAvatar = Boolean(snapshot.avatarUrl) &&
+    const hiddenAvatar = !cloudProfile?.avatarId && Boolean(snapshot.avatarUrl) &&
       (avatarPolicy === "never" || (avatarPolicy === "ask" && !avatarRevealed));
     const avatarControl = hiddenAvatar && avatarPolicy === "ask"
       ? element("button", {
@@ -4154,7 +4531,7 @@ export class LinkChatView {
       snapshot.bannerUrl &&
       this.#revealedBannerUrls.has(profileImageRevealKey(target.memberNumber, snapshot.bannerUrl)),
     );
-    const hiddenBanner = Boolean(snapshot.bannerUrl) &&
+    const hiddenBanner = !cloudProfile?.bannerId && Boolean(snapshot.bannerUrl) &&
       (avatarPolicy === "never" || (avatarPolicy === "ask" && !bannerRevealed));
     const bannerControl = hiddenBanner && avatarPolicy === "ask"
       ? element("button", {
@@ -4216,6 +4593,7 @@ export class LinkChatView {
           ? snapshot.source === "kikilink"
             ? `${snapshot.addonVersion ? `Live v${snapshot.addonVersion}` : "Live"} · details saved ${formatFullSeenTime(snapshot.profileSyncedAt)}`
             : `Saved · ${formatFullSeenTime(snapshot.profileSyncedAt)}`
+          : cloudProfile ? cloudProfile.isDefault ? "Profile not set up yet" : "Saved profile"
           : snapshot.addonVersion
             ? `v${snapshot.addonVersion}`
             : "Detected",
@@ -4325,6 +4703,13 @@ export class LinkChatView {
       privateSection,
       element("div", { className: "kl-addon-profile-actions" }, message, whisper, nativeProfile, favorite, note),
     );
+    const actions = card.querySelector<HTMLElement>(".kl-addon-profile-actions")!;
+    if (target.memberNumber === this.adapter.getOwnMemberNumber()) {
+      message.textContent = "Edit profile";
+      message.replaceWith(element("button", { className: message.className, type: "button", text: "Edit profile",
+        onClick: () => { this.#addonProfileDialog.close(); this.#openPresenceDialog(); } }));
+    }
+    if (cloudProfile && !cloudProfile.isDefault && this.#cloud) actions.append(...this.#cloud.profileActions(target.memberNumber, card));
     card.dataset.profileStyle = style;
     card.dataset.memberNumber = target.memberNumber.toString();
     const outlineColor = normalizeProfileOutlineColor(snapshot.profileOutlineColor ?? "");
@@ -4351,7 +4736,8 @@ export class LinkChatView {
       card.style.setProperty("--kl-profile-text", foreground);
     }
     this.#addonProfileBody.replaceChildren(card);
-    this.#renderProfileBanner(
+    if (cloudProfile?.bannerId && this.#cloud) profileBanner.append(this.#cloud.profileImage(cloudProfile.bannerId, "banner"));
+    else this.#renderProfileBanner(
       profileBanner,
       shownName,
       target.memberNumber,
@@ -4369,7 +4755,7 @@ export class LinkChatView {
   }
 
   #openPresenceDialog(): void {
-    const config = this.settings.get().linkPresence;
+    const config = this.settings.getSection("linkPresence");
     this.#presenceEnabledToggle.checked = config.enabled;
     this.#presenceMessage.value = config.statusMessage;
     this.#presenceBio.value = config.bio;
@@ -4381,26 +4767,42 @@ export class LinkChatView {
     this.#presenceGradientSecondary.value = config.profileGradient.secondary;
     this.#presenceBannerUrl.value = config.bannerUrl;
     this.#presenceOutlineEnabled.checked = Boolean(config.profileOutlineColor);
-    this.#presenceOutlineColor.value = config.profileOutlineColor || this.settings.get().ui.accent;
+    this.#presenceOutlineColor.value = config.profileOutlineColor || this.settings.getSection("ui").accent;
     this.#presenceBannerStatus.textContent = "";
     this.#presenceBannerStatus.dataset.tone = "";
+    this.#preparedProfileBanner = undefined;
     this.#autoIdleInput.value = config.autoIdleMinutes.toString();
     this.#afkAutoReplyToggle.checked = config.afkAutoReply.enabled;
     this.#afkAutoReplyMessage.value = config.afkAutoReply.message;
     this.#renderOwnAvatarPreview();
     this.#renderOwnBannerPreview();
     this.#renderPresenceDialog();
+    this.#cloudProfile?.open({ bio: this.#presenceBio, statusMessage: this.#presenceMessage, avatarUrl: this.#presenceAvatarUrl, bannerUrl: this.#presenceBannerUrl,
+      avatarPreview: this.#presenceAvatarPreview, bannerPreview: this.#presenceBannerPreview,
+      frame: this.#presenceAvatarFrame, style: this.#presenceProfileStyle,
+      outlineEnabled: this.#presenceOutlineEnabled, outlineColor: this.#presenceOutlineColor,
+      gradientEnabled: this.#presenceGradientEnabled, gradientPrimary: this.#presenceGradientPrimary, gradientSecondary: this.#presenceGradientSecondary,
+      save: this.#presenceSaveButton, renderPreviews: () => { this.#renderOwnAvatarPreview(); this.#renderOwnBannerPreview(); } });
     if (!this.#presenceDialog.open) this.#presenceDialog.showModal();
     this.#presenceOptions.querySelector<HTMLButtonElement>('[data-active="true"]')?.focus();
   }
 
   #requestClosePresenceDialog(): void {
+    if (this.#cloudProfile?.busy) { this.#toast("Wait for your profile to finish loading or saving."); return; }
+    if (this.#profileBannerUploadBusy) {
+      this.#toast(
+        "Use Cancel upload first, then wait for the final upload status before closing.",
+        "error",
+      );
+      this.#presenceBannerUploadButton.focus({ preventScroll: true });
+      return;
+    }
     this.#cancelProfileBannerUpload();
     this.#presenceDialog.close();
   }
 
   #renderPresenceDialog(): void {
-    const selected = this.settings.get().linkPresence.status;
+    const selected = this.settings.getSection("linkPresence").status;
     const enabled = this.#presenceEnabledToggle.checked;
     for (const option of this.#presenceOptions.querySelectorAll<HTMLButtonElement>(
       ".kl-presence-option",
@@ -4411,22 +4813,26 @@ export class LinkChatView {
       option.disabled = !enabled;
     }
     this.#presenceMessage.disabled = !enabled;
-    this.#presenceBio.disabled = !enabled;
+    this.#presenceBio.disabled = !enabled && !this.#cloudProfile;
     this.#presenceBannerUrl.disabled = this.#profileBannerUploadBusy;
-    const canUploadToCatbox = supportsLongLivedCatboxUploads();
-    this.#presenceBannerUploadButton.textContent = !canUploadToCatbox
+    const canUploadToCatbox = Boolean(this.#cloudProfile) || supportsLongLivedCatboxUploads();
+    this.#presenceBannerUploadButton.textContent = this.#cloudProfile ? "Choose banner" : !canUploadToCatbox
       ? "Catbox unavailable in FUSAM"
       : this.#profileBannerUploadBusy
       ? this.#profileBannerUploadController?.signal.aborted
         ? "Cancelling…"
         : "Cancel upload"
-      : "Upload banner";
+      : usesCatboxUploadRelay() && this.#preparedProfileBanner
+        ? "Verify & upload"
+        : "Upload banner";
     this.#presenceBannerUploadButton.disabled =
       !canUploadToCatbox ||
       (this.#profileBannerUploadBusy && this.#profileBannerUploadController?.signal.aborted === true);
     this.#presenceBannerUploadButton.title = canUploadToCatbox
-      ? "Prepare and upload a public Catbox banner"
-      : "FUSAM cannot access Catbox's non-CORS upload API";
+      ? usesCatboxUploadRelay()
+        ? "Prepare, verify, and relay a public Catbox banner"
+        : "Prepare and upload a public Catbox banner"
+      : "The reviewed FUSAM-to-Catbox relay is not enabled";
     this.#presenceBannerRemoveButton.disabled = this.#profileBannerUploadBusy;
     this.#presenceOutlineEnabled.disabled = this.#profileBannerUploadBusy;
     this.#presenceOutlineColor.disabled =
@@ -4434,11 +4840,17 @@ export class LinkChatView {
     this.#presenceGradientPrimary.disabled = !this.#presenceGradientEnabled.checked;
     this.#presenceGradientSecondary.disabled = !this.#presenceGradientEnabled.checked;
     this.#presenceSaveButton.disabled = this.#profileBannerUploadBusy;
+    if (this.#cloudProfile) {
+      this.#presenceBannerUploadButton.title = "Choose a banner for your KikiLink profile";
+      this.#presenceSaveButton.disabled = this.#cloudProfile.busy;
+      this.#presenceBannerUploadButton.disabled = this.#cloudProfile.busy;
+      this.#cloudProfile.keepControlsLocked();
+    }
     this.#afkAutoReplyMessage.disabled = !this.#afkAutoReplyToggle.checked;
     this.#afkAutoReplyOptions.dataset.disabled = String(!this.#afkAutoReplyToggle.checked);
   }
 
-  #savePresencePreferences(): void {
+  async #savePresencePreferences(): Promise<void> {
     if (this.#profileBannerUploadBusy) {
       this.#toast("Wait for the profile banner upload to finish.", "error");
       return;
@@ -4497,6 +4909,18 @@ export class LinkChatView {
       this.#toast("Add a short AFK auto-reply message.", "error");
       return;
     }
+    if (this.#cloudProfile) {
+      try { await this.#cloudProfile.save(); }
+      catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        const reason = code === "authentication_required" ? "Connect your profile first."
+          : code === "image_import_failed" ? "The image host did not allow copying this image. Choose the image file instead."
+          : code === "revision_conflict" ? "This profile changed on another device. Reopen the editor before saving."
+          : code === "invalid_display_name" ? "Enter a display name up to 80 characters."
+          : "Profile could not be saved. Your draft is kept; try again.";
+        this.#cloudProfile.status.textContent = reason; this.#toast(reason, "error"); return;
+      }
+    }
     this.presence.setOwnProfile({
       enabled: this.#presenceEnabledToggle.checked,
       statusMessage: this.#presenceMessage.value,
@@ -4508,8 +4932,8 @@ export class LinkChatView {
       profileOutlineColor: outlineColor,
       profileGradient: {
         enabled: this.#presenceGradientEnabled.checked,
-        primary: gradientPrimary || this.settings.get().linkPresence.profileGradient.primary,
-        secondary: gradientSecondary || this.settings.get().linkPresence.profileGradient.secondary,
+        primary: gradientPrimary || this.settings.getSection("linkPresence").profileGradient.primary,
+        secondary: gradientSecondary || this.settings.getSection("linkPresence").profileGradient.secondary,
       },
       autoIdleMinutes: autoIdle,
       afkAutoReply: {
@@ -4522,12 +4946,17 @@ export class LinkChatView {
     this.#toast("KikiLink profile saved.");
   }
 
-  async #uploadPresenceBanner(file: File): Promise<void> {
+  async #uploadPresenceBanner(file?: File, prepareOnly = false): Promise<void> {
     if (!supportsLongLivedCatboxUploads()) {
       this.#toast("Catbox uploads are unavailable in FUSAM. Paste a direct HTTPS link instead.", "error");
       return;
     }
-    if (this.#profileBannerUploadBusy || !this.#presenceDialog.open) return;
+    if (
+      this.#profileBannerUploadBusy ||
+      !this.#presenceDialog.open ||
+      (!file && !this.#preparedProfileBanner)
+    )
+      return;
     const token = ++this.#profileBannerUploadToken;
     const controller = new AbortController();
     let statusTimer: ReturnType<typeof setInterval> | undefined;
@@ -4539,12 +4968,32 @@ export class LinkChatView {
     this.#presenceBannerStatus.dataset.tone = "";
     this.#renderPresenceDialog();
     try {
-      const prepared = await prepareProfileBanner(file);
-      if (prepared.blob.size > MAX_PROFILE_BANNER_BYTES) {
-        throw new Error("The prepared profile banner is larger than 2 MB");
+      let prepared = this.#preparedProfileBanner;
+      if (file) {
+        this.#preparedProfileBanner = undefined;
+        prepared = await prepareProfileBanner(file);
+        if (controller.signal.aborted) {
+          this.#presenceBannerStatus.textContent =
+            "Banner preparation cancelled. Nothing was uploaded.";
+          this.#presenceBannerStatus.dataset.tone = "warning";
+          return;
+        }
+        if (prepared.blob.size > MAX_PROFILE_BANNER_BYTES) {
+          throw new Error("The prepared profile banner is larger than 2 MB");
+        }
+        if (token !== this.#profileBannerUploadToken || !this.#presenceDialog.open) return;
+        if (prepareOnly) {
+          this.#preparedProfileBanner = prepared;
+          this.#presenceBannerStatus.textContent =
+            `Prepared ${formatBytes(prepared.blob.size)}. Press Verify & upload; no file has been sent yet.`;
+          this.#presenceBannerStatus.dataset.tone = "";
+          return;
+        }
       }
-      if (token !== this.#profileBannerUploadToken || !this.#presenceDialog.open) return;
-      this.#presenceBannerStatus.textContent = "Uploading to public Catbox storage…";
+      if (!prepared) return;
+      this.#presenceBannerStatus.textContent = usesCatboxUploadRelay()
+        ? "Authorizing and uploading to public Catbox storage…"
+        : "Uploading to public Catbox storage…";
       this.#profileBannerUploadStartedAt = Date.now();
       statusTimer = setInterval(() => {
         if (token !== this.#profileBannerUploadToken || controller.signal.aborted) return;
@@ -4572,7 +5021,11 @@ export class LinkChatView {
         throw new Error("Catbox returned an invalid profile banner link");
       }
       this.#presenceBannerUrl.value = normalized;
-      this.#presenceBannerStatus.textContent = "Banner uploaded. Save profile to share it.";
+      this.#preparedProfileBanner = undefined;
+      const savedToGallery = this.#saveGalleryImage(normalized);
+      this.#presenceBannerStatus.textContent = savedToGallery
+        ? "Banner uploaded and saved to Gallery. Save profile to share it."
+        : "Banner uploaded. Save profile to share it.";
       this.#presenceBannerStatus.dataset.tone = "success";
       this.#renderOwnBannerPreview();
     } catch (error) {
@@ -4607,9 +5060,12 @@ export class LinkChatView {
       0,
       Math.floor((Date.now() - this.#profileBannerUploadStartedAt) / 1_000),
     );
+    const action = usesCatboxUploadRelay()
+      ? "Authorizing and uploading to public Catbox storage"
+      : "Uploading to public Catbox storage";
     this.#presenceBannerStatus.textContent = this.#profileBannerUploadPercent === undefined
-      ? `Uploading to public Catbox storage… ${elapsedSeconds}s`
-      : `Uploading to public Catbox storage… ${this.#profileBannerUploadPercent}% · ${elapsedSeconds}s`;
+      ? `${action}… ${elapsedSeconds}s`
+      : `${action}… ${this.#profileBannerUploadPercent}% · ${elapsedSeconds}s`;
   }
 
   #cancelProfileBannerUpload(): void {
@@ -4693,7 +5149,7 @@ export class LinkChatView {
       selectOption("24h", "24 hours"),
       selectOption("72h", "72 hours"),
     );
-    this.#galleryRetentionSelect.value = this.settings.get().linkChat.imageUploads.retention;
+    this.#galleryRetentionSelect.value = this.settings.getSection("linkChat").imageUploads.retention;
     this.#galleryRetentionSelect.addEventListener("change", () =>
       this.#renderLocalImageComposeState());
     this.#galleryRetentionField.append(
@@ -4702,7 +5158,12 @@ export class LinkChatView {
     );
     const galleryStorageChoices = ([
       ["device", "lock", "This device", "Private · stays until you delete it"],
-      ["catbox", "star", "Catbox", "Public link · no automatic expiry"],
+        [
+          "catbox",
+          "star",
+          "Catbox",
+          "Public long-lived link · Catbox retention applies",
+        ],
       ["litterbox", "status", "Litterbox", "Public link · expires automatically"],
     ] as const).map(([storage, icon, title, description]) => {
       const input = element("input") as HTMLInputElement;
@@ -5045,7 +5506,9 @@ export class LinkChatView {
         : storage === "device"
           ? "Nothing uploads. The prepared image stays privately in this browser until you delete it."
           : storage === "catbox"
-            ? "Nothing uploads on selection. Saving creates a public Catbox link without an automatic expiry."
+            ? usesCatboxUploadRelay()
+              ? "Nothing uploads on selection. Saving asks for Cloudflare verification, then sends only the prepared WebP through the KikiLink relay to public Catbox. The relay does not retain it."
+              : "Nothing uploads on selection. Saving creates a public, long-lived Catbox link; Catbox retention applies."
             : "Nothing uploads on selection. Saving creates a public Litterbox link for the lifetime you choose.";
     if (this.#imageSourceMode === "file") this.#renderLocalImageComposeState();
   }
@@ -5094,7 +5557,7 @@ export class LinkChatView {
   }
 
   #renderLocalImageComposeState(): void {
-    const settings = this.settings.get().linkChat.imageUploads;
+    const settings = this.settings.getSection("linkChat").imageUploads;
     const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
     const gallery = this.#imageDestination === "gallery";
     const storage = this.#galleryFileStorage;
@@ -5134,7 +5597,9 @@ export class LinkChatView {
             text: gallery
               ? storage === "device"
                 ? "Saving to this device…"
-                : `Uploading to ${storage === "catbox" ? "Catbox" : "Litterbox"}…`
+                : storage === "catbox" && usesCatboxUploadRelay()
+                  ? "Sending the prepared image through the Catbox relay…"
+                  : `Uploading to ${storage === "catbox" ? "Catbox" : "Litterbox"}…`
               : "Uploading prepared image…",
           }),
           element("small", {
@@ -5208,7 +5673,7 @@ export class LinkChatView {
             ? storage === "device"
               ? "Ready for private device storage"
               : storage === "catbox"
-                ? "Ready for Catbox with no automatic expiry"
+                ? "Ready for long-lived Catbox storage"
                 : `Ready for ${formatRetention(this.#galleryRetentionSelect.value as LitterboxUploadConfig["retention"])} Litterbox storage`
             : "Prepared locally",
         }),
@@ -5405,7 +5870,7 @@ export class LinkChatView {
           storage === "device"
             ? "Image saved permanently on this device. Nothing was uploaded."
             : storage === "catbox"
-              ? "Image uploaded to Catbox and saved to Gallery without an automatic expiry."
+              ? "Image uploaded to Catbox and saved to Gallery. Catbox retention applies."
               : `Image uploaded to Litterbox and saved for ${formatRetention(litterboxConfig!.retention)}.`,
         );
       } catch (error) {
@@ -5422,7 +5887,7 @@ export class LinkChatView {
       }
       return;
     }
-    const uploadSettings = this.settings.get().linkChat.imageUploads;
+    const uploadSettings = this.settings.getSection("linkChat").imageUploads;
     const config = uploadSettings.enabled
       ? normalizeLitterboxUploadConfig(uploadSettings)
       : null;
@@ -5512,6 +5977,16 @@ export class LinkChatView {
       this.#toast("Another group avatar is already uploading.", "error");
       return;
     }
+    const prepared = this.#preparedGroupAvatar;
+    if (
+      usesCatboxUploadRelay() &&
+      prepared?.groupId === groupId &&
+      prepared.returnFocus === returnFocus
+    ) {
+      void this.#uploadPreparedGroupAvatar(prepared);
+      return;
+    }
+    if (prepared) this.#clearPendingGroupAvatarPicker(false);
     const group = this.#groupChatService?.getGroup(groupId);
     if (
       !group ||
@@ -5529,8 +6004,15 @@ export class LinkChatView {
   #clearPendingGroupAvatarPicker(restoreFocus: boolean): void {
     if (this.#groupAvatarUploadBusy && restoreFocus) return;
     const target = this.#groupAvatarUploadTarget;
+    const prepared = this.#preparedGroupAvatar;
     this.#groupAvatarUploadTarget = undefined;
+    this.#preparedGroupAvatar = undefined;
     this.#groupAvatarFileInput.value = "";
+    const button = prepared?.returnFocus ?? target?.returnFocus;
+    if (button?.isConnected) {
+      button.textContent = "Choose & upload to Catbox";
+      button.title = "Prepare this image and upload it publicly to Catbox";
+    }
     if (restoreFocus && target?.returnFocus.isConnected) {
       target.returnFocus.focus({ preventScroll: true });
     }
@@ -5543,7 +6025,7 @@ export class LinkChatView {
     this.#groupAvatarUploadBusy = false;
   }
 
-  async #uploadSelectedGroupAvatar(): Promise<void> {
+  async #prepareSelectedGroupAvatar(): Promise<void> {
     const target = this.#groupAvatarUploadTarget;
     const file = this.#groupAvatarFileInput.files?.[0];
     this.#groupAvatarFileInput.value = "";
@@ -5575,14 +6057,86 @@ export class LinkChatView {
     this.#groupAvatarUploadBusy = true;
     const controller = new AbortController();
     this.#groupAvatarUploadController = controller;
-    let shownPercent = -10;
     try {
       this.#toast("Preparing the group avatar locally…");
-      const prepared = await this.imageUploader.prepare(file);
+      const image = await this.imageUploader.prepare(file);
       if (controller.signal.aborted) return;
-      this.#toast(`Prepared ${formatBytes(prepared.blob.size)}; waiting for Catbox…`);
+      const prepared = {
+        groupId: target.groupId,
+        returnFocus: target.returnFocus,
+        image,
+        ownMemberNumber,
+        startingAvatarUrl,
+      };
+      if (usesCatboxUploadRelay()) {
+        this.#preparedGroupAvatar = prepared;
+        target.returnFocus.textContent = "Verify & upload avatar";
+        target.returnFocus.title = "Verify and upload this prepared image publicly to Catbox";
+        this.#toast(
+          `Prepared ${formatBytes(image.blob.size)}. Press Verify & upload avatar; no file has been sent yet.`,
+        );
+        return;
+      }
+      await this.#performGroupAvatarUpload(prepared, controller);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        this.#toast(imageUploadErrorMessage(error), "error");
+      }
+    } finally {
+      if (this.#groupAvatarUploadController === controller) {
+        this.#groupAvatarUploadController = undefined;
+        this.#groupAvatarUploadBusy = false;
+        if (!this.#preparedGroupAvatar) this.#groupAvatarUploadTarget = undefined;
+      }
+      if (!controller.signal.aborted && target.returnFocus.isConnected) {
+        target.returnFocus.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  async #uploadPreparedGroupAvatar(
+    prepared: PreparedGroupAvatarUpload,
+  ): Promise<void> {
+    if (this.#groupAvatarUploadBusy || this.#preparedGroupAvatar !== prepared) return;
+    const group = this.#groupChatService?.getGroup(prepared.groupId);
+    let currentOwnMemberNumber: number;
+    try {
+      currentOwnMemberNumber = this.adapter.getOwnMemberNumber();
+    } catch {
+      this.#toast("Your current BC identity could not be verified for this upload.", "error");
+      this.#clearPendingGroupAvatarPicker(true);
+      return;
+    }
+    if (
+      !group ||
+      group.protocolVersion !== 2 ||
+      group.creatorNumber !== prepared.ownMemberNumber ||
+      group.avatarUrl !== prepared.startingAvatarUrl ||
+      currentOwnMemberNumber !== prepared.ownMemberNumber
+    ) {
+      this.#toast("The group changed after the avatar was prepared. Choose the file again.", "error");
+      this.#clearPendingGroupAvatarPicker(true);
+      return;
+    }
+    const controller = new AbortController();
+    this.#groupAvatarUploadController = controller;
+    this.#groupAvatarUploadBusy = true;
+    await this.#performGroupAvatarUpload(prepared, controller);
+  }
+
+  async #performGroupAvatarUpload(
+    prepared: PreparedGroupAvatarUpload,
+    controller: AbortController,
+  ): Promise<void> {
+    const service = this.#groupChatService;
+    let shownPercent = -10;
+    let confirmedUrl: string | undefined;
+    try {
+      this.#toast(usesCatboxUploadRelay()
+        ? "Authorizing and uploading the group avatar to Catbox…"
+        : `Prepared ${formatBytes(prepared.image.blob.size)}; waiting for Catbox…`);
       const url = await this.catboxImageUpload(
-        prepared,
+        prepared.image,
         (progress) => {
           const percent = progress.percent === undefined
             ? undefined
@@ -5593,35 +6147,57 @@ export class LinkChatView {
         },
         controller.signal,
       );
-      if (controller.signal.aborted) return;
-      const current = service.getGroup(target.groupId);
+      confirmedUrl = url;
+      if (controller.signal.aborted) {
+        throw new Error("The group avatar upload completed after cancellation");
+      }
+      const current = service?.getGroup(prepared.groupId);
       if (
+        !service ||
         !current ||
         current.protocolVersion !== 2 ||
-        current.creatorNumber !== ownMemberNumber ||
-        this.adapter.getOwnMemberNumber() !== ownMemberNumber
+        current.creatorNumber !== prepared.ownMemberNumber ||
+        this.adapter.getOwnMemberNumber() !== prepared.ownMemberNumber
       ) {
         throw new Error("The group changed before the avatar upload finished");
       }
-      if (current.avatarUrl !== startingAvatarUrl) {
+      if (current.avatarUrl !== prepared.startingAvatarUrl) {
         throw new Error(
           "The group avatar changed while this upload was running. The newer avatar was kept.",
         );
       }
-      await service.setGroupAvatar(target.groupId, url);
+      await service.setGroupAvatar(prepared.groupId, url);
       this.#toast("Group avatar uploaded and shared with current members.");
+      if (
+        this.#groupAvatarUploadController === controller ||
+        this.#preparedGroupAvatar === prepared
+      ) {
+        this.#clearPendingGroupAvatarPicker(false);
+      }
     } catch (error) {
-      if (!controller.signal.aborted) {
+      if (confirmedUrl) {
+        const saved = this.#saveGalleryImage(confirmedUrl);
+        if (
+          this.#groupAvatarUploadController === controller ||
+          this.#preparedGroupAvatar === prepared
+        ) {
+          this.#clearPendingGroupAvatarPicker(false);
+        }
+        const recovery = saved
+          ? " The confirmed public Catbox link was saved to Gallery."
+          : " The confirmed public Catbox link could not be saved to Gallery.";
+        this.#toast(`${imageUploadErrorMessage(error)}${recovery}`, "error");
+      } else if (!controller.signal.aborted) {
         this.#toast(imageUploadErrorMessage(error), "error");
       }
     } finally {
       if (this.#groupAvatarUploadController === controller) {
         this.#groupAvatarUploadController = undefined;
         this.#groupAvatarUploadBusy = false;
-        this.#groupAvatarUploadTarget = undefined;
+        if (!this.#preparedGroupAvatar) this.#groupAvatarUploadTarget = undefined;
       }
-      if (!controller.signal.aborted && target.returnFocus.isConnected) {
-        target.returnFocus.focus({ preventScroll: true });
+      if (!controller.signal.aborted && prepared.returnFocus.isConnected) {
+        prepared.returnFocus.focus({ preventScroll: true });
       }
     }
   }
@@ -5730,7 +6306,7 @@ export class LinkChatView {
         detail: settings.linkRoster.enabled
           ? `${currentRoomCount} ${currentRoomCount === 1 ? "person" : "people"} here now`
           : "Optional player notebook · currently off",
-        keywords: "roster people room notes tags favorites whisper profile linkroster",
+        keywords: "roster people friends known online room notes tags favorites whisper profile linkroster",
         priority: 74,
         action: { kind: "workspace", target: "roster" },
       },
@@ -5739,8 +6315,8 @@ export class LinkChatView {
         kind: "destination",
         icon: "location",
         category: "Destination",
-        title: "Room Tools",
-        detail: this.adapter.isInChatRoom() ? "Background, music, players, and roles" : "Enter a room first",
+        title: "Rooms",
+        detail: "Browse rooms, favorites, and friends · Manage your current room",
         keywords: "room admin background music kick promote whitelist roles customization lobbies rooms directory refresh presets blacklist access",
         priority: 72,
         action: { kind: "workspace", target: "room" },
@@ -5792,6 +6368,44 @@ export class LinkChatView {
         action: { kind: "workspace", target: "settings" },
       },
     ];
+
+    if (this.#cloud) {
+      results.push(
+        {
+          id: "destination-cloud-feed",
+          kind: "destination",
+          icon: "feed",
+          category: "Cloud",
+          title: "Cloud Feed",
+          detail: "Posts, images, comments and reactions",
+          keywords: "cloud feed post posts publish comment comments reaction reactions",
+          priority: 75,
+          action: { kind: "cloud", destination: "feed" },
+        },
+        {
+          id: "destination-cloud-groups",
+          kind: "destination",
+          icon: "users",
+          category: "Cloud",
+          title: "Cloud Groups",
+          detail: "Your groups and invitations",
+          keywords: "cloud group groups invitation invitations invite members messages",
+          priority: 74,
+          action: { kind: "cloud", destination: "groups" },
+        },
+        {
+          id: "destination-cloud-profile",
+          kind: "destination",
+          icon: "status",
+          category: "Cloud",
+          title: "My KikiLink profile",
+          detail: "Edit your KikiLink profile, status and appearance",
+          keywords: "cloud my profile avatar banner bio display name",
+          priority: 73,
+          action: { kind: "cloud", destination: "profile" },
+        },
+      );
+    }
 
     for (const conversation of conversations) {
       const details = [
@@ -5892,6 +6506,7 @@ export class LinkChatView {
         featuredConversation?.id,
         "new-chat",
         featuredConversation ? undefined : "destination-chat",
+        this.#cloud ? "destination-cloud-feed" : undefined,
         "destination-players",
         "destination-room",
         "destination-gallery",
@@ -6027,6 +6642,11 @@ export class LinkChatView {
     const action = result.action;
     if (action.kind === "workspace") {
       this.#activateFeature(action.target);
+    } else if (action.kind === "cloud") {
+      if (this.#cloud) {
+        if (action.destination === "profile") this.#openPresenceDialog();
+        else this.#showWorkspace(action.destination === "groups" ? "chat" : "cloud", true, action.destination);
+      }
     } else if (action.kind === "new-chat") {
       this.#openNewChat();
     } else if (action.kind === "presence") {
@@ -6404,7 +7024,7 @@ export class LinkChatView {
 
   async #shareLocalGalleryImage(item: GalleryItem): Promise<void> {
     if (!item.localId) return;
-    const uploadSettings = this.settings.get().linkChat.imageUploads;
+    const uploadSettings = this.settings.getSection("linkChat").imageUploads;
     const config = uploadSettings.enabled
       ? normalizeLitterboxUploadConfig(uploadSettings)
       : null;
@@ -6455,7 +7075,7 @@ export class LinkChatView {
     const refresh = element("button", {
       className: "kl-text-button",
       type: "button",
-      text: "Refresh room",
+      text: "Refresh",
       onClick: () => {
         if (this.#roomSubView === "lobbies") void this.#refreshLobbies();
         else if (this.#roomSubView === "presets") this.#renderRoomPresets();
@@ -6468,14 +7088,9 @@ export class LinkChatView {
       element(
         "div",
         { className: "kl-feature-page-heading" },
-        element("div", { className: "kl-feature-page-eyebrow", text: "CURRENT ROOM" }),
-        element("h1", { className: "kl-feature-page-title", text: "Room Tools" }),
-        element("p", {
-          className: "kl-feature-page-subtitle",
-          text: "Background, music, and native room administration without leaving the Link Deck.",
-        }),
+        element("h1", { className: "kl-feature-page-title", text: "Rooms" }),
       ),
-      refresh,
+      element("div", { className: "kl-directory-header-actions" }, this.#roomBack, refresh),
     );
 
     this.#roomImageUrl.type = "url";
@@ -6599,15 +7214,17 @@ export class LinkChatView {
       }),
       this.#roomPlayers,
     );
+    this.#roomManager = new RoomManager(room => this.#applyRoomSettings(room), () => this.adapter.getOwnMemberNumber());
     this.#roomCurrentPanel.append(
       this.#roomAdminStatus,
-      element("div", { className: "kl-room-grid" }, mediaForm, players),
+      element("div", { className: "kl-room-grid" }, this.#roomManager.root,
+        element("div", { className: "kl-room-secondary" }, mediaForm, players)),
     );
     this.#buildLobbyPanel();
     this.#buildRoomPresetsPanel();
     for (const [target, label] of [
-      ["current", "Room"],
-      ["lobbies", "Lobbies"],
+      ["lobbies", "Browse"],
+      ["current", "Manage"],
       ["presets", "Presets"],
     ] as const) {
       const button = element("button", {
@@ -6627,7 +7244,9 @@ export class LinkChatView {
       this.#roomPresetsPanel,
     );
     this.#roomPage.append(header, this.#roomSubnav, content);
-    this.#showRoomSubView("current", false);
+    this.#roomBack.addEventListener("click", () => this.#goBackSocial());
+    this.#roomBack.hidden = true;
+    this.#showRoomSubView("lobbies", false);
   }
 
   #showRoomSubView(view: RoomSubView, refresh = true): void {
@@ -6637,12 +7256,13 @@ export class LinkChatView {
     this.#roomPresetsPanel.hidden = view !== "presets";
     for (const button of this.#roomSubnav.querySelectorAll<HTMLButtonElement>("button")) {
       button.dataset.active = String(button.dataset.roomSubview === view);
+      button.setAttribute("aria-pressed", String(button.dataset.roomSubview === view));
     }
     if (!refresh) return;
     if (view === "current") void this.#renderRoomTools(true);
     else if (view === "lobbies") {
       this.#renderLobbies();
-      if (this.#lobbyRooms.length === 0) void this.#refreshLobbies();
+      if (!this.#lobbyHasLoaded && !this.#lobbyRefreshButton.disabled) void this.#refreshLobbies();
     } else {
       this.#renderRoomPresets();
     }
@@ -6650,10 +7270,10 @@ export class LinkChatView {
 
   #buildLobbyPanel(): void {
     this.#lobbyQuery.type = "search";
-    this.#lobbyQuery.placeholder = "Filter rooms or descriptions";
+    this.#lobbyQuery.placeholder = "Search rooms";
     this.#lobbyQuery.setAttribute("aria-label", "Filter lobby rooms");
     this.#lobbyQuery.autocomplete = "off";
-    this.#lobbyQuery.addEventListener("input", () => this.#renderLobbies());
+    this.#lobbyQuery.addEventListener("input", () => this.#renderLobbies(true));
     this.#lobbyQuery.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -6672,21 +7292,25 @@ export class LinkChatView {
       : "";
     this.#lobbySpaceSelect.addEventListener("change", () => {
       this.#lobbyRooms = [];
+      this.#lobbyError = "";
+      this.#renderLobbies(true);
       void this.#refreshLobbies();
     });
+    for (const [filter, label] of [["all", "All"], ["favorites", "Favorites"], ["friends", "Friends"]] as const) {
+      const button = element("button", {
+        className: "kl-directory-filter", type: "button", text: label,
+        onClick: () => { this.#lobbyFilter = filter; this.#renderLobbies(true); },
+      });
+      button.dataset.roomFilter = filter;
+      this.#lobbyFilters.append(button);
+    }
+    this.#lobbyRows = new InteractiveList(this.#lobbyList, (room) => roomKey(room.name),
+      (room) => this.#lobbyCard(room), (row, room) => this.#updateLobbyCard(row, room));
     this.#roomLobbiesPanel.append(
+      this.#currentRoomCard,
       element(
         "div",
         { className: "kl-lobby-toolbar" },
-        element(
-          "div",
-          {},
-          element("h2", { text: "Live lobbies" }),
-          element("p", {
-            className: "kl-setting-help",
-            text: "Favorite room names come first in gold; rooms with friends follow in your accent color. KikiLink refreshes only when you ask.",
-          }),
-        ),
         element(
           "div",
           { className: "kl-lobby-search-wrap" },
@@ -6695,13 +7319,17 @@ export class LinkChatView {
           this.#lobbyRefreshButton,
         ),
       ),
+      this.#lobbyFilters,
       this.#lobbyStatus,
       this.#lobbyList,
+      this.#lobbyEmpty,
     );
   }
 
   async #refreshLobbies(): Promise<void> {
     const token = ++this.#lobbyRenderToken;
+    this.#lobbyHasLoaded = true;
+    this.#lobbyError = "";
     this.#lobbyRefreshButton.disabled = true;
     this.#lobbyStatus.textContent = "Refreshing Bondage Club rooms…";
     this.#lobbyStatus.dataset.state = "loading";
@@ -6712,185 +7340,182 @@ export class LinkChatView {
       );
       if (token !== this.#lobbyRenderToken) return;
       this.#lobbyRooms = rooms;
+      this.#lobbyUpdatedAt = Date.now();
       const friendNumbers = rooms.flatMap((room) => room.friends.map((friend) => friend.memberNumber));
       this.presence.requestMany(friendNumbers);
       this.#renderLobbies();
     } catch (error) {
       if (token !== this.#lobbyRenderToken) return;
-      const message = error instanceof Error
+      this.#lobbyError = error instanceof Error
         ? error.message
         : "The room list could not be refreshed.";
-      this.#lobbyRooms = [];
       this.#renderLobbies();
-      const hasCurrentRoom = this.#lobbyList.querySelector('[data-current="true"]') !== null;
-      this.#lobbyStatus.textContent = hasCurrentRoom ? `${message} · Your current room is still shown.` : message;
-      this.#lobbyStatus.dataset.state = "error";
     } finally {
       if (token === this.#lobbyRenderToken) this.#lobbyRefreshButton.disabled = false;
     }
   }
 
-  #renderLobbies(): void {
-    const filter = this.#lobbyQuery.value.trim().toLocaleLowerCase();
-    const favoriteKeys = new Set(
-      this.settings.get().linkRoom.favoriteRoomNames.map(lobbyRoomNameKey),
-    );
-    let currentRoomName = "";
-    let currentRoomKey = "";
+  #renderLobbies(forceOrder = false): void {
+    let current: BCLobbyRoom | undefined;
+    let currentName = "";
     try {
-      currentRoomName = (this.adapter.getCurrentRoomName() ?? "").trim();
-      currentRoomKey = lobbyRoomNameKey(currentRoomName);
-    } catch {
-      // Keep the directory usable while BC replaces its room globals.
+      current = this.adapter.getCurrentLobbyRoom?.();
+      currentName = this.adapter.getCurrentRoomName?.() || current?.name || "";
+    } catch { /* A guarded native refresh must not hide the directory. */ }
+    this.#renderCurrentRoomCard(current, currentName);
+    const favorites = this.settings.getSection("linkRoom").favoriteRoomNames;
+    const source = this.#roomsWithLiveFriends();
+    const rooms = selectRooms(source, favorites, this.#lobbyQuery.value, this.#lobbyFilter, currentName);
+    for (const button of this.#lobbyFilters.querySelectorAll<HTMLButtonElement>("button")) {
+      button.setAttribute("aria-pressed", String(button.dataset.roomFilter === this.#lobbyFilter));
     }
-    let roomSource = this.#lobbyRooms.slice(0, 500);
-    try {
-      const currentRoom = typeof this.adapter.getCurrentLobbyRoom === "function"
-        ? this.adapter.getCurrentLobbyRoom()
-        : undefined;
-      if (currentRoom) {
-        const fallbackCurrentRoomKey = lobbyRoomNameKey(currentRoom.name);
-        if (!currentRoomKey) currentRoomKey = fallbackCurrentRoomKey;
-        if (
-          currentRoomKey &&
-          !roomSource.some((room) => lobbyRoomNameKey(room.name) === currentRoomKey)
-        ) {
-          roomSource = [currentRoom, ...roomSource];
-        }
-      }
-    } catch {
-      // The live directory still renders if BC swaps room data mid-frame.
+    this.#lobbyStatus.textContent = this.#lobbyError
+      ? `${this.#lobbyError}${this.#lobbyRooms.length ? " · Showing the last room list; refresh to retry." : ""}`
+      : `${rooms.length} room${rooms.length === 1 ? "" : "s"} · Favorites first, then friends`;
+    if (this.#lobbyError && currentName) this.#lobbyStatus.textContent += " · Your current room is still shown.";
+    if (!this.#lobbyError && this.#lobbyUpdatedAt) {
+      this.#lobbyStatus.textContent += Date.now() - this.#lobbyUpdatedAt > 90_000
+        ? " · Last loaded room list; refresh for current availability"
+        : " · Just refreshed";
     }
-    if (
-      currentRoomKey &&
-      currentRoomName &&
-      !roomSource.some((room) => lobbyRoomNameKey(room.name) === currentRoomKey)
-    ) {
-      let memberCount = 1;
-      try {
-        memberCount = Math.max(1, this.adapter.getRoomCharacters().length + 1);
-      } catch {
-        // The name alone is enough to keep the current room visible during guarded refreshes.
-      }
-      roomSource = [{
-        name: currentRoomName,
-        description: "Live room details are temporarily unavailable.",
-        language: "",
-        memberCount,
-        memberLimit: memberCount,
-        canJoin: false,
-        locked: false,
-        privateRoom: false,
-        mapType: "",
-        friends: [],
-      }, ...roomSource];
-    }
-    const rooms = roomSource
-      .map((room, index) => ({
-        room,
-        index,
-        favorite: favoriteKeys.has(lobbyRoomNameKey(room.name)),
-        current: Boolean(currentRoomKey) && lobbyRoomNameKey(room.name) === currentRoomKey,
-      }))
-      .filter(({ room, current }) =>
-        current || !filter || `${room.name}\n${room.description}\n${room.language}`.toLocaleLowerCase().includes(filter),
-      )
-      .sort((left, right) => {
-        const leftRank = left.current
-          ? 3
-          : left.favorite
-            ? 2
-            : left.room.friends.length > 0
-              ? 1
-              : 0;
-        const rightRank = right.current
-          ? 3
-          : right.favorite
-            ? 2
-            : right.room.friends.length > 0
-              ? 1
-              : 0;
-        return rightRank - leftRank || left.index - right.index;
-      });
-    const friendRoomCount = rooms.filter(({ room }) => room.friends.length > 0).length;
-    const favoriteRoomCount = rooms.filter(({ favorite }) => favorite).length;
-    this.#lobbyStatus.textContent = rooms.length === 0
-      ? `No rooms returned for ${lobbySpaceLabel(this.#lobbySpaceSelect.value)}.`
-      : `${rooms.length} rooms · ${favoriteRoomCount} favorite${favoriteRoomCount === 1 ? "" : "s"} · ${friendRoomCount} with friends`;
-    this.#lobbyStatus.dataset.state = rooms.length > 0 ? "ready" : "empty";
-    this.#lobbyList.replaceChildren(
-      ...rooms.map(({ room, favorite, current }) => this.#lobbyCard(room, favorite, current)),
-    );
+    this.#lobbyStatus.dataset.state = this.#lobbyError ? "error" : "ready";
+    this.#lobbyRows?.updateVisible(source);
+    this.#lobbyRows?.render(rooms, forceOrder);
+    this.#lobbyEmpty.hidden = rooms.length > 0;
+    this.#lobbyEmpty.textContent = this.#lobbyQuery.value || this.#lobbyFilter !== "all"
+      ? "No rooms match these filters. Try All or another name."
+      : `No rooms returned for ${lobbySpaceLabel(this.#lobbySpaceSelect.value)}. Refresh to try again.`;
   }
 
-  #lobbyCard(room: BCLobbyRoom, isFavorite: boolean, isCurrent: boolean): HTMLElement {
-    const friends = element("div", { className: "kl-lobby-friends" });
-    if (room.friends.length > 0) {
-      for (const friend of room.friends.slice(0, 5)) {
-        const avatar = this.#avatar(friend.memberName, friend.memberNumber, "kl-lobby-friend-avatar");
-        avatar.title = `${friend.memberName} · #${friend.memberNumber}`;
-        friends.append(avatar);
+  #roomsWithLiveFriends(): BCLobbyRoom[] {
+    // Native room search remains the only directory source. A complete, fresh friend snapshot
+    // can update its social counts locally without refreshing/scraping room availability.
+    try {
+      if (!this.adapter.hasOnlineFriendSnapshot?.() || !nativeFriendSnapshotIsFresh(this.adapter)) return this.#lobbyRooms;
+      const byRoom = new Map<string, KnownContact[]>();
+      for (const friend of this.adapter.getOnlineFriends()) {
+        const name = playerRoom({ presence: this.presence.get(friend.memberNumber) });
+        if (!name) continue;
+        const key = roomKey(name);
+        const group = byRoom.get(key) ?? [];
+        group.push({ memberNumber: friend.memberNumber, memberName: this.adapter.getMemberName(friend.memberNumber) });
+        byRoom.set(key, group);
       }
-      if (room.friends.length > 5) {
-        friends.append(element("span", { className: "kl-lobby-friend-more", text: `+${room.friends.length - 5}` }));
-      }
+      return this.#lobbyRooms.map((room) => ({ ...room, friends: byRoom.get(roomKey(room.name)) ?? [] }));
+    } catch { return this.#lobbyRooms; }
+  }
+
+  #renderCurrentRoomCard(room: BCLobbyRoom | undefined, name: string): void {
+    let players: KnownContact[] = [];
+    try { players = name ? this.adapter.getRoomCharacters?.() ?? [] : []; } catch { /* A guarded native roster. */ }
+    const signature = JSON.stringify([name, room?.memberCount, room?.memberLimit,
+      players.map((player) => [player.memberNumber, player.memberName])]);
+    if (this.#currentRoomCard.dataset.signature === signature) return;
+    this.#currentRoomCard.dataset.signature = signature;
+    this.#currentRoomCard.hidden = !name;
+    this.#currentRoomCard.replaceChildren();
+    if (!name) return;
+    const participants = this.#roomPeopleButton(name, players, true);
+    const card = element("article", { className: "kl-lobby-card" },
+      element("div", { className: "kl-lobby-card-main" },
+        element("strong", { className: "kl-lobby-name", text: name, title: name }),
+        room ? element("span", { className: "kl-lobby-count", text: `${room.memberCount}/${room.memberLimit}` }) : null,
+        element("span", { className: "kl-lobby-current", text: "Current room" })),
+      room ? null : element("p", { className: "kl-lobby-description", text: "Live room details are temporarily unavailable." }),
+      element("div", { className: "kl-lobby-card-footer" }, participants,
+        element("button", { className: "kl-text-button kl-room-manage", type: "button", text: "Manage",
+          onClick: () => this.#showRoomSubView("current") })),
+    );
+    card.dataset.current = "true";
+    this.#currentRoomCard.append(card);
+  }
+
+  #roomPeopleButton(name: string, people: KnownContact[], current = false): HTMLButtonElement {
+    const button = element("button", {
+      className: "kl-room-people-button", type: "button",
+      ariaLabel: current ? `View players in ${name}` : `View known friends in ${name}`,
+      title: current ? "View players in this room" : "View known friends in this room",
+      onClick: () => this.#openRoomPlayers(name, current),
+    });
+    const avatars = element("span", { className: "kl-lobby-friends" });
+    for (const person of people.slice(0, 4)) {
+      const avatar = this.#avatar(person.memberName, person.memberNumber, "kl-lobby-friend-avatar");
+      avatar.title = `${person.memberName} · #${person.memberNumber}`;
+      avatars.append(avatar);
     }
-    const flags = [
-      room.language,
-      room.creator ? `by ${room.creator}` : "",
-      lobbyMapTypeLabel(room.mapType),
-      room.locked ? "Locked" : "",
-      room.privateRoom ? "Private" : "",
-    ].filter(Boolean);
-    const join = isCurrent
-      ? element("span", { className: "kl-lobby-current", text: "Current room" })
-      : element("button", {
-          className: "kl-text-button kl-lobby-join",
-          type: "button",
-          text: this.#lobbyJoinBusy ? "Joining…" : room.canJoin ? "Join" : "Unavailable",
-          onClick: () => void this.#joinLobby(room),
-        });
-    if (join instanceof HTMLButtonElement) join.disabled = this.#lobbyJoinBusy || !room.canJoin;
+    button.append(avatars, element("span", {
+      className: "kl-room-people-label",
+      text: current ? `Players${people.length > 4 ? ` +${people.length - 4}` : ""}`
+        : `${people.length} friend${people.length === 1 ? "" : "s"}`,
+    }));
+    button.disabled = !this.settings.getSection("linkRoster").enabled;
+    if (button.disabled) button.title = "Enable Players in settings to open this list";
+    return button;
+  }
+
+  #lobbyCard(room: BCLobbyRoom): HTMLElement {
     const favorite = element("button", {
-      className: "kl-icon-button kl-lobby-favorite",
-      type: "button",
-      title: isFavorite ? `Remove ${room.name} from favorites` : `Add ${room.name} to favorites`,
-      ariaLabel: isFavorite ? `Remove ${room.name} from favorite rooms` : `Add ${room.name} to favorite rooms`,
+      className: "kl-icon-button kl-lobby-favorite", type: "button",
       onClick: () => this.#toggleFavoriteLobby(room.name),
     });
-    favorite.setAttribute("aria-pressed", String(isFavorite));
-    favorite.append(kikiIcon("star", "kl-lobby-favorite-icon", isFavorite));
-    const card = element(
-      "article",
-      { className: "kl-lobby-card" },
-      element(
-        "div",
-        { className: "kl-lobby-card-main" },
-        element("strong", { className: "kl-lobby-name", text: room.name }),
-        element("span", {
-          className: "kl-lobby-count",
-          text: `${room.memberCount}/${room.memberLimit}`,
-        }),
-        room.friends.length > 0
-          ? element("span", { className: "kl-lobby-friend-label", text: `${room.friends.length} friend${room.friends.length === 1 ? "" : "s"}` })
-          : null,
-        favorite,
-      ),
-      room.description
-        ? element("p", { className: "kl-lobby-description", text: room.description })
-        : null,
-      element(
-        "div",
-        { className: "kl-lobby-card-footer" },
-        element("span", { className: "kl-lobby-flags", text: flags.join(" · ") || "Public room" }),
-        friends,
-        join,
-      ),
+    const join = element("button", {
+      className: "kl-text-button kl-lobby-join", type: "button",
+      onClick: () => {
+        const latest = this.#lobbyRooms.find((candidate) => roomKey(candidate.name) === roomKey(room.name));
+        if (latest && latest.canJoin && latest.memberCount < latest.memberLimit) void this.#joinLobby(latest);
+      },
+    });
+    const card = element("article", { className: "kl-lobby-card" },
+      element("div", { className: "kl-lobby-card-main" },
+        element("strong", { className: "kl-lobby-name", text: room.name, title: room.name }),
+        element("span", { className: "kl-lobby-count" }), element("div", { className: "kl-lobby-indicators" }, favorite,
+          element("span", { className: "kl-lobby-locked", title: "Locked", ariaLabel: "Locked" }, kikiIcon("lock", "kl-lobby-lock")))),
+      element("p", { className: "kl-lobby-description" }),
+      element("div", { className: "kl-lobby-card-footer" },
+        element("span", { className: "kl-lobby-flags" }),
+        element("span", { className: "kl-lobby-people" }), join),
     );
-    card.dataset.hasFriends = String(room.friends.length > 0);
-    card.dataset.favorite = String(isFavorite);
-    card.dataset.current = String(isCurrent);
+    card.dataset.roomName = room.name;
+    this.#updateLobbyCard(card, room);
     return card;
+  }
+
+  #updateLobbyCard(card: HTMLElement, room: BCLobbyRoom): void {
+    const favorite = this.settings.getSection("linkRoom").favoriteRoomNames.some((name) => roomKey(name) === roomKey(room.name));
+    const full = room.memberCount >= room.memberLimit;
+    const locked = room.locked || (!room.canJoin && !full);
+    card.querySelector<HTMLElement>(".kl-lobby-locked")!.hidden = !locked;
+    const count = card.querySelector<HTMLElement>(".kl-lobby-count")!;
+    count.textContent = `${room.memberCount}/${room.memberLimit}${full ? " · Full" : ""}`;
+    const description = card.querySelector<HTMLElement>(".kl-lobby-description")!;
+    description.textContent = room.description;
+    description.hidden = !room.description;
+    const flags = [room.language, room.creator ? `by ${room.creator}` : "",
+      lobbyMapTypeLabel(room.mapType), room.locked ? "Locked" : "", room.privateRoom ? "Private" : ""].filter(Boolean);
+    card.querySelector<HTMLElement>(".kl-lobby-flags")!.textContent = flags.join(" · ") || "Public room";
+    const join = card.querySelector<HTMLButtonElement>(".kl-lobby-join")!;
+    join.textContent = this.#lobbyJoinBusy ? "Joining…" : full ? "Full" : room.canJoin ? "Join" : "Locked";
+    join.disabled = this.#lobbyJoinBusy || full || !room.canJoin;
+    join.title = full ? "This room is full" : room.canJoin ? `Join ${room.name}` : "BC currently prevents joining this room";
+    const star = card.querySelector<HTMLButtonElement>(".kl-lobby-favorite")!;
+    const label = `${favorite ? "Remove" : "Add"} ${room.name} ${favorite ? "from" : "to"} favorite rooms`;
+    star.title = label;
+    star.setAttribute("aria-label", label);
+    if (star.getAttribute("aria-pressed") !== String(favorite)) {
+      star.setAttribute("aria-pressed", String(favorite));
+      star.replaceChildren(kikiIcon("star", "kl-lobby-favorite-icon", favorite));
+    }
+    const people = card.querySelector<HTMLElement>(".kl-lobby-people")!;
+    const signature = JSON.stringify(room.friends);
+    if (people.dataset.signature !== signature) {
+      people.dataset.signature = signature;
+      const existing = people.querySelector<HTMLButtonElement>(".kl-room-people-button");
+      const updated = room.friends.length ? this.#roomPeopleButton(room.name, room.friends) : undefined;
+      if (existing && updated) existing.replaceChildren(...updated.childNodes);
+      else people.replaceChildren(...(updated ? [updated] : []));
+    }
+    card.dataset.hasFriends = String(room.friends.length > 0);
+    card.dataset.favorite = String(favorite);
   }
 
   #toggleFavoriteLobby(roomName: string): void {
@@ -6912,7 +7537,7 @@ export class LinkChatView {
     this.#toast(added ? `${roomName} added to favorite rooms.` : `${roomName} removed from favorite rooms.`);
   }
 
-  async #joinLobby(room: BCLobbyRoom): Promise<void> {
+  async #joinLobby(room: Pick<BCLobbyRoom, "name" | "canJoin">): Promise<void> {
     if (this.#lobbyJoinBusy) return;
     let wasInChatRoom = false;
     let roomStateReadable = true;
@@ -6936,6 +7561,7 @@ export class LinkChatView {
     }
     this.#lobbyJoinBusy = true;
     this.#renderLobbies();
+    if (this.#workspaceView === "roster") this.#renderRoster();
     try {
       this.#toast(
         wasInChatRoom
@@ -6949,7 +7575,10 @@ export class LinkChatView {
       this.#toast(error instanceof Error ? error.message : "Could not join this room.", "error");
     } finally {
       this.#lobbyJoinBusy = false;
-      if (this.#mounted) this.#renderLobbies();
+      if (this.#mounted) {
+        this.#renderLobbies();
+        if (this.#workspaceView === "roster") this.#renderRoster();
+      }
     }
   }
 
@@ -6983,23 +7612,33 @@ export class LinkChatView {
       this.#toast("Enter a chat room before saving a preset.", "error");
       return;
     }
-    const label = this.#presetName.value.trim() || snapshot.roomName;
-    const preset: RoomPreset = {
-      id: createLocalId("room"),
-      label: label.slice(0, 60),
-      savedAt: Date.now(),
-      room: structuredClone(snapshot.settings),
-    };
-    this.settings.update((draft) => {
-      draft.linkRoom.presets = [preset, ...draft.linkRoom.presets].slice(0, 12);
-    });
-    this.#presetName.value = "";
-    this.#renderRoomPresets();
-    this.#toast(`Saved room preset “${preset.label}”.`);
+    try {
+      if (typeof ChatRoomData === "object" && ChatRoomData?.MapData !== undefined && !copyRoomMap(ChatRoomData.MapData))
+        throw new Error("This map cannot be saved by the current BC client.");
+      const label = this.#presetName.value.trim() || snapshot.roomName;
+      const preset: RoomPreset = {
+        id: createLocalId("room"),
+        label: label.slice(0, 60),
+        savedAt: Date.now(),
+        room: structuredClone(snapshot.settings),
+      };
+      this.settings.update((draft) => {
+        draft.linkRoom.presets = [preset, ...draft.linkRoom.presets].slice(0, 12);
+      }, { requirePersistence: true });
+      this.#presetName.value = "";
+      this.#renderRoomPresets();
+      this.#toast(`Saved room preset “${preset.label}”.`);
+    } catch (error) {
+      this.#toast(error instanceof Error ? error.message : "The room preset could not be saved.", "error");
+    }
   }
 
   #renderRoomPresets(): void {
-    const presets = this.settings.get().linkRoom.presets;
+    const presets = this.settings.getSection("linkRoom").presets;
+    let snapshot: BCRoomAdminSnapshot | undefined;
+    try { snapshot = this.adapter.getRoomAdminSnapshot?.(); } catch { /* Native refresh. */ }
+    this.#saveRoomPresetButton.disabled = !snapshot;
+    this.#saveRoomPresetButton.title = snapshot ? "Save this room as a private preset" : "Enter a room to save it as a preset";
     if (presets.length === 0) {
       this.#roomPresetList.replaceChildren(
         element("div", { className: "kl-gallery-empty", text: "No room presets yet." }),
@@ -7007,11 +7646,16 @@ export class LinkChatView {
       return;
     }
     this.#roomPresetList.replaceChildren(...presets.map((preset) => this.#roomPresetCard(preset)));
+    for (const button of this.#roomPresetList.querySelectorAll<HTMLButtonElement>(".kl-text-button--primary")) {
+      button.disabled = !snapshot?.isAdmin;
+      button.title = snapshot?.isAdmin ? "Load into Room Manager" : "Administrator rights in the current room are required";
+    }
   }
 
   #roomPresetCard(preset: RoomPreset): HTMLElement {
     const detail = [
       `${preset.room.limit} players`,
+      preset.room.mapData?.Type === "Always" ? "Map included" : preset.room.mapData?.Type === "Hybrid" ? "Hybrid map included" : "Classic room",
       preset.room.language || "Any language",
       `${preset.room.admins.length} admins`,
       `${preset.room.whitelist.length} whitelist`,
@@ -7033,7 +7677,7 @@ export class LinkChatView {
         element("button", {
           className: "kl-text-button kl-text-button--primary",
           type: "button",
-          text: "Apply",
+          text: "Load",
           onClick: () => this.#applyRoomPreset(preset),
         }),
         element("button", {
@@ -7048,19 +7692,27 @@ export class LinkChatView {
   }
 
   #applyRoomPreset(preset: RoomPreset): void {
-    if (
-      typeof confirm === "function" &&
-      !confirm(`Apply “${preset.label}” to the current room? This updates the live room settings.`)
-    ) {
-      return;
-    }
+    const snapshot = this.adapter.getRoomAdminSnapshot();
+    if (!snapshot) { this.#toast("Enter a room before loading a preset.", "error"); return; }
+    this.#showRoomSubView("current", false);
+    this.#roomManager?.update(snapshot);
+    this.#roomManager?.load(preset.room, preset.label);
+  }
+
+  async #applyRoomSettings(room: import("../../core/types").RoomPresetData): Promise<void> {
+    if (this.#roomApplyController) throw new Error("A room update is already pending");
+    const before = this.adapter.getRoomAdminSnapshot();
+    if (!before?.isAdmin) throw new Error("Administrator rights are required");
+    const controller = new AbortController();
+    this.#roomApplyController = controller;
     try {
-      this.adapter.applyRoomPreset(preset.room);
-      this.#toast(`Applying room preset “${preset.label}”…`);
-      this.#scheduleRoomToolsRefresh();
-    } catch (error) {
-      this.#toast(error instanceof Error ? error.message : "The room preset could not be applied.", "error");
-    }
+      const expected = this.adapter.applyRoomPreset(room) ?? structuredClone(room);
+      expected.admins = [this.adapter.getOwnMemberNumber(), ...expected.admins.filter(member => member !== this.adapter.getOwnMemberNumber())].slice(0, 20);
+      expected.name = expected.name.trim(); expected.description = expected.description.trim();
+      expected.language ||= before.settings.language || "EN";
+      await waitForRoomSettings(() => this.adapter.getRoomAdminSnapshot(), before.settings, expected, controller.signal);
+      await this.#renderRoomTools(true);
+    } finally { if (this.#roomApplyController === controller) this.#roomApplyController = undefined; }
   }
 
   #deleteRoomPreset(preset: RoomPreset): void {
@@ -7073,12 +7725,22 @@ export class LinkChatView {
 
   async #openRoomTools(refreshFields = true): Promise<void> {
     this.#showWorkspace("room");
-    await this.#renderRoomTools(refreshFields);
+    this.#showRoomSubView("current", false);
+    await this.#renderRoomTools(refreshFields, true);
   }
 
-  async #renderRoomTools(refreshFields: boolean): Promise<void> {
-    const snapshot = this.adapter.getRoomAdminSnapshot();
+  async #renderRoomTools(refreshFields: boolean, strict = false): Promise<void> {
+    let snapshot: BCRoomAdminSnapshot | undefined;
+    try { snapshot = this.adapter.getRoomAdminSnapshot?.(); } catch (error) {
+      if (strict) throw error;
+      this.#roomAdminStatus.textContent = "Room settings are temporarily unavailable. Refresh to retry.";
+      this.#roomAdminStatus.dataset.state = "error";
+      this.#setRoomControlsEnabled(false);
+      this.#roomManager?.update(undefined);
+      return;
+    }
     if (!snapshot) {
+      if (strict) throw new Error("Open a Bondage Club room before selecting room media.");
       this.#roomAdminStatus.textContent = "Enter a chat room to use Room Tools.";
       this.#roomAdminStatus.dataset.state = "empty";
       this.#roomPlayers.replaceChildren(
@@ -7088,12 +7750,14 @@ export class LinkChatView {
       this.#roomPlaylistSyncEnabled = false;
       this.#roomPlaylistSync.checked = false;
       this.#roomPlaylistSyncStatus.textContent = "Enter a room to follow the playlist.";
+      this.#roomManager?.update(undefined);
       return;
     }
     this.#roomAdminStatus.textContent = snapshot.isAdmin
       ? `${snapshot.roomName} · You are a room administrator`
       : `${snapshot.roomName} · View only (administrator rights required to make changes)`;
     this.#roomAdminStatus.dataset.state = snapshot.isAdmin ? "admin" : "readonly";
+    this.#roomManager?.update(snapshot, refreshFields);
     this.#setRoomControlsEnabled(snapshot.isAdmin);
     this.#roomPlaylistSync.checked = snapshot.isAdmin && this.#roomPlaylistSyncEnabled;
     this.#roomPlaylistSyncStatus.textContent = snapshot.isAdmin
@@ -7337,7 +8001,7 @@ export class LinkChatView {
     const file = this.#roomImageFileInput.files?.[0];
     this.#roomImageFileInput.value = "";
     if (!file) return;
-    const settings = this.settings.get().linkChat.imageUploads;
+    const settings = this.settings.getSection("linkChat").imageUploads;
     const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
     if (!config) {
       this.#toast("Enable temporary local image uploads in Chat settings first.", "error");
@@ -7389,7 +8053,7 @@ export class LinkChatView {
     const file = this.#roomMusicFileInput.files?.[0];
     this.#roomMusicFileInput.value = "";
     if (!file) return;
-    const settings = this.settings.get().linkChat.imageUploads;
+    const settings = this.settings.getSection("linkChat").imageUploads;
     const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
     if (!config) {
       this.#toast("Enable temporary local uploads in Chat settings first.", "error");
@@ -7549,7 +8213,9 @@ export class LinkChatView {
       element("p", {
         className: "kl-setting-help",
         text: supportsLongLivedCatboxUploads()
-          ? "Local files stay in this browser. Catbox files are public bearer links and may include embedded audio metadata. KikiLink sends no userhash, but a userscript manager may attach an existing Catbox session cookie; retention then depends on Catbox account state."
+          ? usesCatboxUploadRelay()
+            ? "Local files stay in this browser unless you choose Catbox. That opens Cloudflare verification, then sends the selected file through the KikiLink relay to public Catbox. The relay does not retain it; Cloudflare handles network and upload metadata, audio metadata may remain, and Catbox retention applies."
+            : "Local files stay in this browser. Catbox files are public bearer links and may include embedded audio metadata. KikiLink sends no userhash, but a userscript manager may attach an existing Catbox session cookie; Catbox retention depends on its account and inactivity rules."
           : "FUSAM keeps selected files on this device. For remote music, use a direct HTTPS link you trust; Catbox upload is unavailable.",
       }),
       this.#musicAddStatus,
@@ -7680,7 +8346,7 @@ export class LinkChatView {
 
   async #renderMusicPage(forceLocalRefresh = false): Promise<void> {
     const token = ++this.#musicRenderToken;
-    const settings = this.settings.get().linkMusic;
+    const settings = this.settings.getSection("linkMusic");
     this.#playlistSelect.replaceChildren(
       ...settings.playlists.map((playlist) => selectOption(playlist.id, `${playlist.name} · ${playlist.tracks.length}`)),
     );
@@ -7827,7 +8493,7 @@ export class LinkChatView {
       return;
     }
 
-    const uploadSettings = this.settings.get().linkChat.imageUploads;
+    const uploadSettings = this.settings.getSection("linkChat").imageUploads;
     const config = track.source === "local" && uploadSettings.enabled
       ? normalizeLitterboxUploadConfig(uploadSettings)
       : null;
@@ -7877,13 +8543,22 @@ export class LinkChatView {
     this.#cancelMusicAddUpload();
     const controller = new AbortController();
     this.#musicAddUploadController = controller;
+    const fileMode = this.#musicFileMode.value;
+    const requestedTitle = this.#musicTitleInput.value.trim();
+    const requestedUrl = this.#musicUrlInput.value;
+    const targetPlaylistId = this.settings.getSection("linkMusic").activePlaylistId;
     this.#musicAddButton.disabled = true;
+    this.#musicTitleInput.disabled = true;
+    this.#musicUrlInput.disabled = true;
+    this.#musicFileInput.disabled = true;
+    this.#musicFileMode.disabled = true;
     this.#musicAddStatus.textContent = "";
     const staged: MusicTrack[] = [];
+    const added: MusicTrack[] = [];
     const stagedLocalIds = new Set<string>();
     let committed = false;
     try {
-      const trackCount = this.settings.get().linkMusic.playlists.reduce(
+      const trackCount = this.settings.getSection("linkMusic").playlists.reduce(
         (total, playlist) => total + playlist.tracks.length,
         0,
       );
@@ -7898,17 +8573,18 @@ export class LinkChatView {
           let source: MusicTrack["source"];
           let locator: string;
           let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
-          if (this.#musicFileMode.value === "catbox") {
+          if (fileMode === "catbox") {
             if (!supportsLongLivedCatboxUploads()) {
               throw new Error("Catbox uploads are unavailable in FUSAM");
             }
-            this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to Catbox…`;
+            this.#musicAddStatus.textContent = usesCatboxUploadRelay()
+              ? `Sending ${index + 1}/${files.length} through the Catbox relay…`
+              : `Uploading ${index + 1}/${files.length} to Catbox…`;
             locator = await uploadMusicToCatbox(file, undefined, (progress) => {
               if (controller.signal.aborted) return;
               const amount = progress.percent === undefined ? "" : ` · ${progress.percent}%`;
               this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length}${amount}`;
             }, controller.signal);
-            if (controller.signal.aborted) throw new Error("The upload was cancelled");
             source = "catbox";
           } else {
             this.#musicAddStatus.textContent = `Saving ${index + 1}/${files.length} on this device…`;
@@ -7922,36 +8598,58 @@ export class LinkChatView {
             source = "local";
             localTrackIds.add(stored.id);
           }
-          staged.push({
+          const track: MusicTrack = {
             id: createLocalId("track"),
-            title: ((files.length === 1 ? this.#musicTitleInput.value.trim() : "") || fallbackTitle || "Untitled track").slice(0, 80),
+            title: ((files.length === 1 ? requestedTitle : "") || fallbackTitle || "Untitled track").slice(0, 80),
             source,
             locator,
             addedAt: Date.now(),
-          });
+          };
+          added.push(track);
+          if (source === "catbox") {
+            // Persist each confirmed public URL before starting the next upload. Closing the panel,
+            // cancelling a later file, or changing playlists must not lose a file that Catbox has
+            // already accepted.
+            this.#appendMusicTracks([track], targetPlaylistId);
+            this.#musicFileInput.value = "";
+          } else {
+            staged.push(track);
+          }
         }
       } else {
-        const locator = normalizeAudioTrackUrl(this.#musicUrlInput.value);
-        staged.push({
+        const locator = normalizeAudioTrackUrl(requestedUrl);
+        const track: MusicTrack = {
           id: createLocalId("track"),
-          title: (this.#musicTitleInput.value.trim() || trackTitleFromUrl(locator) || "Untitled track").slice(0, 80),
+          title: (requestedTitle || trackTitleFromUrl(locator) || "Untitled track").slice(0, 80),
           source: "url",
           locator,
           addedAt: Date.now(),
-        });
+        };
+        staged.push(track);
+        added.push(track);
       }
       if (controller.signal.aborted) throw new Error("The operation was cancelled");
-      this.#appendMusicTracks(staged);
+      this.#appendMusicTracks(staged, targetPlaylistId);
       committed = true;
       this.#releaseStagedLocalMusicTrackIds(stagedLocalIds);
       this.#musicTitleInput.value = "";
       this.#musicUrlInput.value = "";
       this.#musicFileInput.value = "";
-      this.#musicAddStatus.textContent = staged.length === 1
-        ? `Added “${staged[0]!.title}”.`
-        : `Added ${staged.length} tracks.`;
+      this.#musicAddStatus.textContent = added.length === 1
+        ? `Added “${added[0]!.title}”.`
+        : `Added ${added.length} tracks.`;
       await this.#renderMusicPage();
     } catch (error) {
+      const message = error instanceof Error ? error.message : "The track could not be added.";
+      if (staged.length > 0 && !committed) {
+        this.#appendMusicTracks(staged, targetPlaylistId);
+        committed = true;
+        this.#releaseStagedLocalMusicTrackIds(stagedLocalIds);
+        this.#musicTitleInput.value = "";
+        this.#musicUrlInput.value = "";
+        this.#musicFileInput.value = "";
+      }
+      const confirmedCount = added.length - staged.length;
       if (
         controller.signal.aborted ||
         this.#musicAddUploadController !== controller ||
@@ -7959,16 +8657,10 @@ export class LinkChatView {
       ) {
         return;
       }
-      const message = error instanceof Error ? error.message : "The track could not be added.";
-      if (staged.length > 0 && !committed) {
-        this.#appendMusicTracks(staged);
-        committed = true;
-        this.#releaseStagedLocalMusicTrackIds(stagedLocalIds);
-        this.#musicTitleInput.value = "";
-        this.#musicUrlInput.value = "";
-        this.#musicFileInput.value = "";
+      if (committed || confirmedCount > 0) {
         await this.#renderMusicPage();
-        this.#musicAddStatus.textContent = `Added ${staged.length}; stopped because: ${message}`;
+        this.#musicAddStatus.textContent =
+          `Added ${committed ? staged.length + confirmedCount : confirmedCount}; stopped because: ${message}`;
       } else {
         this.#musicAddStatus.textContent = message;
       }
@@ -7982,11 +8674,15 @@ export class LinkChatView {
         this.#musicAddUploadController = undefined;
       }
       this.#musicAddButton.disabled = false;
+      this.#musicTitleInput.disabled = false;
+      this.#musicUrlInput.disabled = false;
+      this.#musicFileInput.disabled = false;
+      this.#musicFileMode.disabled = false;
     }
   }
 
   #createPlaylist(): void {
-    if (this.settings.get().linkMusic.playlists.length >= 8) {
+    if (this.settings.getSection("linkMusic").playlists.length >= 8) {
       this.#toast("KikiLink supports up to 8 playlists.", "error");
       return;
     }
@@ -8002,7 +8698,7 @@ export class LinkChatView {
   }
 
   #renameActivePlaylist(): void {
-    const music = this.settings.get().linkMusic;
+    const music = this.settings.getSection("linkMusic");
     const playlist = activePlaylist(music.playlists, music.activePlaylistId);
     const value = typeof prompt === "function" ? prompt("Playlist name", playlist.name) : playlist.name;
     const name = value?.trim().slice(0, 60);
@@ -8014,7 +8710,14 @@ export class LinkChatView {
   }
 
   #duplicateActivePlaylist(): void {
-    const music = this.settings.get().linkMusic;
+    if (this.#musicAddUploadController) {
+      this.#toast(
+        "Wait for the current track upload before duplicating a playlist.",
+        "error",
+      );
+      return;
+    }
+    const music = this.settings.getSection("linkMusic");
     if (music.playlists.length >= 8) {
       this.#toast("KikiLink supports up to 8 playlists.", "error");
       return;
@@ -8039,7 +8742,14 @@ export class LinkChatView {
   }
 
   async #clearActivePlaylist(): Promise<void> {
-    const music = this.settings.get().linkMusic;
+    if (this.#musicAddUploadController) {
+      this.#toast(
+        "Wait for the current track upload before clearing a playlist.",
+        "error",
+      );
+      return;
+    }
+    const music = this.settings.getSection("linkMusic");
     const playlist = activePlaylist(music.playlists, music.activePlaylistId);
     if (playlist.tracks.length === 0) return;
     if (typeof confirm === "function" && !confirm(`Remove all tracks from “${playlist.name}”?`)) return;
@@ -8053,7 +8763,14 @@ export class LinkChatView {
   }
 
   async #deleteActivePlaylist(): Promise<void> {
-    const music = this.settings.get().linkMusic;
+    if (this.#musicAddUploadController) {
+      this.#toast(
+        "Wait for the current track upload before deleting a playlist.",
+        "error",
+      );
+      return;
+    }
+    const music = this.settings.getSection("linkMusic");
     const playlist = activePlaylist(music.playlists, music.activePlaylistId);
     if (music.playlists.length <= 1) {
       this.#toast("Keep at least one playlist.", "error");
@@ -8134,7 +8851,7 @@ export class LinkChatView {
 
   async #toggleMusicPlayback(): Promise<void> {
     if (!this.#activeTrackId) {
-      const settings = this.settings.get().linkMusic;
+      const settings = this.settings.getSection("linkMusic");
       const first = activePlaylist(settings.playlists, settings.activePlaylistId).tracks[0];
       if (first) await this.#playTrack(first);
       return;
@@ -8155,7 +8872,7 @@ export class LinkChatView {
       this.#audio.currentTime = 0;
       return;
     }
-    const settings = this.settings.get().linkMusic;
+    const settings = this.settings.getSection("linkMusic");
     const tracks = activePlaylist(settings.playlists, settings.activePlaylistId).tracks;
     if (tracks.length === 0) return;
     const index = tracks.findIndex((track) => track.id === this.#activeTrackId);
@@ -8164,7 +8881,7 @@ export class LinkChatView {
   }
 
   async #nextTrack(fromEnded: boolean): Promise<void> {
-    const settings = this.settings.get().linkMusic;
+    const settings = this.settings.getSection("linkMusic");
     const tracks = activePlaylist(settings.playlists, settings.activePlaylistId).tracks;
     if (tracks.length === 0) return;
     if (fromEnded && settings.repeatMode === "one") {
@@ -8209,7 +8926,7 @@ export class LinkChatView {
   }
 
   #renderMusicTransport(): void {
-    const settings = this.settings.get().linkMusic;
+    const settings = this.settings.getSection("linkMusic");
     const track = settings.playlists.flatMap((playlist) => playlist.tracks)
       .find((candidate) => candidate.id === this.#activeTrackId);
     this.#musicNowTitle.textContent = track?.title ?? "Nothing playing";
@@ -8258,10 +8975,13 @@ export class LinkChatView {
     this.#renderMusicTransport();
   }
 
-  #appendMusicTracks(tracks: MusicTrack[]): void {
+  #appendMusicTracks(tracks: MusicTrack[], targetPlaylistId?: string): void {
     if (tracks.length === 0) return;
     this.settings.update((draft) => {
-      const playlist = activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
+      const playlist = targetPlaylistId
+        ? draft.linkMusic.playlists.find((candidate) => candidate.id === targetPlaylistId) ??
+          activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId)
+        : activePlaylist(draft.linkMusic.playlists, draft.linkMusic.activePlaylistId);
       playlist.tracks.push(...tracks);
     });
   }
@@ -8309,7 +9029,7 @@ export class LinkChatView {
     );
     if (locators.size === 0) return;
     const stillUsed = new Set(
-      this.settings.get().linkMusic.playlists.flatMap((playlist) =>
+      this.settings.getSection("linkMusic").playlists.flatMap((playlist) =>
         playlist.tracks.filter((track) => track.source === "local").map((track) => track.locator),
       ),
     );
@@ -8390,7 +9110,7 @@ export class LinkChatView {
         return;
       }
       if (typeof MediaMetadata === "function") {
-        const music = this.settings.get().linkMusic;
+        const music = this.settings.getSection("linkMusic");
         navigator.mediaSession.metadata = new MediaMetadata({
           title: track.title,
           artist: "KikiLink",
@@ -8490,7 +9210,7 @@ export class LinkChatView {
 
   async #syncPlayingTrackToRoom(force = false): Promise<void> {
     if (!this.#roomPlaylistSyncEnabled || !this.#activeTrackId || this.#audio.paused) return;
-    const settings = this.settings.get().linkMusic;
+    const settings = this.settings.getSection("linkMusic");
     const track = settings.playlists.flatMap((playlist) => playlist.tracks)
       .find((candidate) => candidate.id === this.#activeTrackId);
     if (!track) return;
@@ -8504,7 +9224,7 @@ export class LinkChatView {
     }
     const roomTarget = this.#roomOperationTarget(snapshot);
 
-    const uploadSettings = this.settings.get().linkChat.imageUploads;
+    const uploadSettings = this.settings.getSection("linkChat").imageUploads;
     const config = track.source === "local" && uploadSettings.enabled
       ? normalizeLitterboxUploadConfig(uploadSettings)
       : null;
@@ -8580,7 +9300,6 @@ export class LinkChatView {
       element(
         "div",
         { className: "kl-feature-page-heading" },
-        element("div", { className: "kl-feature-page-eyebrow", text: "PEOPLE" }),
         element("h1", { className: "kl-feature-page-title", text: "Players" }),
         this.#rosterSubtitle,
       ),
@@ -8594,8 +9313,8 @@ export class LinkChatView {
 
     for (const [scope, label] of [
       ["current", "In room"],
+      ["friends", "Friends"],
       ["known", "Known"],
-      ["favorites", "Favorites"],
     ] as const) {
       const button = element("button", {
         className: "kl-roster-scope",
@@ -8606,8 +9325,9 @@ export class LinkChatView {
       button.addEventListener("click", () => {
         this.#saveNotebook(false);
         this.#rosterScope = scope;
+        this.#rosterRoomFilter = undefined;
         this.#selectedRosterMember = undefined;
-        this.#renderRoster();
+        this.#renderRoster(true);
       });
       this.#rosterScopes.append(button);
     }
@@ -8615,14 +9335,36 @@ export class LinkChatView {
     this.#rosterSearch.type = "search";
     this.#rosterSearch.placeholder = "Search name, number, tag, or note";
     this.#rosterSearch.autocomplete = "off";
-    this.#rosterSearch.addEventListener("input", () => this.#renderRoster());
+    this.#rosterSearch.setAttribute("aria-label", "Search players");
+    this.#rosterSearch.addEventListener("input", () => this.#renderRoster(true));
+    for (const [filter, label] of [["favorites", "Favorites"], ["online", "Online"], ["addon", "KikiLink"]] as const) {
+      const button = element("button", {
+        className: "kl-directory-filter", type: "button", ariaLabel: `Filter ${label.toLowerCase()} players`,
+        title: filter === "addon" ? "Players with fresh KikiLink detection" : `Show only ${label.toLowerCase()} players`,
+        onClick: () => { this.#peopleFilters[filter] = !this.#peopleFilters[filter]; this.#renderRoster(true); },
+      });
+      button.dataset.peopleFilter = filter;
+      if (filter === "favorites") button.append(kikiIcon("star"));
+      if (filter === "addon") button.append(element("img", {
+        className: "kl-directory-flower", src: KIKILINK_BLOSSOM_DATA_URL, alt: "",
+      }));
+      button.append(element("span", { text: label }));
+      this.#rosterFilters.append(button);
+    }
+    this.#rosterBack.hidden = true;
+    this.#rosterBack.addEventListener("click", () => this.#goBackSocial());
+    header.append(this.#rosterBack);
+    this.#rosterRows = new InteractiveList(this.#rosterList, (player) => String(player.entry.memberNumber),
+      (player) => this.#rosterEntryButton(player), (row, player) => this.#updateRosterRow(row, player));
 
     const listPane = element(
       "section",
       { className: "kl-roster-list-pane" },
-      this.#rosterScopes,
       this.#rosterSearch,
-      this.#rosterList,
+      this.#rosterScopes,
+      this.#rosterFilters,
+      this.#rosterRoomContext,
+      element("div", { className: "kl-roster-results" }, this.#rosterList, this.#rosterEmpty),
     );
     const body = element(
       "div",
@@ -8655,186 +9397,280 @@ export class LinkChatView {
       this.#notebookDirty = true;
       this.#saveNotebookButton.disabled = false;
     });
+    this.#rosterPage.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || event.isComposing || this.#selectedRosterMember === undefined) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.#rosterDetail.querySelector<HTMLButtonElement>(".kl-roster-detail-back")?.click();
+    });
     this.#rosterPage.append(header, body, footer);
   }
 
   #openRoster(memberNumber?: number): void {
-    if (!this.settings.get().linkRoster.enabled) {
+    if (!this.settings.getSection("linkRoster").enabled) {
       this.#openSettings("players");
       this.#rosterEnabledToggle.focus();
       this.#toast("Enable LinkRoster here to add it back to your deck.");
       return;
     }
+    this.#saveNotebook(false);
     this.#showWorkspace("roster");
     this.roster.sync();
-    this.#rosterSearch.value = "";
-    const selectedEntry =
-      memberNumber === undefined
-        ? undefined
-        : this.roster.list("known").find((entry) => entry.memberNumber === memberNumber);
-    this.#rosterScope =
-      selectedEntry?.present === true
-        ? "current"
-        : memberNumber !== undefined
-          ? "known"
-          : this.adapter.isInChatRoom()
-            ? "current"
-            : "known";
-    this.#selectedRosterMember = memberNumber;
-    this.#notebookDirty = false;
+    if (!this.#rosterInitialized) {
+      this.#rosterInitialized = true;
+      this.#rosterScope = this.adapter.isInChatRoom() ? "current" : "friends";
+    }
+    if (memberNumber !== undefined) this.#selectedRosterMember = memberNumber;
     this.#renderRoster();
-    if (memberNumber !== undefined) {
-      this.#rosterList
-        .querySelector<HTMLElement>(`[data-member-number="${memberNumber}"]`)
-        ?.querySelector<HTMLButtonElement>(".kl-roster-entry-select")
-        ?.focus();
-    } else {
-      this.#rosterSearch.focus();
-    }
+    if (memberNumber !== undefined) this.#rosterDetail.querySelector<HTMLButtonElement>(".kl-roster-detail-back")?.focus({ preventScroll: true });
   }
 
-  #renderRoster(): void {
-    const roomName = this.adapter.getCurrentRoomName();
-    this.#rosterSubtitle.textContent = roomName
-      ? `${roomName} · private player notebook`
-      : "Private player notebook";
-    for (const button of this.#rosterScopes.querySelectorAll<HTMLButtonElement>(
-      ".kl-roster-scope",
-    )) {
-      button.dataset.active = String(button.dataset.scope === this.#rosterScope);
-    }
-
-    const entries = this.roster.list(this.#rosterScope, this.#rosterSearch.value);
-    if (!entries.some((entry) => entry.memberNumber === this.#selectedRosterMember)) {
-      this.#selectedRosterMember = entries[0]?.memberNumber;
-      this.#notebookDirty = false;
-    }
-
-    this.#rosterList.replaceChildren();
-    if (entries.length === 0) {
-      this.#rosterList.append(
-        element("div", {
-          className: "kl-roster-empty",
-          text:
-            this.#rosterScope === "current" && !this.adapter.isInChatRoom()
-              ? "Join a chat room to see its roster."
-              : this.#rosterScope === "favorites"
-                ? "No favorite players yet. Use the star on any player."
-                : this.#rosterSearch.value
-                  ? "No players match this search."
-                  : "No players recorded yet.",
-        }),
-      );
-    } else {
-      for (const entry of entries) this.#rosterList.append(this.#rosterEntryButton(entry));
-      this.presence.requestMany(entries.slice(0, 60).map((entry) => entry.memberNumber));
-    }
-
-    const selected = entries.find(
-      (entry) => entry.memberNumber === this.#selectedRosterMember,
-    );
-    if (!this.#notebookDirty) this.#renderRosterDetail(selected);
-  }
-
-  #rosterEntryButton(entry: RosterEntry): HTMLElement {
-    const presence = this.presence.get(entry.memberNumber);
-    const badges = element("div", { className: "kl-roster-entry-badges" });
+  #directoryPlayer(entry: RosterEntry): DirectoryPlayer {
+    let presence = this.presence.get(entry.memberNumber);
     if (entry.present) {
-      badges.append(element("span", { className: "kl-roster-badge kl-roster-live", text: "HERE" }));
+      // Visible native characters are present even when addon presence is disabled or unavailable.
+      presence = { ...presence, status: isOnline(presence) ? presence.status : "online" };
+      const roomName = this.adapter.getCurrentRoomName?.();
+      if (roomName) presence.roomName = roomName;
+      else delete presence.roomName;
     }
-    const status = element("span", {
-      className: "kl-roster-badge kl-roster-presence-label",
-      text: presenceLabel(presence.status),
-    });
-    status.dataset.status = presence.status;
-    status.dataset.presenceLabel = "true";
-    status.hidden = presence.status === "unknown";
-    badges.append(status);
-    if (entry.isFriend) {
-      badges.append(element("span", { className: "kl-roster-badge kl-roster-friend", text: "FRIEND" }));
+    return { entry, presence };
+  }
+
+  #getRosterEntry(memberNumber: number): RosterEntry {
+    return this.roster.list("known").find((entry) => entry.memberNumber === memberNumber) ??
+      this.roster.list("friends").find((entry) => entry.memberNumber === memberNumber) ?? {
+        ...this.roster.get(memberNumber, this.adapter.getMemberName(memberNumber)),
+        present: false, isFriend: this.adapter.isKnownFriend?.(memberNumber) ?? false,
+        relationships: this.adapter.getPlayerRelationships?.(memberNumber) ?? [],
+      };
+  }
+
+  #renderRoster(forceOrder = false): void {
+    const all = this.roster.list(this.#rosterScope).map((entry) => this.#directoryPlayer(entry));
+    const entries = selectPeople(all, this.#rosterSearch.value, this.#peopleFilters,
+      this.#rosterScope === "current", this.#rosterRoomFilter);
+    this.#rosterSubtitle.textContent = `${entries.length} player${entries.length === 1 ? "" : "s"}${
+      this.#rosterScope === "current" ? ` · ${this.adapter.getCurrentRoomName?.() || "No active room"}` : ""}`;
+    for (const button of this.#rosterScopes.querySelectorAll<HTMLButtonElement>("button")) {
+      button.dataset.active = String(button.dataset.scope === this.#rosterScope);
+      button.setAttribute("aria-pressed", String(button.dataset.scope === this.#rosterScope));
     }
-    for (const relationship of entry.relationships) {
-      badges.append(
-        element("span", {
-          className: `kl-roster-badge kl-roster-relationship kl-roster-relationship--${relationship}`,
-          text: rosterRelationshipLabel(relationship).toUpperCase(),
-          title: rosterRelationshipDescription(relationship),
-        }),
-      );
+    for (const button of this.#rosterFilters.querySelectorAll<HTMLButtonElement>("button")) {
+      button.setAttribute("aria-pressed", String(this.#peopleFilters[button.dataset.peopleFilter as keyof PeopleFilters]));
     }
-    if (entry.favorite) badges.append(kikiIcon("star", "kl-roster-favorite", true));
-    const preview = entry.tags.length
-      ? entry.tags.join(" · ")
-      : entry.note
-        ? entry.note.replace(/\s+/gu, " ")
-        : entry.lastRoomName || `Member ${entry.memberNumber}`;
-    const avatarButton = element(
-      "button",
-      {
-        className: "kl-avatar-button kl-roster-entry-avatar-button",
-        type: "button",
-        ariaLabel: `Open KikiLink profile for ${entry.displayName}`,
+    const contextKey = this.#rosterRoomFilter ?? "";
+    if (this.#rosterRoomContext.dataset.room !== contextKey) {
+      this.#rosterRoomContext.dataset.room = contextKey;
+      this.#rosterRoomContext.replaceChildren(element("span", { text: `Friends in ${contextKey}`, title: contextKey }),
+        element("button", { className: "kl-icon-button", type: "button", ariaLabel: "Clear room filter",
+          onClick: () => { this.#rosterRoomFilter = undefined; this.#renderRoster(true); } }, kikiIcon("close")));
+    }
+    this.#rosterRoomContext.hidden = !this.#rosterRoomFilter;
+    this.#rosterRows?.updateVisible(all);
+    this.#rosterRows?.render(entries, forceOrder);
+    this.#rosterEmpty.hidden = entries.length > 0;
+    this.#rosterEmpty.textContent = this.#rosterSearch.value || this.#rosterRoomFilter || Object.values(this.#peopleFilters).some(Boolean)
+      ? "No players match these filters. Try another name or clear a filter."
+      : this.#rosterScope === "current" ? "No other players in this room. Friends are available from any room or Lobby."
+        : this.#rosterScope === "friends" ? "Your BC friends will appear here, including friends in other rooms."
+          : "No known players yet. Saved notes and encounters will appear here.";
+    // Discovery uses the existing shared queue and its backoff. Filtering never adds a new endpoint.
+    this.presence.requestMany(entries.slice(0, 60).map(({ entry }) => entry.memberNumber));
+    const selected = this.#selectedRosterMember === undefined ? undefined : this.#getRosterEntry(this.#selectedRosterMember);
+    const selectedPresence = selected ? this.presence.get(selected.memberNumber) : undefined;
+    const signature = JSON.stringify([selected, selectedPresence?.status, selectedPresence?.roomName,
+      selectedPresence?.statusMessage, selectedPresence?.avatarUrl, selectedPresence?.addonInstalled]);
+    this.#rosterPage.dataset.detail = String(Boolean(selected));
+    this.#rosterDetail.hidden = !selected;
+    if (selected && this.#rosterDetail.dataset.detailMember === String(selected.memberNumber)) {
+      const star = this.#rosterDetail.querySelector<HTMLButtonElement>(".kl-roster-star");
+      if (star && star.getAttribute("aria-pressed") !== String(selected.favorite)) {
+        star.setAttribute("aria-pressed", String(selected.favorite));
+        star.title = selected.favorite ? "Remove from favorites" : "Add to favorites";
+        star.setAttribute("aria-label", star.title);
+        star.replaceChildren(kikiIcon("star", "kl-favorite-icon", selected.favorite));
+      }
+    }
+    if (!this.#notebookDirty && this.#rosterDetailSignature !== signature &&
+      (this.#rosterDetail.dataset.detailMember !== String(selected?.memberNumber) ||
+        !this.#rosterDetail.contains(focusedElement(this.#rosterDetail) ?? null))) {
+      this.#rosterDetailSignature = signature;
+      this.#renderRosterDetail(selected);
+    }
+    this.#updateSocialBack();
+  }
+
+  #rosterEntryButton(player: DirectoryPlayer): HTMLElement {
+    const { entry } = player;
+    const avatar = element("button", {
+      className: "kl-avatar-button kl-roster-entry-avatar-button", type: "button",
+      ariaLabel: `Open KikiLink profile for ${entry.displayName}`,
+      onClick: () => void this.#openAddonProfile(entry.memberNumber, this.adapter.getMemberName(entry.memberNumber), avatar),
+    }, element("span", { className: "kl-avatar-wrap" },
+      this.#avatar(entry.displayName, entry.memberNumber), presenceDot(player.presence.status)));
+    const select = element("button", {
+      className: "kl-roster-entry-select", type: "button", ariaLabel: `Open details and private notes for ${entry.displayName}`,
+      onClick: () => {
+        this.#saveNotebook(false);
+        this.#selectedRosterMember = entry.memberNumber;
+        this.#rosterDetailSignature = "";
+        this.#renderRoster();
+        this.#rosterDetail.querySelector<HTMLButtonElement>(".kl-roster-detail-back")?.focus({ preventScroll: true });
       },
-      element(
-        "span",
-        { className: "kl-avatar-wrap" },
-        this.#avatar(entry.displayName, entry.memberNumber),
-        presenceDot(presence.status),
-      ),
-    );
-    const selectButton = element(
-      "button",
-      {
-        className: "kl-roster-entry-select",
-        type: "button",
-        ariaLabel: `Open private notes for ${entry.displayName}`,
-      },
-      element(
-        "div",
-        { className: "kl-roster-entry-copy" },
-        element(
-          "div",
-          { className: "kl-roster-entry-name-row" },
-          element("span", { className: "kl-roster-entry-name", text: entry.displayName }),
-          badges,
-        ),
-        element("div", { className: "kl-roster-entry-preview", text: preview }),
-      ),
-      element("span", {
-        className: "kl-roster-entry-time",
-        text: entry.present ? "now" : formatRelativeTime(entry.lastSeenAt),
-      }),
-    );
-    const row = element(
-      "div",
-      { className: "kl-roster-entry" },
-      avatarButton,
-      selectButton,
-    );
-    row.dataset.selected = String(entry.memberNumber === this.#selectedRosterMember);
-    row.dataset.memberNumber = entry.memberNumber.toString();
-    selectButton.addEventListener("click", () => {
-      if (entry.memberNumber === this.#selectedRosterMember) return;
-      this.#saveNotebook(false);
-      this.#selectedRosterMember = entry.memberNumber;
-      this.#notebookDirty = false;
-      this.#renderRoster();
+    }, element("span", { className: "kl-roster-entry-name" }),
+      element("span", { className: "kl-roster-entry-markers" }));
+    const location = element("button", {
+      className: "kl-roster-location-button", type: "button",
+      onClick: () => this.#openPlayerRoom(entry.memberNumber),
     });
-    const profileTarget = () => ({
-      memberNumber: entry.memberNumber,
-      displayName: entry.displayName,
-    });
-    this.#bindProfileMenu(avatarButton, profileTarget);
-    this.#bindProfileMenu(selectButton, profileTarget);
-    avatarButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      void this.#openAddonProfile(entry.memberNumber, entry.displayName, avatarButton);
-    });
+    const message = element("button", { className: "kl-text-button kl-roster-message", type: "button", text: "Message",
+      onClick: () => void this.#openRosterBeep(this.#getRosterEntry(entry.memberNumber)) });
+    const join = element("button", { className: "kl-text-button kl-roster-join", type: "button", text: "Join",
+      onClick: () => {
+        const current = this.#directoryPlayer(this.#getRosterEntry(entry.memberNumber));
+        const roomName = playerRoom(current);
+        if (roomName && this.#canJoinPlayer(current)) void this.#joinLobby({ name: roomName, canJoin: true });
+      } });
+    const more = element("button", { className: "kl-icon-button kl-roster-more", type: "button",
+      ariaLabel: `More actions for ${entry.displayName}`, title: "More actions", onClick: () => {
+        const bounds = more.getBoundingClientRect();
+        void this.#openProfileMenu(entry.memberNumber, this.#getRosterEntry(entry.memberNumber).displayName,
+          bounds.right, bounds.bottom, more);
+      } }, kikiIcon("more"));
+    const row = element("div", { className: "kl-roster-entry" }, avatar,
+      element("div", { className: "kl-roster-entry-copy" }, select, location),
+      element("div", { className: "kl-roster-entry-actions" }, message, join, more));
+    row.dataset.memberNumber = String(entry.memberNumber);
+    const target = () => ({ memberNumber: entry.memberNumber, displayName: this.#getRosterEntry(entry.memberNumber).displayName });
+    this.#bindProfileMenu(avatar, target);
+    this.#bindProfileMenu(select, target);
+    this.#updateRosterRow(row, player);
     return row;
+  }
+
+  #canJoinPlayer(player: DirectoryPlayer): boolean {
+    const name = playerRoom(player);
+    if (!name || player.entry.present || roomKey(name) === roomKey(this.adapter.getCurrentRoomName?.() ?? "")) return false;
+    const room = this.#lobbyRooms.find((candidate) => roomKey(candidate.name) === roomKey(name));
+    return !room || room.canJoin && room.memberCount < room.memberLimit;
+  }
+
+  #updateRosterRow(row: HTMLElement, player: DirectoryPlayer): void {
+    const { entry, presence } = player;
+    row.dataset.selected = String(entry.memberNumber === this.#selectedRosterMember);
+    row.dataset.status = presence.status;
+    row.querySelector<HTMLElement>(".kl-roster-entry-name")!.textContent = entry.displayName;
+    row.querySelector(".kl-roster-entry-avatar-button")?.setAttribute("aria-label", `Open KikiLink profile for ${entry.displayName}`);
+    row.querySelector(".kl-roster-entry-select")?.setAttribute("aria-label", `Open details and private notes for ${entry.displayName}`);
+    const markers = row.querySelector<HTMLElement>(".kl-roster-entry-markers")!;
+    const markerKey = `${entry.favorite}/${Boolean(entry.note || entry.tags.length)}`;
+    if (markers.dataset.key !== markerKey) {
+      markers.dataset.key = markerKey;
+      markers.replaceChildren();
+      if (entry.favorite) markers.append(element("span", { title: "Favorite", ariaLabel: "Favorite" }, kikiIcon("star", "kl-roster-favorite", true)));
+      if (entry.note || entry.tags.length) markers.append(element("span", { title: "Private note or tags saved", ariaLabel: "Private note or tags saved" }, kikiIcon("note", "kl-roster-note-marker")));
+    }
+    const location = row.querySelector<HTMLButtonElement>(".kl-roster-location-button")!;
+    const knownRoom = playerRoom(player);
+    const locationText = playerLocation(player);
+    location.textContent = isOnline(presence) && locationText !== "In this room"
+      ? `${presenceLabel(presence.status)} · ${locationText}` : locationText;
+    location.disabled = !knownRoom;
+    location.title = knownRoom ? `View ${knownRoom} in Rooms` : locationText;
+    const join = row.querySelector<HTMLButtonElement>(".kl-roster-join")!;
+    join.hidden = !knownRoom || entry.present || roomKey(knownRoom) === roomKey(this.adapter.getCurrentRoomName?.() ?? "");
+    join.disabled = !this.#canJoinPlayer(player) || this.#lobbyJoinBusy;
+    join.textContent = join.disabled && !this.#lobbyJoinBusy ? "Locked" : "Join";
+    join.title = knownRoom ? `Join ${knownRoom}` : "";
+    const message = row.querySelector<HTMLButtonElement>(".kl-roster-message")!;
+    message.disabled = !this.adapter.canSendBeep() || entry.relationships.some((value) => value === "blacklist" || value === "ghosted");
+    message.title = message.disabled ? "Messaging is unavailable under the current BC connection or privacy settings" : `Message ${entry.displayName}`;
+    for (const dot of row.querySelectorAll<HTMLElement>(".kl-presence-dot")) dot.dataset.status = presence.status;
+  }
+
+  #rememberSocialContext(): void {
+    this.#saveNotebook(false);
+    if (this.#workspaceView !== "room" && this.#workspaceView !== "roster") return;
+    this.#socialTrail.push({ workspace: this.#workspaceView, roomView: this.#roomSubView,
+      roomQuery: this.#lobbyQuery.value, roomFilter: this.#lobbyFilter, roomScroll: this.#roomLobbiesPanel.scrollTop,
+      roomSource: this.#lobbyRooms, roomSpace: this.#lobbySpaceSelect.value, roomUpdatedAt: this.#lobbyUpdatedAt,
+      roomLoaded: this.#lobbyHasLoaded, roomError: this.#lobbyError,
+      playerQuery: this.#rosterSearch.value, playerScope: this.#rosterScope, playerInitialized: this.#rosterInitialized, playerFilters: { ...this.#peopleFilters },
+      playerRoom: this.#rosterRoomFilter, playerScroll: this.#rosterList.scrollTop, selectedPlayer: this.#selectedRosterMember });
+    if (this.#socialTrail.length > 10) this.#socialTrail.shift();
+  }
+
+  #updateSocialBack(): void {
+    const previous = this.#socialTrail.at(-1);
+    for (const button of [this.#roomBack, this.#rosterBack]) {
+      button.hidden = !previous;
+      button.textContent = `Back to ${previous?.workspace === "room" ? "Rooms" : "Players"}`;
+    }
+  }
+
+  #goBackSocial(): void {
+    const context = this.#socialTrail.pop();
+    if (!context) return;
+    this.#saveNotebook(false);
+    this.#lobbyQuery.value = context.roomQuery;
+    this.#lobbyFilter = context.roomFilter;
+    this.#lobbyRooms = context.roomSource;
+    this.#lobbySpaceSelect.value = context.roomSpace;
+    this.#lobbyUpdatedAt = context.roomUpdatedAt;
+    this.#lobbyHasLoaded = context.roomLoaded;
+    this.#lobbyError = context.roomError;
+    // A lookup started in the page being left must not replace the restored directory.
+    this.#lobbyRenderToken += 1;
+    this.#lobbyRefreshButton.disabled = false;
+    this.#rosterSearch.value = context.playerQuery;
+    this.#rosterScope = context.playerScope;
+    this.#rosterInitialized = context.playerInitialized;
+    this.#peopleFilters = { ...context.playerFilters };
+    this.#rosterRoomFilter = context.playerRoom;
+    this.#selectedRosterMember = context.selectedPlayer;
+    this.#showWorkspace(context.workspace);
+    this.#showRoomSubView(context.roomView, false);
+    this.#renderLobbies(true);
+    this.#renderRoster(true);
+    this.#roomLobbiesPanel.scrollTop = context.roomScroll;
+    this.#rosterList.scrollTop = context.playerScroll;
+    this.#updateSocialBack();
+    (context.workspace === "room" ? this.#lobbyQuery : this.#rosterSearch).focus({ preventScroll: true });
+  }
+
+  #openRoomPlayers(name: string, current: boolean): void {
+    if (!this.settings.getSection("linkRoster").enabled) return;
+    this.#rememberSocialContext();
+    this.#rosterInitialized = true;
+    this.#rosterScope = current && roomKey(name) === roomKey(this.adapter.getCurrentRoomName?.() ?? "") ? "current" : "friends";
+    this.#rosterRoomFilter = this.#rosterScope === "current" ? undefined : name;
+    this.#peopleFilters = { favorites: false, online: false, addon: false };
+    this.#rosterSearch.value = "";
+    this.#selectedRosterMember = undefined;
+    this.#showWorkspace("roster");
+    this.#renderRoster(true);
+    this.#rosterList.scrollTop = 0;
+  }
+
+  #openPlayerRoom(memberNumber: number): void {
+    const name = playerRoom(this.#directoryPlayer(this.#getRosterEntry(memberNumber)));
+    if (!name) return;
+    this.#rememberSocialContext();
+    this.#lobbyQuery.value = name;
+    this.#lobbyFilter = "all";
+    this.#showWorkspace("room");
+    this.#showRoomSubView("lobbies", false);
+    this.#renderLobbies(true);
+    this.#roomLobbiesPanel.scrollTop = 0;
+    this.#updateSocialBack();
+    if (roomKey(name) !== roomKey(this.adapter.getCurrentRoomName?.() ?? "") &&
+      !this.#lobbyRooms.some((room) => roomKey(room.name) === roomKey(name))) void this.#refreshLobbies();
   }
 
   #renderRosterDetail(entry: RosterEntry | undefined): void {
     this.#rosterDetail.replaceChildren();
+    this.#rosterDetail.dataset.detailMember = String(entry?.memberNumber);
     if (!entry) {
       this.#rosterDetail.append(
         element("div", {
@@ -8969,7 +9805,7 @@ export class LinkChatView {
       "div",
       { className: "kl-roster-stats" },
       this.#rosterStat("Last seen", entry.present ? "Now" : formatFullSeenTime(entry.lastSeenAt)),
-      this.#rosterStat("Last room", entry.lastRoomName || "Not recorded"),
+      this.#rosterStat("Last recorded room", entry.lastRoomName || "Not recorded"),
       this.#rosterStat("Encounters", entry.encounterCount.toString()),
     );
     this.#rosterTags.value = entry.tags.join(", ");
@@ -8987,7 +9823,15 @@ export class LinkChatView {
         this.#saveNotebookButton,
       ),
     );
-    this.#rosterDetail.append(identity, quickActions, stats, notebook);
+    const back = element("button", { className: "kl-text-button kl-roster-detail-back", type: "button", text: "Back to list",
+      onClick: () => {
+        this.#saveNotebook(false);
+        this.#selectedRosterMember = undefined;
+        this.#renderRoster();
+        const target = this.#rosterList.querySelector<HTMLButtonElement>(`[data-member-number="${entry.memberNumber}"] .kl-roster-entry-select`);
+        (target ?? this.#rosterSearch).focus({ preventScroll: true });
+      } });
+    this.#rosterDetail.append(back, identity, quickActions, stats, notebook);
     this.#bindProfileMenu(identity, () => ({
       memberNumber: entry.memberNumber,
       displayName: entry.displayName,
@@ -9075,11 +9919,10 @@ export class LinkChatView {
       },
       (message, kind) => this.#toast(message, kind),
     );
-    this.#customActivitiesView.open();
   }
 
   #openActivities(activityIndex?: number): void {
-    if (!this.settings.get().linkActivities.enabled) {
+    if (!this.settings.getField("linkActivities", "enabled")) {
       this.#openSettings("activities");
       this.#activitiesToggle.focus();
       this.#toast("Turn on the Custom Activities tab to open your activity builder.");
@@ -9087,7 +9930,7 @@ export class LinkChatView {
     }
 
     this.#showWorkspace("activities");
-    const activities = this.settings.get().linkActivities.customActivities;
+    const activities = this.settings.getSection("linkActivities").customActivities;
     this.#selectedActivityIndex =
       activityIndex !== undefined && Number.isInteger(activityIndex) && activityIndex >= 0
         ? activityIndex
@@ -9138,7 +9981,7 @@ export class LinkChatView {
 
     const conversations = providedConversations ?? await this.service.listConversations();
     if (!this.#mounted) return;
-    const groups = this.#groupChatService?.listGroups() ?? [];
+    const groups = this.#cloud ? [] : this.#groupChatService?.listGroups() ?? [];
     const totalChats = conversations.length + groups.length;
     const onlineFriendCount =
       typeof this.adapter.getOnlineFriends === "function"
@@ -9329,9 +10172,10 @@ export class LinkChatView {
   }
 
   #renderOwnPresence(): void {
-    const enabled = this.settings.get().linkPresence.enabled;
+    this.#cloudPresence?.update();
+    const enabled = this.settings.getSection("linkPresence").enabled;
     const ownMemberNumber = this.adapter.getOwnMemberNumber();
-    const ownName = this.adapter.getOwnName();
+    const ownName = this.#cloudProfile?.current?.displayName ?? this.adapter.getOwnName();
     const snapshot = this.presence.get(ownMemberNumber);
     const label = enabled ? presenceLabel(snapshot.status) : "Presence off";
     this.#presenceTriggerDot.dataset.status = enabled ? snapshot.status : "unknown";
@@ -9339,7 +10183,14 @@ export class LinkChatView {
     this.#presenceTriggerStatus.textContent = snapshot.statusMessage
       ? `${label} · ${snapshot.statusMessage}`
       : label;
-    this.#renderAvatar(this.#presenceTriggerAvatar, ownName, ownMemberNumber, snapshot.avatarUrl);
+    if (this.#cloudProfile?.current?.avatarId) {
+      this.#cancelRemoteImageLoadsWithin(this.#presenceTriggerAvatar);
+      this.#cloudProfile.paintAvatar(this.#presenceTriggerAvatar);
+    } else { delete this.#presenceTriggerAvatar.dataset.cloudAvatar; this.#renderAvatar(this.#presenceTriggerAvatar, ownName, ownMemberNumber, snapshot.avatarUrl); }
+    if (this.#cloudProfile?.current) {
+      const appearance = withCloudProfile(snapshot, this.#cloudProfile.current, this.#cloudProfile.preserveLegacyAppearance);
+      this.#presenceTriggerAvatar.dataset.avatarFrame = appearance.avatarFrame ?? "none";
+    }
     this.#presenceTrigger.title = snapshot.statusMessage
       ? `${ownName}: ${label} · ${snapshot.statusMessage}`
       : `KikiLink status: ${label}`;
@@ -9397,7 +10248,7 @@ export class LinkChatView {
 
   #renderTypingIndicator(): void {
     const typing =
-      this.settings.get().linkChat.typingIndicators &&
+      this.settings.getSection("linkChat").typingIndicators &&
       this.#activePeer !== undefined &&
       this.presence.isTyping(this.#activePeer);
     this.#typingIndicator.hidden = !typing;
@@ -9519,6 +10370,8 @@ export class LinkChatView {
           void this.#renderAddonProfile();
         }
       }
+      if (this.#workspaceView === "roster" && !this.#panel.hidden) this.#renderRoster();
+      if (updateAll && this.#workspaceView === "room" && this.#roomSubView === "lobbies" && !this.#panel.hidden) this.#renderLobbies();
       if (updateAll) void this.#renderHome();
     });
   }
@@ -9561,11 +10414,12 @@ export class LinkChatView {
   }
 
   async #renderConversations(providedConversations?: ConversationMeta[]): Promise<void> {
-    if (!this.#mounted) return;
+    if (!this.#mounted || !this.#host.isConnected) return;
+    if (this.#cloud && this.#chatFilter !== "all") { this.#cloud.inbox.search(this.#search.value); if (this.#chatFilter === "groups") return; }
     const renderToken = ++this.#conversationRenderToken;
     const query = this.#search.value.trim().toLocaleLowerCase();
     const allConversations = providedConversations ?? await this.service.listConversations();
-    if (!this.#mounted || renderToken !== this.#conversationRenderToken) return;
+    if (!this.#mounted || !this.#host.isConnected || renderToken !== this.#conversationRenderToken) return;
     for (const conversation of allConversations) {
       const nickname = this.adapter.getMemberNickname(conversation.peerNumber);
       if (nickname && nickname !== conversation.peerName) {
@@ -9583,6 +10437,7 @@ export class LinkChatView {
     this.#cacheDirectConversations(allConversations);
     const conversations = allConversations
       .filter((conversation) => {
+        if (this.#chatFilter === "groups" || (this.#chatFilter === "unread" && conversation.unread === 0)) return false;
         if (!query) return true;
         return (
           conversationDisplayName(conversation).toLocaleLowerCase().includes(query) ||
@@ -9592,7 +10447,8 @@ export class LinkChatView {
         );
       })
       .slice(0, 200);
-    const groups = (this.#groupChatService?.listGroups() ?? []).filter((group) => {
+    const groups = (this.#cloud ? [] : this.#groupChatService?.listGroups() ?? []).filter((group) => {
+      if (this.#chatFilter === "unread" && group.unread === 0) return false;
       if (!query) return true;
       return [
         group.title,
@@ -9633,17 +10489,17 @@ export class LinkChatView {
       this.#conversationList.replaceChildren(
         element("div", {
           className: "kl-empty-copy",
-          text: query ? "No matching chats." : "No chats yet.",
+          text: query ? "No matching chats." : this.#chatFilter === "unread" ? "No unread direct chats." : this.#chatFilter === "groups" ? "No group chats yet. Create one with the group button above." : "No chats yet.",
         }),
       );
       return;
     }
 
-    const root = this.#conversationList.getRootNode() as Document | ShadowRoot;
+    const active = focusedElement(this.#conversationList);
     const focusedConversationKey =
-      root.activeElement instanceof HTMLButtonElement &&
-      this.#conversationList.contains(root.activeElement)
-        ? root.activeElement.dataset.conversationKey
+      active instanceof HTMLButtonElement &&
+      this.#conversationList.contains(active)
+        ? active.dataset.conversationKey
         : undefined;
     const existingRows = new Map<string, HTMLButtonElement>();
     for (const row of this.#conversationList.querySelectorAll<HTMLButtonElement>(
@@ -9760,13 +10616,13 @@ export class LinkChatView {
     else if (!conversation.pinned) currentPin?.remove();
     const prefix = conversation.lastDirection === "outgoing" ? "You: " : "";
     const previewText = messagePreview(conversation.lastMessage);
-    const preview = previewText
-      ? `${prefix}${previewText}`
-      : `Member ${conversation.peerNumber}`;
+    const preview = conversation.draft
+      ? `Draft: ${messagePreview(conversation.draft)}`
+      : previewText ? `${prefix}${previewText}` : `Member ${conversation.peerNumber}`;
     const previewNode = button.querySelector<HTMLElement>(".kl-conversation-preview");
     if (previewNode) {
       previewNode.textContent = preview;
-      delete previewNode.dataset.draft;
+      previewNode.dataset.draft = String(Boolean(conversation.draft));
     }
     const time = button.querySelector<HTMLElement>(".kl-time");
     if (time) {
@@ -10011,7 +10867,7 @@ export class LinkChatView {
   ): boolean {
     if (!normalizedAvatar) return false;
     if (group.creatorNumber === ownMemberNumber) return true;
-    const policy = this.settings.get().linkPresence.profileImagePreviews;
+    const policy = this.settings.getSection("linkPresence").profileImagePreviews;
     return policy === "always" || (
       policy === "ask" &&
       this.#revealedAvatarUrls.has(avatarRevealKey(group.creatorNumber, normalizedAvatar))
@@ -10022,7 +10878,7 @@ export class LinkChatView {
     const normalizedAvatar = normalizeImageUrl(group.avatarUrl) ?? "";
     if (
       !normalizedAvatar ||
-      this.settings.get().linkPresence.profileImagePreviews !== "ask"
+      this.settings.getSection("linkPresence").profileImagePreviews !== "ask"
     ) {
       return false;
     }
@@ -10113,6 +10969,7 @@ export class LinkChatView {
   ): Promise<void> {
     const intent = existingIntent ?? ++this.#directSelectionIntent;
     if (intent !== this.#directSelectionIntent) return;
+    if (this.#cloud && this.#cloudChatSelected) { this.#cloudChatSelected = false; this.#showWorkspace("chat"); }
     if (this.#groupChatPanel?.activeGroupId) this.#groupChatPanel.closeActive();
     if (this.#activePeer !== undefined && this.#activePeer !== peerNumber) {
       void this.#flushDirectDraft(this.#activePeer);
@@ -10147,8 +11004,9 @@ export class LinkChatView {
     this.#renderActivePresence();
     this.presence.request(peerNumber);
     this.#renderPinButton(conversation.pinned);
-    this.#composer.value = conversation.draft;
-    this.#includeRoom.checked = this.settings.get().linkChat.includeRoomByDefault;
+    this.#reply.load(conversation.draft);
+    this.#messageInteraction?.close();
+    this.#includeRoom.checked = this.settings.getSection("linkChat").includeRoomByDefault;
     this.#sendButton.disabled = !this.adapter.canSendBeep() || this.#directSendBusy;
     this.#attachImageButton.disabled = !this.adapter.canSendBeep() || this.#directSendBusy;
     this.#composer.disabled = !this.adapter.canSendBeep() || this.#directSendBusy;
@@ -10256,24 +11114,8 @@ export class LinkChatView {
     group: MessageGroupPosition = "single",
   ): HTMLDivElement {
     const body = this.#renderMessageBody(message);
-    const actions = element(
-      "div",
-      { className: "kl-message-side-actions" },
-      element("button", {
-        className: "kl-message-action",
-        type: "button",
-        title: "Quote this message in your reply",
-        ariaLabel: "Reply to message",
-        onClick: () => this.#replyToMessage(message),
-      }, kikiIcon("reply")),
-      element("button", {
-        className: "kl-message-action",
-        type: "button",
-        title: "Copy message",
-        ariaLabel: "Copy message",
-        onClick: () => void this.#copyMessage(message.content),
-      }, kikiIcon("copy")),
-    );
+    const actions = messageActions(() => this.#replyToMessage(message), () => copyText(message.content),
+      () => this.#toast("The browser blocked clipboard access.", "error"));
     const meta = element(
       "div",
       { className: "kl-message-meta" },
@@ -10284,7 +11126,9 @@ export class LinkChatView {
     );
     const bubble = element("div", { className: "kl-message-bubble" }, body, meta);
     if (body.querySelector(".kl-message-media")) bubble.dataset.media = "true";
-    const row = element("div", { className: "kl-message-row" }, bubble, actions);
+    const row = element("div", { className: "kl-message-row kl-message-line kl-message-interaction" }, bubble, actions);
+    row.dataset.actionable = "true";
+    bubble.tabIndex = 0;
     row.dataset.direction = message.direction;
     row.dataset.group = group;
     row.dataset.messageId = message.id;
@@ -10356,8 +11200,8 @@ export class LinkChatView {
   }
 
   async #send(): Promise<void> {
-    const message = this.#composer.value.trim();
-    if (!message || this.#directSendBusy) return;
+    const message = this.#reply.value.trim();
+    if (!this.#reply.hasContent || this.#directSendBusy) return;
     await this.#sendContent(message, true);
   }
 
@@ -10370,7 +11214,7 @@ export class LinkChatView {
     const peerNumber = target?.peerNumber ?? this.#activePeer!;
     const peerName = target?.peerName ?? this.#activeNativeName;
     const includeRoom = target?.includeRoom ?? this.#includeRoom.checked;
-    const composerValueAtSend = this.#composer.value;
+    const composerValueAtSend = this.#reply.value;
     if (clearComposer) this.#cancelDirectDraft(peerNumber);
     this.#directSendBusy = true;
     this.#sendButton.disabled = true;
@@ -10390,8 +11234,8 @@ export class LinkChatView {
       this.presence.setTyping(peerNumber, false, true);
       if (clearComposer) {
         await this.service.setDraft(peerNumber, peerName, "");
-        if (this.#activePeer === peerNumber && this.#composer.value === composerValueAtSend) {
-          this.#composer.value = "";
+        if (this.#activePeer === peerNumber && this.#reply.value === composerValueAtSend) {
+          this.#reply.load("");
           this.#resizeComposer();
           this.#updateCounter();
         }
@@ -10403,7 +11247,7 @@ export class LinkChatView {
       if (
         clearComposer &&
         this.#activePeer === peerNumber &&
-        this.#composer.value === composerValueAtSend
+        this.#reply.value === composerValueAtSend
       ) {
         this.#scheduleDirectDraft(peerNumber, peerName, composerValueAtSend);
       }
@@ -10436,35 +11280,11 @@ export class LinkChatView {
     const reply = parseInlineReplyContext(content);
     const visibleContent = reply?.content ?? content;
     const links = parseMessageLinks(visibleContent);
-    const previewsEnabled = this.settings.get().linkChat.imagePreviews !== "never";
+    const previewsEnabled = this.settings.getSection("linkChat").imagePreviews !== "never";
     const imageUrls = [...new Set(links.filter((link) => link.image).map((link) => link.url))].slice(0, 2);
     const body = element("div", { className });
     if (reply) {
-      const context = element(
-        "div",
-        {
-          className: "kl-message-reply",
-          ariaLabel: `Unverified quote attributed to ${reply.author}: ${reply.excerpt}`,
-        },
-        kikiIcon("reply", "kl-message-reply-icon"),
-        element(
-          "span",
-          { className: "kl-message-reply-copy" },
-          element("strong", {
-            className: "kl-message-reply-author",
-            text: `Quoted as ${reply.author}`,
-          }),
-          element("span", { className: "kl-message-reply-excerpt", text: reply.excerpt }),
-          element("small", {
-            className: "kl-message-reply-warning",
-            text: "Unverified quote",
-          }),
-        ),
-      );
-      context.title =
-        `Unverified quote attributed to ${reply.author}: ${reply.excerpt}`;
-      context.setAttribute("role", "note");
-      body.append(context);
+      body.append(replyPreview(reply));
       body.dataset.hasReply = "true";
     }
     appendActionFormattedText(body, visibleContent, links, (link) => {
@@ -10513,7 +11333,7 @@ export class LinkChatView {
         open,
       ),
     );
-    const previewPolicy = this.settings.get().linkChat.imagePreviews;
+    const previewPolicy = this.settings.getSection("linkChat").imagePreviews;
     if (deviceLocal) {
       this.#loadTrustedLocalImage(preview, url);
     } else if (previewPolicy === "always") {
@@ -10886,7 +11706,7 @@ export class LinkChatView {
     if (!preview.isConnected) return;
     if (
       reason === "offscreen" &&
-      this.settings.get().linkChat.imagePreviews === "always" &&
+      this.settings.getSection("linkChat").imagePreviews === "always" &&
       this.#remoteImageVisibilityObserver
     ) {
       this.#queueRemoteImage(preview, url);
@@ -11128,27 +11948,9 @@ export class LinkChatView {
 
   #replyToMessage(message: LinkMessage): void {
     const author = message.direction === "incoming" ? this.#activeNativeName : this.adapter.getOwnName();
-    const quote = formatInlineReplyPrefix(author, message.content);
-    const draft = stripInlineReplyDraft(this.#composer.value);
-    if (draft.length + quote.length > 1000) {
-      this.#toast("That reply would exceed the 1000 character Beep limit.", "error");
-      return;
-    }
-    this.#composer.value = `${quote}${draft}`;
-    this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
-    this.#composer.focus();
-    this.#composer.setSelectionRange(this.#composer.value.length, this.#composer.value.length);
+    try { this.#reply.replyTo(author, message.content); this.#messageInteraction?.close(); }
+    catch (error) { this.#toast(error instanceof Error ? error.message : "Unable to reply", "error"); }
   }
-
-  async #copyMessage(content: string): Promise<void> {
-    try {
-      await copyText(content);
-      this.#toast("Message copied.");
-    } catch {
-      this.#toast("The browser blocked clipboard access.", "error");
-    }
-  }
-
   async #togglePin(): Promise<void> {
     if (this.#activePeer === undefined) return;
     const pinned = await this.service.togglePinned(this.#activePeer);
@@ -11287,7 +12089,7 @@ export class LinkChatView {
     token: number,
   ): Promise<void> {
     this.presence.request(memberNumber);
-    const conversation = await this.service.getConversation(memberNumber);
+    const conversation = await this.service.getConversation(memberNumber).catch(() => undefined);
     if (!this.#isProfileMenuOperationCurrent(token)) return;
     const nativeName = conversation?.peerName ?? displayName;
     const shownName = conversation ? conversationDisplayName(conversation) : displayName;
@@ -11764,7 +12566,7 @@ export class LinkChatView {
   }
 
   #renderQuickActions(): void {
-    const actions = this.settings.get().linkChat.quickActions;
+    const actions = this.settings.getSection("linkChat").quickActions;
     this.#quickActions.replaceChildren();
     this.#quickActions.hidden = actions.length === 0;
 
@@ -11789,7 +12591,7 @@ export class LinkChatView {
       .replaceAll("{me}", this.adapter.getOwnName());
     const current = this.#composer.value.trimEnd();
     const next = current ? `${current}\n${expanded}` : expanded;
-    if (next.length > 1000) {
+    if (next.length > this.#composer.maxLength) {
       this.#toast("This action would exceed the 1000 character Beep limit.", "error");
       return;
     }
@@ -12144,7 +12946,7 @@ export class LinkChatView {
     void this.#refreshCustomSounds(settings.linkReactions.sounds);
     this.#reactionsToggle.checked = settings.linkReactions.enabled;
     this.#renderReactionRuleEditor(settings.linkReactions.rules);
-    this.#showWorkspace("settings", false);
+    this.#showWorkspace("settings");
     this.#showSettingsSection(section ?? settings.ui.settingsSection, false);
     this.#settingsTabs
       .querySelector<HTMLButtonElement>(`[data-section="${this.#settingsSection}"]`)
@@ -12162,7 +12964,7 @@ export class LinkChatView {
       tab.setAttribute("aria-selected", String(selected));
       tab.tabIndex = selected ? 0 : -1;
     }
-    if (remember && this.settings.get().ui.settingsSection !== section) {
+    if (remember && this.settings.getSection("ui").settingsSection !== section) {
       this.settings.update((draft) => {
         draft.ui.settingsSection = section;
       });
@@ -12177,7 +12979,7 @@ export class LinkChatView {
 
   async #refreshCustomSounds(
     selected: KikiLinkSettings["linkReactions"]["sounds"] = {
-      ...this.settings.get().linkReactions.sounds,
+      ...this.settings.getSection("linkReactions").sounds,
       chat: soundChoiceOr(this.#chatSoundSelect.value, "chime"),
       friendOnline: soundChoiceOr(this.#friendOnlineSoundSelect.value, "sparkle"),
       roomJoin: soundChoiceOr(this.#roomJoinSoundSelect.value, "pop"),
@@ -12258,7 +13060,7 @@ export class LinkChatView {
     if (!file) return;
     try {
       const sound = await this.soundStore.add(file);
-      const current = this.settings.get().linkReactions.sounds;
+      const current = this.settings.getSection("linkReactions").sounds;
       await this.#refreshCustomSounds({ ...current, chat: `custom:${sound.id}` });
       this.#chatSoundSelect.value = `custom:${sound.id}`;
       this.#toast(`Saved “${sound.name}” locally. Choose Save changes to use it.`);
@@ -12424,7 +13226,7 @@ export class LinkChatView {
   }
 
   #beginRoomBadgePlacement(): void {
-    if (!this.settings.get().ui.roomBadge.enabled) {
+    if (!this.settings.getSection("ui").roomBadge.enabled) {
       this.settings.update((draft) => {
         draft.ui.roomBadge.enabled = true;
       });
@@ -12505,7 +13307,7 @@ export class LinkChatView {
     this.#messageRenderPeer = undefined;
     this.#loadingOlderMessages = false;
     this.#renderedMessageIds.clear();
-    this.#composer.value = "";
+    this.#reply.load("");
     this.#messages.replaceChildren();
     this.#attachImageButton.disabled = true;
     this.#chat.hidden = true;
@@ -12590,7 +13392,7 @@ export class LinkChatView {
     if (refreshDirect || this.#cachedDirectConversations === undefined) {
       this.#directUnreadCount = await this.service.totalUnread();
     }
-    const unread = this.#directUnreadCount + (this.#groupChatService?.totalUnread() ?? 0);
+    const unread = this.#directUnreadCount + (this.#cloud ? this.#cloud.inbox.unreadGroups : this.#groupChatService?.totalUnread() ?? 0);
     this.#unreadCount = unread;
     this.#badge.hidden = unread === 0;
     this.#badge.textContent = unread > 99 ? "99+" : unread.toString();
@@ -12598,16 +13400,17 @@ export class LinkChatView {
 
   #resizeComposer(): void {
     this.#composer.style.height = "auto";
-    this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 120)}px`;
+    this.#composer.style.height = `${Math.min(this.#composer.scrollHeight + 2, 120)}px`;
   }
 
   #updateCounter(): void {
-    const count = this.#composer.value.length;
+    const count = this.#reply.value.length;
     this.#counter.textContent = `${count}/1000 · Ctrl+Enter`;
     this.#counter.dataset.over = String(count > 1000);
   }
 
   #applyTheme(settings: KikiLinkSettings): void {
+    this.#host.style.setProperty("--kl-launcher-size", `${settings.ui.launcherSize}px`);
     this.#host.style.setProperty("--kl-accent", settings.ui.accent);
     this.#host.style.setProperty("--kl-accent-strong", settings.ui.accent);
     this.#host.style.setProperty("--kl-accent-foreground", readableForeground(settings.ui.accent));
@@ -12623,6 +13426,17 @@ export class LinkChatView {
 
   #startLauncherDrag(event: PointerEvent): void {
     if (event.button !== 0) return;
+    this.#ignoreLauncherClick = false;
+    this.#cancelLauncherHold();
+    this.#launcherHoldTimer = setTimeout(() => {
+      this.#launcherHoldTimer = undefined;
+      if (!this.#mounted || !this.#launcherDrag || this.#launcherDrag.moved) return;
+      this.#launcherDrag = undefined;
+      this.#ignoreLauncherClick = true;
+      this.#suppressLauncherClickUntil = Date.now() + 800;
+      try { this.#launcher.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+      this.#launcherMenu.open(this.#launcher);
+    }, 520);
     const rect = this.#launcher.getBoundingClientRect();
     this.#launcherDrag = {
       pointerId: event.pointerId,
@@ -12647,12 +13461,14 @@ export class LinkChatView {
     if (!drag.moved && Math.hypot(deltaX, deltaY) < 5) return;
 
     drag.moved = true;
+    this.#cancelLauncherHold();
     event.preventDefault();
     this.#launcher.dataset.dragging = "true";
     this.#placeLauncher(drag.startLeft + deltaX, drag.startTop + deltaY);
   }
 
   #finishLauncherDrag(event: PointerEvent): void {
+    this.#cancelLauncherHold();
     const drag = this.#launcherDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
     this.#launcherDrag = undefined;
@@ -12669,6 +13485,7 @@ export class LinkChatView {
   }
 
   #cancelLauncherDrag(event: PointerEvent): void {
+    this.#cancelLauncherHold();
     if (!this.#launcherDrag || this.#launcherDrag.pointerId !== event.pointerId) return;
     this.#launcherDrag = undefined;
     this.#launcher.dataset.dragging = "false";
@@ -12692,6 +13509,31 @@ export class LinkChatView {
     this.#panel.dataset.side = side;
   }
 
+  #cancelLauncherHold(): void {
+    if (this.#launcherHoldTimer !== undefined) clearTimeout(this.#launcherHoldTimer);
+    this.#launcherHoldTimer = undefined;
+  }
+
+  #notificationsMuted(): boolean {
+    return this.presence.getOwnStatus() === "dnd" ||
+      notificationsAreMuted(this.settings.getSection("ui").notificationsMutedUntil);
+  }
+
+  #syncNotificationState(): void {
+    if (this.#notificationResumeTimer !== undefined) clearTimeout(this.#notificationResumeTimer);
+    this.#notificationResumeTimer = undefined;
+    const until = this.settings.getSection("ui").notificationsMutedUntil;
+    const muted = this.#notificationsMuted();
+    this.#launcher.dataset.muted = String(muted);
+    this.#launcher.title = `KikiLink${muted ? " · Notifications paused" : ""} · Hold or right-click for quick actions`;
+    if (until > Date.now()) {
+      this.#notificationResumeTimer = setTimeout(() => {
+        this.#notificationResumeTimer = undefined;
+        if (this.#mounted) this.#syncNotificationState();
+      }, Math.min(until - Date.now() + 1, 2_147_483_647));
+    }
+  }
+
   #saveLauncherPosition(): void {
     const rect = this.#launcher.getBoundingClientRect();
     const maxLeft = Math.max(0, window.innerWidth - rect.width);
@@ -12706,7 +13548,7 @@ export class LinkChatView {
   }
 
   #positionLauncher(): void {
-    const ui = this.settings.get().ui;
+    const ui = this.settings.getSection("ui");
     if (!ui.launcherPosition) {
       this.#launcher.style.removeProperty("left");
       this.#launcher.style.removeProperty("top");
@@ -12814,7 +13656,7 @@ export class LinkChatView {
   }
 
   #positionPanel(): void {
-    const position = this.settings.get().ui.panelPosition;
+    const position = this.settings.getSection("ui").panelPosition;
     if (!position || this.#isMobileLayout()) {
       this.#panel.style.removeProperty("left");
       this.#panel.style.removeProperty("top");
@@ -12858,6 +13700,22 @@ export class LinkChatView {
     return avatar;
   }
 
+  #renderAddonBadge(target: HTMLElement, installed: boolean): void {
+    const existing = target.querySelector(":scope > .kl-addon-badge");
+    if (!installed) { existing?.remove(); return; }
+    if (existing) return;
+    const badge = element("span", { className: "kl-addon-badge", title: "KikiLink detected" });
+    badge.setAttribute("role", "img");
+    badge.setAttribute("aria-label", "KikiLink detected");
+    // This bundled transparent icon stays separate from remote portrait cropping.
+    const flower = document.createElement("img");
+    flower.src = KIKILINK_BLOSSOM_DATA_URL;
+    flower.alt = "";
+    flower.draggable = false;
+    badge.append(flower);
+    target.append(badge);
+  }
+
   #renderAvatar(
     target: HTMLElement,
     name: string,
@@ -12878,7 +13736,7 @@ export class LinkChatView {
       // Treat guarded native identity as remote for privacy purposes.
     }
     const candidateUrl = normalizeImageUrl(explicitUrl ?? snapshot.avatarUrl ?? "") ?? "";
-    const policy = this.settings.get().linkPresence.profileImagePreviews;
+    const policy = this.settings.getSection("linkPresence").profileImagePreviews;
     const allowedUrl =
       explicitUrl !== undefined ||
       ownMember ||
@@ -12888,8 +13746,12 @@ export class LinkChatView {
         : "";
     const avatarFrame =
       ownMember && explicitUrl !== undefined
-        ? this.#presenceAvatarFrame.value || this.settings.get().linkPresence.avatarFrame
+        ? this.#presenceAvatarFrame.value || this.settings.getSection("linkPresence").avatarFrame
         : snapshot.avatarFrame ?? "none";
+    const installed = ownMember || snapshot.addonInstalled === true ||
+      (snapshot.addonInstalled === undefined && snapshot.source === "kikilink");
+    target.dataset.addonInstalled = String(installed);
+    this.#renderAddonBadge(target, installed);
     if (
       !force &&
       target.dataset.avatarName === name &&
@@ -12918,6 +13780,7 @@ export class LinkChatView {
     }
     const showFallback = (state = "initials"): void => {
       target.replaceChildren(document.createTextNode(avatarText(name)));
+      this.#renderAddonBadge(target, target.dataset.addonInstalled === "true");
       target.dataset.avatarState = state;
     };
     const fallback = (state = "initials"): void => {
@@ -12986,6 +13849,7 @@ export class LinkChatView {
           }
         }, { once: true });
         target.replaceChildren(image);
+        this.#renderAddonBadge(target, target.dataset.addonInstalled === "true");
         image.src = lease.url;
       }).catch(() => {
         if (
@@ -13029,7 +13893,7 @@ export class LinkChatView {
       // A guarded native identity must not accidentally bypass the remote-image preference.
     }
     const candidateUrl = normalizeImageUrl(requestedUrl) ?? "";
-    const policy = this.settings.get().linkPresence.profileImagePreviews;
+    const policy = this.settings.getSection("linkPresence").profileImagePreviews;
     const allowedUrl =
       explicit ||
       ownMember ||
@@ -13143,6 +14007,8 @@ export class LinkChatView {
   }
 
   #renderOwnAvatarPreview(): void {
+    this.#presenceAvatarPreview.dataset.avatarFrame = this.#presenceAvatarFrame.value || "none";
+    if (this.#cloudProfile?.restorePreview("avatar")) { this.#cancelRemoteImageLoadsWithin(this.#presenceAvatarPreview); return; }
     const url = normalizeImageUrl(this.#presenceAvatarUrl.value);
     this.#renderAvatar(
       this.#presenceAvatarPreview,
@@ -13164,6 +14030,7 @@ export class LinkChatView {
       delete this.#presenceBannerPreview.dataset.customGradient;
       this.#presenceBannerPreview.style.removeProperty("background-image");
     }
+    if (this.#cloudProfile?.restorePreview("banner")) { this.#cancelRemoteImageLoadsWithin(this.#presenceBannerPreview); return; }
     this.#renderProfileBanner(
       this.#presenceBannerPreview,
       this.adapter.getOwnName(),
@@ -13206,7 +14073,7 @@ export class LinkChatView {
         : this.#panel;
     if (surface === this.#shadow) {
       toast.classList.add("kl-toast--floating");
-      toast.dataset.side = this.settings.get().ui.launcherSide;
+      toast.dataset.side = this.settings.getSection("ui").launcherSide;
     }
     surface.append(toast);
     if (kind === "info") {
@@ -13729,23 +14596,6 @@ function deviceRoomMusicFile(track: DeviceMusicTrack): File {
 function imageUploadErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message.trim() : "Unable to prepare this image";
   return (message || "Unable to prepare this image").slice(0, 180);
-}
-
-async function copyText(value: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.append(textarea);
-  textarea.select();
-  const copied = document.execCommand("copy");
-  textarea.remove();
-  if (!copied) throw new Error("Clipboard unavailable");
 }
 
 function readableForeground(background: string): "#17100d" | "#fff8ee" {

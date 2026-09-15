@@ -167,8 +167,7 @@ describe("group chat integration", () => {
     expect(groups.getGroup(created.group.groupId)?.unread).toBe(1);
 
     await view.open();
-    expect(view.getActiveGroupId()).toBeUndefined();
-    shadow?.querySelector<HTMLButtonElement>('[data-target="chat"]')?.click();
+    expect(view.getActiveGroupId()).toBe(created.group.groupId);
     await vi.waitFor(() => {
       expect(view.getActiveGroupId()).toBe(created.group.groupId);
       expect(groups.getGroup(created.group.groupId)?.unread).toBe(0);

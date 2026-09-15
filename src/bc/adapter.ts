@@ -1,4 +1,5 @@
 import "bondage-club-mod-sdk";
+import { observeBCSend, sendBCPacket, setBCTrafficHookAvailable, setBCTrafficSocket, withBCNetworkReason } from "./traffic-audit";
 import type { ModSDKGlobalAPI, ModSDKModAPI } from "bondage-club-mod-sdk";
 import { Logger } from "../core/logger";
 import type {
@@ -11,6 +12,9 @@ import type {
 } from "../core/types";
 import type { EventBus } from "../core/event-bus";
 import { cleanBeepMessageContent } from "./message-content";
+import { copyRoomMap } from "../core/room-map";
+import { roomOptions } from "./room-options";
+import { NATIVE_FRIEND_FRESH_MS } from "./friend-state";
 
 const READY_POLL_MS = 400;
 const COMPATIBILITY_HOOK_RETRY_MS = 500;
@@ -66,6 +70,8 @@ export type BCCharacterOverlayRenderer = (
 ) => void;
 
 export interface BCCustomActivityIntegration {
+  onActivityStart?(actor: BCCharacter): void;
+  onCharacterStateChange?(character: BCCharacter, kind: "expression" | "pose" | "appearance", group?: string): void;
   isCustomActivity?(activityName: string): boolean;
   extendAllowedActivities?(
     character: BCCharacter,
@@ -151,7 +157,11 @@ export class BCAdapter {
   #ready = false;
   #sendingViaKikiLink = false;
   #hasOnlineFriendSnapshot = false;
+  #onlineFriendsUpdatedAt = 0;
   #onlineFriendSignature: string | undefined;
+  #lastOnlineFriendsRequestAt: number | undefined;
+  #transportConnected = false;
+  #observedRoomKey = "";
   #compatibilityHooksInitialized = false;
   #roomMessageHookInstalled = false;
   #roomMembershipObservationFailed = false;
@@ -175,6 +185,28 @@ export class BCAdapter {
     this.#captureOnlineFriends(data);
   };
 
+  readonly #socketConnectListener = (): void => {
+    if (this.#transportConnected || this.#stopped) return;
+    this.#transportConnected = true;
+    this.#lastOnlineFriendsRequestAt = undefined;
+    if (this.#ready) this.bus.emit("bc:reconnected", { memberNumber: this.getOwnMemberNumber() });
+  };
+  readonly #socketDisconnectListener = (): void => {
+    this.#transportConnected = false;
+    this.#onlineFriendsUpdatedAt = 0;
+  };
+  readonly #socketRoomSyncListener = (): void => {
+    // Native socket handlers finish loading ChatRoomData before we inspect it.
+    queueMicrotask(() => { if (!this.#stopped) this.#observeRoom(); });
+  };
+
+  #observeRoom(): void {
+    const key = this.getCurrentRoomKey();
+    if (key === this.#observedRoomKey) return;
+    this.#observedRoomKey = key;
+    if (this.#ready) this.bus.emit("bc:room-changed", {});
+  }
+
   readonly #socketRoomMessageListener = (data: BCChatRoomMessage): void => {
     this.#captureRoomProtocolPayload(data);
   };
@@ -194,7 +226,7 @@ export class BCAdapter {
     this.#attachSocketListeners();
     this.#installCompatibilityHooks();
     this.#socketRebindTimer = setInterval(
-      () => this.#attachSocketListeners(),
+      () => { this.#attachSocketListeners(); this.#observeRoom(); },
       SOCKET_REBIND_MS,
     );
     this.#beepLogTimer = setInterval(() => {
@@ -223,7 +255,11 @@ export class BCAdapter {
     this.#seenIncomingPayloads = new WeakSet<object>();
     this.#seenRoomProtocolPayloads = new WeakSet<object>();
     this.#hasOnlineFriendSnapshot = false;
+    this.#onlineFriendsUpdatedAt = 0;
     this.#onlineFriendSignature = undefined;
+    this.#lastOnlineFriendsRequestAt = undefined;
+    this.#observedRoomKey = "";
+    setBCTrafficHookAvailable(false);
     if (this.#socketRebindTimer !== undefined) clearInterval(this.#socketRebindTimer);
     if (this.#beepLogTimer !== undefined) clearInterval(this.#beepLogTimer);
     if (this.#compatibilityHookRetryTimer !== undefined) {
@@ -278,8 +314,12 @@ export class BCAdapter {
   }
 
   refreshOnlineFriends(): boolean {
-    if (typeof ServerSend !== "function" || !this.#ready) return false;
-    ServerSend("AccountQuery", { Query: "OnlineFriends" });
+    if (typeof ServerSend !== "function" || !this.#ready || this.#socket?.connected === false) return false;
+    const now = Date.now();
+    // Coalesce UI/presence/reconnect callers, including requests with a missing response.
+    if (this.#lastOnlineFriendsRequestAt !== undefined && now - this.#lastOnlineFriendsRequestAt < 10_000) return false;
+    this.#lastOnlineFriendsRequestAt = now;
+    sendBCPacket("online-friends-query", "AccountQuery", { Query: "OnlineFriends" });
     return true;
   }
 
@@ -295,6 +335,8 @@ export class BCAdapter {
   hasOnlineFriendSnapshot(): boolean {
     return this.#hasOnlineFriendSnapshot;
   }
+
+  getOnlineFriendsUpdatedAt(): number { return this.#onlineFriendsUpdatedAt; }
 
   isKnownFriend(memberNumber: number): boolean {
     if (typeof Player !== "object" || Player === null) return false;
@@ -342,17 +384,18 @@ export class BCAdapter {
     return this.isInChatRoom() && this.#findRoomCharacter(memberNumber) !== undefined;
   }
 
-  sendKikiLinkProtocol(target: number, payload: string): "room" | "beep" {
+  sendKikiLinkProtocol(target: number, payload: string, route?: "beep"): "room" | "beep" {
     if (!Number.isSafeInteger(target) || target < 0) {
       throw new Error("A valid non-negative member number is required");
     }
+    if (this.#socket?.connected === false) throw new Error("Bondage Club is reconnecting");
     const wire = protocolWire(payload);
     if (typeof ServerSend !== "function") {
       throw new Error("The KikiLink compatibility channel is still loading");
     }
 
-    if (this.isInChatRoom() && this.#findRoomCharacter(target)) {
-      ServerSend("ChatRoomChat", {
+    if (route !== "beep" && this.isInChatRoom() && this.#findRoomCharacter(target)) {
+      sendBCPacket("protocol", "ChatRoomChat", {
         Type: "Hidden",
         Content: wire,
         Target: target,
@@ -360,7 +403,7 @@ export class BCAdapter {
       return "room";
     }
 
-    ServerSend("AccountBeep", {
+    sendBCPacket("protocol", "AccountBeep", {
       MemberNumber: target,
       BeepType: KIKILINK_BEEP_TYPE,
       Message: wire,
@@ -370,8 +413,8 @@ export class BCAdapter {
   }
 
   broadcastKikiLinkProtocol(payload: string): boolean {
-    if (!this.isInChatRoom() || typeof ServerSend !== "function") return false;
-    ServerSend("ChatRoomChat", {
+    if (!this.isInChatRoom() || typeof ServerSend !== "function" || this.#socket?.connected === false) return false;
+    sendBCPacket("protocol", "ChatRoomChat", {
       Type: "Hidden",
       Content: protocolWire(payload),
     });
@@ -399,7 +442,7 @@ export class BCAdapter {
 
     this.#sendingViaKikiLink = true;
     try {
-      ServerSendBeepMessage(target, message, { includeRoom });
+      withBCNetworkReason("direct-message", () => ServerSendBeepMessage(target, message, { includeRoom }));
     } finally {
       this.#sendingViaKikiLink = false;
     }
@@ -517,7 +560,13 @@ export class BCAdapter {
     if (typeof ChatRoomSendEmote !== "function") {
       throw new Error("The Bondage Club room chat is still loading");
     }
-    ChatRoomSendEmote(message);
+    withBCNetworkReason("room-action", () => ChatRoomSendEmote(message));
+  }
+
+  getCurrentRoomKey(): string {
+    const name = this.getCurrentRoomName();
+    if (!name) return "";
+    try { return `${ChatRoomData?.Space ?? ""}\u0000${name}`; } catch { return name; }
   }
 
   getCurrentRoomName(): string | undefined {
@@ -595,12 +644,14 @@ export class BCAdapter {
             custom.SizeMode >= 1 &&
             custom.SizeMode <= 3
               ? custom.SizeMode
-              : 1,
+              : 2,
           musicSync: typeof custom?.MusicStart === "number",
         },
         settings: {
           name: cleanName(ChatRoomData.Name) ?? "Current room",
-          description: cleanText(ChatRoomData.Description, 200),
+          description: cleanText(ChatRoomData.Description, 300),
+          ...(ChatRoomData.MapData === undefined ? { mapData: { Type: "Never" as const } } :
+            copyRoomMap(ChatRoomData.MapData) ? { mapData: copyRoomMap(ChatRoomData.MapData)! } : {}),
           background: cleanText(ChatRoomData.Background, 120),
           limit: boundedInteger(ChatRoomData.Limit, 2, 20, 10),
           game: cleanText(ChatRoomData.Game, 40),
@@ -616,7 +667,7 @@ export class BCAdapter {
             imageUrl: cleanText(custom?.ImageURL, 500),
             imageFilter: cleanText(custom?.ImageFilter, 120),
             musicUrl: cleanText(custom?.MusicURL, 500),
-            sizeMode: boundedInteger(custom?.SizeMode, 1, 3, 1),
+            sizeMode: boundedInteger(custom?.SizeMode, 1, 3, 2),
             musicSync: typeof custom?.MusicStart === "number",
           },
         },
@@ -641,7 +692,7 @@ export class BCAdapter {
     const musicUrl = normalizeRoomMediaUrl(customization.musicUrl, "audio");
     const sizeMode = Number.isInteger(customization.sizeMode)
       ? Math.min(3, Math.max(1, customization.sizeMode))
-      : 1;
+      : 2;
     const room =
       typeof ChatRoomGetSettings === "function"
         ? ChatRoomGetSettings(ChatRoomData as BCChatRoomData)
@@ -669,7 +720,7 @@ export class BCAdapter {
     if (musicUrl) custom.MusicURL = musicUrl;
     else delete custom.MusicURL;
     room.Custom = custom;
-    ServerSend("ChatRoomAdmin", {
+    sendBCPacket("room-control", "ChatRoomAdmin", {
       MemberNumber:
         typeof Player.ID === "number" && Number.isSafeInteger(Player.ID)
           ? Player.ID
@@ -679,7 +730,7 @@ export class BCAdapter {
     });
   }
 
-  applyRoomPreset(preset: RoomPresetData): void {
+  applyRoomPreset(preset: RoomPresetData): RoomPresetData {
     const snapshot = this.getRoomAdminSnapshot();
     if (!snapshot) throw new Error("Open a Bondage Club chat room first");
     if (!snapshot.isAdmin) throw new Error("Only a room administrator can apply room presets");
@@ -690,28 +741,37 @@ export class BCAdapter {
       ? ChatRoomGetSettings(current)
       : { ...current };
     const ownMemberNumber = this.getOwnMemberNumber();
+    const options = roomOptions();
+    if (!preset.name.trim()) throw new Error("Enter a room name");
+    if (!options.games.some(choice => choice.value === preset.game)) throw new Error("This game is not available in the current BC client");
+    if (preset.language && !options.languages.some(choice => choice.value === preset.language)) throw new Error("Choose a supported room language");
+    if ([...preset.visibility, ...preset.access].some(role => !["All", "Admin", "Whitelist"].includes(role))) throw new Error("Choose a supported access mode");
+    if (preset.blockCategory.some(category => !options.blocks.includes(category))) throw new Error("A blocked category is not supported by this BC client");
+    if (preset.mapData && !copyRoomMap(preset.mapData)) throw new Error("The saved map is invalid or unsupported");
     const admins = cleanMemberNumberArray(preset.admins, 20);
     if (!admins.includes(ownMemberNumber)) admins.unshift(ownMemberNumber);
     room.Name = cleanText(preset.name, 80) || snapshot.roomName;
-    room.Description = cleanText(preset.description, 200);
+    room.Description = cleanText(preset.description, 300);
     room.Background = cleanText(preset.background, 120);
     room.Limit = boundedInteger(preset.limit, 2, 20, 10);
     room.Game = cleanText(preset.game, 40);
     room.Space = cleanText(preset.space, 20);
-    room.Language = cleanText(preset.language, 12);
+    room.Language = cleanText(preset.language, 12) || cleanText(current.Language, 12) || "EN";
     room.Visibility = cleanStringArray(preset.visibility, 8, 30);
     room.Access = cleanStringArray(preset.access, 8, 30);
     room.BlockCategory = cleanStringArray(preset.blockCategory, 24, 40);
-    room.Admin = admins;
+    room.Admin = admins.slice(0, 20);
     room.Whitelist = cleanMemberNumberArray(preset.whitelist, 100);
     room.Ban = cleanMemberNumberArray(preset.blacklist, 100);
+    if (room.Ban.includes(ownMemberNumber)) throw new Error("Remove yourself from the blacklist before applying");
+    if (preset.mapData) room.MapData = copyRoomMap(preset.mapData)!;
 
     const custom: NonNullable<BCChatRoomData["Custom"]> = {
       ...(current.Custom ?? {}),
-      SizeMode: boundedInteger(preset.custom.sizeMode, 1, 3, 1),
+      SizeMode: boundedInteger(preset.custom.sizeMode, 1, 3, 2),
     };
-    const imageUrl = normalizeRoomMediaUrl(preset.custom.imageUrl, "image");
-    const musicUrl = normalizeRoomMediaUrl(preset.custom.musicUrl, "audio");
+    const imageUrl = normalizePresetMediaUrl(preset.custom.imageUrl, "image");
+    const musicUrl = normalizePresetMediaUrl(preset.custom.musicUrl, "audio");
     if (imageUrl) custom.ImageURL = imageUrl;
     else delete custom.ImageURL;
     if (musicUrl) custom.MusicURL = musicUrl;
@@ -727,7 +787,7 @@ export class BCAdapter {
       delete custom.MusicStart;
     }
     room.Custom = custom;
-    ServerSend("ChatRoomAdmin", {
+    sendBCPacket("room-control", "ChatRoomAdmin", {
       MemberNumber:
         typeof Player.ID === "number" && Number.isSafeInteger(Player.ID)
           ? Player.ID
@@ -735,6 +795,13 @@ export class BCAdapter {
       Room: room,
       Action: "Update",
     });
+    return {
+      ...structuredClone(preset), name: room.Name, description: room.Description, background: room.Background,
+      limit: room.Limit, game: room.Game, space: room.Space, language: room.Language,
+      access: room.Access, visibility: room.Visibility, blockCategory: room.BlockCategory,
+      admins: [...room.Admin], whitelist: [...room.Whitelist], blacklist: [...room.Ban],
+      custom: { imageUrl: imageUrl ?? "", imageFilter, musicUrl: musicUrl ?? "", sizeMode: custom.SizeMode ?? 2, musicSync: typeof custom.MusicStart === "number" },
+    };
   }
 
   getRoomSearchSpace(): BCRoomSearchSpace {
@@ -781,15 +848,10 @@ export class BCAdapter {
         (data: BCServerRoomSearchRequest): Promise<BCServerRoomSearchResult>;
         (query: string, data: BCServerRoomSearchRequest): Promise<BCServerRoomSearchResult>;
       };
-      let response: BCServerRoomSearchResult;
-      try {
-        // Current BC accepts a query identity followed by the actual bounded request. Calling this
-        // shape first also survives wrappers whose Function.length was erased by another addon.
-        response = await search(normalizedQuery, request);
-      } catch {
-        // Compatibility with older clients that exposed only the request argument.
-        response = await search(request);
-      }
+      // Current BC takes (query identity, request); a wrapped length of zero still uses that API.
+      // Keep the older explicit one-argument helper, but never retry a network failure as another signature.
+      const response: BCServerRoomSearchResult = await withBCNetworkReason("room-search", () =>
+        search.length === 1 ? search(request) : search(normalizedQuery, request));
       if (
         response &&
         !Array.isArray(response) &&
@@ -898,7 +960,7 @@ export class BCAdapter {
 
         // Calling this a second time cancels BC's native slow-leave timer, so it is only invoked
         // when no native/addon transition is already in progress.
-        ChatRoomAttemptLeave();
+        withBCNetworkReason("room-leave", () => ChatRoomAttemptLeave());
       }
     }
 
@@ -920,7 +982,7 @@ export class BCAdapter {
         // a rejected native request. The bounded waiter installs both fulfillment and rejection
         // handlers immediately, so a stopped/timed-out request can never cause an unhandled late
         // rejection after KikiLink has moved on.
-        const nativeJoin = Promise.resolve().then(() => ServerRoomJoin(roomName));
+        const nativeJoin = Promise.resolve().then(() => withBCNetworkReason("room-join", () => ServerRoomJoin(roomName)));
         result = await waitForNativeRoomJoin(
           nativeJoin,
           ROOM_JOIN_RESPONSE_TIMEOUT_MS,
@@ -953,7 +1015,7 @@ export class BCAdapter {
     } else {
       // Compatibility with older clients is safe only after native membership and ChatRoomData
       // are both gone. A raw join while still in a room triggers BC's AlreadyInRoom guard.
-      ServerSend("ChatRoomJoin", { Name: roomName });
+      sendBCPacket("room-join", "ChatRoomJoin", { Name: roomName });
     }
 
     try {
@@ -1012,7 +1074,7 @@ export class BCAdapter {
       whitelist: "Whitelist",
       unwhitelist: "Unwhitelist",
     };
-    ServerSend("ChatRoomAdmin", {
+    sendBCPacket("room-control", "ChatRoomAdmin", {
       MemberNumber: memberNumber,
       Action: nativeAction[action],
       ...(action === "kick" ? { Publish: true } : {}),
@@ -1182,12 +1244,13 @@ export class BCAdapter {
     if (typeof ServerSend !== "function") return;
 
     const hook: ResilientHook = (args, next) => {
-      const result = next(args);
+      const result = observeBCSend(args[0], args[1], () => next(args));
       if (!this.#sendingViaKikiLink) this.#captureOutgoingServerPacket(args[0], args[1]);
       return result;
     };
     if (this.#installIntegrationHook(name, 0, hook)) {
       this.#installedOutgoingHooks.add(name);
+      setBCTrafficHookAvailable(true);
     }
   }
 
@@ -1281,6 +1344,9 @@ export class BCAdapter {
     );
 
     const runHook = nonReentrantHook((args, next) => {
+      for (const integration of this.#customActivityIntegrations) {
+        this.#callActivityIntegration(integration, () => integration.onActivityStart?.(args[0]));
+      }
       for (const integration of [...this.#customActivityIntegrations]) {
         const handled = this.#callActivityIntegration(integration, () =>
           integration.run(args[0], args[1], args[2], args[3]),
@@ -1295,6 +1361,23 @@ export class BCAdapter {
       10,
       runHook,
     );
+
+    for (const [name, available, kind] of [
+      ["CharacterSetFacialExpression", typeof CharacterSetFacialExpression === "function", "expression"],
+      ["PoseSetActive", typeof PoseSetActive === "function", "pose"],
+      ["CharacterSetActivePose", typeof CharacterSetActivePose === "function", "pose"],
+      ["InventoryRemove", typeof InventoryRemove === "function", "appearance"],
+      ["CharacterAppearanceSetItem", typeof CharacterAppearanceSetItem === "function", "appearance"],
+    ] as const) {
+      this.#tryInstallActivityHook(name, available, 20, (args, next) => {
+        for (const integration of this.#customActivityIntegrations) {
+          this.#callActivityIntegration(integration, () => integration.onCharacterStateChange?.(
+            args[0], kind, typeof args[1] === "string" ? args[1] : undefined,
+          ));
+        }
+        return next(args);
+      });
+    }
 
     const activityButtonHook = nonReentrantHook((args, next) => {
       const itemActivity = args[1];
@@ -1459,10 +1542,14 @@ export class BCAdapter {
       this.#detachSocketListeners();
       if (!socket || typeof socket.on !== "function") return;
       this.#socket = socket;
+      setBCTrafficSocket(socket);
       socket.on("AccountBeep", this.#socketBeepListener);
       socket.on("AccountQueryResult", this.#socketQueryListener);
       socket.on("ChatRoomMessage", this.#socketRoomMessageListener);
-      if (this.#ready) this.refreshOnlineFriends();
+      socket.on("ChatRoomSync", this.#socketRoomSyncListener);
+      socket.on("connect", this.#socketConnectListener);
+      socket.on("disconnect", this.#socketDisconnectListener);
+      if (socket.connected !== false) this.#socketConnectListener();
     } catch (error) {
       this.#detachSocketListeners();
       this.#logger.warn("Direct Bondage Club socket listeners unavailable", error);
@@ -1472,6 +1559,9 @@ export class BCAdapter {
   #detachSocketListeners(): void {
     const socket = this.#socket;
     this.#socket = undefined;
+    setBCTrafficSocket(undefined);
+    this.#transportConnected = false;
+    this.#onlineFriendsUpdatedAt = 0;
     if (!socket) return;
     const removeWith = (
       method: "off" | "removeListener",
@@ -1496,6 +1586,9 @@ export class BCAdapter {
       ["AccountBeep", this.#socketBeepListener],
       ["AccountQueryResult", this.#socketQueryListener],
       ["ChatRoomMessage", this.#socketRoomMessageListener],
+      ["ChatRoomSync", this.#socketRoomSyncListener],
+      ["connect", this.#socketConnectListener],
+      ["disconnect", this.#socketDisconnectListener],
     ] as const) {
       if (!removeWith("off", event, listener)) {
         removeWith("removeListener", event, listener);
@@ -1753,6 +1846,7 @@ export class BCAdapter {
             memberNumber: entry.MemberNumber,
             memberName: nickname ?? (entry.MemberName.trim() || `Member ${entry.MemberNumber}`),
             privateRoom: "Private" in entry && entry.Private === true,
+            ...("ChatRoomName" in entry && entry.ChatRoomName != null && typeof entry.ChatRoomName !== "string" ? { locationKnown: false } : {}),
             ...(roomName ? { roomName } : {}),
             ...(roomSpace ? { roomSpace } : {}),
             ...(relationship ? { relationship } : {}),
@@ -1772,16 +1866,20 @@ export class BCAdapter {
             friend.roomName ?? "",
             friend.roomSpace ?? "",
             friend.privateRoom ? 1 : 0,
+            friend.locationKnown === false ? 0 : 1,
             friend.relationship ?? "",
           ].join("\u001f"),
         )
         .sort()
         .join("\u001e");
 
+      const wasStale = !this.#hasOnlineFriendSnapshot || this.#onlineFriendsUpdatedAt === 0 ||
+        Date.now() - this.#onlineFriendsUpdatedAt > NATIVE_FRIEND_FRESH_MS;
       this.#onlineFriends.clear();
       for (const friend of friends) this.#onlineFriends.set(friend.memberNumber, friend);
       this.#hasOnlineFriendSnapshot = true;
-      if (signature === this.#onlineFriendSignature) return;
+      this.#onlineFriendsUpdatedAt = Date.now();
+      if (signature === this.#onlineFriendSignature && !wasStale) return;
       this.#onlineFriendSignature = signature;
       this.bus.emit("bc:online-friends", { friends: this.getOnlineFriends(), receivedAt: Date.now() });
     } catch (error) {
@@ -2094,6 +2192,20 @@ function normalizeRoomMediaUrl(value: string, kind: "image" | "audio"): string |
     );
   }
   return url.href;
+}
+
+/** A preset can contain media accepted by vanilla BC, beyond the upload form's file formats. */
+function normalizePresetMediaUrl(value: string, kind: "image" | "audio"): string | undefined {
+  if (!value.trim()) return undefined;
+  if (typeof ServerChatRoomDataValidate === "object" && ServerChatRoomDataValidate?.Custom) {
+    const validate = kind === "image" ? ServerChatRoomDataValidate.Custom.ImageURL : ServerChatRoomDataValidate.Custom.MusicURL;
+    if (typeof validate === "function") {
+      const url = validate(value);
+      if (typeof url === "string" && url.trim()) return url;
+      throw new Error(`BC no longer accepts the saved room ${kind === "image" ? "background" : "music"} URL`);
+    }
+  }
+  return normalizeRoomMediaUrl(value, kind);
 }
 
 function incomingFingerprint(event: BeepEvent): string {

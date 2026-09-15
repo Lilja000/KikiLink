@@ -16,6 +16,25 @@ afterEach(() => {
 });
 
 describe("KikiLink version update checker", () => {
+  it("never checks production updates in the separately installed DevTest build", async () => {
+    vi.stubGlobal("__KIKILINK_DEV_TEST__", true);
+    vi.resetModules();
+    try {
+      const { checkForKikiLinkUpdate: checkDevTest } = await import(
+        "../src/core/version-update-checker"
+      );
+      const fetchImpl = vi.fn<KikiLinkUpdateFetch>(async () => packageResponse("9.0.0"));
+      await expect(checkDevTest("0.29.0", {
+        hostname: PRODUCTION_HOST,
+        fetchImpl,
+      })).resolves.toBeUndefined();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
   it("performs one bounded credentialless request to the official release package", async () => {
     const fetchImpl = vi.fn<KikiLinkUpdateFetch>(async () =>
       packageResponse("0.22.10"));

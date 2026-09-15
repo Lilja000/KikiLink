@@ -5,6 +5,7 @@ import {
 } from "../modules/link-activities/custom-activity-library";
 import { sanitizeReactionRules } from "../modules/link-reactions/reaction-rules";
 import { normalizeImageUrl } from "../modules/link-chat/media";
+import { copyRoomMap } from "./room-map";
 
 export type KeyValueStorageReadResult =
   | { ok: true; value: string | null }
@@ -19,7 +20,7 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 28,
+  schemaVersion: 29,
   ui: {
     accent: "#d71932",
     theme: "dark",
@@ -27,7 +28,9 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     textScale: "normal",
     homeLayout: "showcase",
     launcherSide: "right",
-    launcherOpen: "home",
+    launcherOpen: "last",
+    launcherSize: 58,
+    notificationsMutedUntil: 0,
     launcherPosition: null,
     panelPosition: null,
     roomBadge: {
@@ -46,7 +49,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     openOnIncoming: false,
     enterToSend: true,
     typingIndicators: true,
-    imagePreviews: "ask",
+    imagePreviews: "always",
     imageUploads: {
       enabled: true,
       retention: "24h",
@@ -66,7 +69,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     status: "online",
     statusMessage: "",
     bio: "",
-    profileImagePreviews: "ask",
+    profileImagePreviews: "always",
     avatarUrl: "",
     bannerUrl: "",
     avatarFrame: "none",
@@ -136,13 +139,26 @@ export class SettingsStore {
     return structuredClone(this.#settings);
   }
 
-  update(mutator: (draft: KikiLinkSettings) => void): KikiLinkSettings {
+  /** Read one independent section without cloning unrelated activity/appearance payloads. */
+  getSection<K extends keyof KikiLinkSettings>(section: K): KikiLinkSettings[K] {
+    return structuredClone(this.#settings[section]);
+  }
+  getField<K extends keyof KikiLinkSettings, P extends keyof KikiLinkSettings[K]>(section: K, field: P): KikiLinkSettings[K][P] {
+    return structuredClone(this.#settings[section][field]);
+  }
+
+  update(mutator: (draft: KikiLinkSettings) => void, options?: { requirePersistence?: boolean }): KikiLinkSettings {
     const draft = this.get();
     mutator(draft);
+    const previous = this.#settings;
     this.#settings = sanitizeSettings(draft);
     try {
       this.#storage.setItem(SETTINGS_KEY, JSON.stringify(this.#settings));
     } catch {
+      if (options?.requirePersistence) {
+        this.#settings = previous;
+        throw new Error("Could not save on this device. Free some browser storage and try again.");
+      }
       // Keep the validated in-memory settings if persistent storage is unavailable.
     }
     const settings = this.get();
@@ -238,7 +254,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 28,
+    schemaVersion: 29,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -257,9 +273,11 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         ui.homeLayout === "compact" ? "compact" : DEFAULT_SETTINGS.ui.homeLayout,
       launcherSide: ui.launcherSide === "left" ? "left" : "right",
       launcherOpen:
-        ui.launcherOpen === "last" || ui.launcherOpen === "chat"
+        ui.launcherOpen === "last" || ui.launcherOpen === "chat" || (sourceSchema >= 29 && ui.launcherOpen === "home")
           ? ui.launcherOpen
           : DEFAULT_SETTINGS.ui.launcherOpen,
+      launcherSize: integerInRange(ui.launcherSize, 40, 88, DEFAULT_SETTINGS.ui.launcherSize),
+      notificationsMutedUntil: integerInRange(ui.notificationsMutedUntil, -1, Number.MAX_SAFE_INTEGER, 0),
       launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
       panelPosition: sanitizeLauncherPosition(ui.panelPosition),
       roomBadge: sanitizeRoomBadge(ui.roomBadge, sourceSchema),
@@ -297,7 +315,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         DEFAULT_SETTINGS.linkChat.typingIndicators,
       ),
       imagePreviews:
-        linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never"
+        linkChat.imagePreviews === "always" || linkChat.imagePreviews === "never" || (sourceSchema >= 29 && linkChat.imagePreviews === "ask")
           ? linkChat.imagePreviews
           : DEFAULT_SETTINGS.linkChat.imagePreviews,
       imageUploads: sanitizeImageUploads(imageUploads, sourceSchema),
@@ -321,11 +339,9 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           ? cleanBoundedPublicBio(linkPresence.bio)
           : DEFAULT_SETTINGS.linkPresence.bio,
       profileImagePreviews:
-        sourceSchema <= 27
-          ? "ask"
-          : linkPresence.profileImagePreviews === "always" ||
-              linkPresence.profileImagePreviews === "ask" ||
-              linkPresence.profileImagePreviews === "never"
+        linkPresence.profileImagePreviews === "always" ||
+        linkPresence.profileImagePreviews === "never" ||
+        (sourceSchema >= 29 && linkPresence.profileImagePreviews === "ask")
           ? linkPresence.profileImagePreviews
           : DEFAULT_SETTINGS.linkPresence.profileImagePreviews,
       avatarUrl: sanitizeAvatarUrl(linkPresence.avatarUrl),
@@ -419,7 +435,8 @@ function sanitizeRoomPresets(value: unknown): KikiLinkSettings["linkRoom"]["pres
       savedAt,
       room: {
         name: cleanBoundedText(room.name, 80),
-        description: cleanBoundedText(room.description, 200),
+        description: cleanBoundedText(room.description, 300),
+        ...(copyRoomMap(room.mapData) ? { mapData: copyRoomMap(room.mapData)! } : {}),
         background: cleanBoundedText(room.background, 120),
         limit: integerInRange(room.limit, 2, 20, 10),
         game: cleanBoundedText(room.game, 40),
@@ -435,7 +452,7 @@ function sanitizeRoomPresets(value: unknown): KikiLinkSettings["linkRoom"]["pres
           imageUrl: sanitizeHttpsUrl(custom.imageUrl),
           imageFilter: cleanBoundedText(custom.imageFilter, 120),
           musicUrl: sanitizeHttpsUrl(custom.musicUrl),
-          sizeMode: integerInRange(custom.sizeMode, 1, 3, 1),
+          sizeMode: integerInRange(custom.sizeMode, 1, 3, 2),
           musicSync: booleanOr(custom.musicSync, false),
         },
       },

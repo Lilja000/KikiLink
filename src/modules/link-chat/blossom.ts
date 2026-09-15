@@ -246,7 +246,7 @@ export class RoomBlossomBadge {
     this.#adapter = adapter;
     this.#settings = settings;
     this.#presence = presence;
-    this.#config = settings.get().ui.roomBadge;
+    this.#config = settings.getSection("ui").roomBadge;
     if (this.#fallbackImage) this.#fallbackImage.src = BLOSSOM_ICON_DATA_URL;
     this.#element.className = "kl-room-blossom";
     this.#element.src = BLOSSOM_ICON_DATA_URL;

@@ -1,5 +1,5 @@
 declare global {
-  interface BCPlayer {
+  interface BCPlayer extends BCCharacter {
     ID?: number;
     MemberNumber: number;
     Name: string;
@@ -32,7 +32,13 @@ declare global {
   }
 
   interface BCServerSocket {
+    onAnyOutgoing?(listener: (event: string, data: unknown) => void): unknown;
+    offAnyOutgoing?(listener: (event: string, data: unknown) => void): unknown;
     connected?: boolean;
+    on(event: "connect" | "ChatRoomSync", listener: () => void): unknown;
+    on(event: "disconnect", listener: () => void): unknown;
+    off?(event: "disconnect", listener: () => void): unknown;
+    removeListener?(event: "disconnect", listener: () => void): unknown;
     on(event: "AccountBeep", listener: (data: BCServerAccountBeepResponse) => void): unknown;
     on(event: "AccountQueryResult", listener: (data: BCAccountQueryResponse) => void): unknown;
     on(event: "ChatRoomMessage", listener: (data: BCChatRoomMessage) => void): unknown;
@@ -65,6 +71,39 @@ declare global {
     } | null;
     FocusGroup?: BCAssetGroup | null;
     GetPronouns?(): "SheHer" | "HeHim" | "TheyThem" | "ItIt";
+    AssetFamily?: string;
+    Appearance?: BCAppearanceItem[];
+    ActivePoseMapping?: Partial<Record<string, string>>;
+    ActivePose?: readonly string[];
+    ExpressionQueue?: Array<{ Group: string; Expression: string | null; Time: number }>;
+    AllowItem?: boolean;
+    CanInteract?(): boolean;
+    CanChangeClothesOn?(character: BCCharacter): boolean;
+    CanChangeOwnClothes?(): boolean;
+    BlackList?: number[];
+    GhostList?: number[];
+  }
+
+  interface BCAppearanceItem {
+    Asset: BCAsset;
+    Property?: { Expression?: string | null; LockedBy?: string; Effect?: string[]; [key: string]: unknown };
+    Color?: string | readonly string[];
+    Difficulty?: number;
+    Craft?: Record<string, unknown>;
+  }
+  interface BCAsset {
+    Name: string;
+    Description?: string;
+    Group: BCAssetGroup;
+    AllowExpression?: readonly (string | null)[];
+    ExpressionPrerequisite?: readonly string[];
+    RemoveItemOnRemove?: ReadonlyArray<{ Group: string; Name: string }>;
+  }
+  interface BCPose {
+    Name: string;
+    Category: string;
+    AllowMenu?: boolean;
+    AllowMenuTransient?: boolean;
   }
 
   interface BCActivity {
@@ -89,7 +128,41 @@ declare global {
     Category: "Appearance" | "Item" | "Script";
     MirrorActivitiesFrom?: string;
     Zone?: ReadonlyArray<readonly [number, number, number, number]>;
+    Family?: string;
+    Clothing?: boolean;
+    AllowNone?: boolean;
+    AllowExpression?: readonly (string | null)[];
+    ExpressionPrerequisite?: readonly string[];
+    RemoveItemOnRemove?: ReadonlyArray<{ Group: string; Name: string }>;
   }
+
+  // BC r131 public API contracts. All optional feature entrypoints are checked at runtime.
+  var PoseFemale3DCG: BCPose[];
+  var PoseRecord: Record<string, BCPose>;
+  function PoseSetActive(character: BCCharacter, pose: string | null, forceChange?: boolean, refreshDialog?: boolean): void;
+  function PoseCanChangeUnaided(character: BCCharacter, pose: string): boolean;
+  function PoseAvailable(character: BCCharacter, category: string, pose: string): boolean;
+  function CharacterSetActivePose(character: BCCharacter, pose: string | null, forceChange?: boolean): void;
+  function CharacterSetFacialExpression(character: BCCharacter, group: string, expression: string | null, timer?: number, color?: string | readonly string[], fromQueue?: boolean): void;
+  function CharacterRefresh(character: BCCharacter, push?: boolean, refreshDialog?: boolean): void;
+  function CharacterAppearanceSetItem(character: BCCharacter, group: string, asset: BCAsset, color?: string | readonly string[] | null, difficulty?: number | null, member?: number | null): BCAppearanceItem | undefined;
+  function ChatRoomCharacterUpdate(character: BCCharacter): void;
+  function ServerPlayerAppearanceSync(): void;
+  function InventoryAllow(character: BCCharacter, asset: BCAsset, prerequisites?: readonly string[], setDialog?: boolean): boolean;
+  function InventoryRemove(character: BCCharacter, group: string, refresh?: boolean): void;
+  function InventoryBlockedOrLimited(character: BCCharacter, item: BCAppearanceItem): boolean;
+  function InventoryItemHasEffect(item: BCAppearanceItem, effect?: string, properties?: boolean): boolean;
+  function InventoryGroupIsBlocked(character: BCCharacter, group: string, activity?: boolean): boolean;
+  function WardrobeGroupAccessible(character: BCCharacter, group: BCAssetGroup, options?: { ExcludeNonCloth: boolean }): boolean;
+  function ValidationCreateDiffParams(character: BCCharacter, source: number): unknown;
+  function ValidationCanRemoveItem(item: BCAppearanceItem, params: unknown, isSwap: boolean): boolean;
+  function ServerChatRoomGetAllowItem(source: BCCharacter, target: BCCharacter): boolean;
+  function ServerBundledItemFromAppearanceItem(item: BCAppearanceItem): import("../core/appearance-template").ClothingTemplate;
+  function ServerBundledItemToAppearanceItem(family: string, item: import("../core/appearance-template").ClothingTemplate): BCAppearanceItem | null;
+  function ServerAppearanceLoadFromBundle(character: BCCharacter, family: string, bundle: import("../core/appearance-template").ClothingTemplate[], sourceMemberNumber?: number, appearanceFull?: boolean): boolean;
+  function ValidationCanAddItem(item: BCAppearanceItem, params: unknown): boolean;
+  function ValidationResolveCyclicBlocks(appearance: BCAppearanceItem[], diffMap: Record<string, [BCAppearanceItem | null, BCAppearanceItem | null]>): { appearance: BCAppearanceItem[]; valid: boolean };
+  function ValidationResolveAppearanceDiff(group: string, previous: BCAppearanceItem | null, next: BCAppearanceItem | null, params: unknown, unknownAsset: boolean): { item: BCAppearanceItem | null; valid: boolean };
 
   interface BCChatRoomData {
     Name?: string;
@@ -114,6 +187,25 @@ declare global {
       MusicStart?: number;
     };
   }
+
+  var ChatAdminGameList: string[];
+  var ServerChatRoomSupportedLanguages: string[];
+  var ServerChatRoomDescriptionMaxLength: number;
+  var ChatRoomMapViewTypeList: string[];
+  var ChatAdminAccessModeValues: string[][];
+  var ChatAdminAccessModeLabels: string[];
+  var ChatAdminVisibilityModeValues: string[][];
+  var ChatAdminVisibilityModeLabels: string[];
+  var BackgroundsList: Array<{ Name: string; Tag: string[] }>;
+  var ChatAdminBackgroundList: string[] | null;
+  function BackgroundsTextGet(name: string): string;
+  var ServerChatRoomDataValidate: {
+    Custom: ((value: BCChatRoomData["Custom"]) => NonNullable<BCChatRoomData["Custom"]>) & {
+      ImageURL(value: string): string | undefined;
+      MusicURL(value: string): string | undefined;
+      ImageFilter(value: string): string | undefined;
+    };
+  };
 
   interface BCServerAccountBeepResponse {
     MemberNumber: number;

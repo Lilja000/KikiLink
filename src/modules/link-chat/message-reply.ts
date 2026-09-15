@@ -24,7 +24,7 @@ export function stripInlineReplyDraft(value: string): string {
   return parseBoundedReplyPrefix(value)?.content ?? value;
 }
 
-function parseBoundedReplyPrefix(value: string): InlineReplyContext | undefined {
+export function parseBoundedReplyPrefix(value: string): InlineReplyContext | undefined {
   const newline = value.indexOf("\n");
   if (newline < 0 || newline > REPLY_PREFIX_MAX_CHARS) return undefined;
   const firstLine = value.slice(0, newline);
