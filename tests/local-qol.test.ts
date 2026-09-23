@@ -2,13 +2,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter } from "../src/bc/adapter";
 import { EventBus } from "../src/core/event-bus";
-import { MemoryKeyValueStorage, sanitizeSettings, SettingsStore } from "../src/core/settings";
+import { MemoryKeyValueStorage, sanitizeSettings, SettingsStore, type KeyValueStorage } from "../src/core/settings";
 import type { KikiLinkEvents, OnlineFriend } from "../src/core/types";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import { GroupChatService, serializeGroupChatPacket } from "../src/modules/link-chat/group-chat-service";
 import { LinkChatView } from "../src/modules/link-chat/view";
 import { LinkPresenceService } from "../src/modules/link-presence/link-presence-service";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
+import { AccountKeyValueStorage } from "../src/storage/account-data-storage";
 
 const disposers: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -18,7 +19,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-function setup(settings = new SettingsStore(new MemoryKeyValueStorage())) {
+function setup(settings = new SettingsStore(new MemoryKeyValueStorage()), navigationStorage: KeyValueStorage = new MemoryKeyValueStorage()) {
   const online: OnlineFriend[] = [20, 30].map((memberNumber) => ({ memberNumber, memberName: `Friend ${memberNumber}`, privateRoom: false }));
   const adapter = {
     getOwnMemberNumber: () => 10, getOwnName: () => "Kiki",
@@ -40,6 +41,7 @@ function setup(settings = new SettingsStore(new MemoryKeyValueStorage())) {
     isPeerReachable: (memberNumber) => Boolean(adapter.getOnlineFriend(memberNumber)),
   });
   const view = new LinkChatView(adapter, direct, settings, "0.29.0", undefined, undefined, presence);
+  view.attachNavigationStorage(navigationStorage);
   view.attachGroupChatService(groups); view.mount();
   disposers.push(() => presence.stop(), async () => { await groups.destroy(); }, () => view.destroy());
   const shadow = document.querySelector("#kikilink-root")!.shadowRoot!;
@@ -67,16 +69,52 @@ describe("local FUSAM QoL", () => {
     expect(hidden.linkPresence.profileImagePreviews).toBe("never");
   });
 
-  it("restores the last tab including settings but starts a new page at Home", async () => {
-    const h = setup(); await h.view.open();
+  it("restores the last section across page/browser restarts and keeps accounts separate", async () => {
+    const backing = new MemoryKeyValueStorage(), storage = new AccountKeyValueStorage(10, backing);
+    const h = setup(new SettingsStore(storage), storage); await h.view.open();
     const panel = required(h.shadow, ".kl-panel"); expect(panel.dataset.workspace).toBe("home");
     required(h.shadow, '[data-target="music"]').click();
     h.view.close(); await h.view.open(); expect(panel.dataset.workspace).toBe("music");
     required(h.shadow, '[data-target="settings"]').click();
     h.view.close(); await h.view.open(); expect(panel.dataset.workspace).toBe("settings");
     h.view.destroy();
-    const second = setup(h.settings); await second.view.open();
-    expect(required(second.shadow, ".kl-panel").dataset.workspace).toBe("home");
+    const otherStorage = new AccountKeyValueStorage(11, backing);
+    const other = setup(new SettingsStore(otherStorage), otherStorage); await other.view.open();
+    expect(required(other.shadow, ".kl-panel").dataset.workspace).toBe("home"); other.view.destroy();
+    const restoredStorage = new AccountKeyValueStorage(10, backing);
+    const second = setup(new SettingsStore(restoredStorage), restoredStorage); await second.view.open();
+    expect(required(second.shadow, ".kl-panel").dataset.workspace).toBe("settings");
+    const select = required<HTMLSelectElement>(second.shadow, '[data-setting="launcher-open"]');
+    expect([...select.options].map(option => option.value)).toEqual(["last", "home", "chat"]);
+    expect(select.value).toBe("last");
+    expect(select.closest('.kl-setting-row')?.textContent).not.toContain("always starts at Home");
+  });
+
+  it.each(["last", "chat", "home"] as const)("honors the %s launcher preference on the first open after a reload", async preference => {
+    const storage = new MemoryKeyValueStorage(), settings = new SettingsStore(storage);
+    settings.update(draft => { draft.ui.launcherOpen = preference; });
+    const first = setup(settings, storage); await first.view.open();
+    required(first.shadow, '[data-target="music"]').click(); first.view.destroy();
+    const restored = setup(new SettingsStore(storage), storage); await restored.view.open();
+    expect(required(restored.shadow, '.kl-panel').dataset.workspace).toBe(preference === "last" ? "music" : preference);
+    expect(restored.settings.getSection("ui").launcherOpen).toBe(preference);
+  });
+
+  it("keeps navigation usable when persistence fails and skips writes for reopening the same section", async () => {
+    const storage = { getItem: vi.fn(() => { throw new Error("unavailable"); }), setItem: vi.fn(() => { throw new Error("quota"); }), removeItem: vi.fn() };
+    const h = setup(undefined, storage); await h.view.open();
+    required(h.shadow, '[data-target="music"]').click();
+    h.view.close(); await h.view.open();
+    expect(required(h.shadow, '.kl-panel').dataset.workspace).toBe("music");
+    expect(storage.setItem).toHaveBeenCalledOnce();
+  });
+
+  it.each(["__proto__", "toString", "cloud", "activities", "roster"])("safely falls back from an invalid or unavailable saved section: %s", async saved => {
+    const storage = new MemoryKeyValueStorage(), settings = new SettingsStore(storage);
+    storage.setItem("kikilink:launcher:last-section:v1", saved);
+    settings.update(draft => { draft.linkActivities.enabled = false; draft.linkRoster.enabled = false; });
+    const h = setup(settings, storage); await h.view.open();
+    expect(required(h.shadow, '.kl-panel').dataset.workspace).toBe("home");
   });
 
   it("opens quick actions on a long hold without accidentally toggling the panel", async () => {

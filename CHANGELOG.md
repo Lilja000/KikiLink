@@ -21,6 +21,11 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.0.1 - 2026-09-23
+
+- Honor the launcher preference on the first open after a page/browser restart. Remember
+  the last section in account-scoped local storage and show the default Last section option first.
+
 ## 1.0.0 - 2026-09-23
 
 - Added optional Preferences with 225 categorized interests, explicit sharing controls,

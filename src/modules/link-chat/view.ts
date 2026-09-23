@@ -169,6 +169,7 @@ import type { KeyValueStorage } from "../../core/settings";
 
 type WorkspaceView = "home" | "news" | "chat" | "gallery" | "roster" | "room" | "music" | "activities" | "settings" | "cloud";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
+const LAST_WORKSPACE_KEY = "kikilink:launcher:last-section:v1";
 type RoomSubView = "current" | "lobbies" | "presets";
 type GalleryFileStorage = "device" | "catbox" | "litterbox";
 type KnownContact = ReturnType<BCAdapter["getKnownContacts"]>[number];
@@ -1054,7 +1055,7 @@ export class LinkChatView {
   #lobbyRows: InteractiveList<BCLobbyRoom> | undefined;
   #rosterDetailSignature = "";
   #lastWorkspaceView: WorkspaceView = "home";
-  #hasOpenedPanel = false;
+  #navigationStorage: KeyValueStorage | undefined;
   #chatFilter: "all" | "unread" | "groups" = "all";
   #ignoreLauncherClick = false;
   #launcherHoldTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1327,6 +1328,15 @@ export class LinkChatView {
   readonly #roomBadge: RoomBlossomBadge;
   readonly #launcherMenu: LauncherMenu;
   readonly #notificationSounds: NotificationSoundService;
+
+  attachNavigationStorage(storage: KeyValueStorage): void {
+    if (this.#mounted) throw new Error("Attach navigation storage before mounting KikiLink");
+    this.#navigationStorage = storage;
+    try {
+      const saved = storage.getItem(LAST_WORKSPACE_KEY);
+      if (saved && Object.hasOwn(WORKSPACE_TITLES, saved)) this.#lastWorkspaceView = saved as WorkspaceView;
+    } catch { /* Keep navigation usable when browser storage is unavailable. */ }
+  }
 
   attachGroupChatService(service: GroupChatService): void {
     if (this.#mounted) throw new Error("Attach group chats before mounting KikiLink");
@@ -1802,13 +1812,11 @@ export class LinkChatView {
     const settings = this.settings.get();
     const preference = settings.ui.launcherOpen;
     const requested =
-      !this.#hasOpenedPanel ? "home" :
-        preference === "chat" ? "chat" : preference === "last" ? this.#lastWorkspaceView : "home";
+      preference === "chat" ? "chat" : preference === "last" ? this.#lastWorkspaceView : "home";
     await this.#openPanel(this.#availableWorkspace(requested, settings));
   }
 
   async #openPanel(view: WorkspaceView): Promise<void> {
-    this.#hasOpenedPanel = true;
     this.#launcherMenu.close(false);
     this.#panel.hidden = false;
     this.#positionPanel();
@@ -1860,6 +1868,7 @@ export class LinkChatView {
   ): WorkspaceView {
     if (view === "roster" && !settings.linkRoster.enabled) return "home";
     if (view === "activities" && !settings.linkActivities.enabled) return "home";
+    if (view === "cloud" && !this.#cloud) return "home";
     return view;
   }
 
@@ -2607,7 +2616,11 @@ export class LinkChatView {
     if (view !== "chat") this.#stopLocalTyping();
     this.#workspaceView = view;
     this.presence.setNativeFriendsVisible?.(!this.#panel.hidden && ["chat", "roster", "room"].includes(view));
-    if (remember) this.#lastWorkspaceView = view;
+    if (remember && this.#lastWorkspaceView !== view) {
+      this.#lastWorkspaceView = view;
+      try { this.#navigationStorage?.setItem(LAST_WORKSPACE_KEY, view); }
+      catch { /* Retain the last section in memory if the local write fails. */ }
+    }
     this.#panel.dataset.workspace = view;
     this.#home.hidden = view !== "home";
     this.#newsPage.hidden = view !== "news";
@@ -2925,15 +2938,15 @@ export class LinkChatView {
     );
 
     this.#launcherOpenSelect.replaceChildren(
-      selectOption("home", "Link Deck home"),
       selectOption("last", "Last section"),
+      selectOption("home", "Link Deck home"),
       selectOption("chat", "LinkChat directly"),
     );
     this.#launcherOpenSelect.dataset.setting = "launcher-open";
     this.#launcherOpenSelect.setAttribute("aria-label", "Launcher opens");
     const launcherOpen = this.#settingRow(
       "Launcher opens",
-      "Reopen where you left off. Reloading the website always starts at Home.",
+      "Choose where the launcher opens, including after restarting your browser. Last section remembers where you left off.",
       this.#launcherOpenSelect,
     );
 

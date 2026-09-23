@@ -83,6 +83,7 @@ export class LinkChatModule implements KikiLinkModule {
       this.#roster,
       this.#presence,
     );
+    this.#view.attachNavigationStorage(accountStorage);
     this.#view.attachGroupChatService(this.#groups);
     if (KIKILINK_CLOUD_ORIGIN && context.memberNumber !== undefined && cloudMemberEnabled(context.memberNumber)) {
       try {
