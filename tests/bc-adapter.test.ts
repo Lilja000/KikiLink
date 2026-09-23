@@ -503,6 +503,7 @@ describe("BCAdapter", () => {
     globalThis.ChatRoomData = {
       Name: "  Moon Garden  ",
       Description: "\u0000Quiet\troom\n",
+      Creator: "  Room host  ",
       Language: "  EN  ",
       Limit: 0,
       Visibility: ["Invite"],
@@ -520,6 +521,7 @@ describe("BCAdapter", () => {
     expect(adapter.getCurrentLobbyRoom()).toEqual({
       name: "Moon Garden",
       description: "Quiet room",
+      creator: "Room host",
       language: "EN",
       memberCount: 3,
       memberLimit: 3,
@@ -532,9 +534,11 @@ describe("BCAdapter", () => {
 
     globalThis.ChatRoomData.Visibility = ["All"];
     globalThis.ChatRoomData.Access = ["All"];
+    globalThis.ChatRoomData.MapData = null;
     expect(adapter.getCurrentLobbyRoom()).toMatchObject({
       locked: false,
       privateRoom: false,
+      mapType: "Never",
     });
 
     const guardedRoom = Proxy.revocable<BCChatRoomData>({ Name: "Hidden room" }, {});

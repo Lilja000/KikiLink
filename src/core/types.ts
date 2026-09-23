@@ -8,6 +8,7 @@ export type MessageDirection = "incoming" | "outgoing";
 export type ThemePreference = "dark" | "light" | "system";
 export type LauncherOpenPreference = "home" | "last" | "chat";
 export type InterfaceDensity = "comfortable" | "compact" | "super-compact";
+export type TimeFormatPreference = "24-hour" | "12-hour";
 export type TextScalePreference = "normal" | "large" | "extra-large";
 export type HomeLayoutPreference = "showcase" | "compact";
 export type SettingsSection =
@@ -30,12 +31,21 @@ export type AvatarFrame =
   | "laurel"
   | "thorn"
   | "moon"
-  | "ribbon";
-export type ProfileCardStyle = "classic" | "garden" | "midnight";
+  | "ribbon" | "wings" | "lotus" | "constellation" | "crest";
+export interface AvatarDecoration {
+  mode: "none" | "preset" | "solid" | "gradient";
+  preset: AvatarFrame;
+  primary: string;
+  secondary: string;
+  angle: number;
+}
+export type ProfileCardStyle = "classic" | "garden" | "midnight" | "glacier" | "sage" | "dusty-rose" | "amber" | "gradient";
 export interface ProfileGradient {
   enabled: boolean;
   primary: string;
   secondary: string;
+  /** Clockwise CSS gradient direction. Older profiles omit it and use 135°. */
+  angle?: number;
 }
 export type ImagePreviewPreference = "ask" | "always" | "never";
 export type ImageUploadRetention = "1h" | "12h" | "24h" | "72h";
@@ -128,6 +138,8 @@ export interface PresenceSnapshot {
   bio?: string;
   roomName?: string;
   avatarFrame?: AvatarFrame;
+  avatarDecoration?: AvatarDecoration;
+  publicTags?: string[];
   profileStyle?: ProfileCardStyle;
   profileOutlineColor?: string;
   profileGradient?: ProfileGradient;
@@ -282,6 +294,11 @@ export interface BeepEvent {
 export interface LinkMessage extends BeepEvent {
   id: string;
   read: boolean;
+  clientMessageId?: string;
+  cloudId?: string;
+  cloudSequence?: number;
+  delivery?: "waiting" | "sent" | "delivered" | "read" | "failed";
+  deliveryError?: string;
 }
 
 export interface ConversationMeta {
@@ -295,6 +312,8 @@ export interface ConversationMeta {
   unread: number;
   pinned: boolean;
   draft: string;
+  /** -1 is indefinite; otherwise an absolute timestamp (0 means unmuted). */
+  muteUntil?: number;
 }
 
 export interface KikiLinkEvents {
@@ -313,11 +332,12 @@ export interface KikiLinkEvents {
 }
 
 export interface KikiLinkSettings {
-  schemaVersion: 29;
+  schemaVersion: 30;
   ui: {
     accent: string;
     theme: ThemePreference;
     density: InterfaceDensity;
+    timeFormat: TimeFormatPreference;
     textScale: TextScalePreference;
     homeLayout: HomeLayoutPreference;
     launcherSide: "left" | "right";
@@ -364,6 +384,8 @@ export interface KikiLinkSettings {
     avatarUrl: string;
     bannerUrl: string;
     avatarFrame: AvatarFrame;
+    avatarDecoration: AvatarDecoration;
+    publicTags: string[];
     profileStyle: ProfileCardStyle;
     profileOutlineColor: string;
     profileGradient: ProfileGradient;

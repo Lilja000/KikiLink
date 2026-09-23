@@ -103,6 +103,63 @@ async function connect(panel: CloudPanel) {
   );
 }
 describe("Cloud UI automatic verification and recovery", () => {
+  it("automatically reconciles coalesced Feed events and catches up after returning without a refresh button", async () => {
+    const profile: CloudProfile = { memberNumber: 202, displayName: "Person", bio: "", avatarId: null, bannerId: null,
+      avatarFrame: "none", profileStyle: "classic", revision: 1, visible: true, updatedAt: 1 };
+    const posts: CloudPost[] = [{ id: 1, author: 202, profile, text: "First post", mediaIds: [], revision: 1,
+      createdAt: 1, updatedAt: 1, commentCount: 0, reactions: { counts: [], mine: null } }];
+    const { panel, fetchImpl } = await setup(posts);
+    const original = fetchImpl.getMockImplementation()!;
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    fetchImpl.mockImplementation(async (url, init) => {
+      if (new URL(String(url)).pathname !== "/v1/events") return original(url, init);
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        stream = controller; init?.signal?.addEventListener("abort", () => { try { controller.close(); } catch {} }, { once: true });
+      } }), { headers: { "content-type": "text/event-stream" } });
+    });
+    await connect(panel); await vi.waitFor(() => expect(stream).toBeDefined());
+    const emit = () => stream!.enqueue(new TextEncoder().encode("event: feed\ndata: {}\n\n"));
+    const reads = () => fetchImpl.mock.calls.filter(([url]) => new URL(String(url)).pathname === "/v1/feed").length;
+    const before = reads(), card = panel.element.querySelector('[data-post-id="1"]');
+    const field = panel.element.querySelector<HTMLTextAreaElement>('textarea[aria-label="Share a post"]')!;
+    field.value = "Keep my draft"; field.dispatchEvent(new Event("input")); field.focus();
+    posts.unshift({ ...posts[0]!, id: 2, text: "New post" }); emit(); emit(); emit();
+    await vi.waitFor(() => expect(panel.element.querySelector('[data-post-id="2"]')).not.toBeNull());
+    expect(reads()).toBe(before + 1); expect(panel.element.querySelector('[data-post-id="1"]')).toBe(card);
+    expect(field.value).toBe("Keep my draft"); expect(document.activeElement).toBe(field);
+    expect(panel.element.querySelector(".kl-cloud-update")).toBeNull(); expect(panel.element.textContent).not.toContain("New updates");
+    panel.setVisible(false, undefined, true);
+    posts.unshift({ ...posts[0]!, id: 3, text: "While away" }); emit(); await Promise.resolve();
+    const hiddenReads = reads();
+    panel.setVisible(true, "feed");
+    await vi.waitFor(() => expect(panel.element.querySelector('[data-post-id="3"]')).not.toBeNull());
+    expect(reads()).toBe(hiddenReads + 1); expect(field.value).toBe("Keep my draft");
+  });
+
+  it("opens Report post in a focused dialog with visible quick reasons instead of below the post", async () => {
+    const post: CloudPost = { id: 7, author: 202, profile: { memberNumber: 202, displayName: "Friend" } as CloudProfile, text: "Long post\n".repeat(100), mediaIds: [], revision: 1,
+      createdAt: Date.now(), updatedAt: Date.now(), commentCount: 0, reactions: { counts: [], mine: null } };
+    const { panel, client, writes } = await setup([post]); await connect(panel);
+    const trigger = button(panel.element, "Report post"), menu = trigger.closest("details")!;
+    menu.open = true; trigger.focus(); trigger.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".kl-report-dialog")!;
+    expect(dialog.open).toBe(true);
+    expect(panel.element.querySelector(".kl-report-form")).toBeNull();
+    expect(dialog.textContent).toContain("Spam"); expect(dialog.textContent).toContain("Racism / hate speech");
+    expect(document.activeElement).toBe(dialog.querySelector("input"));
+    expect(dialog.querySelectorAll('input[type="radio"]')).toHaveLength(7);
+    expect(writes.some(write => write.path === "/v1/reports")).toBe(false);
+    const request = vi.spyOn(client, "request").mockResolvedValue({ id: 42 });
+    dialog.querySelector<HTMLInputElement>('input[value="spam"]')!.click();
+    expect(request).not.toHaveBeenCalled();
+    button(dialog, "Submit report").click();
+    await vi.waitFor(() => expect(dialog.textContent).toContain("Report submitted"));
+    expect(request).toHaveBeenCalledWith("POST", "/v1/reports", { targetType: "post", targetId: "7", reason: "Spam report" });
+    button(dialog, "Close").click(); expect(dialog.open).toBe(false);
+    expect(document.activeElement).toBe(menu.querySelector("summary"));
+    request.mockClear(); trigger.click(); button(dialog, "Cancel").click();
+    expect(dialog.open).toBe(false); expect(request).not.toHaveBeenCalled();
+  });
   it("releases observers for replaced offscreen images and its cleanup timer on destroy", async () => {
     const observed = new Set<Element>();
     vi.stubGlobal("IntersectionObserver", class {

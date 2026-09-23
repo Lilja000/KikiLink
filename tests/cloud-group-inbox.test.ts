@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CloudGroupInbox } from "../src/cloud/group-inbox";
 import { SocialUI } from "../src/cloud/social-ui";
 import type { CloudClient } from "../src/cloud/client";
+import { CloudError } from "../src/cloud/client";
 import type { CloudGroup, CloudMessage } from "../src/cloud/types";
 import { MemoryKeyValueStorage } from "../src/core/settings";
 
@@ -11,14 +12,46 @@ const group = (id: string): CloudGroup => ({ id, title: `Group ${id}`, owner: 10
 const message = (sequence: number, sender = 202): CloudMessage => ({ id: `m${sequence}`, conversationId: "g", sequence,
   sender, text: `Message ${sequence}`, createdAt: sequence * 100, deletedAt: null, clientId: `c${sequence}`,
   encryption: "server-aes-256-gcm", schemaVersion: 1, membershipVersion: 1, keyVersion: 1 });
-function setup(handler: (method: string, path: string) => Promise<unknown>, storage = new MemoryKeyValueStorage(), member = 101) {
+function setup(handler: (method: string, path: string, body?: unknown) => Promise<unknown>, storage = new MemoryKeyValueStorage(), member = 101) {
   let connected = true;
   const client = { memberNumber: member, get connected() { return connected; }, request: vi.fn(handler), subscribe: () => () => {} } as unknown as CloudClient;
   const ui = new SocialUI({ client, run: async action => { await action(); }, image: () => document.createElement("div"), openProfile: vi.fn(), isBlocked: n => n === 303 });
   const select = vi.fn(), changed = vi.fn();
   const inbox = new CloudGroupInbox(client, ui, storage, { select, changed, inviteChanged: async () => {} });
-  return { inbox, client, select, changed, disconnect: () => { connected = false; inbox.clear(); } };
+  return { inbox, client, select, changed, disconnect: () => { connected = false; inbox.clear(); }, reconnect: () => { connected = true; } };
 }
+
+it("persists only pending group receipt IDs offline and upgrades delivery to read on reconnect", async () => {
+  const storage = new MemoryKeyValueStorage();
+  const bodies: unknown[] = [];
+  let fail = true;
+  const { inbox, disconnect, reconnect } = setup(async (method, path, body) => {
+    if (method === "PUT" && path === "/v1/conversations/c/receipts") {
+      bodies.push(body);
+      if (fail) throw new CloudError("offline");
+      return { acknowledged: ["m1"] };
+    }
+    return { items: [] };
+  }, storage);
+  inbox.enableMessageReceipts(true);
+  disconnect();
+  inbox.acknowledgeReceipts("g", "c", ["m1"], []);
+  inbox.acknowledgeReceipts("g", "c", [], ["m1"]);
+  expect(storage.getItem("kikilink:cloud:group-receipts:101:v1")).toContain('"state":"read"');
+  expect(bodies).toHaveLength(0);
+  reconnect();
+  await expect(inbox.flushReceipts()).rejects.toMatchObject({ code: "offline" });
+  expect(storage.getItem("kikilink:cloud:group-receipts:101:v1")).toContain('"m1"');
+  fail = false;
+  await inbox.flushReceipts();
+  expect(bodies.at(-1)).toEqual({ deliveredIds: [], readIds: ["m1"] });
+  expect(storage.getItem("kikilink:cloud:group-receipts:101:v1")).toBe("[]");
+  const completed = bodies.length;
+  inbox.acknowledgeReceipts("g", "c", ["m1"], ["m1"]);
+  await inbox.flushReceipts();
+  expect(bodies).toHaveLength(completed);
+  inbox.destroy();
+});
 it("pins and mutes through contextual actions, persists per account, and keeps unread groups visible", async () => {
   const storage = new MemoryKeyValueStorage();
   let groups = [{ ...group("a"), lastMessage: message(1), lastIncomingSequence: 1 }, { ...group("b"), lastMessage: message(5), lastIncomingSequence: 5 }];

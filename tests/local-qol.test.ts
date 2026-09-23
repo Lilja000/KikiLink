@@ -129,6 +129,7 @@ describe("local FUSAM QoL", () => {
     await h.direct.capture(incoming(), false); expect(await h.direct.totalUnread()).toBe(1);
     await vi.advanceTimersByTimeAsync(1_002);
     h.view.onNotification(notice);
+    await vi.advanceTimersByTimeAsync(0);
     expect(h.shadow.querySelector(".kl-toast")?.textContent).toContain("Test alert");
     expect(required(h.shadow, ".kl-launcher").dataset.muted).toBe("false");
   });
@@ -185,8 +186,13 @@ describe("local FUSAM QoL", () => {
     const send = vi.mocked(h.adapter.sendKikiLinkProtocol); send.mockClear();
     expect(h.presence.requestMany([20], { interactive: true })).toBe(1);
     expect(send).toHaveBeenCalledTimes(1);
+    expect(h.presence.requestMany([20], { interactive: true })).toBe(1);
     expect(h.presence.requestMany([20], { interactive: true })).toBe(0);
     expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(2);
   });
 
   it("rejects a recently offline friend even while their addon capability remains cached", async () => {
@@ -198,9 +204,9 @@ describe("local FUSAM QoL", () => {
     required(h.shadow, '.kl-toolbar-group-button').click();
     // Keep the native friend in the picker, with an explicitly offline row.
     h.adapter.getKnownContacts = () => [20, 30].map((memberNumber) => ({ memberNumber, memberName: `Friend ${memberNumber}` }));
-    required(h.shadow, '.kl-group-dialog-refresh').click();
-    expect(required<HTMLButtonElement>(h.shadow, '.kl-group-contact[data-member-number="20"]').disabled).toBe(true);
-    expect(required(h.shadow, '.kl-group-contact[data-member-number="20"]').textContent).toContain("Offline");
+    const search = required<HTMLInputElement>(h.shadow, ".kl-new-chat-query");
+    search.value = "Friend 20"; search.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(h.shadow.querySelector('.kl-contact[data-member-number="20"]')).toBeNull();
     await expect(h.groups.createManagedGroup([20, 30], "No stale invitations")).rejects.toThrow("unavailable");
     expect(h.groups.listGroups()).toHaveLength(0);
   });

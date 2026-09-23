@@ -1,3 +1,6 @@
+import { applyAvatarAppearance } from "../modules/link-chat/appearance-renderer";
+import { normalizeAvatarDecoration } from "../core/profile-appearance";
+import type { AvatarDecoration } from "../core/types";
 import { element } from "./dom";
 import { CloudClient, CloudError } from "./client";
 import type { CloudMedia, CloudProfile } from "./types";
@@ -14,8 +17,12 @@ export interface ProfileEditorFields {
   avatarPreview: HTMLElement; bannerPreview: HTMLElement;
   frame: HTMLSelectElement; style: HTMLSelectElement;
   outlineEnabled: HTMLInputElement; outlineColor: HTMLInputElement;
-  gradientEnabled: HTMLInputElement; gradientPrimary: HTMLInputElement; gradientSecondary: HTMLInputElement;
+  gradientEnabled: HTMLInputElement; gradientPrimary: HTMLInputElement; gradientSecondary: HTMLInputElement; gradientAngle?: HTMLSelectElement;
   save: HTMLButtonElement;
+  publicTags?: HTMLInputElement;
+  getAvatarDecoration?(): AvatarDecoration;
+  setAvatarDecoration?(value: AvatarDecoration): void;
+  lockAppearance?(locked: boolean): void;
   renderPreviews?(): void;
 }
 
@@ -37,6 +44,8 @@ export class CloudProfileEditor {
   #busy = false;
   #load: Promise<void> = Promise.resolve();
   #loadError: unknown;
+  #loaded = false;
+  #resumeDraft = false;
   #unsubscribe: () => void;
   #avatar: { id: string; url: string } | undefined;
   #avatarTask: { id: string; promise: Promise<string> } | undefined;
@@ -44,6 +53,7 @@ export class CloudProfileEditor {
   #automaticRetry: ReturnType<typeof setTimeout> | undefined;
   #automaticAttempts = 0;
   #destroyed = false;
+  #draftBaseline: string | undefined;
 
   constructor(readonly client: CloudClient, readonly settings: () => KikiLinkSettings,
     readonly ownName: () => string, readonly onUpdated: (profile: CloudProfile | undefined) => void,
@@ -53,7 +63,16 @@ export class CloudProfileEditor {
     const connect = element("button", { type: "button", className: "kl-text-button", text: "Connect profile" });
     connect.addEventListener("click", () => {
       connect.disabled = true;
-      void client.connect().then(() => this.#reload(true)).catch(() => { this.status.textContent = "Could not connect. Your profile draft is kept."; })
+      void client.connect().then(() => {
+        if (this.#resumeDraft) {
+          // Retain the original revision as well as the draft. If another device
+          // edited it meanwhile, Save must report a conflict, not overwrite it.
+          this.#resumeDraft = false;
+          this.status.textContent = "Connected. Your draft is ready to save.";
+          return;
+        }
+        return this.#reload(true);
+      }).catch(() => { this.status.textContent = "Could not connect. Your profile draft is kept."; })
         .finally(() => { connect.disabled = false; });
     });
     this.element.append(element("label", { className: "kl-presence-field" },
@@ -64,10 +83,16 @@ export class CloudProfileEditor {
       connect.hidden = client.connected;
       if (!client.connected) {
         clearTimeout(this.#automaticRetry); this.#automaticAttempts = 0;
-        this.#generation++; this.#current = undefined; this.#uploads = new WeakMap(); this.#urlUploads.clear(); this.#files.clear(); this.#removed.clear();
-        this.#busy = false; this.#setDisabled(false); this.#releasePreviews(); this.onUpdated(undefined);
+        this.#resumeDraft = this.#open && this.#loaded && client.connectionState !== "idle";
+        this.#generation++;
+        if (!this.#resumeDraft) {
+          this.#current = undefined; this.#uploads = new WeakMap(); this.#urlUploads.clear(); this.#files.clear(); this.#removed.clear(); this.#releasePreviews();
+        }
+        this.#busy = false; this.#setDisabled(false); this.onUpdated(undefined);
         if (this.#avatar) URL.revokeObjectURL(this.#avatar.url); this.#avatar = undefined; this.#avatarTask = undefined;
-        if (this.#open) this.status.textContent = "Profile disconnected. Connect again to save changes.";
+        if (this.#open) this.status.textContent = this.#resumeDraft
+          ? "Profile disconnected. Your draft is kept; reconnect to save it."
+          : "Profile disconnected. Connect again to save changes.";
       }
       else if (!this.#open) this.#loadAutomatically();
     });
@@ -84,6 +109,9 @@ export class CloudProfileEditor {
   }
   get current(): CloudProfile | undefined { return this.client.connected ? this.#current : undefined; }
   get busy(): boolean { return this.#busy; }
+  get dirty(): boolean {
+    return this.#open && this.#draftBaseline !== undefined && this.#draftFingerprint() !== this.#draftBaseline;
+  }
   get preserveLegacyAppearance(): boolean { return !this.#appearanceMigrated; }
   #recordAppearance(): void {
     this.#appearanceMigrated = true;
@@ -152,7 +180,7 @@ export class CloudProfileEditor {
     const id = this.current?.avatarId;
     if (!id) return;
     target.dataset.cloudAvatar = id;
-    target.dataset.avatarFrame = this.current?.avatarFrame ?? "none";
+    applyAvatarAppearance(target, this.current ?? {});
     const paint = (url: string) => {
       if (target.querySelector<HTMLImageElement>("img")?.src === url) return;
       if (target.isConnected && this.current?.avatarId === id && target.dataset.cloudAvatar === id)
@@ -178,6 +206,7 @@ export class CloudProfileEditor {
     clearTimeout(this.#automaticRetry);
     this.close(); this.#open = true; this.#fields = fields;
     this.name.value = this.current?.displayName ?? this.ownName();
+    this.#draftBaseline = this.#draftFingerprint();
     this.#loadError = undefined;
     if (this.client.connected) {
       this.#load = this.#reload(true).catch(error => { this.#loadError = error; this.status.textContent = "Profile could not load. Close and reopen to retry; nothing was overwritten."; });
@@ -199,6 +228,7 @@ export class CloudProfileEditor {
       if (profile?.isDefault) profile = undefined;
       if (profile && (profile.avatarFrame !== "none" || profile.profileStyle !== "classic" || profile.profileOutlineColor || profile.profileGradient)) this.#recordAppearance();
       this.#current = profile; this.onUpdated(profile);
+      this.#loaded = true;
       if (!hydrate || !this.#open || !this.#fields) return;
       const fields = this.#fields;
       if (profile) {
@@ -209,23 +239,37 @@ export class CloudProfileEditor {
         // pre-Cloud KikiLink profile. The existing editor uploads it on Save.
         const emptyAppearance = profile.avatarFrame === "none" && profile.profileStyle === "classic" && !profile.profileOutlineColor && !profile.profileGradient;
         if (!emptyAppearance || this.#appearanceMigrated) {
-          fields.frame.value = profile.avatarFrame; fields.style.value = profile.profileStyle;
+          fields.frame.value = profile.avatarFrame;
+          fields.setAvatarDecoration?.(normalizeAvatarDecoration(profile.avatarDecoration, profile.avatarFrame));
+          fields.style.value = profile.profileGradient && profile.profileGradient.enabled !== false ? "gradient" : profile.profileStyle;
+          if (fields.publicTags) fields.publicTags.value = (profile.publicTags ?? []).join(", ");
           fields.outlineEnabled.checked = Boolean(profile.profileOutlineColor); fields.outlineColor.value = profile.profileOutlineColor ?? "#d71932";
-          fields.gradientEnabled.checked = Boolean(profile.profileGradient);
-          if (profile.profileGradient) { fields.gradientPrimary.value = profile.profileGradient.start; fields.gradientSecondary.value = profile.profileGradient.end; }
+          fields.gradientEnabled.checked = fields.style.value === "gradient";
+          if (profile.profileGradient) {
+            fields.gradientPrimary.value = profile.profileGradient.start;
+            fields.gradientSecondary.value = profile.profileGradient.end;
+            // An older Cloud stores the colors but not their direction. Keep the
+            // device-local selection instead of silently resetting it to 135°.
+            if (fields.gradientAngle && profile.profileGradient.angle !== undefined)
+              fields.gradientAngle.value = String(profile.profileGradient.angle);
+          }
         }
-        fields.avatarPreview.dataset.avatarFrame = fields.frame.value;
+        const decoration = fields.getAvatarDecoration?.();
+        fields.avatarPreview.dataset.avatarFrame = decoration ? decoration.mode === "preset" ? decoration.preset : "none" : fields.frame.value;
         if (profile.avatarId) { fields.avatarUrl.value = ""; fields.avatarUrl.placeholder = "Avatar saved in KikiLink"; void this.#showStored(profile.avatarId, fields.avatarPreview, generation); }
         if (profile.bannerId) { fields.bannerUrl.value = ""; fields.bannerUrl.placeholder = "Banner saved in KikiLink"; void this.#showStored(profile.bannerId, fields.bannerPreview, generation); }
         fields.renderPreviews?.();
       }
       this.status.textContent = "One profile. Save here to update your name, images and appearance everywhere in KikiLink.";
+      this.#draftBaseline = this.#draftFingerprint();
     } finally { if (generation === this.#generation && hydrate) { this.#busy = false; this.#setDisabled(false); } }
   }
   #setDisabled(value: boolean): void {
     if (!this.#fields) return;
+    this.#fields.lockAppearance?.(value);
     for (const control of [this.name, this.visible, ...(this.#fields.statusMessage ? [this.#fields.statusMessage] : []), this.#fields.bio, this.#fields.avatarUrl, this.#fields.bannerUrl, this.#fields.frame, this.#fields.style,
-      this.#fields.outlineEnabled, this.#fields.outlineColor, this.#fields.gradientEnabled, this.#fields.gradientPrimary, this.#fields.gradientSecondary, this.#fields.save]) control.disabled = value;
+      this.#fields.outlineEnabled, this.#fields.outlineColor, this.#fields.gradientEnabled, this.#fields.gradientPrimary, this.#fields.gradientSecondary, ...(this.#fields.gradientAngle ? [this.#fields.gradientAngle] : []), this.#fields.save, ...(this.#fields.publicTags ? [this.#fields.publicTags] : [])]) control.disabled = value;
+    this.#fields.lockAppearance?.(value);
   }
   async #showStored(id: string, target: HTMLElement, generation: number): Promise<void> {
     const key = `stored:${id}`;
@@ -286,14 +330,19 @@ export class CloudProfileEditor {
     if (!name || name.length > 80) throw new CloudError("invalid_display_name");
     const input = {
       displayName: name, bio: fields.bio.value,
-      avatarFrame: fields.frame.value, profileStyle: fields.style.value,
+      avatarFrame: fields.getAvatarDecoration ? (fields.getAvatarDecoration().mode === "preset" ? fields.getAvatarDecoration().preset : "none") : fields.frame.value,
+      ...(fields.getAvatarDecoration ? { avatarDecoration: fields.getAvatarDecoration() } : {}),
+      ...(fields.publicTags ? { publicTags: fields.publicTags.value.split(",").map(x => x.trim()).filter(Boolean).slice(0, 5) } : {}),
+      profileStyle: fields.style.value,
       visible: this.visible.checked, revision: this.#current?.revision ?? 0,
       ...(fields.outlineEnabled.checked ? { profileOutlineColor: fields.outlineColor.value } : {}),
-      ...(fields.gradientEnabled.checked ? { profileGradient: { start: fields.gradientPrimary.value, end: fields.gradientSecondary.value } } : {}),
+      profileGradient: { start: fields.gradientPrimary.value, end: fields.gradientSecondary.value, angle: Number(fields.gradientAngle?.value ?? 135), enabled: fields.style.value === "gradient" },
     };
     const urls = { avatar: fields.avatarUrl.value, banner: fields.bannerUrl.value };
     this.#busy = true; this.#setDisabled(true); this.status.textContent = "Saving your profile…";
     try {
+      const me = await this.client.request<{features?: {fullProfile?: boolean; profileGradientAngle?: boolean}}>("GET", "/v1/me");
+      if (!me.features?.fullProfile) throw new CloudError("profile_schema_unsupported", 409);
       const ids = { avatarId: this.#current?.avatarId ?? null, bannerId: this.#current?.bannerId ?? null };
       for (const kind of ["avatar", "banner"] as const) {
         const key = kind === "avatar" ? "avatarId" : "bannerId";
@@ -312,12 +361,14 @@ export class CloudProfileEditor {
           ids[key] = id;
         }
       }
-      const features = fields.statusMessage || this.automaticSync
-        ? (await this.client.request<{features?: {fullProfile?: boolean}}>("GET", "/v1/me"))?.features : undefined;
-      const profile = await this.client.request<CloudProfile>("PUT", "/v1/profiles/me", { ...input, ...ids,
-        ...(features?.fullProfile ? { statusMessage: fields.statusMessage?.value ?? this.settings().linkPresence.statusMessage } : {}) });
-      if (generation !== this.#generation) return;
+      const profileGradient = me.features?.profileGradientAngle
+        ? input.profileGradient
+        : { start: input.profileGradient.start, end: input.profileGradient.end, enabled: input.profileGradient.enabled };
+      const profile = await this.client.request<CloudProfile>("PUT", "/v1/profiles/me", { ...input, profileGradient, ...ids,
+        statusMessage: fields.statusMessage?.value ?? this.settings().linkPresence.statusMessage });
+      if (generation !== this.#generation) throw new CloudError("session_changed");
       this.#recordAppearance(); this.#current = profile; this.onUpdated(profile);
+      this.#draftBaseline = this.#draftFingerprint();
       this.status.textContent = "Profile saved.";
     } finally { if (generation === this.#generation) { this.#busy = false; this.#setDisabled(false); } }
   }
@@ -327,6 +378,35 @@ export class CloudProfileEditor {
       URL.revokeObjectURL(url); this.#previewUrls.delete(key);
     }
   }
-  close(): void { this.#generation++; this.#open = false; this.#busy = false; this.#files.clear(); this.#removed.clear(); this.#urlUploads.clear(); this.#releasePreviews(true); this.#fields = undefined; }
+  #draftFingerprint(): string {
+    const fields = this.#fields;
+    if (!fields) return "";
+    const file = (kind: "avatar" | "banner") => {
+      const value = this.#files.get(kind);
+      return value ? [value.name, value.type, value.size, value.lastModified] : null;
+    };
+    return JSON.stringify({
+      name: this.name.value,
+      visible: this.visible.checked,
+      bio: fields.bio.value,
+      statusMessage: fields.statusMessage?.value ?? "",
+      avatarUrl: fields.avatarUrl.value,
+      bannerUrl: fields.bannerUrl.value,
+      frame: fields.frame.value,
+      style: fields.style.value,
+      outlineEnabled: fields.outlineEnabled.checked,
+      outlineColor: fields.outlineColor.value,
+      gradientEnabled: fields.gradientEnabled.checked,
+      gradientPrimary: fields.gradientPrimary.value,
+      gradientSecondary: fields.gradientSecondary.value,
+      gradientAngle: fields.gradientAngle?.value ?? "",
+      publicTags: fields.publicTags?.value ?? "",
+      avatarDecoration: fields.getAvatarDecoration?.(),
+      avatarFile: file("avatar"),
+      bannerFile: file("banner"),
+      removed: [...this.#removed].sort(),
+    });
+  }
+  close(): void { this.#generation++; this.#open = false; this.#loaded = false; this.#resumeDraft = false; this.#busy = false; this.#draftBaseline = undefined; this.#files.clear(); this.#removed.clear(); this.#urlUploads.clear(); this.#releasePreviews(true); this.#fields = undefined; }
   destroy(): void { this.#destroyed = true; clearTimeout(this.#automaticRetry); this.close(); this.#releasePreviews(); this.#current = undefined; if (this.#avatar) URL.revokeObjectURL(this.#avatar.url); this.#avatar = undefined; this.#unsubscribe(); }
 }

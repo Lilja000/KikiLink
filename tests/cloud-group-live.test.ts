@@ -22,7 +22,10 @@ it('shows names for concurrent typists, expires hints, and stops updates after l
  const {ui,client}=setup(async()=>({members:[],typing:[{memberNumber:202,expiresInMs:4000},{memberNumber:303,expiresInMs:2000},{memberNumber:404,expiresInMs:6000}]}));
  const live=new GroupLiveView(ui,group,vi.fn());stop.push(()=>live.destroy());live.resume();await live.refresh();
  expect(live.element.textContent).toBe('Kiki, Snowy are typing');expect(live.element.querySelectorAll('.kl-typing-dots i')).toHaveLength(3);
+ const dots=live.element.querySelector('.kl-typing-dots'), nameText=live.element.querySelector('.kl-typing-name')!.firstChild;
+ await live.refresh();expect(live.element.querySelector('.kl-typing-dots')).toBe(dots);expect(live.element.querySelector('.kl-typing-name')!.firstChild).toBe(nameText);
  await vi.advanceTimersByTimeAsync(2030);expect(live.element.textContent).toBe('Kiki is typing');
+ expect(live.element.querySelector('.kl-typing-dots')).toBe(dots);
  await vi.advanceTimersByTimeAsync(2030);expect(live.element.hidden).toBe(true);
  live.pause();const calls=vi.mocked(client.request).mock.calls.length;await vi.advanceTimersByTimeAsync(60000);expect(client.request).toHaveBeenCalledTimes(calls);
 });

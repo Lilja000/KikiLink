@@ -364,8 +364,14 @@ describe("GroupChatPanel group creation", () => {
     if (!contactItem) throw new Error("Missing Reina contact item");
     const profile = required<HTMLButtonElement>(contactItem, ".kl-group-contact-profile");
     const selection = required<HTMLButtonElement>(contactItem, ".kl-group-contact");
+    const selectionToggle = required<HTMLButtonElement>(contactItem, ".kl-group-contact-toggle");
     expect(profile.parentElement).toBe(contactItem);
     expect(selection.parentElement).toBe(contactItem);
+    expect(selectionToggle.parentElement).toBe(contactItem);
+    expect(contactItem.lastElementChild).toBe(selectionToggle);
+    expect(selectionToggle.getAttribute("aria-label")).toBe("Add Reina to group");
+    expect(selectionToggle.querySelector("svg")?.dataset.icon).toBe("plus");
+    expect(contactItem.children).toHaveLength(3);
     expect(contactItem.querySelector("button button")).toBeNull();
     expect(profile.getAttribute("aria-label")).toContain("Open KikiLink profile for Reina");
     profile.focus();
@@ -1115,6 +1121,74 @@ describe("GroupChatPanel conversation pane", () => {
     expect(messageLog.scrollTop).toBe(17);
   });
 
+  it.each([
+    { name: "Enter, unchanged draft", next: "", moveFocus: false, failed: false, clickSend: false },
+    { name: "Send button, unchanged draft", next: "", moveFocus: false, failed: false, clickSend: true },
+    { name: "typing the next message", next: "Next message", moveFocus: false, failed: false, clickSend: false },
+    { name: "moving to another field", next: "Next message", moveFocus: true, failed: false, clickSend: false },
+    { name: "failed send after moving focus", next: "Next message", moveFocus: true, failed: true, clickSend: false },
+  ])("keeps native group focus and drafts safe: $name", async ({ next, moveFocus, failed, clickSend }) => {
+    const harness = setup();
+    const host = document.createElement("div");
+    const shadow = host.attachShadow({ mode: "open" });
+    const otherField = document.createElement("input");
+    document.body.append(host);
+    shadow.append(harness.panel.chatPane, otherField);
+    const creation = await harness.service.createGroup([20, 30], "Keyboard Crew");
+    await harness.panel.activate(creation.group.groupId);
+    const gate = deferred<void>();
+    const originalSend = harness.service.sendMessage.bind(harness.service);
+    const send = vi.spyOn(harness.service, "sendMessage").mockImplementationOnce(async (...args) => {
+      await gate.promise;
+      if (failed) throw new Error("Test transport unavailable");
+      return originalSend(...args);
+    });
+    const composer = required<HTMLTextAreaElement>(shadow, ".kl-group-composer");
+    const sendButton = required<HTMLButtonElement>(shadow, ".kl-group-send");
+    composer.value = "First message";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    const enter = () => composer.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter", bubbles: true, composed: true, cancelable: true,
+    }));
+    if (clickSend) { sendButton.focus(); sendButton.click(); } else enter();
+    expect(composer.disabled).toBe(false);
+    expect(shadow.activeElement).toBe(composer);
+    enter();
+    expect(send).toHaveBeenCalledOnce();
+    if (next) { composer.value = next; composer.dispatchEvent(new Event("input", { bubbles: true })); }
+    if (moveFocus) otherField.focus();
+    gate.resolve();
+    await vi.waitFor(() => expect(harness.feedback.at(-1)?.tone).toBe(failed ? "error" : "success"));
+    await harness.panel.flushPendingDraft();
+    expect(composer.value).toBe(next || (failed ? "First message" : ""));
+    expect(harness.service.getGroup(creation.group.groupId)?.draft).toBe(composer.value);
+    expect(shadow.activeElement).toBe(moveFocus ? otherField : composer);
+    expect(required(shadow, ".kl-group-composer")).toBe(composer);
+    if (!failed && !moveFocus) {
+      composer.value = "Second message";
+      composer.dispatchEvent(new Event("input", { bubbles: true }));
+      enter();
+      await vi.waitFor(() => expect(harness.feedback).toHaveLength(2));
+      expect(harness.service.getMessages(creation.group.groupId).map(message => message.content))
+        .toEqual(["First message", "Second message"]);
+      expect(shadow.activeElement).toBe(composer);
+    }
+    harness.panel.destroy();
+  });
+
+  it("clears only the sent draft after earlier queued writes have completed", async () => {
+    const harness = setup();
+    const { group } = await harness.service.createGroup([20, 30], "Draft Queue");
+    await harness.service.setDraft(group.groupId, "Sent message");
+    const nextDraft = harness.service.setDraft(group.groupId, "New unsent message");
+    const lateClear = harness.service.setDraft(group.groupId, "", "Sent message");
+    await nextDraft;
+    expect(await lateClear).toBe("New unsent message");
+    expect(harness.service.getGroup(group.groupId)?.draft).toBe("New unsent message");
+    expect(await harness.service.setDraft(group.groupId, "", "New unsent message")).toBe("");
+    harness.panel.destroy();
+  });
+
   it("does not clear the next group's draft or report stale feedback when a send resolves late", async () => {
     const harness = setup();
     const first = await harness.service.createGroup([20, 30], "First Crew");
@@ -1148,7 +1222,7 @@ describe("GroupChatPanel conversation pane", () => {
       handedOffTo: [20, 30],
       failed: [],
     });
-    await vi.waitFor(() => expect(composer.disabled).toBe(false));
+    await vi.waitFor(() => expect(required<HTMLButtonElement>(harness.panel.chatPane, ".kl-group-send").disabled).toBe(false));
 
     expect(harness.panel.activeGroupId).toBe(second.group.groupId);
     expect(composer.value).toBe("Second group draft");

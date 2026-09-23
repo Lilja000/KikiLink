@@ -1,0 +1,2587 @@
+{
+  "version": "2026.09.23-1",
+  "audience": "Consenting adults only",
+  "sources": [
+    {
+      "id": "bc-fetishes",
+      "url": "https://gitgud.io/BondageProjects/Bondage-College/-/blob/0de770190c9e72790d3be6be70e7901d68cc78a0/BondageClub/Assets/Female3DCG/Female3DCG.js",
+      "section": "FetishFemale3DCG",
+      "checked": "2026-09-19",
+      "version": "R131",
+      "commit": "0de770190c9e72790d3be6be70e7901d68cc78a0"
+    },
+    {
+      "id": "bc-assets",
+      "url": "https://gitgud.io/BondageProjects/Bondage-College/-/blob/0de770190c9e72790d3be6be70e7901d68cc78a0/BondageClub/Assets/Female3DCG/Female3DCG.csv",
+      "checked": "2026-09-19",
+      "version": "R131"
+    },
+    {
+      "id": "bc-activities",
+      "url": "https://gitgud.io/BondageProjects/Bondage-College/-/blob/0de770190c9e72790d3be6be70e7901d68cc78a0/BondageClub/Assets/Female3DCG/Female3DCG.js",
+      "section": "ActivityFemale3DCG",
+      "checked": "2026-09-19",
+      "version": "R131"
+    },
+    {
+      "id": "flist",
+      "url": "https://www.f-list.net/json/api/kink-list.php",
+      "terms": "https://www.f-list.net/doc/tos.php",
+      "checked": "2026-09-19"
+    },
+    {
+      "id": "scarleteen",
+      "url": "https://www.scarleteen.com/read/relationships/yes-no-maybe-so-sexual-inventory-stocklist",
+      "terms": "https://www.scarleteen.com/about/user-guidelines-privacy-policy",
+      "authors": [
+        "Heather Corinna",
+        "CJ Turett"
+      ],
+      "checked": "2026-09-19"
+    },
+    {
+      "id": "kikilink-curated",
+      "description": "KikiLink consenting-adult preference taxonomy",
+      "checked": "2026-09-19"
+    }
+  ],
+  "retiredIds": [],
+  "items": [
+    {
+      "id": "dynamics.dominance",
+      "label": "Dominance",
+      "category": "Dynamics",
+      "aliases": [
+        "dominant",
+        "dom"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "dynamics.maledom",
+      "label": "Maledom",
+      "category": "Dynamics",
+      "aliases": [
+        "male dominance",
+        "male dom",
+        "maledom"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.femdom",
+      "label": "Femdom",
+      "category": "Dynamics",
+      "aliases": [
+        "female dominance",
+        "female dom",
+        "femdom"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.lezdom",
+      "label": "Lezdom",
+      "category": "Dynamics",
+      "aliases": [
+        "lesbian dominance",
+        "lesbian dom",
+        "lezdom"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.submission",
+      "label": "Submission",
+      "category": "Dynamics",
+      "aliases": [
+        "submissive",
+        "sub"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "dynamics.switching",
+      "label": "Switching",
+      "category": "Dynamics",
+      "aliases": [
+        "switch"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "dynamics.power-exchange",
+      "label": "Power Exchange",
+      "category": "Dynamics",
+      "aliases": [
+        "D/s",
+        "power dynamic"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.service-submission",
+      "label": "Service Submission",
+      "category": "Dynamics",
+      "aliases": [
+        "service sub"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.ownership",
+      "label": "Ownership",
+      "category": "Dynamics",
+      "aliases": [
+        "owned"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.master-slave",
+      "label": "Master / Slave Dynamic",
+      "category": "Dynamics",
+      "aliases": [
+        "M/s",
+        "master slave"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.owner-pet",
+      "label": "Owner / Pet Dynamic",
+      "category": "Dynamics",
+      "aliases": [
+        "owner pet"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.rules-protocol",
+      "label": "Rules / Protocol",
+      "category": "Dynamics",
+      "aliases": [
+        "protocol",
+        "rules"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.obedience",
+      "label": "Obedience",
+      "category": "Dynamics",
+      "aliases": [],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.brat-taming",
+      "label": "Brat / Brat Taming",
+      "category": "Dynamics",
+      "aliases": [
+        "brat",
+        "brat tamer"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "dynamics.total-power-exchange",
+      "label": "Total Power Exchange",
+      "category": "Dynamics",
+      "aliases": [
+        "TPE"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.aftercare",
+      "label": "Aftercare",
+      "category": "Dynamics",
+      "aliases": [
+        "scene care",
+        "care after a scene"
+      ],
+      "sources": [
+        "flist:681"
+      ]
+    },
+    {
+      "id": "role.leading",
+      "label": "Leading a Consensual Scene",
+      "category": "Dynamics",
+      "aliases": [
+        "taking the lead",
+        "dominant"
+      ],
+      "sources": [
+        "scarleteen:relationship-models"
+      ]
+    },
+    {
+      "id": "role.following",
+      "label": "Following in a Consensual Scene",
+      "category": "Dynamics",
+      "aliases": [
+        "following",
+        "submissive"
+      ],
+      "sources": [
+        "scarleteen:relationship-models"
+      ]
+    },
+    {
+      "id": "interest.bondage",
+      "label": "Bondage",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "restraint"
+      ],
+      "sources": [
+        "bc-fetishes:Bondage"
+      ],
+      "popular": true
+    },
+    {
+      "id": "interest.rope",
+      "label": "Rope Bondage",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "rope play",
+        "rope restraint",
+        "rope bondage",
+        "shibari"
+      ],
+      "sources": [
+        "bc-fetishes:Rope"
+      ],
+      "popular": true
+    },
+    {
+      "id": "restraint.shibari",
+      "label": "Shibari",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "Japanese rope",
+        "kinbaku"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.cuffs",
+      "label": "Cuffs",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "wrist cuffs",
+        "leather cuffs",
+        "handcuffs"
+      ],
+      "sources": [
+        "bc-assets:ItemArms/LeatherCuffs"
+      ],
+      "popular": true
+    },
+    {
+      "id": "restraint.handcuffs",
+      "label": "Handcuffs",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "metal cuffs"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.ankle-cuffs",
+      "label": "Ankle Cuffs",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "ankle restraints",
+        "ankle shackles"
+      ],
+      "sources": [
+        "bc-assets:ItemFeet/LeatherAnkleCuffs"
+      ]
+    },
+    {
+      "id": "restraint.elbow-cuffs",
+      "label": "Elbow Cuffs",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "elbow restraints"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.chains",
+      "label": "Chains",
+      "category": "Bondage & Restraints",
+      "aliases": [],
+      "sources": [
+        "bc-assets:ItemAddon/BedChains"
+      ]
+    },
+    {
+      "id": "restraint.shackles",
+      "label": "Shackles",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "leg irons"
+      ],
+      "sources": [
+        "bc-assets:ItemArms/CeilingShackles"
+      ]
+    },
+    {
+      "id": "restraint.collar",
+      "label": "Collars",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "collaring",
+        "neck collar"
+      ],
+      "sources": [
+        "bc-assets:ItemNeck/LeatherCollar"
+      ],
+      "popular": true
+    },
+    {
+      "id": "restraint.leash",
+      "label": "Leashes",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "lead"
+      ],
+      "sources": [
+        "bc-assets:ItemNeckRestraints/ChainLeash"
+      ]
+    },
+    {
+      "id": "interest.blindfold",
+      "label": "Blindfolds",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "eye covering",
+        "blindness"
+      ],
+      "sources": [
+        "bc-fetishes:Blindness",
+        "flist:47"
+      ],
+      "popular": true
+    },
+    {
+      "id": "interest.gagged",
+      "label": "Gags",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "being gagged",
+        "mouth restraint"
+      ],
+      "sources": [
+        "bc-fetishes:Gagged",
+        "flist:135"
+      ],
+      "popular": true
+    },
+    {
+      "id": "restraint.ball-gag",
+      "label": "Ball gags",
+      "category": "Bondage & Restraints",
+      "aliases": [],
+      "sources": [
+        "bc-assets:ItemMouth/BallGag"
+      ]
+    },
+    {
+      "id": "restraint.bit-gag",
+      "label": "Bit gags",
+      "category": "Bondage & Restraints",
+      "aliases": [],
+      "sources": [
+        "bc-assets:ItemMouth/BitGag"
+      ]
+    },
+    {
+      "id": "restraint.ring-gag",
+      "label": "Ring gags",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "open-mouth gag"
+      ],
+      "sources": [
+        "bc-assets:ItemMouth/RingGag"
+      ]
+    },
+    {
+      "id": "restraint.panel-gag",
+      "label": "Panel gags",
+      "category": "Bondage & Restraints",
+      "aliases": [],
+      "sources": [
+        "bc-assets:ItemMouth/FoxyHarnessPanelGag"
+      ]
+    },
+    {
+      "id": "restraint.stuffing-gags",
+      "label": "Stuffing Gags",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "stuffing gag",
+        "mouth stuffing"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.muzzle",
+      "label": "Muzzles",
+      "category": "Bondage & Restraints",
+      "aliases": [],
+      "sources": [
+        "bc-assets:ItemMouth/AsylumMuzzle"
+      ]
+    },
+    {
+      "id": "restraint.nose-hooks",
+      "label": "Nose Hooks",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "nose hook"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.hood",
+      "label": "Hoods",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "bondage hood",
+        "head covering"
+      ],
+      "sources": [
+        "bc-assets:ItemHood/AccentHood"
+      ]
+    },
+    {
+      "id": "restraint.harness",
+      "label": "Harnesses",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "body harness"
+      ],
+      "sources": [
+        "bc-assets:ItemArms/FullBodyLeatherHarness"
+      ]
+    },
+    {
+      "id": "restraint.spreader",
+      "label": "Spreader Bars",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "spreader bar"
+      ],
+      "sources": [
+        "bc-assets:ItemFeet/HeavySpreaderMetal"
+      ]
+    },
+    {
+      "id": "restraint.armbinder",
+      "label": "Armbinders",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "arm binder",
+        "arm restraint"
+      ],
+      "sources": [
+        "bc-assets:ItemArms/LeatherArmbinder"
+      ]
+    },
+    {
+      "id": "restraint.monoglove",
+      "label": "Monogloves",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "monoglove"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.mittens",
+      "label": "Bondage Mittens",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "restraint mittens",
+        "hand covering"
+      ],
+      "sources": [
+        "bc-assets:ItemHands/LeatherMittens"
+      ]
+    },
+    {
+      "id": "restraint.straitjacket",
+      "label": "Straitjackets",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "straightjacket"
+      ],
+      "sources": [
+        "bc-assets:ItemArms/StraitJacket"
+      ]
+    },
+    {
+      "id": "restraint.stocks",
+      "label": "Stocks",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "pillory"
+      ],
+      "sources": [
+        "bc-assets:ItemDevices/WoodenStocks"
+      ]
+    },
+    {
+      "id": "restraint.yoke",
+      "label": "Yokes",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "bondage yoke"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.tethering",
+      "label": "Tethering",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "tied to a point"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.immobilization",
+      "label": "Immobilization",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "immobile"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.hogtie",
+      "label": "Hogtie",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "hog tie"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.frogtie",
+      "label": "Frogtie",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "frog tie"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.mummification",
+      "label": "Mummification",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "wrap bondage"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.confinement",
+      "label": "Confinement",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "confined"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.cages",
+      "label": "Cage",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "confinement cage",
+        "caging"
+      ],
+      "sources": [
+        "bc-assets:ItemDevices/Cage"
+      ]
+    },
+    {
+      "id": "interest.suspension",
+      "label": "Suspension",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "rope suspension",
+        "suspended restraint"
+      ],
+      "sources": [
+        "flist:367"
+      ]
+    },
+    {
+      "id": "restraint.predicament",
+      "label": "Predicament Bondage",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "predicament rope"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.full-body",
+      "label": "Full-body Bondage",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "full body restraint"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.full-body-rope",
+      "label": "Full-body Rope",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "rope body harness"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "impact.spanking",
+      "label": "Spanking",
+      "category": "Impact & Pain",
+      "aliases": [
+        "spank"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "impact.general",
+      "label": "Impact Play",
+      "category": "Impact & Pain",
+      "aliases": [
+        "impact"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "impact.caning",
+      "label": "Caning",
+      "category": "Impact & Pain",
+      "aliases": [
+        "cane"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "impact.whipping",
+      "label": "Whipping",
+      "category": "Impact & Pain",
+      "aliases": [
+        "whip"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.flogging",
+      "label": "Flogging",
+      "category": "Impact & Pain",
+      "aliases": [
+        "flogger",
+        "whipping"
+      ],
+      "sources": [
+        "flist:147"
+      ]
+    },
+    {
+      "id": "impact.pain",
+      "label": "Pain Play",
+      "category": "Impact & Pain",
+      "aliases": [
+        "pain"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "impact.biting",
+      "label": "Biting",
+      "category": "Impact & Pain",
+      "aliases": [
+        "bite"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "impact.scratching",
+      "label": "Scratching",
+      "category": "Impact & Pain",
+      "aliases": [
+        "scratch"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "impact.pinching",
+      "label": "Pinching",
+      "category": "Impact & Pain",
+      "aliases": [
+        "pinch"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.sadism",
+      "label": "Sadism",
+      "category": "Impact & Pain",
+      "aliases": [
+        "giving consensual pain",
+        "sadism"
+      ],
+      "sources": [
+        "bc-fetishes:Sadism"
+      ]
+    },
+    {
+      "id": "interest.masochism",
+      "label": "Masochism",
+      "category": "Impact & Pain",
+      "aliases": [
+        "receiving consensual pain",
+        "masochism"
+      ],
+      "sources": [
+        "bc-fetishes:Masochism"
+      ]
+    },
+    {
+      "id": "interest.orgasm-control",
+      "label": "Orgasm Control",
+      "category": "Control",
+      "aliases": [
+        "climax control",
+        "orgasm denial"
+      ],
+      "sources": [
+        "flist:107"
+      ],
+      "popular": true
+    },
+    {
+      "id": "control.orgasm-denial",
+      "label": "Orgasm Denial",
+      "category": "Control",
+      "aliases": [
+        "denial"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "control.edging",
+      "label": "Edging",
+      "category": "Control",
+      "aliases": [
+        "edge"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "interest.chastity",
+      "label": "Chastity",
+      "category": "Control",
+      "aliases": [
+        "chastity devices"
+      ],
+      "sources": [
+        "bc-fetishes:Chastity",
+        "flist:23"
+      ],
+      "popular": true
+    },
+    {
+      "id": "control.permission",
+      "label": "Permission Control",
+      "category": "Control",
+      "aliases": [
+        "asking permission"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.speech",
+      "label": "Speech Control",
+      "category": "Control",
+      "aliases": [
+        "speech rules",
+        "speech restrictions"
+      ],
+      "sources": [
+        "flist:265"
+      ]
+    },
+    {
+      "id": "control.clothing",
+      "label": "Clothing Control",
+      "category": "Control",
+      "aliases": [
+        "outfit control"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "control.posture",
+      "label": "Posture Control",
+      "category": "Control",
+      "aliases": [
+        "position control"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "control.commands",
+      "label": "Commands",
+      "category": "Control",
+      "aliases": [
+        "orders"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "control.reward-punishment",
+      "label": "Reward / Punishment",
+      "category": "Control",
+      "aliases": [
+        "rewards",
+        "punishment"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.praise",
+      "label": "Praise",
+      "category": "Psychological",
+      "aliases": [
+        "positive reinforcement",
+        "praise"
+      ],
+      "sources": [
+        "flist:34"
+      ],
+      "popular": true
+    },
+    {
+      "id": "psych.humiliation",
+      "label": "Humiliation",
+      "category": "Psychological",
+      "aliases": [
+        "humiliation play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "psych.degradation",
+      "label": "Degradation",
+      "category": "Psychological",
+      "aliases": [
+        "degrading language"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "psych.objectification",
+      "label": "Objectification",
+      "category": "Psychological",
+      "aliases": [
+        "object play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.begging",
+      "label": "Begging",
+      "category": "Psychological",
+      "aliases": [
+        "begging roleplay",
+        "begging"
+      ],
+      "sources": [
+        "flist:257"
+      ]
+    },
+    {
+      "id": "psych.fear",
+      "label": "Fear Play",
+      "category": "Psychological",
+      "aliases": [
+        "scare play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "psych.mind-games",
+      "label": "Mind Games",
+      "category": "Psychological",
+      "aliases": [
+        "psychological play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "psych.ritual",
+      "label": "Ritual / Ceremony",
+      "category": "Psychological",
+      "aliases": [
+        "ceremony"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.discipline",
+      "label": "Consensual Discipline",
+      "category": "Psychological",
+      "aliases": [
+        "discipline"
+      ],
+      "sources": [
+        "flist:34"
+      ]
+    },
+    {
+      "id": "interest.hypnosis",
+      "label": "Hypnosis",
+      "category": "Psychological",
+      "aliases": [
+        "consensual hypnosis roleplay",
+        "hypnosis fantasy",
+        "hypnotism",
+        "Consensual Hypnosis Roleplay"
+      ],
+      "sources": [
+        "flist:129"
+      ]
+    },
+    {
+      "id": "roleplay.general",
+      "label": "Roleplay",
+      "category": "Roleplay",
+      "aliases": [
+        "role play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "interest.pet-role",
+      "label": "Pet Play",
+      "category": "Roleplay",
+      "aliases": [
+        "petplay",
+        "pet roleplay"
+      ],
+      "sources": [
+        "bc-fetishes:Pet",
+        "flist:251"
+      ],
+      "popular": true
+    },
+    {
+      "id": "roleplay.puppy",
+      "label": "Puppy Play",
+      "category": "Roleplay",
+      "aliases": [
+        "puppyplay"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.kitty",
+      "label": "Kitty Play",
+      "category": "Roleplay",
+      "aliases": [
+        "cat play",
+        "kittyplay"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.foxy",
+      "label": "Foxy Play",
+      "category": "Roleplay",
+      "aliases": [
+        "fox play",
+        "fox roleplay",
+        "foxyplay"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.pony-role",
+      "label": "Pony Play",
+      "category": "Roleplay",
+      "aliases": [
+        "ponyplay",
+        "pony roleplay"
+      ],
+      "sources": [
+        "bc-fetishes:Pony",
+        "flist:313"
+      ]
+    },
+    {
+      "id": "roleplay.abdl",
+      "label": "ABDL",
+      "category": "Roleplay",
+      "aliases": [
+        "adult baby diaper lover",
+        "adult-only roleplay",
+        "diaper lover"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.captor-prisoner",
+      "label": "Captor / Prisoner",
+      "category": "Roleplay",
+      "aliases": [
+        "prisoner roleplay"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.kidnap-fantasy",
+      "label": "Kidnapping",
+      "category": "Roleplay",
+      "aliases": [
+        "consensual kidnap roleplay",
+        "kidnap",
+        "Kidnap Fantasy"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.interrogation",
+      "label": "Interrogation",
+      "category": "Roleplay",
+      "aliases": [
+        "interrogation roleplay"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.medical",
+      "label": "Medical Roleplay",
+      "category": "Roleplay",
+      "aliases": [
+        "doctor roleplay"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.maid-servant",
+      "label": "Maid / Servant",
+      "category": "Roleplay",
+      "aliases": [
+        "maid roleplay",
+        "servant roleplay"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.authority",
+      "label": "Authority Roleplay",
+      "category": "Roleplay",
+      "aliases": [
+        "authority figure"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.magic",
+      "label": "Magic",
+      "category": "Roleplay",
+      "aliases": [
+        "magical roleplay",
+        "spell roleplay"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.sci-fi",
+      "label": "Sci-fi",
+      "category": "Roleplay",
+      "aliases": [
+        "science fiction",
+        "sci fi",
+        "scifi"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.transformation",
+      "label": "Transformation",
+      "category": "Roleplay",
+      "aliases": [
+        "transformation roleplay",
+        "shapeshifting"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "roleplay.dollification",
+      "label": "Dollification",
+      "category": "Roleplay",
+      "aliases": [
+        "doll play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.furniture",
+      "label": "Human Furniture",
+      "category": "Roleplay",
+      "aliases": [
+        "human furniture roleplay",
+        "forniphilia"
+      ],
+      "sources": [
+        "bc-fetishes:Forniphilia"
+      ]
+    },
+    {
+      "id": "interest.object-role",
+      "label": "Object Roleplay",
+      "category": "Roleplay",
+      "aliases": [
+        "object play",
+        "objectification"
+      ],
+      "sources": [
+        "flist:263"
+      ]
+    },
+    {
+      "id": "interest.story",
+      "label": "Story-focused Roleplay",
+      "category": "Roleplay",
+      "aliases": [
+        "story roleplay",
+        "plot",
+        "story driven"
+      ],
+      "sources": [
+        "flist:428"
+      ]
+    },
+    {
+      "id": "interest.nonsexual",
+      "label": "Nonsexual Roleplay",
+      "category": "Roleplay",
+      "aliases": [
+        "non-sexual roleplay",
+        "social roleplay"
+      ],
+      "sources": [
+        "flist:273"
+      ]
+    },
+    {
+      "id": "interest.sensory",
+      "label": "Sensory Play",
+      "category": "Sensory",
+      "aliases": [
+        "sensation play",
+        "sensory deprivation"
+      ],
+      "sources": [
+        "flist:682"
+      ],
+      "popular": true
+    },
+    {
+      "id": "sensory.smell",
+      "label": "Smell Play",
+      "category": "Sensory",
+      "aliases": [
+        "scent play",
+        "olfactophilia",
+        "odour",
+        "odor"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "sensory.sweat",
+      "label": "Sweat",
+      "category": "Sensory",
+      "aliases": [
+        "sweat fetish",
+        "body scent"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "sensory.deprivation",
+      "label": "Sensory Deprivation",
+      "category": "Sensory",
+      "aliases": [
+        "sensory restriction"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "sensory.blindfold",
+      "label": "Blindfold Play",
+      "category": "Sensory",
+      "aliases": [
+        "blindfold scene"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.wax",
+      "label": "Wax Play",
+      "category": "Sensory",
+      "aliases": [
+        "candle wax",
+        "wax"
+      ],
+      "sources": [
+        "flist:258"
+      ]
+    },
+    {
+      "id": "interest.ice",
+      "label": "Ice / Cold Play",
+      "category": "Sensory",
+      "aliases": [
+        "ice play",
+        "cold play",
+        "cold sensation"
+      ],
+      "sources": [
+        "flist:125"
+      ]
+    },
+    {
+      "id": "sensory.temperature",
+      "label": "Temperature Play",
+      "category": "Sensory",
+      "aliases": [
+        "hot and cold"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "sensory.tickling",
+      "label": "Tickling",
+      "category": "Sensory",
+      "aliases": [
+        "tickle"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.hearing",
+      "label": "Hearing Restriction",
+      "category": "Sensory",
+      "aliases": [
+        "earplugs",
+        "deafness play",
+        "deafness"
+      ],
+      "sources": [
+        "bc-fetishes:Deafness"
+      ]
+    },
+    {
+      "id": "interest.electric",
+      "label": "Electrical Sensation",
+      "category": "Sensory",
+      "aliases": [
+        "electrostimulation",
+        "electric toys"
+      ],
+      "sources": [
+        "flist:31"
+      ]
+    },
+    {
+      "id": "fetish.futanari",
+      "label": "Futanari",
+      "category": "Fetishes",
+      "aliases": [
+        "futa",
+        "futas"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "fetish.feet",
+      "label": "Foot Fetish",
+      "category": "Fetishes",
+      "aliases": [
+        "feet"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "fetish.foot-worship",
+      "label": "Foot Worship",
+      "category": "Fetishes",
+      "aliases": [
+        "feet worship"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "fetish.body-worship",
+      "label": "Body Worship",
+      "category": "Fetishes",
+      "aliases": [
+        "worship"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "fetish.body-modification",
+      "label": "Body Modification",
+      "category": "Fetishes",
+      "aliases": [
+        "body mods",
+        "piercings",
+        "tattoos"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "fetish.boots",
+      "label": "Boot Fetish",
+      "category": "Fetishes",
+      "aliases": [
+        "boots"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "fetish.high-heels",
+      "label": "High Heels",
+      "category": "Fetishes",
+      "aliases": [
+        "heels"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.leather",
+      "label": "Leather",
+      "category": "Fetishes",
+      "aliases": [
+        "leather fetish"
+      ],
+      "sources": [
+        "bc-fetishes:Leather",
+        "flist:247"
+      ],
+      "popular": true
+    },
+    {
+      "id": "interest.latex",
+      "label": "Latex",
+      "category": "Fetishes",
+      "aliases": [
+        "latex fetish",
+        "latex",
+        "rubber"
+      ],
+      "sources": [
+        "bc-fetishes:Latex",
+        "flist:90"
+      ],
+      "popular": true
+    },
+    {
+      "id": "fetish.rubber",
+      "label": "Rubber",
+      "category": "Fetishes",
+      "aliases": [
+        "rubber fetish"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "fetish.pvc",
+      "label": "PVC",
+      "category": "Fetishes",
+      "aliases": [
+        "vinyl fetish"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.nylon",
+      "label": "Stockings / Tights",
+      "category": "Fetishes",
+      "aliases": [
+        "nylon",
+        "stockings",
+        "tights"
+      ],
+      "sources": [
+        "bc-fetishes:Nylon"
+      ]
+    },
+    {
+      "id": "fetish.socks",
+      "label": "Socks",
+      "category": "Fetishes",
+      "aliases": [
+        "sock fetish"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.lingerie",
+      "label": "Lingerie",
+      "category": "Fetishes",
+      "aliases": [
+        "underwear"
+      ],
+      "sources": [
+        "bc-fetishes:Lingerie"
+      ]
+    },
+    {
+      "id": "interest.uniforms",
+      "label": "Uniforms",
+      "category": "Fetishes",
+      "aliases": [
+        "uniform fetish",
+        "costume uniform"
+      ],
+      "sources": [
+        "flist:219"
+      ]
+    },
+    {
+      "id": "fetish.gloves",
+      "label": "Gloves",
+      "category": "Fetishes",
+      "aliases": [
+        "glove fetish"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "restraint.corset",
+      "label": "Corsets",
+      "category": "Fetishes",
+      "aliases": [
+        "corset fetish",
+        "waist cincher"
+      ],
+      "sources": [
+        "bc-assets:ItemTorso/HeavyLatexCorset"
+      ]
+    },
+    {
+      "id": "restraint.masks",
+      "label": "Masks",
+      "category": "Fetishes",
+      "aliases": [
+        "mask fetish",
+        "face mask"
+      ],
+      "sources": [
+        "bc-assets:ItemHead/DroneMask"
+      ]
+    },
+    {
+      "id": "physical.rough",
+      "label": "Rough Play",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "rough sex"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.primal",
+      "label": "Primal Play",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "primal"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "popular": true
+    },
+    {
+      "id": "physical.wrestling",
+      "label": "Wrestling / Grappling",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "wrestling",
+        "grappling"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.spitting",
+      "label": "Spitting",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "spit play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.facesitting",
+      "label": "Facesitting",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "face sitting"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.nipple",
+      "label": "Nipple Play",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "nipple stimulation"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.breast",
+      "label": "Breast Play",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "breasts"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.milking",
+      "label": "Milking",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "milking play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.ass-worship",
+      "label": "Ass Worship",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "butt worship"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.toys",
+      "label": "Toys",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "sex toys"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.vibrators",
+      "label": "Vibrators",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "vibrator"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "physical.remote-toys",
+      "label": "Remote-controlled Toys",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "remote toys",
+        "app controlled toys"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "interest.exhibition",
+      "label": "Exhibitionism",
+      "category": "Exhibition / Attention",
+      "aliases": [
+        "consensual exhibition",
+        "being seen",
+        "exhibitionism"
+      ],
+      "sources": [
+        "bc-fetishes:Exhibitionist"
+      ]
+    },
+    {
+      "id": "attention.voyeurism",
+      "label": "Voyeurism",
+      "category": "Exhibition / Attention",
+      "aliases": [
+        "consensual watching"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ]
+    },
+    {
+      "id": "edge.cnc-fantasy",
+      "label": "CNC",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "consensual non-consent",
+        "consensual non-consent fantasy",
+        "CNC Fantasy"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.resistance",
+      "label": "Resistance Play",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "consensual resistance"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.forced-fantasy",
+      "label": "Forced Play",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "consensual forced roleplay",
+        "Forced Fantasy"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.somnophilia-fantasy",
+      "label": "Somnophilia",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "pre-negotiated sleep roleplay",
+        "pre-negotiated sleep fantasy",
+        "Somnophilia Fantasy"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.race-play",
+      "label": "Race Play",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "consensual racial roleplay"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.watersports",
+      "label": "Watersports",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "water sports",
+        "urine play",
+        "golden showers"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.scat",
+      "label": "Scat",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "scat play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.knife",
+      "label": "Knife Play",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "blades"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.blood",
+      "label": "Blood Play",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "blood"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.needle",
+      "label": "Needle Play",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "needles"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.fire",
+      "label": "Fire Play",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "flame play"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.breath",
+      "label": "Breath Play",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "breath control"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.extreme-impact",
+      "label": "Extreme Impact",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "heavy impact"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.torture-roleplay",
+      "label": "Torture Roleplay",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "consensual torture fantasy"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.extreme-humiliation",
+      "label": "Extreme Humiliation",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "heavy humiliation"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.extreme-immobilization",
+      "label": "Extreme Immobilization",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "heavy immobilization"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "edge.heavy-sensory-deprivation",
+      "label": "Heavy Sensory Deprivation",
+      "category": "Edge / Taboo",
+      "aliases": [
+        "extreme sensory deprivation"
+      ],
+      "sources": [
+        "kikilink-curated"
+      ],
+      "edge": true
+    },
+    {
+      "id": "interest.metal",
+      "label": "Metal restraints",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "steel restraints"
+      ],
+      "sources": [
+        "bc-fetishes:Metal"
+      ]
+    },
+    {
+      "id": "interest.tape",
+      "label": "Tape restraints",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "tape bondage",
+        "duct tape"
+      ],
+      "sources": [
+        "bc-fetishes:Tape"
+      ]
+    },
+    {
+      "id": "interest.spandex",
+      "label": "Spandex",
+      "category": "Fetishes",
+      "aliases": [
+        "lycra",
+        "elastane"
+      ],
+      "sources": [
+        "bc-fetishes:Spandex"
+      ]
+    },
+    {
+      "id": "restraint.belt",
+      "label": "Chastity belts",
+      "category": "Bondage & Restraints",
+      "aliases": [],
+      "sources": [
+        "bc-assets:ItemPelvis/MetalChastityBelt"
+      ]
+    },
+    {
+      "id": "restraint.cage-device",
+      "label": "Chastity cages",
+      "category": "Bondage & Restraints",
+      "aliases": [],
+      "sources": [
+        "bc-assets:ItemVulva/FlatChastityCage"
+      ]
+    },
+    {
+      "id": "restraint.cross",
+      "label": "Restraint crosses",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "St Andrew cross"
+      ],
+      "sources": [
+        "bc-assets:ItemDevices/X-Cross"
+      ]
+    },
+    {
+      "id": "restraint.bench",
+      "label": "Restraint benches",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "bondage bench"
+      ],
+      "sources": [
+        "bc-assets:ItemDevices/BondageBench"
+      ]
+    },
+    {
+      "id": "restraint.sleep-sack",
+      "label": "Sleep sacks",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "sleeping bag restraint"
+      ],
+      "sources": [
+        "bc-assets:ItemArms/SleepSac"
+      ]
+    },
+    {
+      "id": "restraint.vacuum",
+      "label": "Vacuum restraints",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "vacuum bed",
+        "vacbed"
+      ],
+      "sources": [
+        "bc-assets:ItemDevices/Vacbed"
+      ]
+    },
+    {
+      "id": "restraint.locks",
+      "label": "Padlocks",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "locking"
+      ],
+      "sources": [
+        "bc-assets:ItemMisc/MetalPadlock"
+      ]
+    },
+    {
+      "id": "restraint.high-heels",
+      "label": "Restrictive heels",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "ballet boots"
+      ],
+      "sources": [
+        "bc-assets:ItemBoots/BalletHeels"
+      ]
+    },
+    {
+      "id": "restraint.boots",
+      "label": "Restrictive boots",
+      "category": "Bondage & Restraints",
+      "aliases": [],
+      "sources": [
+        "bc-assets:ItemBoots/HighThighBoots"
+      ]
+    },
+    {
+      "id": "activity.whisper.giving",
+      "label": "Whispering (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Whisper"
+      ]
+    },
+    {
+      "id": "activity.whisper.receiving",
+      "label": "Whispering (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Whisper"
+      ]
+    },
+    {
+      "id": "activity.kiss.giving",
+      "label": "Kissing (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Kiss",
+        "scarleteen:physical-intimacy"
+      ]
+    },
+    {
+      "id": "activity.kiss.receiving",
+      "label": "Kissing (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Kiss",
+        "scarleteen:physical-intimacy"
+      ]
+    },
+    {
+      "id": "activity.caress.giving",
+      "label": "Caressing (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Caress"
+      ]
+    },
+    {
+      "id": "activity.caress.receiving",
+      "label": "Caressing (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Caress"
+      ]
+    },
+    {
+      "id": "activity.massage.giving",
+      "label": "Massage (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:MassageHands",
+        "scarleteen:physical-intimacy"
+      ]
+    },
+    {
+      "id": "activity.massage.receiving",
+      "label": "Massage (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:MassageHands",
+        "scarleteen:physical-intimacy"
+      ]
+    },
+    {
+      "id": "activity.tickle.giving",
+      "label": "Tickling (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Tickle"
+      ]
+    },
+    {
+      "id": "activity.tickle.receiving",
+      "label": "Tickling (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Tickle"
+      ]
+    },
+    {
+      "id": "activity.petting.giving",
+      "label": "Petting (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Pet"
+      ]
+    },
+    {
+      "id": "activity.petting.receiving",
+      "label": "Petting (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Pet"
+      ]
+    },
+    {
+      "id": "activity.pinch.giving",
+      "label": "Pinching (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Pinch"
+      ]
+    },
+    {
+      "id": "activity.pinch.receiving",
+      "label": "Pinching (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Pinch"
+      ]
+    },
+    {
+      "id": "activity.hand-gag.giving",
+      "label": "Hand gagging (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:HandGag"
+      ]
+    },
+    {
+      "id": "activity.hand-gag.receiving",
+      "label": "Hand gagging (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:HandGag"
+      ]
+    },
+    {
+      "id": "activity.slap.giving",
+      "label": "Slapping (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Slap"
+      ]
+    },
+    {
+      "id": "activity.slap.receiving",
+      "label": "Slapping (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Slap"
+      ]
+    },
+    {
+      "id": "activity.spank.giving",
+      "label": "Spanking (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Spank"
+      ]
+    },
+    {
+      "id": "activity.spank.receiving",
+      "label": "Spanking (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Spank"
+      ]
+    },
+    {
+      "id": "activity.pull-hair.giving",
+      "label": "Hair pulling (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Pull"
+      ]
+    },
+    {
+      "id": "activity.pull-hair.receiving",
+      "label": "Hair pulling (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Pull"
+      ]
+    },
+    {
+      "id": "activity.cuddle.giving",
+      "label": "Cuddling (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Cuddle",
+        "scarleteen:physical-intimacy"
+      ]
+    },
+    {
+      "id": "activity.cuddle.receiving",
+      "label": "Cuddling (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Cuddle",
+        "scarleteen:physical-intimacy"
+      ]
+    },
+    {
+      "id": "activity.scratch.giving",
+      "label": "Scratching (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Scratch"
+      ]
+    },
+    {
+      "id": "activity.scratch.receiving",
+      "label": "Scratching (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Scratch"
+      ]
+    },
+    {
+      "id": "activity.collar-hold.giving",
+      "label": "Collar holding (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:CollarGrab"
+      ]
+    },
+    {
+      "id": "activity.collar-hold.receiving",
+      "label": "Collar holding (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:CollarGrab"
+      ]
+    },
+    {
+      "id": "activity.gag-kiss.giving",
+      "label": "Kissing while gagged (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:GagKiss"
+      ]
+    },
+    {
+      "id": "activity.gag-kiss.receiving",
+      "label": "Kissing while gagged (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:GagKiss"
+      ]
+    },
+    {
+      "id": "activity.brush.giving",
+      "label": "Brushing (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:BrushItem"
+      ]
+    },
+    {
+      "id": "activity.brush.receiving",
+      "label": "Brushing (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:BrushItem"
+      ]
+    },
+    {
+      "id": "activity.care.giving",
+      "label": "Caring touch (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:TakeCare"
+      ]
+    },
+    {
+      "id": "activity.care.receiving",
+      "label": "Caring touch (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:TakeCare"
+      ]
+    },
+    {
+      "id": "activity.nibble.giving",
+      "label": "Nibbling (giving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Nibble"
+      ]
+    },
+    {
+      "id": "activity.nibble.receiving",
+      "label": "Nibbling (receiving)",
+      "category": "Physical / Sexual",
+      "aliases": [],
+      "sources": [
+        "bc-activities:Nibble"
+      ]
+    },
+    {
+      "id": "interest.cuffs-soft",
+      "label": "Soft cuffs",
+      "category": "Bondage & Restraints",
+      "aliases": [
+        "padded cuffs"
+      ],
+      "sources": [
+        "flist:362"
+      ]
+    },
+    {
+      "id": "interest.food",
+      "label": "Food play",
+      "category": "Fetishes",
+      "aliases": [
+        "food"
+      ],
+      "sources": [
+        "flist:284"
+      ]
+    },
+    {
+      "id": "interest.crossdress",
+      "label": "Crossdressing",
+      "category": "Fetishes",
+      "aliases": [
+        "cross-dressing"
+      ],
+      "sources": [
+        "flist:6"
+      ]
+    },
+    {
+      "id": "interest.striptease",
+      "label": "Striptease",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "strip tease"
+      ],
+      "sources": [
+        "flist:307"
+      ]
+    },
+    {
+      "id": "interest.footwear",
+      "label": "Footwear",
+      "category": "Fetishes",
+      "aliases": [
+        "shoes",
+        "boots"
+      ],
+      "sources": [
+        "flist:417"
+      ]
+    },
+    {
+      "id": "interest.muscle",
+      "label": "Muscle appreciation",
+      "category": "Fetishes",
+      "aliases": [
+        "muscle worship"
+      ],
+      "sources": [
+        "flist:293"
+      ]
+    },
+    {
+      "id": "interest.teasing",
+      "label": "Teasing",
+      "category": "Physical / Sexual",
+      "aliases": [
+        "playful teasing"
+      ],
+      "sources": [
+        "flist:69"
+      ]
+    }
+  ]
+}

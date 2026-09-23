@@ -4,12 +4,15 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 
 const path = process.env.KIKILINK_BC_SERVER_SOURCE;
-describe.skipIf(!path)("Pinned BC R131 native Beep presentation", () => {
+describe.skipIf(!path)("Pinned BC R131/R132 native Beep presentation", () => {
   it("keeps KikiLink service Beeps silent in the lobby and room while ordinary Beeps still display", () => {
     const source = readFileSync(path!, "utf8");
-    expect(createHash("sha256").update(source).digest("hex")).toBe(
+    // Audited native sources, kept outside the addon and distribution bundles.
+    // R132: https://www.bondage-europe.com/R132/BondageClub/Scripts/Server.js
+    expect([
       "f7a5d09b622b027e37cd97ad100030ea4608d32db3ddb3cc316ac7e312d31a70",
-    );
+      "122f0d4ba219ac81acaf3e04a4d4bd3b5d7fac288cbb0677a567463c373c957d",
+    ]).toContain(createHash("sha256").update(source).digest("hex"));
     const start = source.indexOf("function ServerAccountBeep(data) {");
     const end = source.indexOf("function ServerSendBeepMessage(", start);
     expect(start).toBeGreaterThan(0);

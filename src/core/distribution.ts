@@ -13,6 +13,8 @@ export const KIKILINK_DISTRIBUTION: KikiLinkDistribution =
 export const KIKILINK_DEV_TEST =
   typeof __KIKILINK_DEV_TEST__ === "boolean" && __KIKILINK_DEV_TEST__;
 
+export const KIKILINK_BUILD_ID = KIKILINK_DEV_TEST && typeof __KIKILINK_BUILD_ID__ === "string" ? __KIKILINK_BUILD_ID__ : "";
+
 const compiledCatboxRelayUrl =
   typeof __KIKILINK_CATBOX_RELAY_URL__ === "string"
     ? __KIKILINK_CATBOX_RELAY_URL__

@@ -1,3 +1,4 @@
+import { isAvatarFrame, isProfileCardStyle, normalizeAvatarDecoration, publicProfileTags } from "../../core/profile-appearance";
 import { withBCNetworkReason } from "../../bc/traffic-audit";
 import type { BCAdapter } from "../../bc/adapter";
 import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
@@ -5,6 +6,7 @@ import type { EventBus } from "../../core/event-bus";
 import type { SettingsStore } from "../../core/settings";
 import type {
   AvatarFrame,
+  AvatarDecoration,
   KikiLinkEvents,
   PresenceSnapshot,
   PresenceStatus,
@@ -62,6 +64,8 @@ type PresencePacket =
       m?: string;
       a?: string;
       f?: AvatarFrame;
+      j?: AvatarDecoration;
+      k?: string[];
       c?: ProfileCardStyle;
       u: number;
       v: string;
@@ -76,6 +80,8 @@ interface RemotePresence {
   statusMessage?: string;
   avatarUrl?: string;
   avatarFrame?: AvatarFrame;
+  avatarDecoration?: AvatarDecoration;
+  publicTags?: string[];
   profileStyle?: ProfileCardStyle;
   addonVersion?: string;
   receivedAt: number;
@@ -116,6 +122,8 @@ export interface OwnProfilePreferences {
   avatarUrl: string;
   bannerUrl: string;
   avatarFrame?: AvatarFrame;
+  avatarDecoration?: AvatarDecoration;
+  publicTags?: string[];
   profileStyle?: ProfileCardStyle;
   profileOutlineColor: string;
   profileGradient?: ProfileGradient;
@@ -454,6 +462,9 @@ export class LinkPresenceService {
       draft.linkPresence.avatarUrl = profile.avatarUrl;
       draft.linkPresence.bannerUrl = profile.bannerUrl;
       if (profile.avatarFrame) draft.linkPresence.avatarFrame = profile.avatarFrame;
+      if (profile.avatarDecoration) draft.linkPresence.avatarDecoration = normalizeAvatarDecoration(profile.avatarDecoration, profile.avatarFrame);
+      else if (profile.avatarFrame) draft.linkPresence.avatarDecoration = normalizeAvatarDecoration(undefined, profile.avatarFrame);
+      if (profile.publicTags) draft.linkPresence.publicTags = publicProfileTags(profile.publicTags);
       if (profile.profileStyle) draft.linkPresence.profileStyle = profile.profileStyle;
       draft.linkPresence.profileOutlineColor = profile.profileOutlineColor;
       if (profile.profileGradient) draft.linkPresence.profileGradient = profile.profileGradient;
@@ -511,6 +522,8 @@ export class LinkPresenceService {
         ...(config.avatarUrl ? { avatarUrl: config.avatarUrl } : {}),
         ...(config.bannerUrl ? { bannerUrl: config.bannerUrl } : {}),
         avatarFrame: config.avatarFrame,
+        avatarDecoration: config.avatarDecoration,
+        publicTags: config.publicTags,
         profileStyle: config.profileStyle,
         ...(config.profileOutlineColor
           ? { profileOutlineColor: config.profileOutlineColor }
@@ -590,6 +603,8 @@ export class LinkPresenceService {
         ...(remote.statusMessage ? { statusMessage: remote.statusMessage } : {}),
         ...(remote.avatarUrl ? { avatarUrl: remote.avatarUrl } : {}),
         ...(remote.avatarFrame ? { avatarFrame: remote.avatarFrame } : {}),
+        ...(remote.avatarDecoration ? { avatarDecoration: remote.avatarDecoration } : {}),
+        ...(remote.publicTags ? { publicTags: remote.publicTags } : {}),
         ...(remote.profileStyle ? { profileStyle: remote.profileStyle } : {}),
         ...(liveProfileDetails
           ? liveProfileDetailFields(liveProfileDetails)
@@ -732,6 +747,7 @@ export class LinkPresenceService {
     const now = Date.now();
     let added = 0;
     for (const memberNumber of memberNumbers) {
+      if (options.interactive && this.#queuedRequests.has(memberNumber)) this.#interactiveRequests.add(memberNumber);
       if (
         this.#requestQueue.length >= MAX_QUEUED_REQUESTS ||
         !Number.isSafeInteger(memberNumber) ||
@@ -739,8 +755,8 @@ export class LinkPresenceService {
         memberNumber === ownMemberNumber ||
         (options.interactive ? this.hasGroupManagedPeer(memberNumber, now) : this.hasCompatiblePeer(memberNumber, now)) ||
         this.#queuedRequests.has(memberNumber) ||
-        now - (this.#lastRequestAt.get(memberNumber) ?? 0) <
-          (options.interactive ? FORCED_REQUEST_COOLDOWN_MS : this.#remoteVersions.has(memberNumber) ? REQUEST_COOLDOWN_MS : BACKGROUND_REQUEST_COOLDOWN_MS) ||
+        (!options.interactive && now - (this.#lastRequestAt.get(memberNumber) ?? 0) <
+          (this.#remoteVersions.has(memberNumber) ? REQUEST_COOLDOWN_MS : BACKGROUND_REQUEST_COOLDOWN_MS)) ||
         !this.#isBackgroundRouteReachable(memberNumber)
       ) {
         continue;
@@ -847,11 +863,18 @@ export class LinkPresenceService {
         !isPositiveMemberNumber(memberNumber) ||
         memberNumber === this.#authenticatedOwnMemberNumber ||
         (interactive ? this.hasGroupManagedPeer(memberNumber, now) : this.hasCompatiblePeer(memberNumber, now)) ||
-        now - (this.#lastRequestAt.get(memberNumber) ?? 0) <
-          (interactive ? FORCED_REQUEST_COOLDOWN_MS : this.#remoteVersions.has(memberNumber) ? REQUEST_COOLDOWN_MS : BACKGROUND_REQUEST_COOLDOWN_MS) ||
+        (!interactive && now - (this.#lastRequestAt.get(memberNumber) ?? 0) <
+          (this.#remoteVersions.has(memberNumber) ? REQUEST_COOLDOWN_MS : BACKGROUND_REQUEST_COOLDOWN_MS)) ||
         !this.#isBackgroundRouteReachable(memberNumber)
       ) {
         continue;
+      }
+      const remaining = FORCED_REQUEST_COOLDOWN_MS - (now - (this.#lastRequestAt.get(memberNumber) ?? 0));
+      if (interactive && remaining > 0) {
+        // Keep one explicit discovery request in the existing bounded queue. Opening the
+        // picker just after a startup probe must not lose the request during cooldown.
+        this.#requestQueue.unshift(memberNumber); this.#queuedRequests.add(memberNumber); this.#interactiveRequests.add(memberNumber);
+        this.#requestTimer = setTimeout(() => this.#drainRequestQueue(), remaining); return;
       }
       sent = this.request(memberNumber, interactive);
     }
@@ -968,6 +991,7 @@ export class LinkPresenceService {
                 enabled: true,
                 primary: packet.x,
                 secondary: packet.y,
+                angle: 135,
               },
             }
           : {}),
@@ -1039,6 +1063,8 @@ export class LinkPresenceService {
       ...(packet.m ? { statusMessage: packet.m } : {}),
       ...(packet.a ? { avatarUrl: packet.a } : {}),
       ...(packet.f ? { avatarFrame: packet.f } : {}),
+      ...(packet.j ? { avatarDecoration: packet.j } : {}),
+      ...(packet.k ? { publicTags: packet.k } : {}),
       ...(packet.c ? { profileStyle: packet.c } : {}),
       addonVersion: packet.v,
       receivedAt,
@@ -1217,6 +1243,8 @@ export class LinkPresenceService {
         : !remote && previous?.avatarUrl
           ? { avatarUrl: previous.avatarUrl }
           : {}),
+      ...(remote?.avatarDecoration ? { avatarDecoration: remote.avatarDecoration } : !remote && previous?.avatarDecoration ? { avatarDecoration: previous.avatarDecoration } : {}),
+      ...(remote?.publicTags ? { publicTags: remote.publicTags } : !remote && previous?.publicTags ? { publicTags: previous.publicTags } : {}),
       ...(remote?.avatarFrame
         ? { avatarFrame: remote.avatarFrame }
         : !remote && previous?.avatarFrame
@@ -1382,6 +1410,8 @@ export class LinkPresenceService {
       ...(config.statusMessage ? { m: config.statusMessage } : {}),
       ...(config.avatarUrl ? { a: config.avatarUrl } : {}),
       f: config.avatarFrame,
+      j: config.avatarDecoration,
+      ...(config.publicTags.length ? { k: config.publicTags } : {}),
       c: config.profileStyle,
       u: Date.now(),
       v: this.version,
@@ -1457,7 +1487,7 @@ export class LinkPresenceService {
       t: "ps", s: statusOverride ?? this.getOwnStatus(),
       ...(includeProfile && config.statusMessage ? { m: config.statusMessage } : {}),
       ...(includeProfile && config.avatarUrl ? { a: config.avatarUrl } : {}),
-      ...(includeProfile ? { f: config.avatarFrame, c: config.profileStyle } : {}),
+      ...(includeProfile ? { f: config.avatarFrame, c: config.profileStyle, j: config.avatarDecoration, k: config.publicTags } : {}),
       u: Date.now(), v: this.version, g: GROUP_CAPABILITY_VERSION,
     };
     try {
@@ -1707,8 +1737,9 @@ export class LinkPresenceService {
       // Native BC/another addon may already have obtained a newer result; reuse that too.
       const latest = Math.max(this.#lastNativeRefreshAt ?? 0, this.adapter.getOnlineFriendsUpdatedAt?.() ?? 0);
       if (latest > 0 && now - latest < interval) return;
-      this.#lastNativeRefreshAt = now;
-      this.adapter.refreshOnlineFriends();
+      // Startup can reach this before the BC adapter is ready. A refused send must not
+      // consume the refresh window and suppress the actual bc:ready catch-up.
+      if (this.adapter.refreshOnlineFriends() !== false) this.#lastNativeRefreshAt = now;
     } catch {
       // Native online-friend state is best effort during account and screen transitions.
     }
@@ -1724,6 +1755,8 @@ function cachedPublicProfileFields(
   return {
     ...(!richOnly && cached.avatarUrl ? { avatarUrl: cached.avatarUrl } : {}),
     ...(!richOnly && cached.avatarFrame ? { avatarFrame: cached.avatarFrame } : {}),
+    ...(!richOnly && cached.avatarDecoration ? { avatarDecoration: cached.avatarDecoration } : {}),
+    ...(!richOnly && cached.publicTags ? { publicTags: cached.publicTags } : {}),
     ...(!richOnly && cached.profileStyle ? { profileStyle: cached.profileStyle } : {}),
     ...(cached.bannerUrl ? { bannerUrl: cached.bannerUrl } : {}),
     ...(cached.bio ? { bio: cached.bio } : {}),
@@ -1749,6 +1782,8 @@ function cachedBasicProfileFields(
   return {
     ...(cached.avatarUrl ? { avatarUrl: cached.avatarUrl } : {}),
     ...(cached.avatarFrame ? { avatarFrame: cached.avatarFrame } : {}),
+    ...(cached.avatarDecoration ? { avatarDecoration: cached.avatarDecoration } : {}),
+    ...(cached.publicTags ? { publicTags: cached.publicTags } : {}),
     ...(cached.profileStyle ? { profileStyle: cached.profileStyle } : {}),
     ...(cached.addonVersion ? { addonVersion: cached.addonVersion } : {}),
     profileFromCache: true,
@@ -1798,6 +1833,8 @@ function cachedPublicProfileMatches(
     input.displayName === cached.displayName &&
     input.avatarUrl === cached.avatarUrl &&
     input.avatarFrame === cached.avatarFrame &&
+    JSON.stringify(input.avatarDecoration) === JSON.stringify(cached.avatarDecoration) &&
+    JSON.stringify(input.publicTags) === JSON.stringify(cached.publicTags) &&
     input.profileStyle === cached.profileStyle &&
     input.bannerUrl === cached.bannerUrl &&
     input.bio === cached.bio &&
@@ -1807,7 +1844,8 @@ function cachedPublicProfileMatches(
     input.addonVersion === cached.addonVersion &&
     input.profileGradient?.enabled === cached.profileGradient?.enabled &&
     input.profileGradient?.primary === cached.profileGradient?.primary &&
-    input.profileGradient?.secondary === cached.profileGradient?.secondary;
+    input.profileGradient?.secondary === cached.profileGradient?.secondary &&
+    (input.profileGradient?.angle ?? 135) === (cached.profileGradient?.angle ?? 135);
 }
 
 function parsePresencePacket(payload: string): PresencePacket | null {
@@ -1931,6 +1969,8 @@ function parsePresencePacket(payload: string): PresencePacket | null {
     ...(message ? { m: message } : {}),
     ...(avatar ? { a: avatar } : {}),
     ...(avatarFrame ? { f: avatarFrame } : {}),
+    ...("j" in value && value.j && typeof value.j === "object" ? { j: normalizeAvatarDecoration(value.j, avatarFrame) } : {}),
+    ...("k" in value ? { k: publicProfileTags(value.k) } : {}),
     ...(profileStyle ? { c: profileStyle } : {}),
     u: value.u,
     v: version,
@@ -1968,6 +2008,8 @@ export function serializePresencePacket(packet: Extract<PresencePacket, { t: "ps
     ...(message ? { m: message } : {}),
     ...(avatar ? { a: avatar } : {}),
     ...(packet.f !== undefined && isAvatarFrame(packet.f) ? { f: packet.f } : {}),
+    ...(packet.j ? { j: normalizeAvatarDecoration(packet.j, packet.f) } : {}),
+    ...(packet.k ? { k: publicProfileTags(packet.k) } : {}),
     ...(packet.c !== undefined && isProfileCardStyle(packet.c) ? { c: packet.c } : {}),
     u: packet.u,
     v: version,
@@ -1976,7 +2018,7 @@ export function serializePresencePacket(packet: Extract<PresencePacket, { t: "ps
   let payload = JSON.stringify(bounded);
   // Required status/time/version always win. Long optional URLs and escaped status notes can make
   // otherwise valid preferences exceed the adapter's transport ceiling.
-  for (const optional of ["a", "m", "f", "c", "i"] as const) {
+  for (const optional of ["a", "m", "k", "j", "f", "c", "i"] as const) {
     if (utf8ByteLength(payload) <= MAX_PROTOCOL_PAYLOAD) return payload;
     delete bounded[optional];
     payload = JSON.stringify(bounded);
@@ -2031,21 +2073,6 @@ export function serializeProfileBioPacket(
     throw new Error("Profile bio exceeds the protocol limit");
   }
   return payload;
-}
-
-function isAvatarFrame(value: unknown): value is AvatarFrame {
-  return value === "none" ||
-    value === "blossom" ||
-    value === "rose" ||
-    value === "starlight" ||
-    value === "laurel" ||
-    value === "thorn" ||
-    value === "moon" ||
-    value === "ribbon";
-}
-
-function isProfileCardStyle(value: unknown): value is ProfileCardStyle {
-  return value === "classic" || value === "garden" || value === "midnight";
 }
 
 function isPresenceStatus(value: unknown): value is PresenceStatus {

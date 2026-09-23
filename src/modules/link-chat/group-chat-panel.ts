@@ -1,9 +1,14 @@
+import type { PeoplePickerRequest } from "./people-picker";
 import type { BCAdapter } from "../../bc/adapter";
 import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
 import { focusedElement as getFocusedElement } from "../../utils/dom";
 import type { PresenceSnapshot } from "../../core/types";
 import type { LinkPresenceService } from "../link-presence/link-presence-service";
 import { kikiIcon } from "./icons";
+import { syncDateSeparators } from "./date-separators";
+import { bindClockText } from "../../core/time-format";
+import { appendFormattedText, TEXT_FORMAT_HINT } from "./text-format";
+import { parseMessageLinks } from "./media";
 import {
   GROUP_MESSAGE_MAX_CONTENT,
   GROUP_TITLE_MAX_CHARS,
@@ -62,6 +67,7 @@ export interface GroupChatPanelMemberTarget {
 }
 
 export interface GroupChatPanelOptions {
+  choosePeople?(request: PeoplePickerRequest): void;
   onActivate?: (groupId: string) => void;
   onClose?: () => void;
   onFeedback?: (feedback: GroupChatPanelFeedback) => void;
@@ -291,6 +297,7 @@ export class GroupChatPanel {
     this.#composer.maxLength = GROUP_MESSAGE_MAX_CONTENT;
     this.#composer.rows = 1;
     this.#composer.placeholder = "Write a group message…";
+    this.#composer.title = TEXT_FORMAT_HINT;
     this.#composer.setAttribute("aria-label", "Message the group");
     composerLabel.htmlFor = this.#composer.id;
     this.#composer.addEventListener("input", () => this.#onComposerInput());
@@ -589,6 +596,15 @@ export class GroupChatPanel {
       );
     } catch {
       // Discovery may be unavailable during BC startup; already-detected peers remain selectable.
+    }
+    if (this.options.choosePeople) {
+      this.options.choosePeople({ mode: "Create group", groupTitle: "", minimum: 2, maximum: GROUP_MAX_REMOTE_MEMBERS,
+        eligible: member => this.#isCompatible(member), confirm: async (members, title) => {
+          const result = await this.service.createManagedGroup(members, title ?? "");
+          await this.activate(result.group.groupId);
+          this.#report({ tone: result.failed.length ? "warning" : "success", message: result.failed.length
+            ? "Group saved; some invitations failed. Open group details to retry." : "Group created. Invitations passed to Bondage Club; delivery is not confirmed." });
+        } }); return;
     }
     this.#renderSelectionStage();
     if (this.newGroupDialog.open) return;
@@ -1158,6 +1174,17 @@ export class GroupChatPanel {
       addButton.disabled = candidates.length === 0 ||
         group.memberNumbers.length >= GROUP_MAX_MEMBERS;
       addButton.addEventListener("click", () => {
+        if (this.options.choosePeople) {
+          this.options.choosePeople({ mode: "Add members", maximum: GROUP_MAX_MEMBERS - group.memberNumbers.length, exclude: group.memberNumbers,
+            eligible: member => this.#isCompatible(member), confirm: async members => {
+              for (const member of members) {
+                if (this.service.getGroup(group.groupId)?.memberNumbers.includes(member)) continue;
+                const result = await (this.options.onAddGroupMember ? this.options.onAddGroupMember(group.groupId, member) : this.service.addMember(group.groupId, member));
+                if (result && result.failed.length) throw new Error("Membership saved; an invitation failed. Retry from group details.");
+              }
+              this.refresh();
+            } }); return;
+        }
         const memberNumber = Number(select.value);
         const candidate = candidates.find((entry) => entry.memberNumber === memberNumber);
         if (!candidate) {
@@ -1174,6 +1201,7 @@ export class GroupChatPanel {
           `${candidate.memberName} was added to the group.`,
         );
       });
+      select.hidden = !!this.options.choosePeople;
       add.append(select, addButton);
       section.append(add);
     }
@@ -1723,6 +1751,7 @@ export class GroupChatPanel {
       }
       this.#messageLog.replaceChildren(fragment);
     }
+    syncDateSeparators(this.#messageLog);
     if (shouldFollowNewest) this.#messageLog.scrollTop = this.#messageLog.scrollHeight;
     else if (changedMemberNames) this.#messageLog.scrollTop = previousScrollTop;
   }
@@ -1734,6 +1763,7 @@ export class GroupChatPanel {
     const item = node("article", "kl-group-message");
     item.dataset.direction = message.direction;
     item.dataset.messageId = message.id;
+    item.dataset.messageTime = String(message.sentAt);
     item.dataset.messageKey = groupMessageKey(message);
     item.dataset.groupMemberNumber = String(message.senderNumber);
     const memberName = this.#memberName(group, message.senderNumber);
@@ -1749,9 +1779,8 @@ export class GroupChatPanel {
       ?.classList.add("kl-group-message-avatar");
     const authorNode = node("strong", "kl-group-message-author", author);
     const timestamp = document.createElement("time");
-    timestamp.className = "kl-group-message-time";
-    timestamp.dateTime = new Date(message.sentAt).toISOString();
-    timestamp.textContent = formatMessageTime(message.sentAt);
+    timestamp.className = "kl-group-message-time kl-message-time";
+    bindClockText(timestamp, message.sentAt);
     const meta = node("header", "kl-group-message-meta");
     meta.append(authorNode);
     if (relayed) {
@@ -1779,7 +1808,7 @@ export class GroupChatPanel {
         // A host renderer must never make the transcript unusable; plain text is always safe.
       }
     }
-    if (!rendered) content.textContent = message.content;
+    if (!rendered) appendFormattedText(content, message.content, parseMessageLinks(message.content));
     item.append(authorTarget, meta, content);
     return item;
   }
@@ -1818,7 +1847,9 @@ export class GroupChatPanel {
     this.#counter.dataset.nearLimit = String(length >= maxContent - 20);
     this.#sendButton.disabled =
       this.#sending || !this.#currentGroupId || this.#composer.value.trim().length === 0;
-    this.#composer.disabled = this.#sending || !this.#currentGroupId;
+    // Keep the focused editor usable while transport/storage work is pending.
+    // Disabling it blurs it in browsers and can dismiss the on-screen keyboard.
+    this.#composer.disabled = !this.#currentGroupId;
     this.#attachImageButton.disabled =
       this.#sending || !this.#currentGroupId || !this.options.onAttachImage;
   }
@@ -1885,6 +1916,8 @@ export class GroupChatPanel {
     const groupId = this.#currentGroupId;
     const value = this.#composer.value;
     if (!groupId || this.#sending || !value.trim()) return;
+    // Only the explicit Send/Enter action owns focus, never its late completion.
+    this.#composer.focus({ preventScroll: true });
     this.#flushDraft();
     this.#sending = true;
     this.#updateComposerControls();
@@ -1892,11 +1925,15 @@ export class GroupChatPanel {
     try {
       const result = await this.service.sendMessage(groupId, value);
       if (result.persisted) {
-        await this.service.setDraft(groupId, "");
-        if (this.#currentGroupId === groupId) {
+        // Enqueue any newer draft before the conditional clear. The service checks
+        // inside its per-group queue so switching chats cannot erase later typing.
+        if (this.#pendingDraft?.groupId === groupId) void this.#flushDraft();
+        const clearDraft = this.service.setDraft(groupId, "", value);
+        if (this.#currentGroupId === groupId && this.#composer.value === value) {
           this.#composer.value = "";
           this.#renderActiveGroup(false, false);
         }
+        await clearDraft;
       }
       if (this.#currentGroupId === groupId) this.#reportSendResult(groupId, result);
     } catch (error) {
@@ -1910,7 +1947,6 @@ export class GroupChatPanel {
     } finally {
       this.#sending = false;
       this.#updateComposerControls();
-      if (this.#currentGroupId === groupId) this.#composer.focus();
     }
   }
 
@@ -2282,14 +2318,23 @@ export class GroupChatPanel {
             : !this.#isOnline(contact.memberNumber) ? "Offline" : "KikiLink not detected yet · Refresh to check",
         );
         contactButton.append(name, detail);
-        contactButton.addEventListener("click", () => {
+        const toggleSelection = (): void => {
           if (this.#selectedMembers.has(contact.memberNumber)) {
             this.#selectedMembers.delete(contact.memberNumber);
           } else if (this.#selectedMembers.size < GROUP_MAX_REMOTE_MEMBERS) {
             this.#selectedMembers.add(contact.memberNumber);
           }
           this.#renderContactOptions();
-        });
+        };
+        contactButton.addEventListener("click", toggleSelection);
+        const selectToggle = button("kl-group-contact-toggle", "");
+        selectToggle.dataset.memberNumber = String(contact.memberNumber);
+        selectToggle.disabled = contactButton.disabled;
+        selectToggle.setAttribute("aria-pressed", String(selected));
+        selectToggle.setAttribute("aria-label", selected ? `Remove ${contact.memberName} from group` : `Add ${contact.memberName} to group`);
+        selectToggle.title = selected ? "Remove from group" : "Add to group";
+        selectToggle.append(kikiIcon(selected ? "check" : "plus"));
+        selectToggle.addEventListener("click", toggleSelection);
         const listItem = node("div", "kl-group-contact-item");
         listItem.setAttribute("role", "listitem");
         listItem.dataset.selected = String(selected);
@@ -2297,6 +2342,7 @@ export class GroupChatPanel {
         listItem.append(
           this.#memberProfileTarget(member, "kl-group-contact-profile"),
           contactButton,
+          selectToggle,
         );
         list.append(listItem);
       }
@@ -2608,22 +2654,8 @@ function uniqueDomId(prefix: string): string {
   return `${prefix}-${domId}`;
 }
 
-let messageTimeFormatter: Intl.DateTimeFormat | undefined;
-
 function groupMessageKey(message: Pick<GroupMessage, "senderNumber" | "id">): string {
   return `${message.senderNumber}:${message.id}`;
-}
-
-function formatMessageTime(value: number): string {
-  try {
-    messageTimeFormatter ??= new Intl.DateTimeFormat(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-    return messageTimeFormatter.format(new Date(value));
-  } catch {
-    return "";
-  }
 }
 
 function validOutlineColor(value: string): string | undefined {

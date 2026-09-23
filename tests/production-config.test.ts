@@ -38,9 +38,11 @@ describe("production configuration", () => {
         cloudTestMember: 0, production: false });
   });
   it("retains staging origin validation", () => {
-    for (const origin of ["", "http://staging.example.invalid", "https://staging.example.invalid/path",
+    for (const origin of ["", "http://staging.example.invalid", "https://staging.example.invalid/path?token=x", "https://staging.example.invalid/a/../b",
       "https://user:password@staging.example.invalid"]) {
       expect(rejected(["--local", "--cloud"], { KIKILINK_CLOUD_ORIGIN: origin })).not.toBe(0);
     }
+    expect(config(["--local", "--cloud"], { KIKILINK_CLOUD_ORIGIN: "https://staging.example.invalid/kikilink-test" }))
+      .toMatchObject({ cloudOrigin: "https://staging.example.invalid/kikilink-test", production: false });
   });
 });

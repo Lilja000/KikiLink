@@ -13,6 +13,7 @@ afterEach(() => {
   for (const dispose of disposers.splice(0)) dispose();
   document.body.replaceChildren();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function button(root: ParentNode, text: string): HTMLButtonElement {
@@ -104,6 +105,96 @@ async function setup(cloudEnabled = true) {
 }
 
 describe("Cloud destinations in LinkFinder", () => {
+  it("closes a clean profile directly and offers save, discard, or continued editing for a draft", async () => {
+    const { shadow, view, settings } = await setup(false);
+    const open = () => shadow.querySelector<HTMLButtonElement>(".kl-presence-trigger")!.click();
+    open();
+    const dialog = shadow.querySelector<HTMLDialogElement>(".kl-presence-dialog")!;
+    button(dialog, "Cancel").click();
+    expect(dialog.open).toBe(false);
+    expect(shadow.querySelector<HTMLDialogElement>(".kl-unsaved-dialog")!.open).toBe(false);
+
+    open();
+    const bio = dialog.querySelector<HTMLTextAreaElement>(".kl-profile-bio-input")!;
+    bio.value = "Keep this draft";
+    button(dialog, "Cancel").click();
+    const warning = shadow.querySelector<HTMLDialogElement>(".kl-unsaved-dialog")!;
+    expect(dialog.open).toBe(true); expect(warning.open).toBe(true);
+    expect(warning.textContent).toContain("You have unsaved changes");
+    button(warning, "Keep Editing").click();
+    expect(warning.open).toBe(false); expect(dialog.open).toBe(true); expect(bio.value).toBe("Keep this draft");
+
+    view.close();
+    expect(warning.open).toBe(true); expect(dialog.open).toBe(true);
+    button(warning, "Discard Changes").click();
+    expect(warning.open).toBe(false); expect(dialog.open).toBe(false);
+    open(); expect(dialog.querySelector<HTMLTextAreaElement>(".kl-profile-bio-input")!.value).toBe("");
+
+    dialog.querySelector<HTMLTextAreaElement>(".kl-profile-bio-input")!.value = "Saved through confirmation";
+    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    expect(warning.open).toBe(true);
+    button(warning, "Save Changes").click();
+    await vi.waitFor(() => expect(dialog.open).toBe(false));
+    expect(settings.getSection("linkPresence").bio).toBe("Saved through confirmation");
+  });
+
+  it.each(["comfortable", "compact", "super-compact"] as const)(
+    "retains the profile disclosure and drafts when the keyboard reduces the viewport at %s density",
+    async density => {
+      const viewport = Object.assign(new EventTarget(), { height: window.innerHeight, offsetTop: 0 });
+      vi.stubGlobal("visualViewport", viewport);
+      const { shadow, settings, fetchImpl } = await setup();
+      settings.update(draft => { draft.ui.density = density; });
+      shadow.querySelector<HTMLButtonElement>(".kl-presence-trigger")!.click();
+      const host = shadow.host as HTMLElement;
+      const dialog = shadow.querySelector<HTMLDialogElement>(".kl-presence-dialog")!;
+      const body = dialog.querySelector<HTMLElement>(".kl-presence-body")!;
+      const preferences = body.querySelector<HTMLDetailsElement>(".kl-preferences-editor")!;
+      const bio = body.querySelector<HTMLTextAreaElement>(".kl-profile-bio-input")!;
+      bio.value = "An unsaved profile draft";
+      preferences.querySelector<HTMLElement>("summary")!.click();
+      expect(preferences.open).toBe(true);
+
+      for (const height of [260, window.innerHeight, 320]) {
+        viewport.height = height;
+        viewport.dispatchEvent(new Event("resize"));
+        expect(host.dataset.shortViewport).toBe(String(height < window.innerHeight - 80));
+        if (height < window.innerHeight - 80) expect(host.style.getPropertyValue("--kl-visible-dialog-height")).toBe(`${height - 16}px`);
+        expect(dialog.open).toBe(true);
+        expect(preferences.open).toBe(true);
+        expect(preferences.textContent).toContain("Connect to KikiLink Cloud to edit preferences.");
+        expect(bio.value).toBe("An unsaved profile draft");
+        // Applied sizing rules only: Happy DOM does not simulate Firefox layout.
+        expect(getComputedStyle(body).display).toBe("flex");
+        expect(getComputedStyle(body).flexDirection).toBe("column");
+        expect(getComputedStyle(body).overflow).toBe("auto");
+        for (const field of Array.from(body.children)) expect(getComputedStyle(field).flexShrink).toBe("0");
+        expect(getComputedStyle(preferences).minHeight).toBe("64px");
+        expect(dialog.querySelector(".kl-dialog-actions")?.parentElement).toBe(dialog);
+      }
+      preferences.querySelector<HTMLElement>("summary")!.click();
+      expect(preferences.open).toBe(false);
+      preferences.querySelector<HTMLElement>("summary")!.click();
+      expect(preferences.open).toBe(true);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("opens Match preferences after Bio in the existing profile editor even before connecting", async () => {
+    const { shadow, fetchImpl } = await setup();
+    shadow.querySelector<HTMLButtonElement>(".kl-presence-trigger")!.click();
+    const dialog = shadow.querySelector<HTMLDialogElement>(".kl-presence-dialog")!;
+    const preferences = dialog.querySelector<HTMLDetailsElement>(".kl-preferences-editor")!;
+    expect(dialog.open).toBe(true);
+    expect(preferences.previousElementSibling?.querySelector(".kl-profile-bio-input")).not.toBeNull();
+    preferences.querySelector<HTMLElement>("summary strong")!.click();
+    expect(preferences.open).toBe(true);
+    expect(preferences.textContent).toContain("Connect to KikiLink Cloud to edit preferences.");
+    expect(fetchImpl).not.toHaveBeenCalled();
+    preferences.querySelector<HTMLElement>("summary")!.click();
+    expect(preferences.open).toBe(false);
+  });
+
   it("uses the native sidebar and preserves direct/Feed drafts and DOM when switching through Groups", async () => {
     const { client, view, shadow, cloud, choose, fetchImpl } = await setup(); await client.connect();
     await view.openChat(202, "Person 202");
@@ -141,9 +232,9 @@ describe("Cloud destinations in LinkFinder", () => {
     cloud!.querySelector<HTMLButtonElement>('[aria-label="Kiki Cloud"]')!.click();
     await vi.waitFor(() => expect(shadow.querySelector(".kl-addon-profile-card")).not.toBeNull());
     const card = shadow.querySelector<HTMLElement>(".kl-addon-profile-card")!;
-    expect(card.dataset.profileStyle).toBe("midnight"); expect(card.dataset.customGradient).toBe("true");
+    expect(card.dataset.profileStyle).toBe("gradient"); expect(card.dataset.customGradient).toBe("true");
     expect(card.style.getPropertyValue("--kl-profile-gradient-primary")).toBe("#123456");
-    expect(card.querySelector<HTMLElement>(".kl-addon-profile-avatar-shell")!.dataset.frame).toBe("moon");
+    expect(card.querySelector<HTMLElement>(".kl-addon-profile-avatar")!.dataset.avatarFrame).toBe("moon");
     expect(card.querySelector(".kl-addon-profile-status")).not.toBeNull();
     expect(card.querySelector(".kl-addon-profile-private")).not.toBeNull();
     expect(shadow.querySelector(".kl-cloud-profile")).toBeNull();
@@ -274,6 +365,7 @@ it('opens a never-seen group member in the native profile dialog, including the 
   await client.profile(202,true);
   shadow.querySelector<HTMLDialogElement>('.kl-addon-profile-dialog')!.close();
   cloud!.querySelector<HTMLButtonElement>('.kl-group-member .kl-social-avatar')!.click();
-  await vi.waitFor(()=>expect(shadow.querySelector('.kl-addon-profile-card')!.textContent).toContain('Profile not set up yet'));
+  await vi.waitFor(()=>expect(shadow.querySelector('.kl-addon-profile-card')!.textContent).not.toContain('Cloud bio'));
+  expect(shadow.querySelector('.kl-addon-profile-card')!.textContent).not.toContain('Profile not set up yet');
   expect(shadow.querySelector('.kl-addon-profile-card')!.textContent).not.toContain('Cloud bio');
 });

@@ -71,6 +71,7 @@ export class CloudClient {
   #closed = false;
   #lifetime = new AbortController();
   #stream: AbortController | undefined;
+  #eventLeases = 0;
   #failures = 0;
   #retryAt = 0;
   #cache = new Map<number, { value: CloudProfile; at: number; refreshAfter: number }>();
@@ -99,21 +100,22 @@ export class CloudClient {
     if (!cloudMemberEnabled(options.memberNumber))
       throw new CloudError("development_allowlist");
     const url = new URL(options.origin);
+    const base = `${url.origin}${url.pathname === "/" ? "" : url.pathname.replace(/\/$/u, "")}`;
     if (
       url.protocol !== "https:" ||
-      url.origin !== options.origin ||
       url.username ||
-      url.password
+      url.password || url.search || url.hash ||
+      !/^\/(?:[A-Za-z0-9._~-]+\/?)*$/u.test(url.pathname) || base !== options.origin
     )
       throw new CloudError("invalid_cloud_origin");
     this.memberNumber = options.memberNumber;
-    this.#origin = url.origin;
+    this.#origin = base;
     this.#fetch = options.fetchImpl ?? fetch.bind(globalThis);
     this.#now = options.now ?? Date.now;
     this.#deviceStore =
       options.deviceStore ??
       (typeof indexedDB !== "undefined"
-        ? new IndexedDbCloudDeviceStore(url.origin, this.memberNumber)
+        ? new IndexedDbCloudDeviceStore(base, this.memberNumber)
         : undefined);
   }
   #check(): void {
@@ -145,6 +147,8 @@ export class CloudClient {
   get connectionError(): string {
     return this.#connectionError;
   }
+  /** Remaining circuit-breaker delay; UI retries must not exhaust themselves during it. */
+  get retryDelay(): number { return Math.max(0, this.#retryAt - this.#now()); }
   #setConnection(state: CloudConnectionState, error = ""): void {
     this.#connectionState = state;
     this.#connectionError = error;
@@ -202,7 +206,7 @@ export class CloudClient {
         this.#session = undefined;
         this.#deviceKey = undefined;
         clearTimeout(this.#refreshTimer);
-        this.stopEvents();
+        this.stopEvents(true);
         this.#notify("session");
         this.#setConnection("idle");
         return;
@@ -490,7 +494,7 @@ export class CloudClient {
       path.includes("\\") ||
       path.includes("#") ||
       path.includes("..") ||
-      new URL(path, this.#origin).origin !== this.#origin
+      new URL(path, this.#origin).origin !== new URL(this.#origin).origin
     )
       throw new CloudError("invalid_path");
     if (
@@ -552,7 +556,7 @@ export class CloudClient {
           this.#inflight.clear();
           this.#cache.clear();
           this.#clearMedia();
-          this.stopEvents();
+          this.stopEvents(true);
           this.#notify("session");
         }
         if (response.status >= 500) this.#failure();
@@ -719,6 +723,10 @@ export class CloudClient {
     if (epoch !== this.#epoch) throw new CloudError("session_changed");
     return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: "image/webp" });
   }
+  retainEvents(): () => void {
+    this.#eventLeases++; this.startEvents();
+    return () => { this.#eventLeases = Math.max(0, this.#eventLeases - 1); if (!this.#eventLeases) this.stopEvents(); };
+  }
   startEvents(): void {
     if (!this.connected || this.#stream) return;
     const controller = new AbortController();
@@ -728,7 +736,7 @@ export class CloudClient {
   async #events(controller: AbortController): Promise<void> {
     for (
       let attempt = 0;
-      attempt < 3 && !controller.signal.aborted && this.connected;
+      !controller.signal.aborted && this.connected;
       attempt++
     ) {
       try {
@@ -756,7 +764,7 @@ export class CloudClient {
             while ((end = buffer.indexOf("\n\n")) >= 0) {
               const entry = buffer.slice(0, end);
               buffer = buffer.slice(end + 2);
-              const kind = /^event: (feed|groups|typing)\n/mu.exec(entry)?.[1];
+              const kind = /^event: (feed|groups|typing|reports|ready|relationships|mailbox|direct|read|receipts|feed-read|preferences)\n/mu.exec(entry)?.[1];
               if (kind) this.#notify(kind);
             }
           }
@@ -773,13 +781,14 @@ export class CloudClient {
             controller.signal.removeEventListener("abort", done);
             resolve();
           };
-          const timer = setTimeout(done, 1000 * 2 ** attempt);
+          const timer = setTimeout(done, Math.min(60_000, 1000 * 2 ** Math.min(attempt, 6)));
           controller.signal.addEventListener("abort", done, { once: true });
         });
     }
     if (this.#stream === controller) this.#stream = undefined;
   }
-  stopEvents(): void {
+  stopEvents(force = false): void {
+    if (!force && this.#eventLeases > 0) return;
     this.#stream?.abort();
     this.#stream = undefined;
   }
@@ -810,7 +819,7 @@ export class CloudClient {
       this.#setConnection("idle");
       this.#cache.clear();
       this.#clearMedia(); this.#blocked.clear();
-      this.stopEvents();
+      this.stopEvents(true);
       this.#notify("session");
     }
   }
@@ -819,7 +828,7 @@ export class CloudClient {
     this.#lifetime.abort();
     clearTimeout(this.#refreshTimer);
     this.#deviceKey = undefined;
-    this.stopEvents();
+    this.stopEvents(true);
     this.#session = undefined;
     this.#pending = undefined;
     this.#cache.clear();

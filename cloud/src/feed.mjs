@@ -1,11 +1,13 @@
 import { requireThat } from "./validation.mjs";
 import { hash } from "./crypto.mjs";
+import { FeedHighlights } from "./feed-highlights.mjs";
 
 export class Feed {
   constructor(social) {
     this.social = social;
     const { db, keys, now } = social;
     Object.assign(this, { db, keys, now });
+    this.highlights = new FeedHighlights(this);
   }
   visiblePost(actor, id) {
     const p = this.db.get(
@@ -35,6 +37,8 @@ export class Feed {
         displayName: p.displayName,
         avatarId: p.avatarId,
         avatarFrame: p.avatarFrame,
+        ...(p.avatarDecoration ? { avatarDecoration: p.avatarDecoration } : {}),
+        ...(p.publicTags ? { publicTags: p.publicTags } : {}),
       };
     } catch {
       return {
@@ -67,6 +71,7 @@ export class Feed {
   }
   view(actor, p) {
     return {
+      ...this.highlights.metadata(p.id),
       id: p.id,
       author: p.author,
       profile: this.profileSummary(actor, p.author),
@@ -103,6 +108,7 @@ export class Feed {
     return {
       items: rows.slice(0, limit).map((p) => this.view(actor, p)),
       nextCursor: rows.length > limit ? rows[limit - 1].id : null,
+      ...(before === 0 ? { promoted: this.highlights.promoted(actor) } : {}),
     };
   }
   search(actor, before, limit, query) {
@@ -221,6 +227,7 @@ export class Feed {
         id,
       );
       this.db.run("DELETE FROM feed_media WHERE post_id=?", id);
+      this.db.run("DELETE FROM feed_pins WHERE post_id=?", id);
       this.db.run(
         "DELETE FROM reactions WHERE (target_type='post' AND target_id=?) OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE post_id=?))",
         id,
@@ -345,13 +352,25 @@ export class Feed {
       );
     else
       this.db.run(
-        "INSERT INTO reactions VALUES(?,?,?,?) ON CONFLICT(target_type,target_id,member_number) DO UPDATE SET reaction=excluded.reaction",
+        "INSERT INTO reactions(target_type,target_id,member_number,reaction,created_at) VALUES(?,?,?,?,?) ON CONFLICT(target_type,target_id,member_number) DO UPDATE SET reaction=excluded.reaction",
         type,
         id,
         actor,
         reaction,
+        this.now(),
       );
     return this.reactions(actor, type, id);
+  }
+  reactionList(actor, type, id, after, limit) {
+    this.target(actor, type, id);
+    const rows = this.db.all(`SELECT r.member_number,r.reaction FROM reactions r
+      JOIN users u ON u.member_number=r.member_number AND u.disabled=0
+      WHERE r.target_type=? AND r.target_id=? AND r.member_number>?
+      AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner=? AND b.target=r.member_number) OR (b.target=? AND b.owner=r.member_number))
+      ORDER BY r.member_number LIMIT ?`, type, id, after, actor, actor, limit + 1);
+    return { items: rows.slice(0, limit).map(row => ({ memberNumber: row.member_number,
+      reaction: row.reaction, profile: this.profileSummary(actor, row.member_number) })),
+      nextCursor: rows.length > limit ? rows[limit - 1].member_number : null };
   }
   reportable(actor, type, id) {
     if (type === "profile") return this.social.profile(actor, Number(id));
@@ -365,7 +384,14 @@ export class Feed {
     this.social.visibleActor(actor, m.sender);
     return m;
   }
-  report(actor, type, id, reason) {
+  report(actor, type, id, reason, reasonCode = null, clientId = null) {
+    if (clientId) {
+      const previous = this.db.get("SELECT id,target_type,target_id FROM reports WHERE reporter=? AND client_id=?", actor, clientId);
+      if (previous) {
+        requireThat(previous.target_type === type && previous.target_id === id, 409, "request_conflict");
+        return { id: previous.id };
+      }
+    }
     this.reportable(actor, type, id);
     const old = this.db.get(
       "SELECT id FROM reports WHERE reporter=? AND target_type=? AND target_id=? AND status='open'",
@@ -376,12 +402,14 @@ export class Feed {
     if (old) return { id: old.id };
     const reportId = Number(
       this.db.run(
-        "INSERT INTO reports(reporter,target_type,target_id,reason,created_at) VALUES(?,?,?,?,?)",
+        "INSERT INTO reports(reporter,target_type,target_id,reason,created_at,reason_code,client_id) VALUES(?,?,?,?,?,?,?)",
         actor,
         type,
         id,
         this.keys.seal(reason, `report:${actor}:${type}:${id}`),
         this.now(),
+        reasonCode,
+        clientId,
       ).lastInsertRowid,
     );
     return { id: reportId };

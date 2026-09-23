@@ -166,3 +166,15 @@ host, Catbox/Litterbox, or a person who saved a copy.
 
 Security-sensitive privacy problems should be reported privately under [SECURITY.md](SECURITY.md).
 Ordinary documentation questions may use the project's public repository.
+
+## Offline Direct and optional Preferences
+
+KikiLink 1.0 automatically enables Cloud delivery for new Direct messages between
+eligible confirmed Cloud friends. Signing out pauses Cloud on that browser. Its local
+retry queue is distinct from Save message history and may briefly persist message text
+until delivery, expiry processing or explicit clearing. Remove chat and Clear history
+stop local retries; they cannot recall a message already stored by Cloud. Existing local
+history is never uploaded automatically. Optional preference ratings use their own
+private encrypted endpoint and are excluded from profile/presence/ExtensionSettings.
+See [the controls and retention](cloud/PRIVACY.md#optional-social-delivery-and-preferences)
+for visibility modes, bilateral grants, server storage, score inference and deletion.

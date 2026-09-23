@@ -12,9 +12,11 @@ import type {
 } from "../core/types";
 import type { EventBus } from "../core/event-bus";
 import { cleanBeepMessageContent } from "./message-content";
+import { isReconnectNotice } from "./reconnect-notice";
 import { copyRoomMap } from "../core/room-map";
 import { roomOptions } from "./room-options";
 import { NATIVE_FRIEND_FRESH_MS } from "./friend-state";
+import { isKikiLinkInputEvent } from "./keyboard";
 
 const READY_POLL_MS = 400;
 const COMPATIBILITY_HOOK_RETRY_MS = 500;
@@ -145,6 +147,7 @@ export class BCAdapter {
   readonly #installedActivityHooks = new Set<string>();
   readonly #installedOutgoingHooks = new Set<string>();
   #modApi: ModSDKModAPI | undefined;
+  #keyboardHooks = new Set<string>();
   #socket: BCServerSocket | undefined;
   #socketRebindTimer: ReturnType<typeof setInterval> | undefined;
   #beepLogTimer: ReturnType<typeof setInterval> | undefined;
@@ -282,6 +285,9 @@ export class BCAdapter {
       this.#logger.warn("ModSDK unload did not finish cleanly", error);
     }
     this.#modApi = undefined;
+    this.#keyboardHooks.clear();
+    this.#friendHookInstalled = false;
+    this.#friendListeners.clear();
     this.#compatibilityHooksInitialized = false;
     this.#roomMessageHookInstalled = false;
     this.#installedActivityHooks.clear();
@@ -337,6 +343,33 @@ export class BCAdapter {
   }
 
   getOnlineFriendsUpdatedAt(): number { return this.#onlineFriendsUpdatedAt; }
+
+  readonly #friendListeners = new Set<(members: number[]) => void>();
+  #friendHookInstalled = false;
+  ownFriends(): number[] {
+    return typeof Player === "object" && Array.isArray(Player.FriendList) ? [...Player.FriendList] : [];
+  }
+  subscribeFriends(listener: (members: number[]) => void): () => void {
+    this.#friendListeners.add(listener); return () => this.#friendListeners.delete(listener);
+  }
+  setNativeFriend(memberNumber: number, adding: boolean): void {
+    if (!Number.isSafeInteger(memberNumber) || memberNumber <= 0 || memberNumber === this.getOwnMemberNumber()) throw new Error("Choose another player");
+    if (this.isKnownFriend(memberNumber) === adding) return;
+    const update = Reflect.get(globalThis, "ChatRoomListUpdate");
+    const canDelete = Reflect.get(globalThis, "FriendListCanDelete");
+    if (!this.#ready || typeof Player !== "object" || !Array.isArray(Player.FriendList) || typeof update !== "function") throw new Error("Native friend controls are unavailable. Reconnect and retry sync.");
+    if (!adding && (typeof canDelete !== "function" || !canDelete(memberNumber))) throw new Error("Bondage Club does not allow removing this friend.");
+    update(Player.FriendList, adding, memberNumber, undefined, true);
+    if (this.isKnownFriend(memberNumber) !== adding) throw new Error("Native friend change could not be confirmed.");
+  }
+  #ensureFriendHook(): void {
+    if (this.#friendHookInstalled || typeof Reflect.get(globalThis, "ChatRoomListUpdate") !== "function") return;
+    this.#friendHookInstalled = this.#installIntegrationHook("ChatRoomListUpdate", 0, (args, next) => {
+      const before = this.ownFriends().join(","); const result = next(args);
+      if (this.ownFriends().join(",") !== before) for (const listener of this.#friendListeners) listener(this.ownFriends());
+      return result;
+    });
+  }
 
   isKnownFriend(memberNumber: number): boolean {
     if (typeof Player !== "object" || Player === null) return false;
@@ -605,6 +638,7 @@ export class BCAdapter {
         name,
         description: cleanText(ChatRoomData.Description, 500),
         language: cleanText(ChatRoomData.Language, 24),
+        ...(cleanText(ChatRoomData.Creator, 80) ? { creator: cleanText(ChatRoomData.Creator, 80) } : {}),
         memberCount: Array.isArray(ChatRoomCharacter) ? ChatRoomCharacter.length : roomCharacters.length + 1,
         memberLimit:
           Number.isSafeInteger(ChatRoomData.Limit) && Number(ChatRoomData.Limit) > 0
@@ -613,9 +647,8 @@ export class BCAdapter {
         canJoin: true,
         locked: access.length > 0 && !access.includes("All"),
         privateRoom: visibility.length > 0 && !visibility.includes("All"),
-        mapType: typeof ChatRoomData.MapData === "object" && ChatRoomData.MapData !== null
-          ? normalizeLobbyMapType("map")
-          : "",
+        mapType: normalizeLobbyMapType(ChatRoomData.MapType) ||
+          (typeof ChatRoomData.MapData === "object" && ChatRoomData.MapData !== null ? "Always" : "Never"),
         friends,
       };
     } catch (error) {
@@ -1229,10 +1262,14 @@ export class BCAdapter {
 
     this.#ensureActivityHooks();
     this.#ensureCharacterOverlayHook();
+    this.#ensureKeyboardHooks();
+    this.#ensureFriendHook();
     if (this.#compatibilityHookRetryTimer === undefined) {
       this.#compatibilityHookRetryTimer = setInterval(() => {
         this.#ensureActivityHooks();
         this.#ensureCharacterOverlayHook();
+        this.#ensureKeyboardHooks();
+        this.#ensureFriendHook();
       }, COMPATIBILITY_HOOK_RETRY_MS);
     }
   }
@@ -1251,6 +1288,17 @@ export class BCAdapter {
     if (this.#installIntegrationHook(name, 0, hook)) {
       this.#installedOutgoingHooks.add(name);
       setBCTrafficHookAvailable(true);
+    }
+  }
+
+  #ensureKeyboardHooks(): void {
+    // BC R131 Game.js registers lambdas that resolve these names on every event.
+    // Guard before KeyManager and map handlers, including capture-phase callers.
+    // Do not intercept GameKeyUp: it must release movement begun outside KikiLink.
+    for (const name of ["GameKeyDown", "GamePaste"]) {
+      if (this.#keyboardHooks.has(name) || typeof Reflect.get(globalThis, name) !== "function") continue;
+      if (this.#installIntegrationHook(name, 100, (args, next) =>
+        isKikiLinkInputEvent(args[0]) ? false : next(args))) this.#keyboardHooks.add(name);
     }
   }
 
@@ -1682,6 +1730,8 @@ export class BCAdapter {
 
   #normalizeBeepLogEntry(entry: BCFriendListBeepLogMessage): BeepEvent | null {
     if (!entry || !Number.isSafeInteger(entry.MemberNumber)) return null;
+    if (isReconnectNotice({ direction: entry.Sent ? "outgoing" : "incoming", peerNumber: entry.MemberNumber,
+      content: entry.Message ?? "", roomName: entry.ChatRoomName }, this.getOwnMemberNumber())) return null;
     const timestamp = new Date(entry.Time).getTime();
     const sentAt = Number.isFinite(timestamp) ? timestamp : Date.now();
     const roomName = cleanName(entry.ChatRoomName);
@@ -1765,6 +1815,8 @@ export class BCAdapter {
   #normalizeIncoming(data: BCServerAccountBeepResponse): BeepEvent | null {
     if (!data || (data.BeepType != null && data.BeepType !== "")) return null;
     if (!Number.isSafeInteger(data.MemberNumber) || typeof data.MemberName !== "string") return null;
+    if (isReconnectNotice({ direction: "incoming", peerNumber: data.MemberNumber,
+      content: data.Message ?? "", roomName: data.ChatRoomName }, this.getOwnMemberNumber())) return null;
 
     const roomName = typeof data.ChatRoomName === "string" ? data.ChatRoomName : undefined;
     return {

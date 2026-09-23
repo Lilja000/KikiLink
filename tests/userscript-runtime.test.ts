@@ -579,8 +579,8 @@ describe("published userscript runtime", () => {
     expect(
       document
         .querySelector<HTMLElement>("#kikilink-root")
-        ?.shadowRoot?.querySelector<HTMLElement>(".kl-connection-text")?.textContent,
-    ).toBe("Connected");
+        ?.shadowRoot?.querySelector<HTMLElement>(".kl-connection-text"),
+    ).toBeNull();
     expect(getGlobal("bcModSdk")).toBe(sharedSdk.global);
     expect(sharedSdk.requests).toContainEqual({
       mod: "KikiLink",

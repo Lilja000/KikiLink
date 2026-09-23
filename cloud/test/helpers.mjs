@@ -41,6 +41,7 @@ export async function fixture(t, overrides = {}) {
   let clock = Date.now();
   const config = {
     mode: "development",
+    communityEnabled: true,
     origin: "https://cloud.example.test",
     allowedOrigins: new Set(["https://bondageprojects.elementfx.com"]),
     testMembers: new Set([101, 202, 303, 404, 505, 606]),

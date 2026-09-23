@@ -94,14 +94,14 @@ describe("SettingsStore", () => {
     }));
 
     const settings = new SettingsStore(storage).get();
-    expect(settings.schemaVersion).toBe(29);
+    expect(settings.schemaVersion).toBe(30);
     expect(settings.linkPresence.profileImagePreviews).toBe("always");
 
     const persisted = JSON.parse(storage.getItem(SETTINGS_KEY) ?? "null") as Record<
       string,
       unknown
     >;
-    expect(persisted.schemaVersion).toBe(29);
+    expect(persisted.schemaVersion).toBe(30);
     expect(persisted).not.toHaveProperty("unknownRootField");
     expect(JSON.stringify(persisted)).not.toContain("legacy-cloud-name");
     expect(JSON.stringify(persisted)).not.toContain("legacy-upload-preset");
@@ -191,7 +191,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(29);
+    expect(settings.schemaVersion).toBe(30);
     expect(settings.linkActivities).toEqual({
       enabled: true,
       customActivities: [
@@ -315,7 +315,7 @@ describe("SettingsStore", () => {
       linkActivities: { enabled: true },
     });
 
-    expect(settings.schemaVersion).toBe(29);
+    expect(settings.schemaVersion).toBe(30);
     expect(settings.linkActivities.enabled).toBe(true);
     expect(settings.linkActivities.customActivities).toEqual([]);
     expect(settings.linkRoster).toEqual({
@@ -339,7 +339,7 @@ describe("SettingsStore", () => {
       linkRoster: { enabled: false, trackEncounters: false },
     });
 
-    expect(settings.schemaVersion).toBe(29);
+    expect(settings.schemaVersion).toBe(30);
     expect(settings.ui).toMatchObject({
       accent: "#247f7a",
       theme: "light",
@@ -383,6 +383,8 @@ describe("SettingsStore", () => {
       avatarUrl: "",
       bannerUrl: "",
       avatarFrame: "none",
+      avatarDecoration: DEFAULT_SETTINGS.linkPresence.avatarDecoration,
+      publicTags: [],
       profileStyle: "classic",
       profileOutlineColor: "",
       profileGradient: DEFAULT_SETTINGS.linkPresence.profileGradient,
@@ -424,7 +426,7 @@ describe("SettingsStore", () => {
       schemaVersion: 23,
       linkPresence: { status: "dnd" },
     });
-    expect(legacy.schemaVersion).toBe(29);
+    expect(legacy.schemaVersion).toBe(30);
     expect(legacy.linkPresence).toMatchObject({
       avatarFrame: "none",
       profileStyle: "classic",
@@ -449,7 +451,7 @@ describe("SettingsStore", () => {
     });
     expect(decorated.linkPresence).toMatchObject({
       avatarFrame: "laurel",
-      profileStyle: "midnight",
+      profileStyle: "gradient",
       bannerUrl: "https://files.catbox.moe/kiki-banner.webp",
       profileOutlineColor: "#aa33cc",
       profileGradient: {
@@ -529,7 +531,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(29);
+    expect(settings.schemaVersion).toBe(30);
     expect(settings.linkReactions).toEqual({
       quickAlerts: {
         friendOnline: false,
@@ -705,7 +707,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(29);
+    expect(settings.schemaVersion).toBe(30);
     expect(settings.ui.roomBadge).toEqual({ enabled: true, position: null });
     expect(settings.linkPresence.afkAutoReply).toEqual({
       enabled: true,
@@ -833,7 +835,7 @@ describe("SettingsStore", () => {
       },
     });
 
-    expect(settings.schemaVersion).toBe(29);
+    expect(settings.schemaVersion).toBe(30);
     expect(settings.linkRoom.favoriteRoomNames).toEqual(["Moon Garden", "Golden Hall"]);
     expect(settings.linkRoom.presets[0]).toMatchObject({
       id: "moon_room",

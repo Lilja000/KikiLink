@@ -1,3 +1,10 @@
+import { CloudError } from "../../cloud/client";
+import { containKikiLinkKeyboard } from "../../bc/keyboard";
+import { activeAvatarFrame, effectiveProfileStyle, normalizeAvatarDecoration, publicProfileTags } from "../../core/profile-appearance";
+import { applyAvatarAppearance, applyProfileAppearance } from "./appearance-renderer";
+import { AvatarAppearanceEditor } from "./avatar-appearance-editor";
+import { syncDateSeparators, localDay } from "./date-separators";
+import { conversationMuted, MUTE_DURATIONS, muteDescription } from "./conversation-mute";
 import type {
   BCAdapter,
   BCLobbyRoom,
@@ -7,7 +14,6 @@ import type {
   BCRoomMemberAction,
 } from "../../bc/adapter";
 import type {
-  AvatarFrame,
   BCConnectionState,
   ConversationMeta,
   KikiLinkSettings,
@@ -36,6 +42,7 @@ import {
 } from "../../core/version-update-checker";
 import {
   KIKILINK_DEV_TEST,
+  KIKILINK_BUILD_ID,
   KIKILINK_DISTRIBUTION,
   usesCatboxUploadRelay,
 } from "../../core/distribution";
@@ -94,7 +101,16 @@ import { parseInlineReplyContext } from "./message-reply";
 import { messageActions, copyMessageText as copyText, shouldSendMessage } from "./message-controls";
 import { ReplyComposer, replyPreview } from "./reply-composer";
 import { MessageInteraction } from "./message-interaction";
-import { appendActionFormattedText } from "./message-actions";
+import { appendFormattedText, TEXT_FORMAT_HINT } from "./text-format";
+import { directReceiptState, messageReceiptIndicator, updateMessageReceipt } from "./message-receipt";
+import {
+  bindClockText,
+  bindClockTitle,
+  clearClockBinding,
+  clearClockTitleBinding,
+  refreshClockText,
+  setTimeFormatPreference,
+} from "../../core/time-format";
 import {
   RemoteImageLoader,
   type RemoteImageLease,
@@ -129,6 +145,20 @@ import type {
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/branding/kikilink-emblem.webp";
 import KIKILINK_BLOSSOM_DATA_URL from "../../../design/branding/kikilink-blossom.png";
 import { CloudClient } from "../../cloud/client";
+import { CommunityService } from "../../cloud/community";
+import { CloudDirect } from "../../cloud/direct";
+import { MailboxPopover } from "../../cloud/mailbox-popover";
+import { renderRelationshipControls } from "../../cloud/relationship-controls";
+import { countBadge, updateBadge } from "./badge";
+import {
+  PreferencesEditor,
+  compatibilityDetails,
+  type Compatibility,
+  type Preferences,
+} from "../../cloud/preferences-editor";
+import { normalizePreferenceRatings } from "../../cloud/preference-model";
+import { ContentDialog } from "./content-dialog";
+import type { PeoplePickerRequest } from "./people-picker";
 import { CloudPanel, type CloudDestination } from "../../cloud/panel";
 import { CloudProfileEditor } from "../../cloud/profile-editor";
 import type { CloudProfile } from "../../cloud/types";
@@ -160,6 +190,13 @@ interface SocialViewContext {
   playerRoom: string | undefined;
   playerScroll: number;
   selectedPlayer: number | undefined;
+}
+interface PresenceLocalDraft {
+  enabled: boolean;
+  status: PresenceStatus;
+  autoIdle: string;
+  afkEnabled: boolean;
+  afkMessage: string;
 }
 type FeatureTarget = WorkspaceView;
 type HomeAction =
@@ -261,29 +298,11 @@ interface RoomOperationTarget {
 const MAX_AUTO_REMOTE_IMAGE_LOADS = 4;
 const MAX_FALLBACK_AUTO_REMOTE_IMAGE_LOADS = 12;
 const MAX_RETAINED_REMOTE_IMAGE_PREVIEWS = 6;
-const MAX_RETAINED_REMOTE_DECORATIONS = 12;
+const MAX_RETAINED_REMOTE_DECORATIONS = 24;
 const REMOTE_IMAGE_TRACK_ATTRIBUTE = "data-kl-remote-image-track";
-const SHORT_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  hour: "2-digit",
-  minute: "2-digit",
-});
 const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
-});
-const FULL_SEEN_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-});
-const LOCAL_CLOCK_TITLE_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  weekday: "long",
-  year: "numeric",
-  month: "long",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
 });
 const WORKSPACE_TITLES: Record<WorkspaceView, string> = {
   home: "Home",
@@ -300,9 +319,56 @@ const WORKSPACE_TITLES: Record<WorkspaceView, string> = {
 
 export class LinkChatView {
   #cloud: CloudPanel | undefined;
+  #community: CommunityService | undefined;
+  #mailbox: MailboxPopover | undefined;
+  #preferences: PreferencesEditor | undefined;
+  readonly #contentDialog = new ContentDialog();
+  readonly #friendNodes = new Map<HTMLElement, number>();
+  readonly #chatCount = countBadge();
+  readonly #feedCount = countBadge();
+  #friendsView: "all" | "requests" = "all";
+  #requestsView: "received" | "sent" = "received";
+  readonly #friendNavigation = element("div", { className: "kl-friend-navigation" });
+  readonly #requestsButton = element("button", { className: "kl-text-button kl-players-requests", type: "button" });
+  #cloudDirect: CloudDirect | undefined;
   #cloudProfile: CloudProfileEditor | undefined;
   #cloudPresence: CloudPresence | undefined;
   attachCloud(client: CloudClient, storage: KeyValueStorage): void {
+    this.#community = new CommunityService(client, this.adapter, storage);
+    this.#preferences = new PreferencesEditor(client);
+    this.#mailbox = new MailboxPopover(this.#community, { open: async item => {
+      if (item.kind === "release") { this.#activateFeature("news"); return; }
+      if (item.targetType === "profile" && item.actor) { await this.#openAddonProfile(item.actor, this.adapter.getMemberName(item.actor)); return; }
+      if (item.kind === "group_invitation") { this.#showWorkspace("chat", true, "groups"); await this.#cloud?.openGroup(item.targetId); return; }
+      this.#showWorkspace("cloud", true, "feed");
+      if (item.kind === "report") await this.#cloud?.openReports();
+      else await this.#cloud?.openPost(item.postId ?? Number(item.targetId), item.targetType === "comment" ? Number(item.targetId) : undefined);
+    } });
+    this.#community.subscribe(() => {
+      if (!this.#mounted) return;
+      updateBadge(this.#feedCount, this.#community?.feedUnread ?? 0);
+      if (this.#newChatDialog.open) this.#renderKnownContacts();
+      if (this.#workspaceView === "roster") this.#renderRoster();
+      for (const [root, peer] of this.#friendNodes) {
+        if (!root.isConnected) { this.#friendNodes.delete(root); continue; }
+        renderRelationshipControls(root, peer, this.#community, this.adapter);
+      }
+    });
+    this.#cloudDirect = new CloudDirect(this.#community, this.service, storage, {
+      active: peer => this.isActiveConversation(peer),
+      changed: (peer, message) => {
+        if (!this.#mounted) return;
+        if (message && this.#activePeer === peer) {
+          if (!this.#patchMessageMetadata(message)) this.#appendMessage(message);
+        }
+        else if (peer !== undefined && this.#activePeer === peer) void this.#renderMessages(peer, false);
+        void this.refresh();
+      },
+      incoming: message => {
+        if (this.#mounted && !this.isActiveConversation(message.peerNumber)) this.onNotification({ kind: "chat", showToast: true,
+          memberNumber: message.peerNumber, occurredAt: message.sentAt, message: `${message.peerName} · ${messagePreview(message.content)}` });
+      },
+    });
     this.#cloudPresence = new CloudPresence(client, () => {
       if (!this.settings.getSection("linkPresence").enabled) return "offline";
       const status = this.presence.get(client.memberNumber).status;
@@ -328,6 +394,9 @@ export class LinkChatView {
       openDirectChats: () => { this.#chatFilter = "all"; this.#showWorkspace("chat"); void this.#renderConversations(); },
       enterToSend: () => this.settings.getSection("linkChat").enterToSend,
       embeddedGroups: true,
+      choosePeople: request => this.#openPeoplePicker(request),
+      readFeed: id => { void this.#community?.readFeed(id).catch(() => {}); },
+      canReadFeed: () => !this.#panel.hidden && this.#workspaceView === "cloud",
       groupSelection: selected => {
         this.#cloudChatSelected = selected;
         this.#stopLocalTyping();
@@ -339,7 +408,7 @@ export class LinkChatView {
       groupIncoming: (group, message) => {
         if (!this.#mounted || this.#notificationsMuted()) return;
         this.onNotification({ kind: "chat", showToast: true, memberNumber: message.sender, occurredAt: message.createdAt,
-          message: `${group.title} · ${messagePreview(message.text ?? "")}` });
+          message: `${group.title} · ${messagePreview(message.text ?? "")}` }, true);
       },
       groupsChanged: () => {
         if (!this.#mounted) return;
@@ -351,6 +420,11 @@ export class LinkChatView {
       relatedMembers: () => { try { return new Set(this.adapter.getKnownContacts().map(contact => contact.memberNumber)); } catch { return new Set(); } },
     });
     client.subscribe(kind => {
+      if (this.#mounted && (kind.startsWith("profile:") || ["profiles-cleared", "media-invalidated", "session", "ready"].includes(kind))) {
+        const changed = kind.startsWith("profile:") ? Number(kind.slice(8)) : undefined;
+        if (kind === "session" || kind === "ready") { this.#cloudAvatarFetchAfter.clear(); this.#cloudAvatarDenied.clear(); }
+        this.#refreshCloudAvatars(changed, kind === "media-invalidated", kind === "ready" || kind === "session");
+      }
       const member = this.#addonProfileTarget?.memberNumber;
       if (!this.#mounted || this.#panel.hidden || !this.#addonProfileDialog.open || member === undefined) return;
       if (kind !== `profile:${member}` && kind !== "profiles-cleared") return;
@@ -362,7 +436,12 @@ export class LinkChatView {
     });
   }
   readonly #host = document.createElement("div");
+  readonly #cloudAvatarTargets = new Map<HTMLElement, { member: number; name: string; visible: boolean }>();
+  readonly #cloudAvatarFetchAfter = new Map<number, number>();
+  readonly #cloudAvatarDenied = new Set<number>();
+  #cloudAvatarObserver: IntersectionObserver | undefined;
   readonly #shadow = this.#host.attachShadow({ mode: "open" });
+  #releaseKeyboardBoundary: (() => void) | undefined;
   readonly #launcher = element("button", {
     className: "kl-launcher",
     type: "button",
@@ -512,7 +591,7 @@ export class LinkChatView {
     className: "kl-typing-indicator",
     ariaLabel: "Typing status",
   });
-  readonly #composer = element("textarea", { className: "kl-composer-input" });
+  readonly #composer = element("textarea", { className: "kl-composer-input", title: TEXT_FORMAT_HINT });
   readonly #reply = new ReplyComposer(this.#composer, 1000);
   #messageInteraction: MessageInteraction | undefined;
   readonly #sendButton = element("button", {
@@ -691,6 +770,7 @@ export class LinkChatView {
   readonly #accentInput = element("input", { className: "kl-color-input" }) as HTMLInputElement;
   readonly #densitySelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
   readonly #textScaleSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #timeFormatSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
   readonly #homeLayoutSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
   readonly #launcherSideSelect = element("select", {
     className: "kl-select",
@@ -713,7 +793,7 @@ export class LinkChatView {
     title: "LinkRoster",
     ariaLabel: "Open LinkRoster",
   });
-  readonly #rosterCount = element("span", { className: "kl-roster-count" });
+  readonly #rosterCount = countBadge();
   readonly #rosterPage = element("section", {
     className: "kl-feature-page kl-roster-page",
     ariaLabel: "LinkRoster players",
@@ -778,6 +858,12 @@ export class LinkChatView {
     className: "kl-select kl-new-chat-sort",
     ariaLabel: "Sort known contacts",
   }) as HTMLSelectElement;
+  #picker: PeoplePickerRequest | undefined;
+  #pickerSelected = new Set<number>();
+  #pickerBusy = false;
+  readonly #pickerGroupTitle = element("input", { className: "kl-search", ariaLabel: "Group name" }) as HTMLInputElement;
+  readonly #pickerSelection = element("div", { className: "kl-picker-selection" });
+  readonly #pickerStatus = element("p", { className: "kl-cloud-status" });
   readonly #newChatResults = element("div", { className: "kl-contact-results" });
   readonly #finderDialog = element("dialog", { className: "kl-dialog kl-finder-dialog" });
   readonly #finderQuery = element("input", { className: "kl-finder-query" }) as HTMLInputElement;
@@ -796,6 +882,7 @@ export class LinkChatView {
   readonly #presenceTriggerStatus = element("span", { className: "kl-presence-trigger-status" });
   readonly #localClock = element("time", { className: "kl-local-clock" });
   readonly #presenceDialog = element("dialog", { className: "kl-dialog kl-presence-dialog" });
+  readonly #presenceUnsavedDialog = element("dialog", { className: "kl-dialog kl-unsaved-dialog" });
   readonly #presenceOptions = element("div", { className: "kl-presence-options" });
   readonly #presenceEnabledToggle = element("input") as HTMLInputElement;
   readonly #presenceMessage = element("input", { className: "kl-search kl-presence-message" }) as HTMLInputElement;
@@ -815,6 +902,9 @@ export class LinkChatView {
     className: "kl-select kl-profile-style-select",
     ariaLabel: "Profile card style",
   }) as HTMLSelectElement;
+  readonly #avatarAppearance = new AvatarAppearanceEditor(this.#presenceAvatarFrame, () => this.#renderOwnAvatarPreview());
+  readonly #publicTags = element("input", { className: "kl-search", ariaLabel: "Public profile tags" });
+  readonly #profileAppearancePreview = element("div", { className: "kl-profile-appearance-preview" }, element("strong", { text: "Your profile card" }), element("small", { text: "Current room · Last seen · Compatibility" }));
   readonly #presenceGradientEnabled = element("input") as HTMLInputElement;
   readonly #presenceGradientPrimary = element("input", {
     className: "kl-profile-gradient-color",
@@ -822,6 +912,10 @@ export class LinkChatView {
   readonly #presenceGradientSecondary = element("input", {
     className: "kl-profile-gradient-color",
   }) as HTMLInputElement;
+  readonly #presenceGradientAngle = element("select", {
+    className: "kl-select kl-profile-gradient-angle",
+    ariaLabel: "Profile card gradient direction",
+  }) as HTMLSelectElement;
   readonly #presenceBannerUrl = element("input", {
     className: "kl-search kl-presence-banner-url",
   }) as HTMLInputElement;
@@ -856,6 +950,8 @@ export class LinkChatView {
     className: "kl-custom-activity-template kl-afk-reply-message",
   }) as HTMLTextAreaElement;
   readonly #afkAutoReplyOptions = element("div", { className: "kl-afk-reply-options" });
+  #presenceLocalBaseline: string | undefined;
+  #presenceStandaloneBaseline: string | undefined;
   readonly #imageDialog = element("dialog", { className: "kl-dialog kl-image-dialog" });
   readonly #imageDialogTitle = element("div", { className: "kl-dialog-title" });
   readonly #imageDialogSubtitle = element("div", { className: "kl-dialog-subtitle" });
@@ -963,6 +1059,7 @@ export class LinkChatView {
   #ignoreLauncherClick = false;
   #launcherHoldTimer: ReturnType<typeof setTimeout> | undefined;
   #notificationResumeTimer: ReturnType<typeof setTimeout> | undefined;
+  #conversationMuteTimer: ReturnType<typeof setTimeout> | undefined;
   #settingsReturnView: PrimaryWorkspaceView = "home";
   #settingsSection: SettingsSection = "appearance";
   #presentCount = 0;
@@ -1129,6 +1226,20 @@ export class LinkChatView {
     this.#positionPanel();
     this.#updateSettingsTabOrientation();
     this.#closeProfileMenu();
+    this.#handleVisualViewport();
+  };
+
+  readonly #handleVisualViewport = (): void => {
+    const viewport = window.visualViewport;
+    const reduced = Boolean(viewport && viewport.height < window.innerHeight - 80);
+    this.#host.dataset.shortViewport = String(reduced);
+    if (reduced && viewport) {
+      this.#host.style.setProperty("--kl-visible-dialog-height", `${Math.max(0, viewport.height - 16)}px`);
+      this.#host.style.setProperty("--kl-visible-dialog-top", `${viewport.offsetTop + 8}px`);
+    } else {
+      this.#host.style.removeProperty("--kl-visible-dialog-height");
+      this.#host.style.removeProperty("--kl-visible-dialog-top");
+    }
   };
 
   constructor(
@@ -1161,6 +1272,7 @@ export class LinkChatView {
       uploadPreparedImageToCatbox(image, undefined, onProgress, signal),
     private readonly remoteImageLoader: RemoteImageLoaderLike = new RemoteImageLoader(),
   ) {
+    setTimeFormatPreference(this.settings.getSection("ui").timeFormat);
     this.presence =
       presence ??
       new LinkPresenceService(adapter, settings, new EventBus(), version);
@@ -1231,6 +1343,7 @@ export class LinkChatView {
     }
     this.#groupChatService = service;
     const panel = new GroupChatPanel(this.adapter, service, this.presence, {
+      choosePeople: request => this.#openPeoplePicker(request),
       onActivate: () => {
         // A group click is a newer navigation intent than any direct-chat lookup currently
         // awaiting storage. Invalidate it before hiding the direct pane.
@@ -1325,10 +1438,25 @@ export class LinkChatView {
     return panel.activeGroupId;
   }
 
+  #directReadFrame: number | undefined;
+  readonly #observeDirectRead = (): void => {
+    if (this.#directReadFrame !== undefined) return;
+    this.#directReadFrame = requestAnimationFrame(() => {
+      this.#directReadFrame = undefined;
+      const peer = this.#activePeer;
+      if (peer === undefined || !this.#mounted || !this.isActiveConversation(peer)) return;
+      void this.service.getConversation(peer).then(async conversation => {
+        if (!conversation?.unread || !this.isActiveConversation(peer)) return;
+        await this.service.markRead(peer); await this.refresh();
+      }).catch(() => {});
+    });
+  };
+
   mount(): void {
     if (this.#mounted) return;
     this.#mounted = true;
     this.#host.id = "kikilink-root";
+    this.#releaseKeyboardBoundary = containKikiLinkKeyboard(this.#shadow);
 
     const style = document.createElement("style");
     style.textContent = LINK_CHAT_STYLES + (this.#cloud ? CLOUD_STYLES : "");
@@ -1338,6 +1466,7 @@ export class LinkChatView {
     this.#buildNewChatDialog();
     this.#buildFinderDialog();
     this.#buildPresenceDialog();
+    this.#buildPresenceUnsavedDialog();
     this.#buildAddonProfileDialog();
     this.#buildImageDialog();
     this.#buildAliasDialog();
@@ -1349,6 +1478,7 @@ export class LinkChatView {
       this.#newChatDialog,
       this.#finderDialog,
       this.#presenceDialog,
+      this.#presenceUnsavedDialog,
       this.#addonProfileDialog,
       this.#imageDialog,
       this.#groupAvatarFileInput,
@@ -1356,7 +1486,9 @@ export class LinkChatView {
       this.#removeChatDialog,
       this.#profileMenuLayer,
       this.#launcherMenu.element,
+      this.#contentDialog.element,
     );
+    if (this.#mailbox) this.#shadow.append(this.#mailbox.element);
     if (this.#groupChatPanel) {
       this.#shadow.append(
         this.#groupChatPanel.newGroupDialog,
@@ -1374,7 +1506,12 @@ export class LinkChatView {
     this.#positionLauncher();
     this.#positionPanel();
     window.addEventListener("resize", this.#handleViewportResize);
+    window.visualViewport?.addEventListener("resize", this.#handleVisualViewport);
+    window.visualViewport?.addEventListener("scroll", this.#handleVisualViewport);
+    this.#handleVisualViewport();
     document.addEventListener("pointerdown", this.#handleOutsidePointerDown);
+    document.addEventListener("visibilitychange", this.#observeDirectRead);
+    this.#messages.addEventListener("scroll", this.#observeDirectRead, { passive: true });
     this.#presenceUnsubscribe = this.presence.subscribe((memberNumber) =>
       this.#schedulePresenceRender(memberNumber),
     );
@@ -1382,6 +1519,9 @@ export class LinkChatView {
     this.#settingsUnsubscribe = this.settings.subscribe((settings) => {
       this.#applyTheme(settings);
       this.#syncNotificationState();
+      setTimeFormatPreference(settings.ui.timeFormat);
+      refreshClockText(this.#shadow, settings.ui.timeFormat);
+      this.#scheduleClockUpdate();
       const signature = localMusicReferenceSignature(settings);
       if (signature === this.#localMusicReferenceSignature) return;
       this.#localMusicReferenceSignature = signature;
@@ -1394,11 +1534,20 @@ export class LinkChatView {
   }
 
   destroy(): void {
+    this.#cloudAvatarObserver?.disconnect(); this.#cloudAvatarObserver = undefined;
+    this.#cloudAvatarTargets.clear(); this.#cloudAvatarFetchAfter.clear(); this.#cloudAvatarDenied.clear();
+    this.#releaseKeyboardBoundary?.();
+    this.#releaseKeyboardBoundary = undefined;
     this.presence.setNativeFriendsVisible?.(false);
     this.#messageInteraction?.destroy();
     this.#reply.destroy();
     this.#cloudPresence?.destroy();
     this.#cloudProfile?.destroy();
+    this.#preferences?.destroy();
+    this.#contentDialog.destroy();
+    this.#mailbox?.destroy();
+    this.#cloudDirect?.destroy();
+    this.#community?.destroy();
     this.#cloud?.destroy();
     this.#mounted = false;
     this.#cancelLauncherHold();
@@ -1460,7 +1609,12 @@ export class LinkChatView {
     this.#removeChatDialog.close();
     this.#closeProfileMenu();
     window.removeEventListener("resize", this.#handleViewportResize);
+    window.visualViewport?.removeEventListener("resize", this.#handleVisualViewport);
+    window.visualViewport?.removeEventListener("scroll", this.#handleVisualViewport);
     document.removeEventListener("pointerdown", this.#handleOutsidePointerDown);
+    document.removeEventListener("visibilitychange", this.#observeDirectRead);
+    this.#messages.removeEventListener("scroll", this.#observeDirectRead);
+    if (this.#directReadFrame !== undefined) cancelAnimationFrame(this.#directReadFrame);
     this.#roomApplyController?.abort();
     this.#roomManager?.destroy();
     this.#presenceUnsubscribe?.();
@@ -1486,6 +1640,7 @@ export class LinkChatView {
     this.#lobbyRows?.destroy();
     this.#lobbyRenderToken += 1;
     this.#host.remove();
+    clearTimeout(this.#conversationMuteTimer);
     void this.#notificationSounds.destroy();
     this.soundStore.close();
     this.musicStore.close();
@@ -1495,6 +1650,9 @@ export class LinkChatView {
 
   isActiveConversation(peerNumber: number): boolean {
     return (
+      document.visibilityState !== "hidden" &&
+      (!this.#isMobileLayout() || this.#panel.dataset.mobileView === "chat") &&
+      this.#messages.scrollHeight - this.#messages.scrollTop - this.#messages.clientHeight < 96 &&
       !this.#panel.hidden &&
       this.#workspaceView === "chat" &&
       !(this.#cloud && (this.#chatFilter === "groups" || this.#cloudChatSelected)) &&
@@ -1517,7 +1675,7 @@ export class LinkChatView {
     this.#sendButton.disabled = !canSend || this.#directSendBusy;
     this.#attachImageButton.disabled =
       !canSend || this.#directSendBusy || this.#activePeer === undefined;
-    this.#composer.disabled = !canSend || this.#directSendBusy;
+    this.#composer.disabled = !canSend;
     this.#composer.placeholder = canSend ? "Write a Beep…" : "Connecting to Bondage Club…";
     if (this.#newChatDialog.open) this.#renderKnownContacts();
     if (this.#workspaceView === "activities") this.#renderActivitiesPage();
@@ -1540,13 +1698,15 @@ export class LinkChatView {
       !this.#notificationsMuted() &&
       this.settings.getSection("linkChat").openOnIncoming
     ) {
-      await this.openChat(peerNumber, this.adapter.getMemberName(peerNumber));
+      await this.openChat(peerNumber, this.adapter.getMemberName(peerNumber), false);
       return;
     }
 
     if (this.#activePeer === peerNumber) {
-      if (message && this.#messageRenderPeer === peerNumber) this.#appendMessage(message);
-      else await this.#renderMessages(peerNumber);
+      if (message && this.#messageRenderPeer === peerNumber) {
+        if (!this.#patchMessageMetadata(message)) this.#appendMessage(message);
+      }
+      else await this.#renderMessages(peerNumber, false);
     }
     await this.refresh();
   }
@@ -1560,7 +1720,18 @@ export class LinkChatView {
     );
   }
 
-  onNotification(notification: LinkNotification): void {
+  onNotification(notification: LinkNotification, group = false): void {
+    if (this.#notificationsMuted()) return;
+    if (notification.kind === "chat" && !group) {
+      void this.service.getConversation(notification.memberNumber).then(conversation => {
+        if (this.#mounted && !conversationMuted(conversation?.muteUntil)) this.#deliverNotification(notification);
+      }).catch(() => {});
+      return;
+    }
+    this.#deliverNotification(notification);
+  }
+
+  #deliverNotification(notification: LinkNotification): void {
     if (this.#notificationsMuted()) return;
     if (notification.showToast) this.#toast(notification.message);
     const sounds = this.settings.getSection("linkReactions").sounds;
@@ -1649,13 +1820,9 @@ export class LinkChatView {
   }
 
   close(): void {
-    if (this.#presenceDialog.open && this.#profileBannerUploadBusy) {
-      this.#toast(
-        "Use Cancel upload in the profile dialog first, then wait for the final upload status before closing.",
-        "error",
-      );
-      this.#presenceBannerUploadButton.focus({ preventScroll: true });
-      return;
+    if (this.#presenceDialog.open) {
+      this.#requestClosePresenceDialog();
+      if (this.#presenceDialog.open) return;
     }
     this.#cancelProfileBannerUpload();
     this.#cancelImageOperation();
@@ -1679,6 +1846,8 @@ export class LinkChatView {
     this.#closeProfileMenu();
     this.#invalidateGalleryRender();
     this.#cancelAllRemoteImageLoads();
+    this.#contentDialog.close();
+    this.#mailbox?.element.close();
     this.#panel.hidden = true;
     this.presence.setNativeFriendsVisible?.(false);
     this.#cloud?.setVisible(false);
@@ -1694,7 +1863,7 @@ export class LinkChatView {
     return view;
   }
 
-  async openChat(memberNumber: number, memberName?: string): Promise<void> {
+  async openChat(memberNumber: number, memberName?: string, focusComposer = true): Promise<void> {
     if (this.#cloud) {
       this.#cloudChatSelected = false;
       this.#chatQueries[this.#chatFilter] = this.#search.value;
@@ -1713,7 +1882,7 @@ export class LinkChatView {
     if (intent !== this.#directSelectionIntent) return;
     await this.#openPanel("chat");
     if (intent !== this.#directSelectionIntent) return;
-    await this.#selectConversation(memberNumber, name, intent);
+    await this.#selectConversation(memberNumber, name, intent, focusComposer);
   }
 
   openActivities(): void {
@@ -1727,8 +1896,7 @@ export class LinkChatView {
   onRosterSync(result: RosterSyncResult): void {
     const countChanged = this.#presentCount !== result.presentCount;
     this.#presentCount = result.presentCount;
-    this.#rosterCount.hidden = result.presentCount === 0;
-    this.#rosterCount.textContent = result.presentCount > 99 ? "99+" : result.presentCount.toString();
+    updateBadge(this.#rosterCount, result.presentCount);
     this.#rosterButton.title = result.presentCount
       ? `LinkRoster · ${result.presentCount} in room`
       : "LinkRoster";
@@ -1809,8 +1977,9 @@ export class LinkChatView {
         element(
           "div",
           { className: "kl-brand-subtitle" },
-          `Personal Link Deck · v${this.version}`,
-          this.#connection,
+          element("span", { className: "kl-brand-product", text: "Personal Link Deck" }),
+          element("span", { className: "kl-brand-version", text: `· v${this.version}` }),
+          KIKILINK_BUILD_ID ? element("span", { className: "kl-brand-build", text: `· ${KIKILINK_BUILD_ID}` }) : null,
         ),
       ),
     );
@@ -1860,6 +2029,7 @@ export class LinkChatView {
       { className: "kl-topbar" },
       brand,
       this.#newsTrigger,
+      this.#mailbox?.button ?? null,
       dragSpace,
       this.#contextTitle,
       this.#localClock,
@@ -1953,7 +2123,7 @@ export class LinkChatView {
           { className: "kl-sidebar-heading-actions" },
           this.#galleryButton,
           newGroupButton,
-          newChatButton, markRead,
+          markRead, newChatButton,
         ),
       ),
       element("div", { className: "kl-chat-inbox" }, this.#conversationList, this.#cloud?.inbox.element),
@@ -2057,6 +2227,7 @@ export class LinkChatView {
     this.#configureNavButton(this.#settingsNavButton, "settings", "Settings", "settings");
     this.#rosterCount.hidden = true;
     this.#rosterButton.append(this.#rosterCount);
+    this.#chatNavButton.append(this.#chatCount);
     this.#featureNav.append(
       this.#homeNavButton,
       this.#chatNavButton,
@@ -2069,6 +2240,7 @@ export class LinkChatView {
     if (this.#cloud) {
       const button = element("button", { className: "kl-nav-item", type: "button", title: "Feed and KikiLink Cloud" });
       this.#configureNavButton(button, "feed", "Feed", "cloud");
+      button.append(this.#feedCount);
       this.#homeNavButton.after(button);
     }
   }
@@ -2712,6 +2884,22 @@ export class LinkChatView {
       this.#textScaleSelect,
     );
 
+    this.#timeFormatSelect.replaceChildren(
+      selectOption("12-hour", "12-Hour"),
+      selectOption("24-hour", "24-Hour"),
+    );
+    this.#timeFormatSelect.dataset.setting = "time-format";
+    this.#timeFormatSelect.setAttribute("aria-label", "Time format");
+    this.#timeFormatSelect.addEventListener("change", () => {
+      const format = this.#timeFormatSelect.value === "12-hour" ? "12-hour" : "24-hour";
+      this.settings.update(draft => { draft.ui.timeFormat = format; });
+    });
+    const timeFormat = this.#settingRow(
+      "Time format",
+      "Use a 24-hour clock or show AM/PM everywhere KikiLink displays a time.",
+      this.#timeFormatSelect,
+    );
+
     this.#homeLayoutSelect.replaceChildren(
       selectOption("showcase", "Guided"),
       selectOption("compact", "Focused"),
@@ -2959,6 +3147,7 @@ export class LinkChatView {
       density,
       textScale,
       homeLayout,
+      timeFormat,
       reducedMotion,
       roomBadgeSection,
     );
@@ -3449,7 +3638,7 @@ export class LinkChatView {
         "dl",
         { className: "kl-about-facts" },
         aboutFact("Version", this.version),
-        aboutFact("Release channel", "Stable"),
+        aboutFact("Release channel", KIKILINK_DEV_TEST ? `DevTest · ${KIKILINK_BUILD_ID || "source"}` : "Stable"),
         aboutFact("License", "MIT"),
         aboutFact("Data", "Account-scoped; see Privacy"),
       ),
@@ -3603,7 +3792,7 @@ export class LinkChatView {
     this.#newChatQuery.autocomplete = "off";
     this.#newChatQuery.addEventListener("input", () => this.#renderKnownContacts());
     this.#newChatQuery.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
+      if (event.key !== "Enter" || event.isComposing) return;
       event.preventDefault();
       void this.#submitNewChat();
     });
@@ -3611,6 +3800,7 @@ export class LinkChatView {
       selectOption("all", "All contacts"),
       selectOption("online", "Online only"),
       selectOption("room", "In this room"),
+      selectOption("addon", "KikiLink users"),
     );
     this.#newChatFilterSelect.value = "all";
     this.#newChatFilterSelect.addEventListener("change", () => this.#renderKnownContacts());
@@ -3636,7 +3826,10 @@ export class LinkChatView {
           this.#newChatSortSelect,
         ),
       ),
+      this.#pickerGroupTitle,
+      this.#pickerSelection,
       this.#newChatResults,
+      this.#pickerStatus,
     );
     const open = element("button", {
       className: "kl-text-button kl-text-button--primary",
@@ -3658,10 +3851,6 @@ export class LinkChatView {
   }
 
   #buildFinderDialog(): void {
-    // The existing local finder must not send navigation keys through to BC gameplay.
-    for (const type of ["keydown", "keyup", "keypress"] as const) {
-      this.#finderDialog.addEventListener(type, (event) => event.stopPropagation());
-    }
     const title = element("div", { className: "kl-dialog-title", text: "Find anything" });
     title.id = "kikilink-finder-title";
     this.#finderDialog.setAttribute("aria-labelledby", title.id);
@@ -3835,34 +4024,33 @@ export class LinkChatView {
     this.#presenceAvatarUrl.spellcheck = false;
     this.#presenceAvatarUrl.setAttribute("aria-label", "Direct profile avatar URL");
     this.#presenceAvatarUrl.addEventListener("input", () => { this.#cloudProfile?.sourceChanged("avatar"); this.#renderOwnAvatarPreview(); });
-    this.#presenceAvatarFrame.replaceChildren(
-      selectOption("none", "None"),
-      selectOption("blossom", "Sakura blossoms"),
-      selectOption("rose", "Scarlet rose ring"),
-      selectOption("starlight", "Violet starlight"),
-      selectOption("laurel", "Golden laurel"),
-      selectOption("thorn", "Poison thorns"),
-      selectOption("moon", "Silver moon orbit"),
-      selectOption("ribbon", "Jade ribbons"),
-    );
-    this.#presenceAvatarFrame.addEventListener("change", () => this.#renderOwnAvatarPreview());
     this.#presenceProfileStyle.replaceChildren(
       selectOption("classic", "Classic"),
+      selectOption("gradient", "Gradient"),
       selectOption("garden", "Garden"),
       selectOption("midnight", "Midnight"),
+      selectOption("glacier", "Glacier"), selectOption("sage", "Sage"), selectOption("dusty-rose", "Dusty rose"), selectOption("amber", "Amber"),
     );
+    this.#presenceProfileStyle.addEventListener("change", () => {
+      this.#presenceGradientEnabled.checked = this.#presenceProfileStyle.value === "gradient";
+      this.#renderPresenceDialog(); this.#renderOwnBannerPreview();
+    });
+    this.#publicTags.maxLength = 108;
+    this.#publicTags.placeholder = "Up to 5 public tags, separated by commas";
     this.#presenceGradientEnabled.type = "checkbox";
     this.#presenceGradientEnabled.setAttribute("aria-label", "Use a two-color profile gradient");
     this.#presenceGradientPrimary.type = "color";
     this.#presenceGradientPrimary.setAttribute("aria-label", "First profile gradient color");
     this.#presenceGradientSecondary.type = "color";
     this.#presenceGradientSecondary.setAttribute("aria-label", "Second profile gradient color");
+    for (let value = 0; value < 360; value += 45) this.#presenceGradientAngle.append(selectOption(String(value), `${value}°`));
     this.#presenceGradientEnabled.addEventListener("change", () => {
       this.#renderPresenceDialog();
       this.#renderOwnBannerPreview();
     });
     this.#presenceGradientPrimary.addEventListener("input", () => this.#renderOwnBannerPreview());
     this.#presenceGradientSecondary.addEventListener("input", () => this.#renderOwnBannerPreview());
+    this.#presenceGradientAngle.addEventListener("change", () => this.#renderOwnBannerPreview());
 
     this.#presenceBannerUrl.type = "url";
     this.#presenceBannerUrl.maxLength = 500;
@@ -3956,6 +4144,7 @@ export class LinkChatView {
           text: "Up to 160 characters. Shared only when another compatible user opens your KikiProfile.",
         }),
       ),
+      this.#preferences?.element,
       element(
         "section",
         { className: "kl-profile-avatar-field" },
@@ -3973,50 +4162,37 @@ export class LinkChatView {
       ),
       element(
         "div",
-        { className: "kl-profile-style-fields" },
+        { className: "kl-profile-customization-grid" },
         element(
-          "label",
-          { className: "kl-presence-field" },
-          element("span", { className: "kl-presence-field-label", text: "Avatar decoration" }),
-          this.#presenceAvatarFrame,
+          "section",
+          { className: "kl-profile-customization-card" },
+          element("div", { className: "kl-profile-customization-heading" },
+            element("strong", { text: "Avatar decoration" }),
+            element("small", { text: "Frame, colors and direction" })),
+          this.#avatarAppearance.element,
         ),
         element(
-          "label",
-          { className: "kl-presence-field" },
-          element("span", { className: "kl-presence-field-label", text: "Profile card" }),
+          "section",
+          { className: "kl-profile-customization-card" },
+          element("div", { className: "kl-profile-customization-heading" },
+            element("strong", { text: "Profile card" }),
+            element("small", { text: "Style, colors and direction" })),
           this.#presenceProfileStyle,
-        ),
-      ),
-      element(
-        "section",
-        { className: "kl-profile-gradient-field" },
-        this.#settingRow(
-          "Two-color profile gradient",
-          "Blend two safe HEX colors across your profile card, similar to Discord profile themes.",
           element(
-            "label",
-            { className: "kl-switch" },
-            this.#presenceGradientEnabled,
-            element("span", { className: "kl-switch-track" }),
-          ),
-        ),
-        element(
-          "div",
-          { className: "kl-profile-gradient-controls" },
-          element(
-            "label",
-            {},
-            this.#presenceGradientPrimary,
-            element("span", { text: "First color" }),
-          ),
-          element(
-            "label",
-            {},
-            this.#presenceGradientSecondary,
-            element("span", { text: "Second color" }),
+            "div",
+            { className: "kl-profile-gradient-field" },
+            element(
+              "div",
+              { className: "kl-profile-gradient-controls" },
+              element("label", {}, this.#presenceGradientPrimary, element("span", { text: "First color" })),
+              element("label", {}, this.#presenceGradientSecondary, element("span", { text: "Second color" })),
+              element("label", { className: "kl-profile-gradient-angle-field" },
+                element("span", { text: "Direction" }), this.#presenceGradientAngle),
+            ),
           ),
         ),
       ),
+      this.#profileAppearancePreview,
       element(
         "section",
         { className: "kl-profile-banner-field" },
@@ -4074,6 +4250,8 @@ export class LinkChatView {
           element("span", { text: "Outline color" }),
         ),
       ),
+      element("label", { className: "kl-presence-field" }, element("span", { className: "kl-presence-field-label", text: "Public profile tags" }), this.#publicTags,
+        element("span", { className: "kl-custom-field-help", text: "Visible to KikiLink users. Private notebook tags stay separate." })),
       this.#settingRow(
         "Automatic Idle",
         "Minutes without a tap or keypress. Enter 0 to disable; maximum 120.",
@@ -4115,23 +4293,18 @@ export class LinkChatView {
         element("button", {
           className: "kl-text-button",
           type: "button",
-          text: "Close",
+          text: "Cancel",
           onClick: () => this.#requestClosePresenceDialog(),
         }),
         this.#presenceSaveButton,
       ),
     );
     this.#presenceDialog.addEventListener("cancel", (event) => {
-      if (this.#cloudProfile?.busy) { event.preventDefault(); return; }
-      if (!this.#profileBannerUploadBusy) return;
       event.preventDefault();
-      this.#toast(
-        "Use Cancel upload first, then wait for the final upload status before closing.",
-        "error",
-      );
-      this.#presenceBannerUploadButton.focus({ preventScroll: true });
+      this.#requestClosePresenceDialog();
     });
     this.#presenceDialog.addEventListener("close", () => {
+      if (this.#presenceUnsavedDialog.open) this.#presenceUnsavedDialog.close();
       this.#cloudProfile?.close();
       this.#cancelProfileBannerUpload();
       this.#profileBannerUploadToken += 1;
@@ -4139,8 +4312,52 @@ export class LinkChatView {
       this.#preparedProfileBanner = undefined;
       this.#presenceBannerStatus.textContent = "";
       this.#presenceBannerStatus.dataset.tone = "";
+      this.#presenceLocalBaseline = undefined;
+      this.#presenceStandaloneBaseline = undefined;
       this.#cancelRemoteImageLoadsWithin(this.#presenceBannerPreview);
       this.#renderPresenceDialog();
+    });
+  }
+
+  #buildPresenceUnsavedDialog(): void {
+    const title = element("div", { className: "kl-dialog-title", text: "Unsaved changes" });
+    title.id = "kikilink-profile-unsaved-title";
+    const description = element("p", {
+      className: "kl-unsaved-copy",
+      text: "You have unsaved changes. Save them before closing the profile editor?",
+    });
+    description.id = "kikilink-profile-unsaved-description";
+    this.#presenceUnsavedDialog.setAttribute("aria-labelledby", title.id);
+    this.#presenceUnsavedDialog.setAttribute("aria-describedby", description.id);
+    const keepEditing = element("button", {
+      className: "kl-text-button",
+      type: "button",
+      text: "Keep Editing",
+      onClick: () => this.#presenceUnsavedDialog.close(),
+    });
+    const discard = element("button", {
+      className: "kl-text-button kl-text-button--danger",
+      type: "button",
+      text: "Discard Changes",
+      onClick: () => this.#discardPresenceChanges(),
+    });
+    const save = element("button", {
+      className: "kl-text-button kl-text-button--primary",
+      type: "button",
+      text: "Save Changes",
+      onClick: () => {
+        this.#presenceUnsavedDialog.close();
+        void this.#savePresencePreferences();
+      },
+    });
+    this.#presenceUnsavedDialog.append(
+      element("header", { className: "kl-dialog-header" }, title),
+      element("div", { className: "kl-dialog-body" }, description),
+      element("footer", { className: "kl-dialog-actions" }, keepEditing, discard, save),
+    );
+    this.#presenceUnsavedDialog.addEventListener("cancel", event => {
+      event.preventDefault();
+      this.#presenceUnsavedDialog.close();
     });
   }
 
@@ -4193,7 +4410,7 @@ export class LinkChatView {
       const contextClass = profileReturnContextClass(preferred);
       if (contextClass) {
         const contextualReplacement = this.#shadow.querySelector<HTMLElement>(
-          `.kl-profile-menu-target.${contextClass}[data-group-member-number="${escaped}"]`,
+          `.kl-profile-menu-target.${contextClass}[data-group-member-number="${escaped}"], .kl-profile-menu-target.${contextClass}[data-member-number="${escaped}"]`,
         );
         const contextualCandidate = contextualReplacement ?? undefined;
         if (isFocusableProfileReturnTarget(contextualCandidate)) {
@@ -4429,17 +4646,8 @@ export class LinkChatView {
       target.memberNumber === this.#cloud?.client.memberNumber && this.#cloudProfile?.preserveLegacyAppearance) : nativeSnapshot;
     this.#addonProfilePresenceSignature = profilePresenceSignature(nativeSnapshot);
     const notebook = this.roster.get(target.memberNumber, nativeName);
-    let relationships: PlayerRelationship[] = [];
     let inRoom = false;
-    let isFriend = false;
     let currentRoomName = "";
-    try {
-      relationships = typeof this.adapter.getPlayerRelationships === "function"
-        ? this.adapter.getPlayerRelationships(target.memberNumber)
-        : [];
-    } catch {
-      // BC can replace guarded cross-realm character objects while the dialog is open.
-    }
     try {
       inRoom = typeof this.adapter.isMemberInCurrentRoom === "function"
         ? this.adapter.isMemberInCurrentRoom(target.memberNumber)
@@ -4450,16 +4658,6 @@ export class LinkChatView {
     } catch {
       // Keep the profile useful without claiming that the player is still in the room.
     }
-    try {
-      isFriend = typeof this.adapter.isKnownFriend === "function"
-        ? this.adapter.isKnownFriend(target.memberNumber)
-        : false;
-    } catch {
-      // Friend state is native-observable and may briefly be unavailable during a BC refresh.
-    }
-    const style = snapshot.profileStyle ?? "classic";
-    const frame = snapshot.avatarFrame ?? "none";
-
     const avatar = element("div", { className: "kl-avatar kl-addon-profile-avatar" });
     if (cloudProfile?.avatarId && this.#cloud) {
       const media = this.#cloud.profileImage(cloudProfile.avatarId, "avatar");
@@ -4467,40 +4665,20 @@ export class LinkChatView {
       if (media.dataset.state === "hidden") avatar.prepend(document.createTextNode(avatarText(shownName)));
       media.addEventListener("cloud-image-error", () => avatar.prepend(document.createTextNode(avatarText(shownName))), { once: true });
     } else this.#renderAvatar(avatar, shownName, target.memberNumber);
-    avatar.dataset.avatarFrame = frame;
+    applyAvatarAppearance(avatar, snapshot);
     const avatarShell = element(
       "div",
       { className: "kl-addon-profile-avatar-shell" },
       avatar,
       presenceDot(snapshot.status),
     );
-    avatarShell.dataset.frame = frame;
+    avatarShell.dataset.frame = "none";
+    const openAvatar = element("button", { className: "kl-avatar-expand", type: "button", ariaLabel: `View full avatar for ${shownName}`,
+      onClick: () => this.#openAvatarImage(shownName, snapshot.avatarUrl, cloudProfile?.avatarId ?? undefined) });
+    openAvatar.disabled = !snapshot.avatarUrl && !cloudProfile?.avatarId; avatarShell.append(openAvatar);
 
     const publicBadges = element("div", { className: "kl-addon-profile-badges" });
     publicBadges.append(element("span", { className: "kl-addon-profile-badge", text: "KIKILINK" }));
-    if (snapshot.profileFromCache) {
-      const savedDetailsOnly = snapshot.source === "kikilink";
-      publicBadges.append(
-        element("span", {
-          className: "kl-addon-profile-badge kl-addon-profile-badge--saved",
-          text: savedDetailsOnly ? "SAVED DETAILS" : "SAVED PROFILE",
-          title: savedDetailsOnly
-            ? "Live KikiLink status with last-saved optional profile details"
-            : "Last profile voluntarily shared with this Bondage Club account",
-        }),
-      );
-    }
-    if (isFriend) publicBadges.append(element("span", { className: "kl-addon-profile-badge", text: "FRIEND" }));
-    for (const relationship of relationships) {
-      publicBadges.append(
-        element("span", {
-          className: `kl-addon-profile-badge kl-addon-profile-badge--${relationship}`,
-          text: rosterRelationshipLabel(relationship).toUpperCase(),
-          title: rosterRelationshipDescription(relationship),
-        }),
-      );
-    }
-
     const avatarPolicy = this.settings.getSection("linkPresence").profileImagePreviews;
     const avatarRevealed = Boolean(
       snapshot.avatarUrl &&
@@ -4562,6 +4740,7 @@ export class LinkChatView {
         : null,
     );
     statusLine.dataset.presenceDescription = "true";
+    const cacheNote = snapshot.profileFromCache ? element("small", { className: "kl-addon-profile-cache-note", text: snapshot.source === "kikilink" ? "Some public details are from the last saved profile" : "Last saved public details · live status unavailable" }) : null;
     const profileBanner = element("div", { className: "kl-addon-profile-banner" });
     const hero = element(
       "section",
@@ -4578,28 +4757,57 @@ export class LinkChatView {
         element("p", { className: "kl-addon-profile-member", text: `Member #${target.memberNumber}` }),
         publicBadges,
         statusLine,
+        cacheNote,
         avatarControl,
         bannerControl,
       ),
     );
 
-    const facts = element(
-      "div",
-      { className: "kl-addon-profile-facts" },
-      this.#addonProfileFact("Current room", snapshot.roomName || (inRoom ? currentRoomName || "Current room" : "Unavailable")),
-      this.#addonProfileFact(
-        "KikiLink",
-        snapshot.profileFromCache && snapshot.profileSyncedAt
-          ? snapshot.source === "kikilink"
-            ? `${snapshot.addonVersion ? `Live v${snapshot.addonVersion}` : "Live"} · details saved ${formatFullSeenTime(snapshot.profileSyncedAt)}`
-            : `Saved · ${formatFullSeenTime(snapshot.profileSyncedAt)}`
-          : cloudProfile ? cloudProfile.isDefault ? "Profile not set up yet" : "Saved profile"
-          : snapshot.addonVersion
-            ? `v${snapshot.addonVersion}`
-            : "Detected",
-      ),
-      this.#addonProfileFact("Last seen", inRoom ? "Now" : notebook.lastSeenAt ? formatFullSeenTime(notebook.lastSeenAt) : "Not recorded"),
+    const ownProfile = target.memberNumber === this.adapter.getOwnMemberNumber();
+    const compatibilityValue = element("strong", { text: ownProfile ? "Manage preferences" : "Loading…" });
+    const compatibility = element(
+      "button",
+      { className: "kl-addon-profile-fact kl-addon-profile-fact--compatibility", type: "button", ariaLabel: ownProfile ? "Open my Match preferences" : `Open Compatibility with ${shownName}` },
+      element("span", { text: "Compatibility" }),
+      element("div", { className: "kl-addon-profile-fact-value" }, kikiIcon("heart"), compatibilityValue, element("span", { className: "kl-addon-profile-fact-next", text: "›" })),
     );
+    const updateCompatibility = async (): Promise<Compatibility | undefined> => {
+      const value = compatibilityValue;
+      if (ownProfile) {
+        if (this.#community?.supported && this.#cloud?.client.connected) try {
+          const own = await this.#cloud.client.request<Preferences>("GET", "/v1/preferences/me");
+          const count = Object.keys(normalizePreferenceRatings(own.ratings)).length;
+          if (compatibility.isConnected) value.textContent = count ? `${count} configured` : "Set my preferences";
+        } catch { /* The action remains available without inventing a self comparison. */ }
+        compatibility.title = value.textContent ?? "Manage preferences"; return;
+      }
+      if (!this.#community?.supported || !this.#cloud?.client.connected) { value.textContent = "Unavailable"; compatibility.dataset.state = "unavailable"; return; }
+      try {
+        const result = await this.#cloud.client.request<Compatibility>("GET", `/v1/compatibility/${target.memberNumber}`);
+        if (!compatibility.isConnected) return;
+        value.textContent = result.status === "available" ? `${result.score}% match` : result.status === "insufficient" ? `${result.count ?? 0} compared` : result.status === "opt_in_required" ? "Preferences not shared" : "Private";
+        compatibility.dataset.state = result.status;
+        compatibility.title = value.textContent;
+        return result;
+      } catch { value.textContent = "Could not load · Retry"; compatibility.dataset.state = "error"; return; }
+    };
+    compatibility.addEventListener("click", () => {
+      if (ownProfile) { this.#addonProfileDialog.close(); this.#openPresenceDialog(); this.#preferences?.openPreference(); return; }
+      compatibility.disabled = true;
+      void updateCompatibility().then(result => {
+        if (result) {
+          const options = this.#preferences
+            ? { setMine: (id: Parameters<PreferencesEditor["setAndSave"]>[0], level: Parameters<PreferencesEditor["setAndSave"]>[1]) => this.#preferences!.setAndSave(id, level) }
+            : {};
+          this.#contentDialog.show("Compatibility", compatibilityDetails(result, options));
+        }
+        else this.#contentDialog.show("Compatibility", element("p", { text: this.#community?.supported ? "Compatibility could not load. Reconnect or try again later." : "Compatibility requires a compatible Cloud account and opt-in from both people." }));
+      }).finally(() => { compatibility.disabled = false; });
+    });
+    const facts = element("div", { className: "kl-addon-profile-facts" },
+      this.#addonProfileFact("Current room", snapshot.roomName || (inRoom ? currentRoomName || "Current room" : "Unavailable")),
+      this.#addonProfileFact("Last seen", inRoom ? "Now" : notebook.lastSeenAt ? "" : "Not recorded", inRoom ? undefined : notebook.lastSeenAt || undefined), compatibility);
+    queueMicrotask(() => { void updateCompatibility(); });
     const bioSection = snapshot.bio
       ? element(
           "section",
@@ -4608,7 +4816,6 @@ export class LinkChatView {
           element("p", { text: snapshot.bio }),
         )
       : null;
-
     const privateSection = element(
       "section",
       { className: "kl-addon-profile-private" },
@@ -4698,8 +4905,8 @@ export class LinkChatView {
       "article",
       { className: "kl-addon-profile-card" },
       hero,
-      bioSection,
       facts,
+      bioSection,
       privateSection,
       element("div", { className: "kl-addon-profile-actions" }, message, whisper, nativeProfile, favorite, note),
     );
@@ -4709,32 +4916,10 @@ export class LinkChatView {
       message.replaceWith(element("button", { className: message.className, type: "button", text: "Edit profile",
         onClick: () => { this.#addonProfileDialog.close(); this.#openPresenceDialog(); } }));
     }
+    if (target.memberNumber !== this.adapter.getOwnMemberNumber()) actions.prepend(this.#friendControls(target.memberNumber));
     if (cloudProfile && !cloudProfile.isDefault && this.#cloud) actions.append(...this.#cloud.profileActions(target.memberNumber, card));
-    card.dataset.profileStyle = style;
     card.dataset.memberNumber = target.memberNumber.toString();
-    const outlineColor = normalizeProfileOutlineColor(snapshot.profileOutlineColor ?? "");
-    if (outlineColor) {
-      card.dataset.customOutline = "true";
-      card.style.setProperty("--kl-profile-outline", outlineColor);
-    }
-    const gradientPrimary = normalizeProfileOutlineColor(
-      snapshot.profileGradient?.primary ?? "",
-    );
-    const gradientSecondary = normalizeProfileOutlineColor(
-      snapshot.profileGradient?.secondary ?? "",
-    );
-    if (snapshot.profileGradient?.enabled && gradientPrimary && gradientSecondary) {
-      const midpoint = mixProfileColors(gradientPrimary, gradientSecondary);
-      const foreground = readableForeground(midpoint);
-      card.dataset.customGradient = "true";
-      card.style.setProperty("--kl-profile-gradient-primary", gradientPrimary);
-      card.style.setProperty("--kl-profile-gradient-secondary", gradientSecondary);
-      card.style.setProperty(
-        "--kl-profile-gradient-tone",
-        foreground === "#fff8ee" ? "#000000" : "#ffffff",
-      );
-      card.style.setProperty("--kl-profile-text", foreground);
-    }
+    applyProfileAppearance(card, snapshot);
     this.#addonProfileBody.replaceChildren(card);
     if (cloudProfile?.bannerId && this.#cloud) profileBanner.append(this.#cloud.profileImage(cloudProfile.bannerId, "banner"));
     else this.#renderProfileBanner(
@@ -4745,12 +4930,38 @@ export class LinkChatView {
     );
   }
 
-  #addonProfileFact(label: string, value: string): HTMLDivElement {
+  #openAvatarImage(name: string, url?: string, cloudId?: string): void {
+    const policy = this.settings.getSection("linkPresence").profileImagePreviews;
+    const body = element("div", { className: "kl-full-image" });
+    let objectUrl: string | undefined, cancelled = false;
+    const link = normalizeImageUrl(url ?? "");
+    if (link) { const external = element("a", { text: "Open original image" }); external.href = link; external.target = "_blank"; external.rel = "noopener noreferrer"; body.append(external); }
+    const status = element("p", { text: policy === "never" ? "Image previews are disabled in your privacy settings." : "" }); body.append(status);
+    const load = async (): Promise<void> => {
+      status.textContent = "Loading image…";
+      try {
+        let source = link;
+        if (cloudId && this.#cloud) { const blob = await this.#cloud.client.media(cloudId); if (cancelled) return; source = objectUrl = URL.createObjectURL(blob); }
+        if (!source || cancelled) { status.textContent = "No full-size image is available."; return; }
+        const image = document.createElement("img"); image.alt = `Full avatar for ${name}`; image.referrerPolicy = "no-referrer";
+        image.addEventListener("load", () => { status.textContent = ""; });
+        image.addEventListener("error", () => { image.remove(); status.textContent = "Image unavailable or link expired. The original link may still be opened."; });
+        image.src = source; body.prepend(image);
+      } catch { status.textContent = "The image could not load. Try again later."; }
+    };
+    if (policy === "ask") body.append(element("button", { className: "kl-text-button", type: "button", text: "Load full image", onClick: event => { (event.currentTarget as HTMLButtonElement).remove(); void load(); } }));
+    this.#contentDialog.show(`${name} · Avatar`, body, () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); });
+    if (policy === "always") void load();
+  }
+
+  #addonProfileFact(label: string, value: string, timestamp?: number): HTMLDivElement {
+    const content = element("strong", { text: value, title: value });
+    if (timestamp) bindClockText(content, timestamp, "full-seen");
     return element(
       "div",
       { className: "kl-addon-profile-fact" },
       element("span", { text: label }),
-      element("strong", { text: value }),
+      content,
     );
   }
 
@@ -4761,10 +4972,13 @@ export class LinkChatView {
     this.#presenceBio.value = config.bio;
     this.#presenceAvatarUrl.value = config.avatarUrl;
     this.#presenceAvatarFrame.value = config.avatarFrame;
-    this.#presenceProfileStyle.value = config.profileStyle;
+    this.#avatarAppearance.set(normalizeAvatarDecoration(config.avatarDecoration, config.avatarFrame));
+    this.#publicTags.value = config.publicTags.join(", ");
+    this.#presenceProfileStyle.value = effectiveProfileStyle(config.profileStyle, config.profileGradient);
     this.#presenceGradientEnabled.checked = config.profileGradient.enabled;
     this.#presenceGradientPrimary.value = config.profileGradient.primary;
     this.#presenceGradientSecondary.value = config.profileGradient.secondary;
+    this.#presenceGradientAngle.value = String(config.profileGradient.angle ?? 135);
     this.#presenceBannerUrl.value = config.bannerUrl;
     this.#presenceOutlineEnabled.checked = Boolean(config.profileOutlineColor);
     this.#presenceOutlineColor.value = config.profileOutlineColor || this.settings.getSection("ui").accent;
@@ -4781,8 +4995,13 @@ export class LinkChatView {
       avatarPreview: this.#presenceAvatarPreview, bannerPreview: this.#presenceBannerPreview,
       frame: this.#presenceAvatarFrame, style: this.#presenceProfileStyle,
       outlineEnabled: this.#presenceOutlineEnabled, outlineColor: this.#presenceOutlineColor,
-      gradientEnabled: this.#presenceGradientEnabled, gradientPrimary: this.#presenceGradientPrimary, gradientSecondary: this.#presenceGradientSecondary,
+      gradientEnabled: this.#presenceGradientEnabled, gradientPrimary: this.#presenceGradientPrimary, gradientSecondary: this.#presenceGradientSecondary, gradientAngle: this.#presenceGradientAngle,
+      publicTags: this.#publicTags,
+      getAvatarDecoration: () => this.#avatarAppearance.get(), setAvatarDecoration: value => this.#avatarAppearance.set(value),
+      lockAppearance: locked => { this.#avatarAppearance.disabled(locked); this.#presenceGradientPrimary.disabled = locked || this.#presenceProfileStyle.value !== "gradient"; this.#presenceGradientSecondary.disabled = this.#presenceGradientPrimary.disabled; this.#presenceGradientAngle.disabled = this.#presenceGradientPrimary.disabled; },
       save: this.#presenceSaveButton, renderPreviews: () => { this.#renderOwnAvatarPreview(); this.#renderOwnBannerPreview(); } });
+    this.#presenceLocalBaseline = this.#presenceLocalDraft();
+    this.#presenceStandaloneBaseline = this.#cloudProfile ? undefined : this.#standalonePresenceDraft();
     if (!this.#presenceDialog.open) this.#presenceDialog.showModal();
     this.#presenceOptions.querySelector<HTMLButtonElement>('[data-active="true"]')?.focus();
   }
@@ -4797,6 +5016,61 @@ export class LinkChatView {
       this.#presenceBannerUploadButton.focus({ preventScroll: true });
       return;
     }
+    if (this.#hasUnsavedPresenceChanges()) {
+      if (!this.#presenceUnsavedDialog.open) this.#presenceUnsavedDialog.showModal();
+      return;
+    }
+    this.#cancelProfileBannerUpload();
+    this.#presenceDialog.close();
+  }
+
+  #presenceLocalDraft(): string {
+    const draft: PresenceLocalDraft = {
+      enabled: this.#presenceEnabledToggle.checked,
+      status: this.settings.getSection("linkPresence").status,
+      autoIdle: this.#autoIdleInput.value,
+      afkEnabled: this.#afkAutoReplyToggle.checked,
+      afkMessage: this.#afkAutoReplyMessage.value,
+    };
+    return JSON.stringify(draft);
+  }
+
+  #standalonePresenceDraft(): string {
+    return JSON.stringify({
+      bio: this.#presenceBio.value,
+      statusMessage: this.#presenceMessage.value,
+      avatarUrl: this.#presenceAvatarUrl.value,
+      bannerUrl: this.#presenceBannerUrl.value,
+      avatarFrame: this.#presenceAvatarFrame.value,
+      avatarDecoration: this.#avatarAppearance.get(),
+      publicTags: this.#publicTags.value,
+      profileStyle: this.#presenceProfileStyle.value,
+      outlineEnabled: this.#presenceOutlineEnabled.checked,
+      outlineColor: this.#presenceOutlineColor.value,
+      gradientEnabled: this.#presenceGradientEnabled.checked,
+      gradientPrimary: this.#presenceGradientPrimary.value,
+      gradientSecondary: this.#presenceGradientSecondary.value,
+      gradientAngle: this.#presenceGradientAngle.value,
+      preparedBanner: Boolean(this.#preparedProfileBanner),
+    });
+  }
+
+  #hasUnsavedPresenceChanges(): boolean {
+    if (this.#preferences?.dirty) return true;
+    if (this.#presenceLocalBaseline !== undefined && this.#presenceLocalDraft() !== this.#presenceLocalBaseline) return true;
+    return this.#cloudProfile
+      ? this.#cloudProfile.dirty
+      : this.#presenceStandaloneBaseline !== undefined && this.#standalonePresenceDraft() !== this.#presenceStandaloneBaseline;
+  }
+
+  #discardPresenceChanges(): void {
+    this.#preferences?.discard();
+    if (this.#presenceLocalBaseline) {
+      const baseline = JSON.parse(this.#presenceLocalBaseline) as PresenceLocalDraft;
+      this.presence.setOwnStatus(baseline.status);
+      this.#renderOwnPresence();
+    }
+    if (this.#presenceUnsavedDialog.open) this.#presenceUnsavedDialog.close();
     this.#cancelProfileBannerUpload();
     this.#presenceDialog.close();
   }
@@ -4837,8 +5111,13 @@ export class LinkChatView {
     this.#presenceOutlineEnabled.disabled = this.#profileBannerUploadBusy;
     this.#presenceOutlineColor.disabled =
       this.#profileBannerUploadBusy || !this.#presenceOutlineEnabled.checked;
+    this.#presenceGradientEnabled.checked = this.#presenceProfileStyle.value === "gradient";
+    const gradientSection = this.#presenceDialog.querySelector<HTMLElement>(".kl-profile-gradient-field");
+    if (gradientSection) gradientSection.hidden = !this.#presenceGradientEnabled.checked;
+    this.#avatarAppearance.render();
     this.#presenceGradientPrimary.disabled = !this.#presenceGradientEnabled.checked;
     this.#presenceGradientSecondary.disabled = !this.#presenceGradientEnabled.checked;
+    this.#presenceGradientAngle.disabled = !this.#presenceGradientEnabled.checked;
     this.#presenceSaveButton.disabled = this.#profileBannerUploadBusy;
     if (this.#cloudProfile) {
       this.#presenceBannerUploadButton.title = "Choose a banner for your KikiLink profile";
@@ -4850,10 +5129,10 @@ export class LinkChatView {
     this.#afkAutoReplyOptions.dataset.disabled = String(!this.#afkAutoReplyToggle.checked);
   }
 
-  async #savePresencePreferences(): Promise<void> {
+  async #savePresencePreferences(): Promise<boolean> {
     if (this.#profileBannerUploadBusy) {
       this.#toast("Wait for the profile banner upload to finish.", "error");
-      return;
+      return false;
     }
     const autoIdle = Number(this.#autoIdleInput.value);
     const normalizedAvatarUrl = this.#presenceAvatarUrl.value.trim()
@@ -4865,7 +5144,7 @@ export class LinkChatView {
     ) {
       this.#presenceAvatarUrl.focus();
       this.#toast("Use a direct HTTPS avatar link up to 500 characters ending in an image extension.", "error");
-      return;
+      return false;
     }
     const avatarUrl = normalizedAvatarUrl ?? "";
     const normalizedBannerUrl = this.#presenceBannerUrl.value.trim()
@@ -4877,7 +5156,7 @@ export class LinkChatView {
     ) {
       this.#presenceBannerUrl.focus();
       this.#toast("Use a direct HTTPS banner link up to 500 characters ending in an image extension.", "error");
-      return;
+      return false;
     }
     const bannerUrl = normalizedBannerUrl ?? "";
     const outlineColor = this.#presenceOutlineEnabled.checked
@@ -4886,14 +5165,14 @@ export class LinkChatView {
     if (this.#presenceOutlineEnabled.checked && !outlineColor) {
       this.#presenceOutlineColor.focus();
       this.#toast("Choose a valid six-digit profile outline color.", "error");
-      return;
+      return false;
     }
     const gradientPrimary = normalizeProfileOutlineColor(this.#presenceGradientPrimary.value);
     const gradientSecondary = normalizeProfileOutlineColor(this.#presenceGradientSecondary.value);
     if (this.#presenceGradientEnabled.checked && (!gradientPrimary || !gradientSecondary)) {
       this.#presenceGradientPrimary.focus();
       this.#toast("Choose two valid six-digit profile gradient colors.", "error");
-      return;
+      return false;
     }
     if (
       !Number.isInteger(autoIdle) ||
@@ -4902,12 +5181,12 @@ export class LinkChatView {
     ) {
       this.#autoIdleInput.focus();
       this.#toast("Automatic Idle must be between 0 and 120 minutes.", "error");
-      return;
+      return false;
     }
     if (this.#afkAutoReplyToggle.checked && !this.#afkAutoReplyMessage.value.trim()) {
       this.#afkAutoReplyMessage.focus();
       this.#toast("Add a short AFK auto-reply message.", "error");
-      return;
+      return false;
     }
     if (this.#cloudProfile) {
       try { await this.#cloudProfile.save(); }
@@ -4917,16 +5196,21 @@ export class LinkChatView {
           : code === "image_import_failed" ? "The image host did not allow copying this image. Choose the image file instead."
           : code === "revision_conflict" ? "This profile changed on another device. Reopen the editor before saving."
           : code === "invalid_display_name" ? "Enter a display name up to 80 characters."
+          : code === "profile_schema_unsupported" ? "This client is connected to an older Cloud API. Install the staging DevTest build before saving."
+          : code === "invalid_input" ? "Cloud rejected a profile field. Reopen this DevTest editor and retry; the draft is still here."
           : "Profile could not be saved. Your draft is kept; try again.";
-        this.#cloudProfile.status.textContent = reason; this.#toast(reason, "error"); return;
+        this.#cloudProfile.status.textContent = reason; this.#toast(reason, "error"); return false;
       }
     }
+    try { if (this.#preferences) await this.#preferences.save(); } catch (error) { this.#toast(error instanceof Error ? error.message : "Preferences could not save.", "error"); return false; }
     this.presence.setOwnProfile({
       enabled: this.#presenceEnabledToggle.checked,
       statusMessage: this.#presenceMessage.value,
       bio: this.#presenceBio.value,
       avatarUrl,
-      avatarFrame: this.#presenceAvatarFrame.value as AvatarFrame,
+      avatarFrame: activeAvatarFrame(this.#avatarAppearance.get()),
+      avatarDecoration: this.#avatarAppearance.get(),
+      publicTags: publicProfileTags(this.#publicTags.value.split(",")),
       profileStyle: this.#presenceProfileStyle.value as ProfileCardStyle,
       bannerUrl,
       profileOutlineColor: outlineColor,
@@ -4934,6 +5218,7 @@ export class LinkChatView {
         enabled: this.#presenceGradientEnabled.checked,
         primary: gradientPrimary || this.settings.getSection("linkPresence").profileGradient.primary,
         secondary: gradientSecondary || this.settings.getSection("linkPresence").profileGradient.secondary,
+        angle: Number(this.#presenceGradientAngle.value),
       },
       autoIdleMinutes: autoIdle,
       afkAutoReply: {
@@ -4944,6 +5229,7 @@ export class LinkChatView {
     this.#renderOwnPresence();
     this.#presenceDialog.close();
     this.#toast("KikiLink profile saved.");
+    return true;
   }
 
   async #uploadPresenceBanner(file?: File, prepareOnly = false): Promise<void> {
@@ -5365,7 +5651,7 @@ export class LinkChatView {
         ),
         element("p", {
           className: "kl-remove-chat-safe",
-          text: "This does not unfriend them and does not change Bondage Club's native Beep log.",
+          text: "Local delivery retries for this chat will stop. Messages already accepted by Cloud may still arrive. This does not unfriend them or change Bondage Club's native Beep log.",
         }),
       ),
       element(
@@ -5428,6 +5714,8 @@ export class LinkChatView {
     const target = this.#removeChatTarget;
     if (!target) return;
     if (target.memberNumber === this.#activePeer) this.#cancelDirectDraft(target.memberNumber);
+    try { this.#cloudDirect?.clearPending(target.memberNumber); }
+    catch { this.#toast("Could not clear local retries. Please try again.", "error"); return; }
     await this.service.removeConversation(target.memberNumber);
     if (target.memberNumber === this.#activePeer) this.#resetActiveConversation();
     this.#removeChatDialog.close();
@@ -6888,6 +7176,16 @@ export class LinkChatView {
         onClick: () => void this.#removeGalleryImage(item),
       }),
     );
+    const galleryTimestamp = item.chat?.sentAt ?? item.group?.sentAt ?? item.sortAt;
+    const galleryDetails = element("span");
+    galleryDetails.append(document.createTextNode(item.chat
+      ? `${item.chat.direction === "outgoing" ? "Sent to" : "From"} ${item.chat.peerName} · `
+      : item.group
+        ? `${item.group.direction === "outgoing" ? "Sent in" : `From ${item.group.senderName} in`} ${item.group.groupTitle} · `
+        : item.localId ? "Stored permanently on this device · " : "Added to Gallery · "));
+    galleryDetails.append(bindClockText(element("time"), galleryTimestamp));
+    if (!item.chat && !item.group && !item.localId && item.expiresAt)
+      galleryDetails.append(document.createTextNode(" · "), bindClockText(element("span"), item.expiresAt, "gallery-expiry"));
     const card = element(
       "article",
       { className: "kl-gallery-item" },
@@ -6904,15 +7202,7 @@ export class LinkChatView {
                 ? "Litterbox"
               : "Image",
         }),
-        element("span", {
-          text: item.chat
-            ? `${item.chat.direction === "outgoing" ? "Sent to" : "From"} ${item.chat.peerName} · ${formatMessageTime(item.chat.sentAt)}`
-            : item.group
-              ? `${item.group.direction === "outgoing" ? "Sent in" : `From ${item.group.senderName} in`} ${item.group.groupTitle} · ${formatMessageTime(item.group.sentAt)}`
-            : item.localId
-              ? `Stored permanently on this device · ${formatMessageTime(item.sortAt)}`
-              : `Added to Gallery · ${formatMessageTime(item.sortAt)}${item.expiresAt ? ` · ${formatGalleryExpiry(item.expiresAt)}` : ""}`,
-        }),
+        galleryDetails,
       ),
       actions,
     );
@@ -7362,7 +7652,11 @@ export class LinkChatView {
       current = this.adapter.getCurrentLobbyRoom?.();
       currentName = this.adapter.getCurrentRoomName?.() || current?.name || "";
     } catch { /* A guarded native refresh must not hide the directory. */ }
-    this.#renderCurrentRoomCard(current, currentName);
+    // Some native room snapshots omit the creator. Reuse the current directory
+    // response when available, without replacing live occupancy or description.
+    const listedCurrent = this.#lobbyRooms.find(room => roomKey(room.name) === roomKey(currentName));
+    this.#renderCurrentRoomCard(current && !current.creator && listedCurrent?.creator
+      ? { ...current, creator: listedCurrent.creator } : current, currentName);
     const favorites = this.settings.getSection("linkRoom").favoriteRoomNames;
     const source = this.#roomsWithLiveFriends();
     const rooms = selectRooms(source, favorites, this.#lobbyQuery.value, this.#lobbyFilter, currentName);
@@ -7408,25 +7702,44 @@ export class LinkChatView {
   #renderCurrentRoomCard(room: BCLobbyRoom | undefined, name: string): void {
     let players: KnownContact[] = [];
     try { players = name ? this.adapter.getRoomCharacters?.() ?? [] : []; } catch { /* A guarded native roster. */ }
-    const signature = JSON.stringify([name, room?.memberCount, room?.memberLimit,
+    const favorite = this.settings.getSection("linkRoom").favoriteRoomNames.some(value => roomKey(value) === roomKey(name));
+    const signature = JSON.stringify([name, favorite, room?.memberCount, room?.memberLimit,
+      room?.description, room?.locked, room?.canJoin, room?.language, room?.creator, room?.mapType, room?.privateRoom,
       players.map((player) => [player.memberNumber, player.memberName])]);
     if (this.#currentRoomCard.dataset.signature === signature) return;
     this.#currentRoomCard.dataset.signature = signature;
     this.#currentRoomCard.hidden = !name;
     this.#currentRoomCard.replaceChildren();
     if (!name) return;
-    const participants = this.#roomPeopleButton(name, players, true);
+    const star = element("button", { className: "kl-icon-button kl-lobby-favorite", type: "button",
+      title: `${favorite ? "Remove" : "Add"} ${name} ${favorite ? "from" : "to"} favorite rooms`,
+      ariaLabel: `${favorite ? "Remove" : "Add"} ${name} ${favorite ? "from" : "to"} favorite rooms`,
+      onClick: event => { event.stopPropagation(); this.#toggleFavoriteLobby(name); } },
+      kikiIcon("star", "kl-lobby-favorite-icon", favorite));
+    star.setAttribute("aria-pressed", String(favorite));
+    const locked = Boolean(room && (room.locked || (!room.canJoin && room.memberCount < room.memberLimit)));
+    const description = room?.description
+      ? element("button", { type: "button", className: "kl-lobby-description kl-room-description-button", text: room.description,
+        title: "Read full room description", ariaLabel: `Read full room description: ${room.description}`,
+        onClick: () => this.#contentDialog.show(`${name} · Description`, element("p", { className: "kl-room-description-full", text: room.description })) })
+      : element("p", { className: "kl-lobby-description", text: room ? "No room description." : "Live room details are temporarily unavailable." });
     const card = element("article", { className: "kl-lobby-card" },
       element("div", { className: "kl-lobby-card-main" },
         element("strong", { className: "kl-lobby-name", text: name, title: name }),
-        room ? element("span", { className: "kl-lobby-count", text: `${room.memberCount}/${room.memberLimit}` }) : null,
-        element("span", { className: "kl-lobby-current", text: "Current room" })),
-      room ? null : element("p", { className: "kl-lobby-description", text: "Live room details are temporarily unavailable." }),
-      element("div", { className: "kl-lobby-card-footer" }, participants,
+        element("span", { className: "kl-lobby-current", text: "Current room" }),
+        element("span", { className: "kl-lobby-count", text: room ? `${room.memberCount}/${room.memberLimit}` : "—", title: room ? "Room occupancy" : "Room occupancy unavailable" }),
+        element("div", { className: "kl-lobby-indicators" }, star, element("span", { className: "kl-lobby-locked", title: "Locked", ariaLabel: "Locked" }, kikiIcon("lock", "kl-lobby-lock")))),
+      description,
+      element("div", { className: "kl-lobby-card-footer" },
+        element("span", { className: "kl-lobby-people" }, players.length ? this.#roomPeopleButton(name, players, true) : null),
+        element("span", { className: "kl-lobby-flags", text: room ? lobbyRoomFlags(room) : "Room details unavailable", title: room ? lobbyRoomFlags(room) : "Room details unavailable" }),
         element("button", { className: "kl-text-button kl-room-manage", type: "button", text: "Manage",
           onClick: () => this.#showRoomSubView("current") })),
     );
     card.dataset.current = "true";
+    card.dataset.favorite = String(favorite);
+    const lock = card.querySelector<HTMLElement>(".kl-lobby-locked");
+    if (lock) lock.hidden = !locked;
     this.#currentRoomCard.append(card);
   }
 
@@ -7443,9 +7756,10 @@ export class LinkChatView {
       avatar.title = `${person.memberName} · #${person.memberNumber}`;
       avatars.append(avatar);
     }
-    button.append(avatars, element("span", {
+    button.append(avatars);
+    if (!current || people.length > 4) button.append(element("span", {
       className: "kl-room-people-label",
-      text: current ? `Players${people.length > 4 ? ` +${people.length - 4}` : ""}`
+      text: current ? `+${people.length - 4}`
         : `${people.length} friend${people.length === 1 ? "" : "s"}`,
     }));
     button.disabled = !this.settings.getSection("linkRoster").enabled;
@@ -7472,8 +7786,9 @@ export class LinkChatView {
           element("span", { className: "kl-lobby-locked", title: "Locked", ariaLabel: "Locked" }, kikiIcon("lock", "kl-lobby-lock")))),
       element("p", { className: "kl-lobby-description" }),
       element("div", { className: "kl-lobby-card-footer" },
+        element("span", { className: "kl-lobby-people" }),
         element("span", { className: "kl-lobby-flags" }),
-        element("span", { className: "kl-lobby-people" }), join),
+        join),
     );
     card.dataset.roomName = room.name;
     this.#updateLobbyCard(card, room);
@@ -7490,9 +7805,8 @@ export class LinkChatView {
     const description = card.querySelector<HTMLElement>(".kl-lobby-description")!;
     description.textContent = room.description;
     description.hidden = !room.description;
-    const flags = [room.language, room.creator ? `by ${room.creator}` : "",
-      lobbyMapTypeLabel(room.mapType), room.locked ? "Locked" : "", room.privateRoom ? "Private" : ""].filter(Boolean);
-    card.querySelector<HTMLElement>(".kl-lobby-flags")!.textContent = flags.join(" · ") || "Public room";
+    const flags = card.querySelector<HTMLElement>(".kl-lobby-flags")!;
+    flags.textContent = flags.title = lobbyRoomFlags(room);
     const join = card.querySelector<HTMLButtonElement>(".kl-lobby-join")!;
     join.textContent = this.#lobbyJoinBusy ? "Joining…" : full ? "Full" : room.canJoin ? "Join" : "Locked";
     join.disabled = this.#lobbyJoinBusy || full || !room.canJoin;
@@ -8307,6 +8621,7 @@ export class LinkChatView {
       if (this.#musicStopAfterTrack) {
         this.#musicStopAfterTrack = false;
         this.#musicSleepSelect.value = "off";
+        clearClockBinding(this.#musicSleepStatus);
         this.#musicSleepStatus.textContent = "Stopped after the track.";
         this.#stopMusic();
         return;
@@ -9047,21 +9362,24 @@ export class LinkChatView {
     this.#clearMusicSleepTimer();
     const value = this.#musicSleepSelect.value;
     if (value === "off") {
+      clearClockBinding(this.#musicSleepStatus);
       this.#musicSleepStatus.textContent = "";
       return;
     }
     if (value === "end") {
       this.#musicStopAfterTrack = true;
+      clearClockBinding(this.#musicSleepStatus);
       this.#musicSleepStatus.textContent = "Playback will stop after this track.";
       return;
     }
     const minutes = Number(value);
     if (!Number.isFinite(minutes) || minutes <= 0) return;
     const stopAt = Date.now() + minutes * 60_000;
-    this.#musicSleepStatus.textContent = `Stops at ${new Date(stopAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
+    bindClockText(this.#musicSleepStatus, stopAt, "music-stop");
     this.#musicSleepTimer = setTimeout(() => {
       this.#musicSleepTimer = undefined;
       this.#musicSleepSelect.value = "off";
+      clearClockBinding(this.#musicSleepStatus);
       this.#musicSleepStatus.textContent = "Sleep timer finished.";
       this.#stopMusic();
     }, minutes * 60_000);
@@ -9293,6 +9611,24 @@ export class LinkChatView {
     }
   }
 
+  #friendControls(member: number): HTMLElement {
+    const root = element("div"); this.#friendNodes.set(root, member);
+    renderRelationshipControls(root, member, this.#community, this.adapter);
+    if (this.#community?.supported && !this.#community.relationships.has(member)) void this.#community.get(member).catch(() => {});
+    return root;
+  }
+  #openAddFriends(): void {
+    this.#openPeoplePicker({ mode: "Add friend", maximum: 1,
+      eligible: member => !this.adapter.isKnownFriend(member) && this.#community?.relationships.get(member)?.state !== "accepted",
+      confirm: async members => {
+        const member = members[0]!;
+        let relation = this.#community?.relationships.get(member);
+        if (this.#community?.supported) { try { relation = await this.#community.get(member); } catch { /* Unknown capability stays native. */ } }
+        if (relation?.supported) await this.#community!.action(member, relation.state === "received" ? "accept" : "request");
+        else this.adapter.setNativeFriend(member, true);
+      } });
+  }
+
   #buildRosterPage(): void {
     const header = element(
       "header",
@@ -9311,6 +9647,20 @@ export class LinkChatView {
       }),
     );
 
+    const addFriends = element("button", { className: "kl-text-button", type: "button", text: "Add friends", onClick: () => this.#openAddFriends() });
+    addFriends.prepend(kikiIcon("group-add"));
+    const newChat = header.querySelector("button")!;
+    this.#requestsButton.replaceChildren(kikiIcon("requests"), element("span", { text: "Requests" }));
+    this.#requestsButton.hidden = !this.#community;
+    this.#requestsButton.addEventListener("click", () => {
+      this.#saveNotebook(false);
+      this.#rosterScope = "friends";
+      this.#friendsView = "requests";
+      this.#rosterRoomFilter = undefined;
+      this.#selectedRosterMember = undefined;
+      this.#renderRoster(true);
+    });
+    const toolbar = element("div", { className: "kl-cloud-actions kl-players-toolbar" }, newChat, addFriends, this.#requestsButton); header.append(toolbar);
     for (const [scope, label] of [
       ["current", "In room"],
       ["friends", "Friends"],
@@ -9325,6 +9675,7 @@ export class LinkChatView {
       button.addEventListener("click", () => {
         this.#saveNotebook(false);
         this.#rosterScope = scope;
+        this.#friendsView = "all";
         this.#rosterRoomFilter = undefined;
         this.#selectedRosterMember = undefined;
         this.#renderRoster(true);
@@ -9362,6 +9713,7 @@ export class LinkChatView {
       { className: "kl-roster-list-pane" },
       this.#rosterSearch,
       this.#rosterScopes,
+      this.#friendNavigation,
       this.#rosterFilters,
       this.#rosterRoomContext,
       element("div", { className: "kl-roster-results" }, this.#rosterList, this.#rosterEmpty),
@@ -9447,8 +9799,25 @@ export class LinkChatView {
   }
 
   #renderRoster(forceOrder = false): void {
-    const all = this.roster.list(this.#rosterScope).map((entry) => this.#directoryPlayer(entry));
-    const entries = selectPeople(all, this.#rosterSearch.value, this.#peopleFilters,
+    const requests = this.#rosterScope === "friends" && this.#friendsView === "requests";
+    this.#friendNavigation.hidden = !requests;
+    this.#friendNavigation.replaceChildren();
+    const requestLabel = this.#requestsButton.querySelector("span");
+    if (requestLabel) requestLabel.textContent = `Requests${this.#community?.pendingCount ? ` (${this.#community.pendingCount})` : ""}`;
+    this.#requestsButton.setAttribute("aria-pressed", String(requests));
+    if (requests) {
+      const tabs = element("div", { className: "kl-cloud-actions kl-request-segments" });
+      for (const [value, title] of [["received", "Received"], ["sent", "Sent"]] as const) {
+        const button = element("button", { type: "button", className: "kl-directory-filter", text: title, onClick: () => { this.#requestsView = value; this.#renderRoster(true); } });
+        button.setAttribute("aria-pressed", String(this.#requestsView === value)); tabs.append(button);
+      }
+      this.#friendNavigation.append(tabs);
+    }
+    this.#rosterFilters.hidden = requests;
+    const all = requests ? [...(this.#community?.relationships.values() ?? [])].filter(r => r.state === this.#requestsView)
+      .map(r => this.#directoryPlayer(this.#getRosterEntry(r.memberNumber)))
+      : this.roster.list(this.#rosterScope).map((entry) => this.#directoryPlayer(entry));
+    const entries = selectPeople(all, this.#rosterSearch.value, requests ? { favorites: false, online: false, addon: false } : this.#peopleFilters,
       this.#rosterScope === "current", this.#rosterRoomFilter);
     this.#rosterSubtitle.textContent = `${entries.length} player${entries.length === 1 ? "" : "s"}${
       this.#rosterScope === "current" ? ` · ${this.adapter.getCurrentRoomName?.() || "No active room"}` : ""}`;
@@ -9475,6 +9844,7 @@ export class LinkChatView {
       : this.#rosterScope === "current" ? "No other players in this room. Friends are available from any room or Lobby."
         : this.#rosterScope === "friends" ? "Your BC friends will appear here, including friends in other rooms."
           : "No known players yet. Saved notes and encounters will appear here.";
+    if (requests && !this.#rosterSearch.value) this.#rosterEmpty.textContent = !this.#community?.supported ? "Connect to a compatible Cloud server to manage friend requests." : this.#requestsView === "received" ? "No received friend requests." : "No sent friend requests.";
     // Discovery uses the existing shared queue and its backoff. Filtering never adds a new endpoint.
     this.presence.requestMany(entries.slice(0, 60).map(({ entry }) => entry.memberNumber));
     const selected = this.#selectedRosterMember === undefined ? undefined : this.#getRosterEntry(this.#selectedRosterMember);
@@ -9541,6 +9911,15 @@ export class LinkChatView {
     const row = element("div", { className: "kl-roster-entry" }, avatar,
       element("div", { className: "kl-roster-entry-copy" }, select, location),
       element("div", { className: "kl-roster-entry-actions" }, message, join, more));
+    row.tabIndex = 0; row.setAttribute("role", "group"); row.setAttribute("aria-label", `Player ${entry.displayName}; Enter opens details`);
+    row.addEventListener("click", event => {
+      if ((event.target as Element).closest("button,a,input,select,textarea,summary") || window.getSelection()?.toString()) return;
+      select.click();
+    });
+    row.addEventListener("keydown", event => { if (event.target === row && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault(); select.click();
+    } });
+    row.querySelector(".kl-roster-entry-copy")!.append(element("div", { className: "kl-player-tags" }));
     row.dataset.memberNumber = String(entry.memberNumber);
     const target = () => ({ memberNumber: entry.memberNumber, displayName: this.#getRosterEntry(entry.memberNumber).displayName });
     this.#bindProfileMenu(avatar, target);
@@ -9558,6 +9937,17 @@ export class LinkChatView {
 
   #updateRosterRow(row: HTMLElement, player: DirectoryPlayer): void {
     const { entry, presence } = player;
+    const requests = this.#rosterScope === "friends" && this.#friendsView === "requests";
+    const actions = row.querySelector<HTMLElement>(".kl-roster-entry-actions")!;
+    actions.hidden = requests;
+    let requestActions = row.querySelector<HTMLElement>(".kl-request-actions");
+    if (requests && !requestActions) { requestActions = this.#friendControls(entry.memberNumber); requestActions.classList.add("kl-request-actions"); row.append(requestActions); }
+    if (requestActions) requestActions.hidden = !requests;
+    const tags = row.querySelector<HTMLElement>(".kl-player-tags")!;
+    const labels = (presence.publicTags ?? []).map(label => ({ label, kind: "Public profile tag" }));
+    tags.replaceChildren(...labels.slice(0, 3).map(tag => element("span", { className: "kl-player-tag", text: tag.label, title: `${tag.kind}: ${tag.label}`, ariaLabel: `${tag.kind}: ${tag.label}` })));
+    tags.hidden = labels.length === 0;
+    if (labels.length > 3) tags.append(element("span", { className: "kl-player-tag", text: `+${labels.length - 3}`, title: labels.slice(3).map(t => `${t.kind}: ${t.label}`).join(" · ") }));
     row.dataset.selected = String(entry.memberNumber === this.#selectedRosterMember);
     row.dataset.status = presence.status;
     row.querySelector<HTMLElement>(".kl-roster-entry-name")!.textContent = entry.displayName;
@@ -9804,7 +10194,11 @@ export class LinkChatView {
     const stats = element(
       "div",
       { className: "kl-roster-stats" },
-      this.#rosterStat("Last seen", entry.present ? "Now" : formatFullSeenTime(entry.lastSeenAt)),
+      this.#rosterStat(
+        "Last seen",
+        entry.present ? "Now" : entry.lastSeenAt ? "" : "Not recorded",
+        entry.present ? undefined : entry.lastSeenAt || undefined,
+      ),
       this.#rosterStat("Last recorded room", entry.lastRoomName || "Not recorded"),
       this.#rosterStat("Encounters", entry.encounterCount.toString()),
     );
@@ -9839,12 +10233,14 @@ export class LinkChatView {
     this.presence.request(entry.memberNumber);
   }
 
-  #rosterStat(label: string, value: string): HTMLDivElement {
+  #rosterStat(label: string, value: string, timestamp?: number): HTMLDivElement {
+    const content = element("div", { className: "kl-roster-stat-value", text: value });
+    if (timestamp) bindClockText(content, timestamp, "full-seen");
     return element(
       "div",
       { className: "kl-roster-stat" },
       element("div", { className: "kl-roster-stat-label", text: label }),
-      element("div", { className: "kl-roster-stat-value", text: value }),
+      content,
     );
   }
 
@@ -10183,10 +10579,7 @@ export class LinkChatView {
     this.#presenceTriggerStatus.textContent = snapshot.statusMessage
       ? `${label} · ${snapshot.statusMessage}`
       : label;
-    if (this.#cloudProfile?.current?.avatarId) {
-      this.#cancelRemoteImageLoadsWithin(this.#presenceTriggerAvatar);
-      this.#cloudProfile.paintAvatar(this.#presenceTriggerAvatar);
-    } else { delete this.#presenceTriggerAvatar.dataset.cloudAvatar; this.#renderAvatar(this.#presenceTriggerAvatar, ownName, ownMemberNumber, snapshot.avatarUrl); }
+    this.#renderAvatar(this.#presenceTriggerAvatar, ownName, ownMemberNumber);
     if (this.#cloudProfile?.current) {
       const appearance = withCloudProfile(snapshot, this.#cloudProfile.current, this.#cloudProfile.preserveLegacyAppearance);
       this.#presenceTriggerAvatar.dataset.avatarFrame = appearance.avatarFrame ?? "none";
@@ -10204,9 +10597,8 @@ export class LinkChatView {
   #scheduleClockUpdate(): void {
     if (this.#clockTimer !== undefined) clearTimeout(this.#clockTimer);
     const now = new Date();
-    this.#localClock.dateTime = now.toISOString();
-    this.#localClock.textContent = SHORT_TIME_FORMATTER.format(now);
-    this.#localClock.title = `Local time · ${LOCAL_CLOCK_TITLE_FORMATTER.format(now)}`;
+    bindClockText(this.#localClock, now.getTime());
+    bindClockTitle(this.#localClock, now.getTime(), "local-clock-title");
     this.#clockTimer = setTimeout(
       () => this.#scheduleClockUpdate(),
       Math.max(1_000, 60_000 - (Date.now() % 60_000) + 25),
@@ -10335,6 +10727,7 @@ export class LinkChatView {
       this.#pendingPresenceMembers.clear();
 
       this.#updateVisiblePresence(updateAll ? undefined : members);
+      if (this.#newChatDialog.open) this.#renderKnownContacts();
       if (
         updateAll ||
         (this.#activePeer !== undefined && members.includes(this.#activePeer))
@@ -10544,7 +10937,7 @@ export class LinkChatView {
   #cacheDirectConversations(conversations: ConversationMeta[]): void {
     this.#cachedDirectConversations = conversations;
     this.#directUnreadCount = conversations.reduce(
-      (total, conversation) => total + conversation.unread,
+      (total, conversation) => total + (conversationMuted(conversation.muteUntil) ? 0 : conversation.unread),
       0,
     );
   }
@@ -10611,6 +11004,19 @@ export class LinkChatView {
     const nameRow = button.querySelector<HTMLElement>(".kl-conversation-name-row");
     const name = nameRow?.querySelector<HTMLElement>(".kl-conversation-name");
     if (name) name.textContent = displayName;
+    const oldMute = nameRow?.querySelector(".kl-conversation-muted");
+    const muted = conversationMuted(conversation.muteUntil);
+    if (muted && !oldMute) {
+      const mark = element("span", { className: "kl-conversation-muted", title: muteDescription(conversation.muteUntil), ariaLabel: muteDescription(conversation.muteUntil) }, kikiIcon("muted"));
+      if (conversation.muteUntil !== -1) bindClockTitle(mark, conversation.muteUntil!, "muted-date-time", true);
+      nameRow?.append(mark);
+    } else if (!muted) oldMute?.remove();
+    else if (oldMute instanceof HTMLElement) {
+      clearClockTitleBinding(oldMute);
+      oldMute.title = muteDescription(conversation.muteUntil);
+      oldMute.setAttribute("aria-label", oldMute.title);
+      if (conversation.muteUntil !== -1) bindClockTitle(oldMute, conversation.muteUntil!, "muted-date-time", true);
+    }
     const currentPin = nameRow?.querySelector(".kl-pin");
     if (conversation.pinned && !currentPin) nameRow?.append(kikiIcon("pin", "kl-pin", true));
     else if (!conversation.pinned) currentPin?.remove();
@@ -10626,9 +11032,8 @@ export class LinkChatView {
     }
     const time = button.querySelector<HTMLElement>(".kl-time");
     if (time) {
-      time.textContent = conversation.lastMessageAt > 0
-        ? formatConversationTime(conversation.lastMessageAt)
-        : "";
+      if (conversation.lastMessageAt > 0) bindClockText(time, conversation.lastMessageAt, "conversation");
+      else { clearClockBinding(time); time.textContent = ""; }
     }
     const side = button.querySelector<HTMLElement>(".kl-conversation-side");
     let unread = side?.querySelector<HTMLElement>(".kl-unread");
@@ -10726,7 +11131,8 @@ export class LinkChatView {
     }
     const time = button.querySelector<HTMLElement>(".kl-time");
     if (time) {
-      time.textContent = group.lastMessageAt > 0 ? formatConversationTime(group.lastMessageAt) : "";
+      if (group.lastMessageAt > 0) bindClockText(time, group.lastMessageAt, "conversation");
+      else { clearClockBinding(time); time.textContent = ""; }
     }
     const side = button.querySelector<HTMLElement>(".kl-conversation-side");
     let unread = side?.querySelector<HTMLElement>(".kl-unread");
@@ -10966,7 +11372,9 @@ export class LinkChatView {
     peerNumber: number,
     peerName: string,
     existingIntent?: number,
+    focusComposer = true,
   ): Promise<void> {
+    const originalFocus = this.#shadow.activeElement;
     const intent = existingIntent ?? ++this.#directSelectionIntent;
     if (intent !== this.#directSelectionIntent) return;
     if (this.#cloud && this.#cloudChatSelected) { this.#cloudChatSelected = false; this.#showWorkspace("chat"); }
@@ -10983,7 +11391,6 @@ export class LinkChatView {
       if (intent !== this.#directSelectionIntent) return;
       conversation.peerName = nativeName;
     }
-    await this.service.markRead(peerNumber);
     if (intent !== this.#directSelectionIntent) return;
     const displayName = conversationDisplayName(conversation);
     this.#activePeer = peerNumber;
@@ -11009,15 +11416,16 @@ export class LinkChatView {
     this.#includeRoom.checked = this.settings.getSection("linkChat").includeRoomByDefault;
     this.#sendButton.disabled = !this.adapter.canSendBeep() || this.#directSendBusy;
     this.#attachImageButton.disabled = !this.adapter.canSendBeep() || this.#directSendBusy;
-    this.#composer.disabled = !this.adapter.canSendBeep() || this.#directSendBusy;
+    this.#composer.disabled = !this.adapter.canSendBeep();
     this.#resizeComposer();
     this.#updateCounter();
     await Promise.all([this.#renderMessages(peerNumber), this.refresh()]);
     if (intent !== this.#directSelectionIntent) return;
-    this.#composer.focus();
+    if (focusComposer && this.#shadow.activeElement === originalFocus) this.#composer.focus();
   }
 
   async #renderMessages(peerNumber: number, scrollToBottom = true): Promise<void> {
+    const previousTop = this.#messages.scrollTop;
     const messages = await this.service.getMessages(peerNumber, this.#messageRenderLimit + 1);
     if (this.#activePeer !== peerNumber) return;
     const hasOlder = messages.length > this.#messageRenderLimit;
@@ -11052,9 +11460,10 @@ export class LinkChatView {
       );
     }
     this.#messages.replaceChildren(fragment);
-    if (scrollToBottom) {
-      this.#messages.scrollTop = this.#messages.scrollHeight;
-    }
+    syncDateSeparators(this.#messages);
+    this.#syncMessageGrouping();
+    this.#messages.scrollTop = scrollToBottom ? this.#messages.scrollHeight : previousTop;
+    if (this.isActiveConversation(peerNumber)) await this.service.markRead(peerNumber);
   }
 
   async #loadOlderMessages(peerNumber: number): Promise<void> {
@@ -11084,6 +11493,7 @@ export class LinkChatView {
       }
       if (fragment.childNodes.length > 0) this.#messages.prepend(fragment);
       this.#messageRenderLimit = nextLimit;
+      syncDateSeparators(this.#messages);
       this.#syncMessageGrouping();
       this.#messages.scrollTop = previousTop + (this.#messages.scrollHeight - previousHeight);
     } finally {
@@ -11116,23 +11526,75 @@ export class LinkChatView {
     const body = this.#renderMessageBody(message);
     const actions = messageActions(() => this.#replyToMessage(message), () => copyText(message.content),
       () => this.#toast("The browser blocked clipboard access.", "error"));
+    const time = bindClockText(element("time", { className: "kl-message-time" }), message.sentAt);
+    // Cloud metadata from older local builds may not contain clientMessageId,
+    // while a confirmed server acceptance/delivery/read state is authoritative.
+    const cloudOutgoing = message.direction === "outgoing" && Boolean(
+      message.clientMessageId || message.cloudId ||
+      directReceiptState(message.delivery),
+    );
+    const stamp = cloudOutgoing
+      ? element("span", { className: "kl-message-stamp", ariaLabel: "Message time and receipt" },
+          time,
+          messageReceiptIndicator(
+            directReceiptState(message.delivery),
+            "Read by recipient",
+          ))
+      : time;
     const meta = element(
       "div",
       { className: "kl-message-meta" },
       message.roomName
         ? element("span", { className: "kl-message-room", text: message.roomName })
         : null,
-      element("time", { text: formatMessageTime(message.sentAt) }),
+      stamp,
     );
+    const retryActions = this.#messageRetryActions(message);
+    if (retryActions) meta.append(retryActions);
     const bubble = element("div", { className: "kl-message-bubble" }, body, meta);
     if (body.querySelector(".kl-message-media")) bubble.dataset.media = "true";
     const row = element("div", { className: "kl-message-row kl-message-line kl-message-interaction" }, bubble, actions);
     row.dataset.actionable = "true";
+    row.dataset.messageTime = String(message.sentAt);
+    row.dataset.day = localDay(message.sentAt);
     bubble.tabIndex = 0;
     row.dataset.direction = message.direction;
     row.dataset.group = group;
     row.dataset.messageId = message.id;
     return row;
+  }
+
+  #patchMessageMetadata(message: LinkMessage): boolean {
+    if (this.#messageRenderPeer !== message.peerNumber) return false;
+    const row = [...this.#messages.querySelectorAll<HTMLElement>(".kl-message-row[data-message-id]")]
+      .find(candidate => candidate.dataset.messageId === message.id);
+    if (!row) return false;
+    const time = row.querySelector<HTMLElement>(".kl-message-time");
+    if (time) bindClockText(time, message.sentAt);
+    const indicator = row.querySelector<HTMLElement>(".kl-message-receipt");
+    if (indicator) updateMessageReceipt(
+      indicator,
+      directReceiptState(message.delivery),
+      "Read by recipient",
+    );
+    const existingRetry = row.querySelector(".kl-message-retry-actions");
+    const retryActions = this.#messageRetryActions(message);
+    if (retryActions && !existingRetry) row.querySelector(".kl-message-meta")?.append(retryActions);
+    else if (!retryActions) existingRetry?.remove();
+    return true;
+  }
+
+  #messageRetryActions(message: LinkMessage): HTMLSpanElement | undefined {
+    // A transient offline send has no visible Sending state. Controls appear only
+    // for a definite failure, so the normal pending → sent transition stays fixed.
+    if (message.delivery !== "failed" || !this.#cloudDirect?.retryable(message.id)) return undefined;
+    const controls = element("span", { className: "kl-message-retry-actions" });
+    controls.append(
+      element("button", { type: "button", className: "kl-text-button", text: "Retry", onClick: () => void this.#cloudDirect?.retry(message.id).catch(error => this.#toast(String(error), "error")) }),
+      element("button", { type: "button", className: "kl-text-button", text: "Stop retrying", title: "Stops local retries. A message already accepted by the server may still arrive.", onClick: () => void this.#cloudDirect?.stopRetrying(message.id).catch(error => this.#toast(String(error), "error")) }),
+    );
+    controls.title = message.deliveryError ?? "Delivery failed";
+    return controls;
   }
 
   #appendMessage(message: LinkMessage): void {
@@ -11173,6 +11635,8 @@ export class LinkChatView {
         }
       }
     }
+    syncDateSeparators(this.#messages);
+    this.#syncMessageGrouping();
     if (shouldFollowMessage) this.#messages.scrollTop = this.#messages.scrollHeight;
   }
 
@@ -11180,9 +11644,9 @@ export class LinkChatView {
     const rows = [...this.#messages.querySelectorAll<HTMLElement>(".kl-message-row")];
     for (const [index, row] of rows.entries()) {
       row.dataset.group = messageGroupPosition(
-        rows[index - 1]?.dataset.direction,
+        rows[index - 1]?.dataset.day === row.dataset.day ? rows[index - 1]?.dataset.direction : undefined,
         row.dataset.direction,
-        rows[index + 1]?.dataset.direction,
+        rows[index + 1]?.dataset.day === row.dataset.day ? rows[index + 1]?.dataset.direction : undefined,
       );
     }
   }
@@ -11202,6 +11666,8 @@ export class LinkChatView {
   async #send(): Promise<void> {
     const message = this.#reply.value.trim();
     if (!this.#reply.hasContent || this.#directSendBusy) return;
+    // This explicit Send/Enter action owns focus. Async completion never does.
+    this.#composer.focus({ preventScroll: true });
     await this.#sendContent(message, true);
   }
 
@@ -11219,21 +11685,24 @@ export class LinkChatView {
     this.#directSendBusy = true;
     this.#sendButton.disabled = true;
     this.#attachImageButton.disabled = true;
-    this.#composer.disabled = true;
     let sent = false;
     try {
-      const event = this.adapter.sendBeep(
-        peerNumber,
-        message,
-        includeRoom,
-      );
+      if (this.#community?.supported && !this.#community.relationships.has(peerNumber)) {
+        try { await this.#community.get(peerNumber); } catch (error) {
+          if (!(error instanceof CloudError && error.status === 404)) throw new Error("Cannot confirm the delivery route. Your draft is kept; retry when connected.");
+        }
+      }
+      const cloud = this.#cloudDirect?.shouldUse(peerNumber);
+      const storedMessage = cloud
+        ? await this.#cloudDirect!.send(peerNumber, peerName, message, includeRoom ? this.adapter.getCurrentRoomName() : undefined)
+        : await this.service.capture(this.adapter.sendBeep(peerNumber, message, includeRoom), true);
       sent = true;
-      const storedMessage = await this.service.capture(event, true);
       if (this.#typingStopTimer !== undefined) clearTimeout(this.#typingStopTimer);
       this.#typingStopTimer = undefined;
       this.presence.setTyping(peerNumber, false, true);
       if (clearComposer) {
-        await this.service.setDraft(peerNumber, peerName, "");
+        await this.service.setDraft(peerNumber, peerName,
+          this.#activePeer === peerNumber && this.#reply.value !== composerValueAtSend ? this.#reply.value : "");
         if (this.#activePeer === peerNumber && this.#reply.value === composerValueAtSend) {
           this.#reply.load("");
           this.#resizeComposer();
@@ -11241,7 +11710,6 @@ export class LinkChatView {
         }
       }
       await this.onMessage(peerNumber, false, storedMessage);
-      if (clearComposer && this.#activePeer === peerNumber) this.#composer.focus();
       return true;
     } catch (error) {
       if (
@@ -11281,13 +11749,14 @@ export class LinkChatView {
     const visibleContent = reply?.content ?? content;
     const links = parseMessageLinks(visibleContent);
     const previewsEnabled = this.settings.getSection("linkChat").imagePreviews !== "never";
-    const imageUrls = [...new Set(links.filter((link) => link.image).map((link) => link.url))].slice(0, 2);
+    const imageUrls: string[] = [];
     const body = element("div", { className });
     if (reply) {
       body.append(replyPreview(reply));
       body.dataset.hasReply = "true";
     }
-    appendActionFormattedText(body, visibleContent, links, (link) => {
+    appendFormattedText(body, visibleContent, links, (link) => {
+      if (link.image && !imageUrls.includes(link.url) && imageUrls.length < 2) imageUrls.push(link.url);
       if (link.image && previewsEnabled) return undefined;
       const anchor = element("a", {
         className: "kl-message-link",
@@ -11401,10 +11870,6 @@ export class LinkChatView {
           if (!entry.isIntersecting) {
             const retainedDecoration = this.#retainedRemoteDecorations.get(target);
             if (retainedDecoration) {
-              this.#retainedRemoteDecorations.delete(target);
-              const shouldReload = target.isConnected && this.#mounted;
-              retainedDecoration.pause();
-              if (shouldReload) retainedDecoration.reload();
               continue;
             }
             const retainedUrl = this.#retainedRemoteImagePreviews.get(target);
@@ -12193,6 +12658,16 @@ export class LinkChatView {
     const organize = element(
       "div",
       { className: "kl-profile-menu-group" },
+      memberNumber !== this.adapter.getOwnMemberNumber?.() ? this.#friendControls(memberNumber) : null,
+      ...(conversation ? (conversationMuted(conversation.muteUntil)
+        ? [this.#profileMenuAction("notifications", "Unmute", conversation.muteUntil === -1
+          ? muteDescription(conversation.muteUntil)
+          : bindClockText(element("span"), conversation.muteUntil!, "muted-date-time"), async () => {
+          await this.service.mute(memberNumber, 0); await this.#renderConversations(); await this.#updateUnreadBadge();
+        })]
+        : [this.#profileMenuAction("muted", "Mute", "Choose how long to silence notifications", () => {
+          this.#openConversationMuteChoices(memberNumber, shownName);
+        })]) : []),
       this.#profileMenuAction(
         "star",
         rosterEntry.favorite ? "Remove favorite" : "Add favorite",
@@ -12291,7 +12766,7 @@ export class LinkChatView {
   #profileMenuAction(
     icon: KikiLinkIconName,
     label: string,
-    help: string,
+    help: string | HTMLElement,
     action: () => void | Promise<void>,
     disabled = false,
     filled = false,
@@ -12304,7 +12779,8 @@ export class LinkChatView {
         "span",
         { className: "kl-profile-menu-copy" },
         element("span", { className: "kl-profile-menu-label", text: label }),
-        element("span", { className: "kl-profile-menu-help", text: help }),
+        typeof help === "string" ? element("span", { className: "kl-profile-menu-help", text: help })
+          : element("span", { className: "kl-profile-menu-help" }, help),
       ),
     );
     button.setAttribute("role", "menuitem");
@@ -12314,6 +12790,34 @@ export class LinkChatView {
       this.#runPlayerAction(action, "Player action could not be completed.");
     });
     return button;
+  }
+
+  #openConversationMuteChoices(memberNumber: number, shownName: string): void {
+    const status = element("p", { className: "kl-cloud-status" });
+    status.setAttribute("role", "status");
+    const choices = element("div", { className: "kl-mute-choice-list" });
+    for (const [label, duration] of MUTE_DURATIONS) {
+      const choice = element("button", { className: "kl-text-button kl-mute-choice", type: "button" },
+        kikiIcon("muted"),
+        element("span", {}, element("strong", { text: label })),
+      );
+      choice.addEventListener("click", () => {
+        for (const button of choices.querySelectorAll<HTMLButtonElement>("button")) button.disabled = true;
+        status.textContent = `Muting ${shownName}…`;
+        void this.service.mute(memberNumber, duration < 0 ? -1 : Date.now() + duration).then(async () => {
+          await this.#renderConversations();
+          await this.#updateUnreadBadge();
+          this.#contentDialog.close();
+          this.#toast(`${shownName} muted · ${label}.`);
+        }).catch(error => {
+          for (const button of choices.querySelectorAll<HTMLButtonElement>("button")) button.disabled = false;
+          status.textContent = error instanceof Error ? error.message : "Could not mute this chat.";
+        });
+      });
+      choices.append(choice);
+    }
+    this.#contentDialog.show(`Mute ${shownName}`, element("div", { className: "kl-mute-sheet" },
+      element("p", { text: "Mute notifications for this chat. Messages and unread counts are kept. You can unmute at any time." }), choices, status));
   }
 
   #runPlayerAction(action: () => void | Promise<void>, fallbackMessage: string): void {
@@ -12368,14 +12872,43 @@ export class LinkChatView {
     this.#toast("Chat marked unread.");
   }
 
-  #openNewChat(): void {
-    this.#newChatQuery.value = "";
-    this.#renderKnownContacts();
+  #openPeoplePicker(request?: PeoplePickerRequest): void {
+    this.#picker = request; this.#pickerSelected.clear(); this.#pickerBusy = false;
+    this.#pickerStatus.textContent = "";
+    this.#pickerGroupTitle.hidden = request?.groupTitle === undefined;
+    this.#pickerGroupTitle.value = request?.groupTitle ?? ""; this.#pickerGroupTitle.maxLength = 60; this.#pickerGroupTitle.placeholder = "Group name (optional)";
+    this.#newChatDialog.querySelector(".kl-dialog-title")!.textContent = request?.mode ?? "New chat";
+    this.#newChatDialog.querySelector<HTMLButtonElement>(".kl-dialog-actions .kl-text-button--primary")!.textContent = request?.mode ?? "Open chat";
+    this.#newChatQuery.value = ""; this.#renderKnownContacts();
     if (!this.#newChatDialog.open) this.#newChatDialog.showModal();
     this.#newChatQuery.focus();
   }
+  #openNewChat(): void { this.#openPeoplePicker(); }
+  #pickerEligible(member: number): boolean {
+    if (member === this.adapter.getOwnMemberNumber() || this.#picker?.exclude?.includes(member)) return false;
+    if ((this.adapter.getPlayerRelationships?.(member) ?? []).some(r => r === "blacklist" || r === "ghosted")) return false;
+    return this.#picker?.eligible?.(member) ?? true;
+  }
+  #chooseContact(member: number, name: string): void {
+    if (this.#pickerBusy || !this.#pickerEligible(member)) return;
+    if (!this.#picker) {
+      this.#newChatDialog.close(); this.#runPlayerAction(() => this.openChat(member, name), "LinkChat could not be opened."); return;
+    }
+    if (this.#pickerSelected.has(member)) this.#pickerSelected.delete(member);
+    else if (this.#pickerSelected.size < this.#picker.maximum) this.#pickerSelected.add(member);
+    this.#renderKnownContacts();
+  }
 
   async #submitNewChat(): Promise<void> {
+    if (this.#pickerBusy) return;
+    if (this.#picker && this.#pickerSelected.size) {
+      if (this.#pickerSelected.size < (this.#picker.minimum ?? 1)) { this.#pickerStatus.textContent = `Select at least ${this.#picker.minimum} people.`; return; }
+      this.#pickerBusy = true; this.#pickerStatus.textContent = "Saving…";
+      try { await this.#picker.confirm([...this.#pickerSelected], this.#pickerGroupTitle.value); this.#newChatDialog.close(); }
+      catch (error) { this.#pickerStatus.textContent = error instanceof Error ? error.message : "Could not save. Your selection is kept; retry."; }
+      finally { this.#pickerBusy = false; }
+      return;
+    }
     const query = this.#newChatQuery.value.trim();
     if (!query) {
       this.#toast("Choose a contact or enter a valid member number.", "error");
@@ -12393,6 +12926,7 @@ export class LinkChatView {
         return;
       }
       if (exactContact) {
+        if (this.#picker) { this.#chooseContact(exactContact.memberNumber, exactContact.memberName); return; }
         this.#newChatDialog.close();
         try {
           await this.openChat(exactContact.memberNumber, exactContact.memberName);
@@ -12424,6 +12958,7 @@ export class LinkChatView {
     } catch {
       // A numeric member ID remains sufficient to open a local conversation.
     }
+    if (this.#picker) { this.#chooseContact(memberNumber, memberName); return; }
     this.#newChatDialog.close();
     try {
       await this.openChat(memberNumber, memberName);
@@ -12452,8 +12987,11 @@ export class LinkChatView {
     let contactsReadable = true;
     let contacts: Array<KnownContact & { inRoom: boolean; online: boolean }> = [];
     try {
-      contacts = this.adapter
-        .getKnownContacts()
+      const known = this.adapter.getKnownContacts();
+      const exact = Number(query.replace(/^#/u, ""));
+      if (Number.isSafeInteger(exact) && exact > 0 && !known.some(c => c.memberNumber === exact)) known.push({ memberNumber: exact, memberName: this.adapter.getMemberName(exact) });
+      contacts = known
+        .filter(contact => this.#pickerEligible(contact.memberNumber))
         .map((contact) => ({
           ...contact,
           inRoom: roomNumbers.has(contact.memberNumber),
@@ -12464,7 +13002,8 @@ export class LinkChatView {
             contact.memberName.toLocaleLowerCase().includes(query) ||
             contact.memberNumber.toString().includes(query)) &&
           (filter !== "online" || contact.online) &&
-          (filter !== "room" || contact.inRoom),
+          (filter !== "room" || contact.inRoom) &&
+          (filter !== "addon" || this.#community?.relationships.get(contact.memberNumber)?.supported || this.presence.get(contact.memberNumber).addonVersion),
         )
         .sort((left, right) => {
           if (this.#newChatSortSelect.value === "online") {
@@ -12482,7 +13021,15 @@ export class LinkChatView {
       contactsReadable = false;
     }
 
+    const focused = this.#newChatResults.querySelector<HTMLElement>(":focus")?.dataset.memberNumber;
     this.#newChatResults.replaceChildren();
+    this.#pickerSelection.hidden = !this.#picker;
+    this.#pickerSelection.replaceChildren();
+    if (this.#picker) {
+      this.#pickerSelection.append(element("small", { text: `${this.#pickerSelected.size} selected · ${Math.max(0, this.#picker.maximum - this.#pickerSelected.size)} places left` }));
+      for (const member of this.#pickerSelected) this.#pickerSelection.append(element("button", { className: "kl-text-button", type: "button", text: `${this.adapter.getMemberName(member)} ×`,
+        ariaLabel: `Remove ${this.adapter.getMemberName(member)} from selection`, onClick: () => { this.#pickerSelected.delete(member); this.#renderKnownContacts(); } }));
+    }
     if (contacts.length === 0) {
       this.#newChatResults.append(
         element("div", {
@@ -12506,6 +13053,8 @@ export class LinkChatView {
 
     for (const contact of contacts) {
       const presence = this.presence.get(contact.memberNumber);
+      const shownStatus = presence.status !== "unknown" ? presence.status
+        : contact.inRoom || contact.online ? "online" : onlineSnapshotReady ? "offline" : "unknown";
       const nativeState = contact.inRoom
         ? "room"
         : contact.online
@@ -12520,7 +13069,7 @@ export class LinkChatView {
           "div",
           { className: "kl-avatar-wrap" },
           this.#avatar(contact.memberName, contact.memberNumber),
-          presenceDot(presence.status === "unknown" && contact.online ? "online" : presence.status),
+          presenceDot(shownStatus),
         ),
         element(
           "div",
@@ -12534,23 +13083,23 @@ export class LinkChatView {
               className: "kl-contact-native-state",
               text: contact.inRoom
                 ? "In this room"
-                : contact.online
-                  ? "Online"
-                  : onlineSnapshotReady
-                    ? "Offline"
-                    : "Status unknown",
+                : presenceLabel(shownStatus),
             }),
           ),
         ),
       );
       button.dataset.nativeState = nativeState;
-      button.addEventListener("click", () => {
-        this.#newChatDialog.close();
-        this.#runPlayerAction(
-          () => this.openChat(contact.memberNumber, contact.memberName),
-          "LinkChat could not be opened.",
-        );
-      });
+      button.dataset.presenceState = shownStatus;
+      if (this.#picker) {
+        const selected = this.#pickerSelected.has(contact.memberNumber);
+        button.setAttribute("aria-pressed", String(selected)); button.dataset.selected = String(selected);
+        button.dataset.picker = "true";
+        button.disabled = this.#pickerBusy || (!selected && this.#pickerSelected.size >= this.#picker.maximum);
+        button.append(element("span", { className: "kl-contact-toggle" }, kikiIcon(selected ? "check" : "plus")));
+        const relation = this.#community?.relationships.get(contact.memberNumber);
+        if (this.#picker.mode === "Add friend" && relation?.state === "sent") { button.disabled = true; button.title = "Pending Request"; }
+      }
+      button.addEventListener("click", () => this.#chooseContact(contact.memberNumber, contact.memberName));
       this.#bindProfileMenu(button, () => ({
         memberNumber: contact.memberNumber,
         displayName: contact.memberName,
@@ -12558,6 +13107,8 @@ export class LinkChatView {
       button.dataset.memberNumber = contact.memberNumber.toString();
       this.#newChatResults.append(button);
     }
+    if (focused) this.#newChatResults.querySelector<HTMLElement>(`[data-member-number="${focused}"]`)?.focus({ preventScroll: true });
+    void this.#community?.known(contacts.map(contact => contact.memberNumber)).catch(() => {});
     try {
       this.presence.requestMany(contacts.map((contact) => contact.memberNumber));
     } catch {
@@ -12915,6 +13466,7 @@ export class LinkChatView {
     this.#updateAccentPresets();
     this.#densitySelect.value = settings.ui.density;
     this.#textScaleSelect.value = settings.ui.textScale;
+    this.#timeFormatSelect.value = settings.ui.timeFormat;
     this.#homeLayoutSelect.value = settings.ui.homeLayout;
     this.#launcherSideSelect.value = settings.ui.launcherSide;
     this.#launcherOpenSelect.value = settings.ui.launcherOpen;
@@ -13096,6 +13648,10 @@ export class LinkChatView {
   }
 
   #cancelSettings(): void {
+    const format = this.settings.getSection("ui").timeFormat;
+    setTimeFormatPreference(format);
+    refreshClockText(this.#shadow, format);
+    this.#scheduleClockUpdate();
     this.#showWorkspace(this.#availableWorkspace(this.#settingsReturnView));
   }
 
@@ -13121,6 +13677,7 @@ export class LinkChatView {
         this.#textScaleSelect.value === "extra-large"
           ? this.#textScaleSelect.value
           : "normal";
+      draft.ui.timeFormat = this.#timeFormatSelect.value === "12-hour" ? "12-hour" : "24-hour";
       draft.ui.homeLayout = this.#homeLayoutSelect.value === "compact" ? "compact" : "showcase";
       draft.ui.launcherSide = launcherSide;
       draft.ui.launcherOpen =
@@ -13240,7 +13797,9 @@ export class LinkChatView {
   }
 
   async #clearHistory(): Promise<void> {
-    if (!window.confirm("Clear all KikiLink direct and group chats, messages, and drafts?")) return;
+    if (!window.confirm("Clear all KikiLink direct and group chats, messages, drafts, and local delivery retries? Messages already accepted by Cloud may still arrive.")) return;
+    try { this.#cloudDirect?.clearPending(); }
+    catch { this.#toast("Could not clear the local delivery queue. History has not been cleared; please retry.", "error"); return; }
     const [directResult, groupResult] = await Promise.allSettled([
       this.service.clearHistory(),
       this.#groupChatService?.clear() ?? Promise.resolve(true),
@@ -13392,10 +13951,16 @@ export class LinkChatView {
     if (refreshDirect || this.#cachedDirectConversations === undefined) {
       this.#directUnreadCount = await this.service.totalUnread();
     }
-    const unread = this.#directUnreadCount + (this.#cloud ? this.#cloud.inbox.unreadGroups : this.#groupChatService?.totalUnread() ?? 0);
+    const unread = this.#directUnreadCount + (this.#cloud ? this.#cloud.inbox.unreadMessages : this.#groupChatService?.totalUnread() ?? 0);
     this.#unreadCount = unread;
+    updateBadge(this.#chatCount, unread);
     this.#badge.hidden = unread === 0;
     this.#badge.textContent = unread > 99 ? "99+" : unread.toString();
+    clearTimeout(this.#conversationMuteTimer);
+    const next = Math.min(...(this.#cachedDirectConversations ?? []).map(c => c.muteUntil ?? 0).filter(t => t > Date.now()));
+    if (Number.isFinite(next)) this.#conversationMuteTimer = setTimeout(() => {
+      if (this.#mounted) { void this.#renderConversations(); void this.#updateUnreadBadge(); }
+    }, Math.min(2_147_483_647, Math.max(1, next - Date.now())));
   }
 
   #resizeComposer(): void {
@@ -13716,6 +14281,133 @@ export class LinkChatView {
     target.append(badge);
   }
 
+  #refreshCloudAvatars(member?: number, invalidated = false, retryFailed = false): void {
+    for (const [target, binding] of this.#cloudAvatarTargets) {
+      if (!target.isConnected) {
+        this.#cloudAvatarObserver?.unobserve(target); this.#cloudAvatarTargets.delete(target); continue;
+      }
+      if (member !== undefined && binding.member !== member) continue;
+      this.#renderAvatar(target, binding.name, binding.member, undefined, invalidated || (retryFailed && target.dataset.avatarState === "error"));
+    }
+  }
+
+  #watchCloudAvatar(target: HTMLElement, name: string, member: number): void {
+    const old = this.#cloudAvatarTargets.get(target);
+    if (old?.member === member) old.name = name;
+    else {
+      this.#cloudAvatarTargets.set(target, { name, member, visible: false });
+      if (typeof IntersectionObserver === "function") {
+        this.#cloudAvatarObserver ??= new IntersectionObserver(entries => {
+          for (const entry of entries) {
+            const node = entry.target as HTMLElement, binding = this.#cloudAvatarTargets.get(node);
+            if (!binding) continue;
+            binding.visible = entry.isIntersecting;
+            if (binding.visible) this.#loadCloudAvatarProfile(node);
+          }
+        }, { rootMargin: "150px" });
+        this.#cloudAvatarObserver.observe(target);
+      }
+      // Discard removed list rows without retaining an unbounded roster.
+      if (this.#cloudAvatarTargets.size > 200) for (const [node] of this.#cloudAvatarTargets) {
+        if (node !== target && !node.isConnected) { this.#cloudAvatarTargets.delete(node); this.#cloudAvatarObserver?.unobserve(node); }
+      }
+    }
+    if (this.#cloudAvatarTargets.get(target)?.visible || !this.#cloudAvatarObserver)
+      queueMicrotask(() => this.#loadCloudAvatarProfile(target));
+  }
+
+  #loadCloudAvatarProfile(target: HTMLElement): void {
+    const binding = this.#cloudAvatarTargets.get(target), client = this.#cloud?.client;
+    if (!binding || !client?.connected || !target.isConnected || this.#panel.hidden || client.isProfileBlocked(binding.member)) return;
+    const member = binding.member, now = Date.now();
+    if (now < (this.#cloudAvatarFetchAfter.get(member) ?? 0)) return;
+    this.#cloudAvatarFetchAfter.delete(member); this.#cloudAvatarFetchAfter.set(member, now + 30000);
+    while (this.#cloudAvatarFetchAfter.size > 200) this.#cloudAvatarFetchAfter.delete(this.#cloudAvatarFetchAfter.keys().next().value!);
+    // CloudClient deduplicates requests and quietly refreshes its saved snapshot.
+    void client.profile(member).then(() => {
+      this.#cloudAvatarDenied.delete(member);
+      if (this.#mounted) this.#refreshCloudAvatars(member);
+    }).catch(error => {
+      if (!this.#mounted || !client.connected) return;
+      if (error instanceof CloudError && (error.status === 403 || error.status === 404)) {
+        this.#cloudAvatarDenied.add(member);
+        while (this.#cloudAvatarDenied.size > 200) this.#cloudAvatarDenied.delete(this.#cloudAvatarDenied.values().next().value!);
+        this.#refreshCloudAvatars(member, true);
+      }
+    });
+  }
+
+  #renderCloudAvatar(target: HTMLElement, name: string, member: number, native: PresenceSnapshot, own: boolean, force: boolean): boolean {
+    const cloud = this.#cloud;
+    if (!cloud) return false;
+    this.#watchCloudAvatar(target, name, member);
+    if (!cloud.client.connected) return false;
+    const denied = cloud.client.isProfileBlocked(member) || this.#cloudAvatarDenied.has(member);
+    const profile = cloud.client.peekProfile(member);
+    const policy = own ? "always" : this.settings.getSection("linkPresence").profileImagePreviews;
+    const sameMember = target.dataset.avatarMemberNumber === String(member);
+    if (!profile && !denied) {
+      // An expired metadata cache is not an avatar removal. Keep a painted
+      // portrait through a quiet refresh, but never across identity/privacy changes.
+      return !force && sameMember && target.dataset.cloudAvatar !== undefined && target.dataset.cloudAvatarPolicy === policy;
+    }
+    if (profile?.isDefault && !denied) return false;
+    const id = denied ? "" : profile?.avatarId ?? "";
+    const appearance = profile && !denied ? withCloudProfile(native, profile, own && this.#cloudProfile?.preserveLegacyAppearance) : native;
+    applyAvatarAppearance(target, appearance);
+    target.dataset.avatarFrame = appearance.avatarFrame ?? "none";
+    const installed = own || native.addonInstalled === true || Boolean(profile && !profile.isDefault);
+    target.dataset.addonInstalled = String(installed);
+    this.#renderAddonBadge(target, installed);
+    if (target.getAttribute("role") === "button") target.setAttribute("aria-label", `Open KikiLink profile for ${name}`);
+    const unchanged = sameMember && target.dataset.cloudAvatar === id && target.dataset.cloudAvatarPolicy === policy;
+    if (unchanged && !force && (target.dataset.avatarState !== "error" || Date.now() < Number(target.dataset.cloudAvatarRetryAt ?? 0))) {
+      target.dataset.avatarName = name;
+      const image = target.querySelector<HTMLImageElement>(".kl-social-avatar-media img"); if (image) image.alt = `${name} profile avatar`;
+      const fallback = target.querySelector(".kl-cloud-avatar-fallback"); if (fallback) fallback.textContent = avatarText(name);
+      return true;
+    }
+    const previous = !force && sameMember && policy === "always"
+      ? target.querySelector<HTMLElement>(':scope > .kl-social-avatar-media[data-state="ready"], :scope > img[data-ready="true"]') : null;
+    this.#cancelRemoteImageLoad(target);
+    target.dataset.kikilinkAvatar = "true";
+    target.dataset.avatarMemberNumber = String(member); target.dataset.avatarName = name;
+    target.dataset.cloudAvatar = id; target.dataset.cloudAvatarPolicy = policy;
+    delete target.dataset.avatarUrl; delete target.dataset.cloudAvatarRetryAt;
+    const fallback = () => {
+      if (!target.querySelector(":scope > .kl-cloud-avatar-fallback"))
+        target.prepend(element("span", { className: "kl-cloud-avatar-fallback", text: avatarText(name) }));
+    };
+    if (!id || policy !== "always") {
+      target.replaceChildren(); fallback(); target.dataset.avatarState = "initials";
+      this.#renderAddonBadge(target, installed); return true;
+    }
+    const media = cloud.avatarImage(id, own);
+    const current = () => target.dataset.avatarMemberNumber === String(member) && target.dataset.cloudAvatar === id &&
+      target.dataset.cloudAvatarPolicy === policy && media.parentElement === target;
+    if (previous && media.dataset.state !== "ready") {
+      media.style.visibility = "hidden"; target.replaceChildren(previous, media);
+    } else { target.replaceChildren(media); if (media.dataset.state !== "ready") fallback(); }
+    target.dataset.avatarState = "loading";
+    const ready = () => {
+      if (!current()) return;
+      media.style.visibility = ""; target.replaceChildren(media); this.#renderAddonBadge(target, installed);
+      const image = media.querySelector("img"); if (image) image.alt = `${target.dataset.avatarName} profile avatar`;
+      target.dataset.avatarState = "image"; delete target.dataset.cloudAvatarRetryAt;
+    };
+    media.addEventListener("cloud-image-ready", ready);
+    media.addEventListener("cloud-image-error", () => {
+      if (!current()) return;
+      const denied = [401, 403, 404].includes(Number(media.dataset.errorStatus));
+      if (denied && previous?.parentElement === target) previous.remove();
+      if (!previous || previous.parentElement !== target) fallback();
+      target.dataset.avatarState = "error"; target.dataset.cloudAvatarRetryAt = denied ? "Infinity" : String(Date.now() + 30000);
+    });
+    if (media.dataset.state === "ready") ready();
+    this.#renderAddonBadge(target, installed);
+    return true;
+  }
+
   #renderAvatar(
     target: HTMLElement,
     name: string,
@@ -13735,6 +14427,14 @@ export class LinkChatView {
     } catch {
       // Treat guarded native identity as remote for privacy purposes.
     }
+    if (explicitUrl === undefined && this.#renderCloudAvatar(target, name, memberNumber, snapshot, ownMember, force)) return;
+    if (explicitUrl !== undefined) {
+      this.#cloudAvatarTargets.delete(target); this.#cloudAvatarObserver?.unobserve(target);
+    }
+    if (target.dataset.cloudAvatar !== undefined) {
+      delete target.dataset.cloudAvatar; delete target.dataset.cloudAvatarPolicy;
+      target.replaceChildren();
+    }
     const candidateUrl = normalizeImageUrl(explicitUrl ?? snapshot.avatarUrl ?? "") ?? "";
     const policy = this.settings.getSection("linkPresence").profileImagePreviews;
     const allowedUrl =
@@ -13750,10 +14450,12 @@ export class LinkChatView {
         : snapshot.avatarFrame ?? "none";
     const installed = ownMember || snapshot.addonInstalled === true ||
       (snapshot.addonInstalled === undefined && snapshot.source === "kikilink");
+    applyAvatarAppearance(target, ownMember && explicitUrl !== undefined ? { avatarDecoration: this.#avatarAppearance.get() } : snapshot);
     target.dataset.addonInstalled = String(installed);
     this.#renderAddonBadge(target, installed);
     if (
       !force &&
+      target.dataset.avatarMemberNumber === String(memberNumber) &&
       target.dataset.avatarName === name &&
       target.dataset.avatarUrl === allowedUrl &&
       target.dataset.avatarFrame === avatarFrame &&
@@ -13767,6 +14469,8 @@ export class LinkChatView {
     ) {
       return;
     }
+    const paintedImage = target.dataset.avatarMemberNumber === String(memberNumber)
+      ? target.querySelector<HTMLImageElement>(':scope > img[data-ready="true"]') : null;
     const token = this.#nextRemoteImageRender(target);
     target.dataset.kikilinkAvatar = "true";
     target.dataset.avatarName = name;
@@ -13793,7 +14497,8 @@ export class LinkChatView {
       }
       showFallback(state);
     };
-    fallback();
+    if (!allowedUrl || !paintedImage) fallback();
+    else target.dataset.avatarState = "refreshing";
     if (!allowedUrl) return;
 
     const pause = (): void => {
@@ -13821,11 +14526,15 @@ export class LinkChatView {
         image.alt = `${name} profile avatar`;
         image.loading = "eager";
         image.decoding = "async";
+        image.style.visibility = "hidden";
         image.addEventListener("load", () => {
           if (
             this.#isLiveRemoteImageRender(target, token) &&
-            image.parentElement === target
+            target.dataset.avatarName === name && target.dataset.avatarUrl === allowedUrl
           ) {
+            image.style.visibility = ""; image.dataset.ready = "true";
+            target.replaceChildren(image);
+            this.#renderAddonBadge(target, target.dataset.addonInstalled === "true");
             target.dataset.avatarState = "image";
             this.#retainRemoteDecoration(target, {
               pinned: this.#isPinnedRemoteDecoration(target),
@@ -13839,17 +14548,17 @@ export class LinkChatView {
           this.#releaseRemoteImageLease(target, lease);
           if (
             this.#isLiveRemoteImageRender(target, token) &&
-            image.parentElement === target &&
             target.dataset.avatarName === name &&
             target.dataset.avatarUrl === allowedUrl
           ) {
-            fallback("error");
+            image.remove();
+            if (!paintedImage || paintedImage.parentElement !== target) fallback("error");
+            else target.dataset.avatarState = "error";
             this.#cancelRemoteImageLoad(target);
             this.#parkFailedRemoteDecoration(target, reload);
           }
         }, { once: true });
-        target.replaceChildren(image);
-        this.#renderAddonBadge(target, target.dataset.addonInstalled === "true");
+        target.append(image);
         image.src = lease.url;
       }).catch(() => {
         if (
@@ -13858,7 +14567,8 @@ export class LinkChatView {
           target.dataset.avatarName === name &&
           target.dataset.avatarUrl === allowedUrl
         ) {
-          fallback("error");
+          if (!paintedImage || paintedImage.parentElement !== target) fallback("error");
+          else target.dataset.avatarState = "error";
           this.#cancelRemoteImageLoad(target);
           this.#parkFailedRemoteDecoration(target, reload);
         }
@@ -13915,11 +14625,12 @@ export class LinkChatView {
     ) {
       return;
     }
+    const paintedImage = target.dataset.bannerState === "image" ? target.querySelector<HTMLImageElement>(":scope > img") : null;
     const token = this.#nextRemoteImageRender(target);
     target.dataset.bannerUrl = allowedUrl;
     target.dataset.bannerName = name;
-    target.dataset.bannerState = allowedUrl ? "loading" : "default";
-    target.replaceChildren();
+    target.dataset.bannerState = allowedUrl ? paintedImage ? "refreshing" : "loading" : "default";
+    if (!paintedImage || !allowedUrl) target.replaceChildren();
     if (!allowedUrl) return;
 
     const pause = (): void => {
@@ -13950,7 +14661,8 @@ export class LinkChatView {
         image.loading = "eager";
         image.decoding = "async";
         image.addEventListener("load", () => {
-          if (this.#isLiveRemoteImageRender(target, token) && image.parentElement === target) {
+          if (this.#isLiveRemoteImageRender(target, token) && target.dataset.bannerUrl === allowedUrl && target.dataset.bannerName === name) {
+            target.replaceChildren(image);
             target.dataset.bannerState = "image";
             this.#retainRemoteDecoration(target, {
               pinned: this.#isPinnedRemoteDecoration(target),
@@ -13964,18 +14676,18 @@ export class LinkChatView {
           this.#releaseRemoteImageLease(target, lease);
           if (
             !this.#isLiveRemoteImageRender(target, token) ||
-            image.parentElement !== target ||
             target.dataset.bannerUrl !== allowedUrl ||
             target.dataset.bannerName !== name
           ) {
             return;
           }
-          target.replaceChildren();
+          image.remove();
+          if (!paintedImage || paintedImage.parentElement !== target) target.replaceChildren();
           target.dataset.bannerState = "error";
           this.#cancelRemoteImageLoad(target);
           this.#parkFailedRemoteDecoration(target, reload);
         }, { once: true });
-        target.replaceChildren(image);
+        target.append(image);
         image.src = lease.url;
       }).catch(() => {
         if (
@@ -13984,7 +14696,7 @@ export class LinkChatView {
           target.dataset.bannerUrl === allowedUrl &&
           target.dataset.bannerName === name
         ) {
-          target.replaceChildren();
+          if (!paintedImage || paintedImage.parentElement !== target) target.replaceChildren();
           target.dataset.bannerState = "error";
           this.#cancelRemoteImageLoad(target);
           this.#parkFailedRemoteDecoration(target, reload);
@@ -14007,7 +14719,7 @@ export class LinkChatView {
   }
 
   #renderOwnAvatarPreview(): void {
-    this.#presenceAvatarPreview.dataset.avatarFrame = this.#presenceAvatarFrame.value || "none";
+    applyAvatarAppearance(this.#presenceAvatarPreview, { avatarDecoration: this.#avatarAppearance.get() });
     if (this.#cloudProfile?.restorePreview("avatar")) { this.#cancelRemoteImageLoadsWithin(this.#presenceAvatarPreview); return; }
     const url = normalizeImageUrl(this.#presenceAvatarUrl.value);
     this.#renderAvatar(
@@ -14016,16 +14728,22 @@ export class LinkChatView {
       this.adapter.getOwnMemberNumber(),
       url ?? "",
     );
-    this.#presenceAvatarPreview.dataset.avatarFrame = this.#presenceAvatarFrame.value || "none";
+    applyAvatarAppearance(this.#presenceAvatarPreview, { avatarDecoration: this.#avatarAppearance.get() });
   }
 
   #renderOwnBannerPreview(): void {
     const primary = normalizeProfileOutlineColor(this.#presenceGradientPrimary.value);
     const secondary = normalizeProfileOutlineColor(this.#presenceGradientSecondary.value);
+    const angle = Number(this.#presenceGradientAngle.value);
+    this.#presenceGradientEnabled.checked = this.#presenceProfileStyle.value === "gradient";
+    const gradientSection = this.#presenceDialog.querySelector<HTMLElement>(".kl-profile-gradient-field");
+    if (gradientSection) gradientSection.hidden = !this.#presenceGradientEnabled.checked;
+    applyProfileAppearance(this.#profileAppearancePreview, { profileStyle: this.#presenceProfileStyle.value as ProfileCardStyle,
+      profileGradient: { enabled: this.#presenceGradientEnabled.checked, primary, secondary, angle }, profileOutlineColor: this.#presenceOutlineEnabled.checked ? this.#presenceOutlineColor.value : "" });
     if (this.#presenceGradientEnabled.checked && primary && secondary) {
       this.#presenceBannerPreview.dataset.customGradient = "true";
       this.#presenceBannerPreview.style.backgroundImage =
-        `linear-gradient(125deg, ${primary}, ${secondary})`;
+        `linear-gradient(${angle}deg, ${primary}, ${secondary})`;
     } else {
       delete this.#presenceBannerPreview.dataset.customGradient;
       this.#presenceBannerPreview.style.removeProperty("background-image");
@@ -14348,6 +15066,11 @@ function lobbyMapTypeLabel(value: string): string {
   return `Map mode: ${value.trim()}`;
 }
 
+function lobbyRoomFlags(room: BCLobbyRoom): string {
+  return [room.language, room.creator ? `by ${room.creator}` : "", lobbyMapTypeLabel(room.mapType),
+    room.locked ? "Locked" : "", room.privateRoom ? "Private" : ""].filter(Boolean).join(" · ") || "Public room";
+}
+
 function rosterRelationshipLabel(relationship: PlayerRelationship): string {
   if (relationship === "owner") return "Owner";
   if (relationship === "sub") return "Sub";
@@ -14409,6 +15132,8 @@ function profilePresenceSignature(snapshot: PresenceSnapshot): string {
     snapshot.statusMessage ?? "",
     snapshot.avatarUrl ?? "",
     snapshot.avatarFrame ?? "none",
+    JSON.stringify(snapshot.avatarDecoration ?? null),
+    (snapshot.publicTags ?? []).join(","),
     snapshot.profileStyle ?? "classic",
     snapshot.bannerUrl ?? "",
     snapshot.bio ?? "",
@@ -14416,6 +15141,7 @@ function profilePresenceSignature(snapshot: PresenceSnapshot): string {
     snapshot.profileGradient?.enabled ?? false,
     snapshot.profileGradient?.primary ?? "",
     snapshot.profileGradient?.secondary ?? "",
+    snapshot.profileGradient?.angle ?? 135,
     snapshot.addonVersion ?? "",
     snapshot.roomName ?? "",
     snapshot.source,
@@ -14484,6 +15210,7 @@ function isNearestProfileMenuTarget(event: Event, target: HTMLElement): boolean 
 
 function profileReturnContextClass(target: HTMLElement | undefined): string | undefined {
   return [
+    "kl-contact",
     "kl-group-contact-profile",
     "kl-group-confirm-profile",
     "kl-group-participant",
@@ -14496,26 +15223,6 @@ function normalizeProfileOutlineColor(value: string): string {
   return /^#[0-9a-f]{6}$/u.test(normalized) ? normalized : "";
 }
 
-function mixProfileColors(first: string, second: string): string {
-  const channels = [1, 3, 5].map((index) => Math.round(
-    (Number.parseInt(first.slice(index, index + 2), 16) +
-      Number.parseInt(second.slice(index, index + 2), 16)) / 2,
-  ));
-  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function formatConversationTime(timestamp: number): string {
-  const date = new Date(timestamp);
-  const now = new Date();
-  if (date.toDateString() === now.toDateString()) {
-    return SHORT_TIME_FORMATTER.format(date);
-  }
-  return SHORT_DATE_FORMATTER.format(date);
-}
-
-function formatMessageTime(timestamp: number): string {
-  return SHORT_TIME_FORMATTER.format(new Date(timestamp));
-}
 
 function formatRelativeTime(timestamp: number): string {
   if (!timestamp) return "—";
@@ -14538,11 +15245,6 @@ function greetingForCurrentTime(): string {
   return "Good evening";
 }
 
-function formatFullSeenTime(timestamp: number): string {
-  if (!timestamp) return "Not recorded";
-  return FULL_SEEN_FORMATTER.format(new Date(timestamp));
-}
-
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
@@ -14558,17 +15260,6 @@ function formatRetention(value: LitterboxUploadConfig["retention"]): string {
 
 function litterboxRetentionMs(value: LitterboxUploadConfig["retention"]): number {
   return Number.parseInt(value, 10) * 60 * 60 * 1_000;
-}
-
-function formatGalleryExpiry(expiresAt: number): string {
-  try {
-    return `Expires ${new Date(expiresAt).toLocaleString([], {
-      dateStyle: "medium",
-      timeStyle: "short",
-    })}`;
-  } catch {
-    return "Expiry unavailable";
-  }
 }
 
 function deviceRoomMusicFile(track: DeviceMusicTrack): File {

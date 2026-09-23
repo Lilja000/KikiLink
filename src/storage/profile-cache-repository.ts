@@ -1,5 +1,6 @@
+import { isAvatarFrame, isProfileCardStyle, normalizeAvatarDecoration, publicProfileTags } from "../core/profile-appearance";
 import type { KeyValueStorage } from "../core/settings";
-import type { AvatarFrame, ProfileCardStyle, ProfileGradient } from "../core/types";
+import type { AvatarFrame, AvatarDecoration, ProfileCardStyle, ProfileGradient } from "../core/types";
 
 export const PUBLIC_PROFILE_CACHE_KEY = "kikilink:public-profile-cache:v1";
 export const MAX_CACHED_PUBLIC_PROFILES = 200;
@@ -36,6 +37,8 @@ export interface CachedPublicProfileRecord {
   displayName: string;
   avatarUrl?: string;
   avatarFrame?: AvatarFrame;
+  avatarDecoration?: AvatarDecoration;
+  publicTags?: string[];
   profileStyle?: ProfileCardStyle;
   bannerUrl?: string;
   bio?: string;
@@ -376,6 +379,8 @@ function sanitizePublicProfileFields(value: unknown): CachedPublicProfileInput |
     displayName,
     ...(avatarUrl ? { avatarUrl } : {}),
     ...(avatarFrame ? { avatarFrame } : {}),
+    ...(value.avatarDecoration ? { avatarDecoration: normalizeAvatarDecoration(value.avatarDecoration, avatarFrame) } : {}),
+    ...(value.publicTags ? { publicTags: publicProfileTags(value.publicTags) } : {}),
     ...(profileStyle ? { profileStyle } : {}),
     ...(bannerUrl ? { bannerUrl } : {}),
     ...(bio ? { bio } : {}),
@@ -414,31 +419,17 @@ function sanitizeDirectImageUrl(value: unknown): string | undefined {
   }
 }
 
-function sanitizeAvatarFrame(value: unknown): AvatarFrame | undefined {
-  return value === "none" ||
-      value === "blossom" ||
-      value === "rose" ||
-      value === "starlight" ||
-      value === "laurel" ||
-      value === "thorn" ||
-      value === "moon" ||
-      value === "ribbon"
-    ? value
-    : undefined;
-}
-
-function sanitizeProfileStyle(value: unknown): ProfileCardStyle | undefined {
-  return value === "classic" || value === "garden" || value === "midnight"
-    ? value
-    : undefined;
-}
+function sanitizeAvatarFrame(value: unknown): AvatarFrame | undefined { return isAvatarFrame(value) ? value : undefined; }
+function sanitizeProfileStyle(value: unknown): ProfileCardStyle | undefined { return isProfileCardStyle(value) ? value : undefined; }
 
 function sanitizeGradient(value: unknown): ProfileGradient | undefined {
   if (!isRecord(value)) return undefined;
   const primary = sanitizeColor(value.primary);
   const secondary = sanitizeColor(value.secondary);
   return value.enabled === true && primary && secondary
-    ? { enabled: true, primary, secondary }
+    ? { enabled: true, primary, secondary,
+        angle: typeof value.angle === "number" && Number.isFinite(value.angle)
+          ? ((Math.round(value.angle / 45) * 45 % 360) + 360) % 360 : 135 }
     : undefined;
 }
 

@@ -3,6 +3,48 @@ import assert from 'node:assert/strict';
 import sharp from 'sharp';
 import { fixture, group } from './helpers.mjs';
 
+test('Group receipts require every relevant recipient and never confuse storage with delivery', async t => {
+  const f = await fixture(t), g = await group(f);
+  const send = (text) => f.ok('POST', `/v1/conversations/${g.conversationId}/messages`, {
+    text, clientId: crypto.randomUUID(), membershipVersion: g.membershipVersion, keyVersion: g.keyVersion,
+    schemaVersion: 1, encryption: 'server-aes-256-gcm',
+  }, 101, 201);
+  const query = (ids) => f.ok('POST', `/v1/conversations/${g.conversationId}/receipts/query`, { ids }, 101);
+  const acknowledge = (actor, deliveredIds, readIds) =>
+    f.ok('PUT', `/v1/conversations/${g.conversationId}/receipts`, { deliveredIds, readIds }, actor);
+
+  const first = await send('Confirm me honestly');
+  assert.equal(first.receiptState, null);
+  assert.equal((await query([first.id])).items[0].state, null);
+  await acknowledge(202, [first.id], []);
+  assert.equal((await query([first.id])).items[0].state, null);
+  await acknowledge(303, [first.id], []);
+  assert.equal((await query([first.id])).items[0].state, 'delivered');
+  await acknowledge(202, [], [first.id]);
+  assert.equal((await query([first.id])).items[0].state, 'delivered');
+  await acknowledge(303, [], [first.id]);
+  assert.equal((await query([first.id])).items[0].state, 'read');
+  const recipientView = await f.ok('GET', `/v1/conversations/${g.conversationId}/messages/${first.id}`, undefined, 202);
+  assert.equal(Object.hasOwn(recipientView, 'receiptState'), false);
+
+  await f.ok('POST', `/v1/groups/${g.id}/invitations`, { memberNumber: 404 }, 101, 204);
+  const expanded = await f.ok('POST', `/v1/groups/${g.id}/accept`, {}, 404);
+  assert.equal((await query([first.id])).items[0].state, 'read');
+  assert.equal((await f.request('PUT', `/v1/conversations/${g.conversationId}/receipts`, { deliveredIds: [first.id], readIds: [] }, 404)).statusCode, 404);
+
+  const second = await f.ok('POST', `/v1/conversations/${g.conversationId}/messages`, {
+    text: 'Everyone currently here', clientId: crypto.randomUUID(), membershipVersion: expanded.membershipVersion,
+    keyVersion: expanded.keyVersion, schemaVersion: 1, encryption: 'server-aes-256-gcm',
+  }, 101, 201);
+  await acknowledge(202, [], [second.id]);
+  await acknowledge(303, [], [second.id]);
+  assert.equal((await query([second.id])).items[0].state, null);
+  await acknowledge(404, [second.id], []);
+  assert.equal((await query([second.id])).items[0].state, 'delivered');
+  await acknowledge(404, [], [second.id]);
+  assert.equal((await query([second.id])).items[0].state, 'read');
+});
+
 test('Group typing is session-bound, expiring, member-only and respects blocks and removal', async t => {
   const f = await fixture(t), g = await group(f), path = `/v1/conversations/${g.conversationId}/typing`;
   await f.ok('PUT', '/v1/presence', {status:'online'}, 202, 204);

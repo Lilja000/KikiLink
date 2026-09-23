@@ -26,8 +26,10 @@ export function resolveBuildConfig(args = [], env = {}) {
   }
   if (cloud) {
     const origin = new URL(cloudOrigin);
-    if (origin.protocol !== "https:" || origin.origin !== cloudOrigin || origin.username || origin.password) {
-      throw new Error("Set KIKILINK_CLOUD_ORIGIN to an exact HTTPS origin.");
+    const base = `${origin.origin}${origin.pathname === "/" ? "" : origin.pathname.replace(/\/$/u, "")}`;
+    if (origin.protocol !== "https:" || origin.username || origin.password || origin.search || origin.hash ||
+        !/^\/(?:[A-Za-z0-9._~-]+\/?)*$/u.test(origin.pathname) || base !== cloudOrigin) {
+      throw new Error("Set KIKILINK_CLOUD_ORIGIN to an exact HTTPS Cloud base URL.");
     }
   }
   return {

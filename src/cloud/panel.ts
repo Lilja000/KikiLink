@@ -1,5 +1,6 @@
 import { element } from "./dom";
 import { kikiIcon } from "../modules/link-chat/icons";
+import { bindClockText } from "../core/time-format";
 import type { KikiLinkSettings } from "../core/types";
 import type { KeyValueStorage } from "../core/settings";
 import type { GroupConversation } from "../modules/link-chat/group-chat-service";
@@ -9,6 +10,9 @@ import { SocialUI } from "./social-ui";
 import { CloudGroupThread } from "./group-thread";
 import { CloudGroupInbox } from "./group-inbox";
 import { profileImportDraft, recordCloudMigration } from "./migration";
+import type { PeoplePickerRequest } from "../modules/link-chat/people-picker";
+import { reportForm } from "./report-form";
+import { ContentDialog } from "../modules/link-chat/content-dialog";
 import type {
   CloudGroup,
   CloudMessage,
@@ -18,6 +22,9 @@ import type {
 } from "./types";
 
 interface PanelOptions {
+  choosePeople?(request: PeoplePickerRequest): void;
+  readFeed?(id: number): void;
+  canReadFeed?(): boolean;
   settings(): KikiLinkSettings;
   ownName(): string;
   storage: KeyValueStorage;
@@ -40,7 +47,7 @@ const safeColor = (value: string | undefined) =>
   value && /^#[0-9a-f]{6}$/iu.test(value) ? value : "";
 export type CloudDestination = "feed" | "groups" | "profile";
 type CloudTab = CloudDestination | "moderation";
-interface SessionInfo { moderator: boolean; features?: SocialFeatures }
+interface SessionInfo { moderator: boolean; features?: SocialFeatures & { reportReasons?: boolean } }
 interface CloudImageEntry { url: string; elements: Set<HTMLElement>; bytes: number; at: number; used: number; ready: Promise<void>; decoded: boolean }
 
 /** Development-only social surface inside the existing KikiLink shell and theme. */
@@ -55,6 +62,7 @@ export class CloudPanel {
   readonly #heading = element("h2", { text: "Feed" });
   readonly #ui: SocialUI;
   readonly #feedView: CloudFeedView;
+  readonly #reportDialog = new ContentDialog();
   readonly inbox: CloudGroupInbox;
   #chatActive = false;
   #createGroup = false;
@@ -62,13 +70,14 @@ export class CloudPanel {
   #surfaces = new Map<CloudTab, { nodes: Node[]; tabs: Node[]; scroll: number }>();
   #completedTab: CloudTab | undefined;
   #groupUpdateTimer: ReturnType<typeof setTimeout> | undefined;
-  readonly #updates = element("button", {
-    className: "kl-text-button kl-cloud-update",
-    type: "button",
-    text: "New updates · Refresh",
-  });
+  #feedUpdateTimer: ReturnType<typeof setTimeout> | undefined;
+  #feedUpdating = false;
+  #feedDirty = false;
+  #feedRetries = 0;
+  readonly #resumeFeed = () => { if (document.visibilityState !== "hidden") this.#invalidateFeed(); };
   #tab: CloudTab = "feed";
   #renderToken = 0;
+  #postNavigation = 0;
   #groupDrafts = new Map<string, { text: string; clientId: string }>();
   #group: CloudGroup | undefined;
   #urls = new Map<string, CloudImageEntry>();
@@ -78,6 +87,7 @@ export class CloudPanel {
   #observedImages = new Map<HTMLElement, number>();
   #imageCleanupTimer: ReturnType<typeof setInterval> | undefined;
   #imageQueue: Array<() => Promise<void>> = [];
+  #imageRetries = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
   #imageActive = 0;
   #destroyed = false;
   #moderator = false;
@@ -110,16 +120,26 @@ export class CloudPanel {
       openGroups: () => options.openGroups ? options.openGroups() : this.setVisible(true, "groups"),
       report: (container, type, id) => this.#report(container, type, id),
       relatedMembers: () => options.relatedMembers?.() ?? new Set(),
+      canPin: () => this.#moderator,
+      readFresh: id => options.readFeed?.(id),
+      canRead: () => !this.element.hidden && this.#tab === "feed" && (options.canReadFeed?.() ?? true),
     });
     this.element.hidden = true;
     this.#status.setAttribute("role", "status");
     this.#status.setAttribute("aria-live", "polite");
-    this.#updates.hidden = true;
-    this.#updates.addEventListener(
-      "click",
-      () => void this.#run(() => this.refresh()),
-    );
+    document.addEventListener("visibilitychange", this.#resumeFeed);
     this.#unsubscribe = client.subscribe((kind) => {
+      if (kind === "receipts") {
+        if (this.#thread && this.#tab === "groups" && !this.element.hidden)
+          void this.#run(() => this.#thread?.refreshReceipts());
+        return;
+      }
+      if (kind === "reports" || kind === "ready") {
+        if (kind === "ready") void this.inbox.flushReceipts().catch(() => {});
+        if (kind === "ready") this.#invalidateFeed();
+        if (this.#moderator && this.#tab === "moderation" && !this.element.hidden) void this.#run(() => this.refresh());
+        return;
+      }
       if (kind.startsWith("profile:")) return;
       if (kind === "profiles-cleared") {
         this.#surfaces.clear(); this.#completedTab = undefined;
@@ -133,6 +153,7 @@ export class CloudPanel {
         return;
       }
       if (kind === "session") {
+        this.#reportDialog.close();
         this.#sessionInfo = undefined;
         this.#sessionTask = undefined;
         if (client.connected && this.#chatActive) { client.startEvents(); this.inbox.invalidate(); void this.#run(() => this.inbox.refresh()); }
@@ -149,11 +170,11 @@ export class CloudPanel {
       } else if (kind === "session" && !this.element.hidden) {
         client.startEvents();
         void this.#run(() => this.refresh());
-      } else if (kind === "groups") {
+      } else if (kind === "groups" || kind === "read" || kind === "ready") {
         this.inbox.invalidate();
-        if (this.#chatActive && this.#groupUpdateTimer === undefined) this.#groupUpdateTimer = setTimeout(() => {
+        if (this.#groupUpdateTimer === undefined) this.#groupUpdateTimer = setTimeout(() => {
           this.#groupUpdateTimer = undefined;
-          if (!this.#chatActive || this.#destroyed) return;
+          if (this.#destroyed) return;
           void this.#run(async () => {
             await this.inbox.refresh();
             if (this.#tab === "groups" && !this.element.hidden && this.#group) {
@@ -164,9 +185,7 @@ export class CloudPanel {
             }
           });
         }, 500);
-      } else if (kind !== "typing" && !this.element.hidden) {
-        this.#updates.hidden = false;
-      }
+      } else if (kind === "feed") this.#invalidateFeed();
     });
     this.element.append(
       element(
@@ -177,12 +196,49 @@ export class CloudPanel {
       ),
       this.#tabs,
       this.#status,
-      this.#updates,
       this.#body,
     );
   }
+  #invalidateFeed(): void {
+    this.#feedDirty = true; this.#feedRetries = 0; this.#queueFeedSync();
+  }
+  #queueFeedSync(delay = 350): void {
+    if (!this.#feedDirty || this.#destroyed || this.#feedUpdating || this.#feedUpdateTimer !== undefined ||
+        this.element.hidden || this.#tab !== "feed" || this.#completedTab !== "feed" ||
+        !this.client.connected || document.visibilityState === "hidden") return;
+    this.#feedUpdateTimer = setTimeout(() => {
+      this.#feedUpdateTimer = undefined;
+      if (this.#destroyed || this.element.hidden || this.#tab !== "feed" || !this.client.connected || document.visibilityState === "hidden") return;
+      this.#feedDirty = false; this.#feedUpdating = true;
+      void (async () => {
+        let retryDelay = 350, failed = false;
+        try { if (!await this.#feedView.sync()) this.#feedDirty = true; }
+        catch {
+          failed = true; this.#feedDirty = true; this.#feedRetries++;
+          retryDelay = Math.max(5000, (this.client.retryDelay || 0) + 50);
+        } finally {
+          this.#feedUpdating = false;
+          if (!failed || this.#feedRetries <= 2) this.#queueFeedSync(retryDelay);
+        }
+      })();
+    }, delay);
+  }
+  async openGroup(id: string): Promise<void> {
+    await this.inbox.refresh(true);
+    const group = this.inbox.groups.find(g => g.id === id);
+    if (!group) { this.#status.textContent = "This group is no longer available. Check invitations."; return; }
+    this.#group = group; this.#tab = "groups"; this.options.groupSelection?.(true); await this.refresh();
+  }
+  async openReports(): Promise<void> { this.#tab = "moderation"; await this.refresh(); }
+  async openPost(id: number, comment?: number): Promise<void> {
+    const navigation = ++this.#postNavigation;
+    this.#tab = "feed"; await this.refresh();
+    if (navigation !== this.#postNavigation || this.#tab !== "feed" || this.#destroyed || this.element.hidden) return;
+    await this.#feedView.openPost(id, comment);
+  }
   setVisible(visible: boolean, destination?: CloudDestination, chatActive = false): void {
     if (this.#destroyed) return;
+    if (!visible || (destination && destination !== this.#tab)) this.#postNavigation++;
     const previous = this.#tab, wasVisible = !this.element.hidden;
     if (wasVisible && this.#completedTab === previous) this.#surfaces.set(previous, {
       nodes: [...this.#body.childNodes], tabs: [...this.#tabs.childNodes], scroll: this.element.scrollTop,
@@ -206,7 +262,7 @@ export class CloudPanel {
         this.#body.replaceChildren(...cached.nodes); this.#tabs.replaceChildren(...cached.tabs);
         this.element.scrollTop = cached.scroll; this.#completedTab = this.#tab;
         if (this.#tab === "groups") { this.#thread?.resume(); void this.#run(async () => { await this.inbox.refresh(); await this.#thread?.updates(); }); }
-        else this.#thread?.pause();
+        else { this.#thread?.pause(); this.#feedView.observeFresh(); if (this.#tab === "feed") this.#invalidateFeed(); }
         return;
       }
       if (wasVisible && previous === this.#tab && this.#completedTab === this.#tab) return;
@@ -292,7 +348,6 @@ export class CloudPanel {
     else if (this.#tab === "feed") this.#feedView.pause();
     this.element.dataset.surface = this.#tab === "groups" ? "groups" : "feed";
     this.#heading.textContent = this.#tab === "groups" ? "Group chats" : this.#tab === "moderation" ? "Reports" : "Feed";
-    this.#updates.hidden = true;
     this.#tabs.replaceChildren();
     if (!this.client.connected) {
       this.#connection();
@@ -304,6 +359,7 @@ export class CloudPanel {
         const info = await task;
         if (operation !== this.#renderToken || this.#destroyed || this.element.hidden) return;
         this.#sessionInfo = info;
+        this.inbox.enableMessageReceipts(info.features?.messageReceipts === true);
       } finally { if (this.#sessionTask === task) this.#sessionTask = undefined; }
     }
     this.#moderator = this.#sessionInfo.moderator;
@@ -336,7 +392,7 @@ export class CloudPanel {
     else if (this.#tab === "groups") await this.#groups(operation);
     else if (this.#tab === "profile") await this.#profileEditor(operation);
     else await this.#reports(operation);
-    if (operation === this.#renderToken) this.#completedTab = this.#tab;
+    if (operation === this.#renderToken) { this.#completedTab = this.#tab; this.#queueFeedSync(); }
   }
   #connection(): void {
     const card = element(
@@ -422,22 +478,19 @@ export class CloudPanel {
   }
 
   #report(container: HTMLElement, type: string, id: string): void {
-    const editor = element("div", { className: "kl-cloud-card" }),
-      field = this.#field("Reason for report", "", 1000, true);
-    editor.append(
-      field.label,
-      this.#button("Submit report", async () => {
-        await this.client.request("POST", "/v1/reports", {
-          targetType: type,
-          targetId: id,
-          reason: field.input.value,
-        });
-        editor.remove();
-        this.#status.textContent = "Report submitted.";
-      }),
-      this.#button("Cancel", () => editor.remove()),
-    );
-    container.append(editor);
+    if (this.#reportDialog.element.open) return;
+    const root = container.getRootNode();
+    (root instanceof ShadowRoot ? root : document.body).append(this.#reportDialog.element);
+    this.#reportDialog.element.classList.add("kl-report-dialog");
+    this.#reportDialog.element.querySelector("button")?.setAttribute("aria-label", "Close report");
+    const form = reportForm(this.client, type, id, this.#sessionInfo?.features?.reportReasons === true,
+      () => { this.#status.textContent = "Report submitted. Thank you."; }, () => this.#reportDialog.close());
+    // The menu has already collapsed. Restore focus to its visible trigger when
+    // the modal closes, not to the now-hidden Report action inside it.
+    const active = root instanceof ShadowRoot ? root.activeElement : document.activeElement;
+    active?.closest("details")?.querySelector("summary")?.focus({ preventScroll: true });
+    this.#reportDialog.show(`Report ${type}`, form);
+    form.querySelector("input")?.focus({ preventScroll: true });
   }
   async #profileEditor(operation: number): Promise<void> {
     let current: CloudProfile | undefined;
@@ -564,7 +617,7 @@ export class CloudPanel {
       safeColor(p.profileGradient.start) &&
       safeColor(p.profileGradient.end)
     )
-      card.style.background = `linear-gradient(135deg,${p.profileGradient.start},${p.profileGradient.end})`;
+      card.style.background = `linear-gradient(${p.profileGradient.angle ?? 135}deg,${p.profileGradient.start},${p.profileGradient.end})`;
     if (p.bannerId)
       card.append(this.#image(p.bannerId, "Profile banner", "kl-cloud-banner"));
     const avatar = element("div", {
@@ -602,6 +655,9 @@ export class CloudPanel {
   }
   profileImage(id: string, kind: "avatar" | "banner"): HTMLElement {
     return this.#image(id, `Profile ${kind}`, kind === "avatar" ? "kl-unified-preview-image" : "kl-addon-profile-banner-image");
+  }
+  avatarImage(id: string, own = false): HTMLElement {
+    return this.#image(id, "Profile avatar", "kl-social-avatar-image", undefined, true, own);
   }
   profileActions(member: number, card: HTMLElement): HTMLElement[] {
     if (member === this.client.memberNumber) return [];
@@ -684,11 +740,18 @@ export class CloudPanel {
         "",
         90,
       );
+    members.label.hidden = !!this.options.choosePeople;
     create.append(
       element("h3", { text: "Start a group chat" }),
       title.label,
       members.label,
       this.#button("Create and invite", async () => {
+        if (this.options.choosePeople) {
+          this.options.choosePeople({ mode: "Create group", minimum: 2, maximum: 4, confirm: async values => {
+            this.#group = await this.client.request<CloudGroup>("POST", "/v1/groups", { title: title.input.value, members: values });
+            this.inbox.invalidate(); await this.refresh();
+          } }); return;
+        }
         const values = members.input.value
           .split(",")
           .map((n) => Number(n.trim()));
@@ -884,6 +947,14 @@ export class CloudPanel {
         await this.client.request("PATCH", `/v1/groups/${g.id}`, { title: title.input.value.trim(), revision: g.revision });
         this.inbox.invalidate(); await this.refresh();
       }, "check"));
+      if (this.options.choosePeople) {
+        const add = this.#ui.button("Add members", () => this.options.choosePeople!({ mode: "Add members", maximum: Math.max(0, 5 - g.members.length),
+          exclude: g.members.map(member => member.memberNumber), confirm: async members => {
+            await this.client.request("POST", `/v1/groups/${g.id}/invitations`, { members });
+            this.inbox.invalidate(); await this.refresh();
+          } }), "group-add");
+        add.disabled = g.members.length >= 5; memberSettings.append(add);
+      } else {
       const invite = this.#field("Invite Member Number", "", 16); invite.input.inputMode = "numeric";
       memberSettings.append(element("div", { className: "kl-group-invite-row" }, invite.label,
         this.#ui.button("Invite", async () => {
@@ -892,6 +963,7 @@ export class CloudPanel {
           await this.client.request("POST", `/v1/groups/${g.id}/invitations`, { memberNumber });
           this.inbox.invalidate(); await this.refresh();
         }, "group-add")));
+      }
     } else identitySettings.append(element("strong", { text: g.title }));
     destructive.append(this.#button(own?.role === "owner" ? "Delete group" : "Leave group",
       () => this.#ui.confirm(destructive, own?.role === "owner" ? "Delete this group and its conversation?" : "Leave this group?", async () => {
@@ -904,6 +976,7 @@ export class CloudPanel {
       messageChanges: this.#sessionInfo?.features?.messageChanges ?? false,
       groupLive: this.#sessionInfo?.features?.groupLive ?? false,
       groupPins: this.#sessionInfo?.features?.groupPins ?? false,
+      messageReceipts: this.#sessionInfo?.features?.messageReceipts ?? false,
       liveChanged: live => {
         const count = live.members.filter(m => m.status !== "unavailable" && !this.options.isBlocked(m.memberNumber)).length;
         online.textContent = ` · ${count} online`;
@@ -915,6 +988,8 @@ export class CloudPanel {
         await this.refresh();
       },
       observed: (messages, read) => this.inbox.observe(g.id, messages, read),
+      acknowledgeReceipts: (deliveredIds, readIds) =>
+        this.inbox.acknowledgeReceipts(g.id, g.conversationId, deliveredIds, readIds),
       draftChanged: text => this.inbox.draft(g.id, text),
       canRead: () => !this.element.hidden && this.#tab === "groups" && (this.options.canReadGroup?.() ?? true),
       readUntil: sequence => this.inbox.markRead(g.id, sequence),
@@ -926,31 +1001,49 @@ export class CloudPanel {
     await thread.loadOlder();
     if (operation === this.#renderToken) this.#refreshMessages = () => thread.updates();
   }
-  async #reports(operation: number): Promise<void> {
+  async #reports(operation: number, cursor = 0, existing?: HTMLElement): Promise<void> {
     const page = await this.client.request<
       CloudPage<{
         id: number;
         target_type: string;
         target_id: string;
         reason: string;
+        created_at: number;
+        status: string;
       }>
-    >("GET", "/v1/moderation/reports?limit=40");
+    >("GET", `/v1/moderation/reports?limit=40&cursor=${cursor}`);
     if (operation !== this.#renderToken) return;
-    const list = element("div", { className: "kl-cloud-body" });
+    const list = existing ?? element("div", { className: "kl-cloud-body" });
+    list.querySelector(".kl-reports-more")?.remove();
+    if (!existing) list.append(this.#button("Refresh reports", () => this.refresh()));
     for (const r of page.items) {
       const preview = element("div", {});
+      const metadata = element("small");
+      metadata.append(
+        document.createTextNode(`${r.status} · `),
+        bindClockText(element("time"), r.created_at, "numeric-date-time"),
+        document.createTextNode(` · ${r.target_type} #${r.target_id}`),
+      );
       list.append(
         element(
           "article",
           { className: "kl-cloud-card" },
           element("h3", { text: `Report #${r.id} · ${r.target_type}` }),
+          metadata,
           element("p", { text: r.reason }),
           this.#button("Review reported content", async () => {
-            const content = await this.client.request<{
+            let content;
+            try { content = await this.client.request<{
               author: number;
               text: string;
               mediaIds: string[];
-            }>("GET", `/v1/moderation/reports/${r.id}`);
+            }>("GET", `/v1/moderation/reports/${r.id}`); }
+            catch (error) {
+              if (error instanceof CloudError && error.status === 404) {
+                preview.textContent = "The reported content is no longer available. The report can still be dismissed."; return;
+              }
+              throw error;
+            }
             if (operation !== this.#renderToken) return;
             preview.replaceChildren(
               element("small", {
@@ -983,9 +1076,13 @@ export class CloudPanel {
         ),
       );
     }
-    if (!page.items.length)
+    if (!page.items.length && !existing)
       list.append(element("p", { text: "No open reports." }));
-    this.#body.replaceChildren(list);
+    if (page.nextCursor !== null) {
+      const more = this.#button("Load more reports", () => this.#reports(operation, Number(page.nextCursor), list));
+      more.classList.add("kl-reports-more"); list.append(more);
+    }
+    if (!existing) this.#body.replaceChildren(list);
   }
   #image(
     assetId: string,
@@ -993,6 +1090,7 @@ export class CloudPanel {
     className = "kl-cloud-image",
     reportId?: number,
     passive = false,
+    own = false,
   ): HTMLElement {
     const wrapper = element("div", {}),
       img = element("img", { className, alt });
@@ -1007,16 +1105,22 @@ export class CloudPanel {
       if (img.src !== entry.url) img.src = entry.url;
       wrapper.dataset.state = "ready"; wrapper.removeAttribute("aria-busy");
       wrapper.replaceChildren(img);
+      wrapper.dispatchEvent(new Event("cloud-image-ready"));
       queueMicrotask(() => {
         for (const node of entry.elements) if (!this.#retainsImage(node)) entry.elements.delete(node);
       });
     };
-    let loading: Promise<void> | undefined;
+    let loading: Promise<void> | undefined, retries = 0;
+    const queue = () => {
+      this.#imageQueue.push(async () => { try { await load(); } catch { /* A visible placeholder or explicit retry stays available. */ } });
+      this.#pumpImages();
+    };
     const load = async () => {
       if (loading) return loading;
       if (this.#destroyed || !this.#retainsImage(wrapper)) return;
       const version = this.#imageVersion;
       wrapper.dataset.state = "loading";
+      delete wrapper.dataset.errorStatus;
       loading = (async () => {
       const blob = await this.client.media(assetId, reportId);
       if (version !== this.#imageVersion || this.#destroyed || !this.#retainsImage(wrapper)) return;
@@ -1040,7 +1144,19 @@ export class CloudPanel {
       })().catch(error => {
         if (version === this.#imageVersion) {
           wrapper.dataset.state = "error"; wrapper.removeAttribute("aria-busy");
+          wrapper.dataset.errorStatus = String(error instanceof CloudError ? error.status : 0);
           wrapper.dispatchEvent(new Event("cloud-image-error"));
+          // Small avatars have no Show button. Recover from a transient failure
+          // without replacing their wrapper or repeatedly retrying denied media.
+          const transient = !(error instanceof CloudError) || error.status === 0 || error.status >= 500;
+          if (passive && transient && retries < 2 && this.client.connected && this.#retainsImage(wrapper)) {
+            const delay = Math.max(retries++ === 0 ? 1000 : 5000, this.client.retryDelay + 50);
+            const timer = setTimeout(() => {
+              this.#imageRetries.delete(wrapper);
+              if (!this.#destroyed && version === this.#imageVersion && this.#retainsImage(wrapper)) queue();
+            }, delay);
+            this.#imageRetries.set(wrapper, timer);
+          }
         }
         throw error;
       }).finally(() => { loading = undefined; });
@@ -1048,7 +1164,7 @@ export class CloudPanel {
     };
     const reveal = this.#button(`Show ${alt.toLowerCase()}`, load);
     const preference =
-      this.options.settings().linkPresence.profileImagePreviews;
+      own ? "always" : this.options.settings().linkPresence.profileImagePreviews;
     if (preference !== "always") wrapper.dataset.state = "hidden";
     if (!passive) wrapper.append(reveal);
     if (preference === "never") {
@@ -1062,16 +1178,6 @@ export class CloudPanel {
         paint(cached); return wrapper;
       }
       wrapper.setAttribute("aria-busy", "true");
-      const queue = () => {
-        this.#imageQueue.push(async () => {
-          try {
-            await load();
-          } catch {
-            /* Explicit Show button remains for retry. */
-          }
-        });
-        this.#pumpImages();
-      };
       if (typeof IntersectionObserver === "function") {
         if (!this.#observer)
           this.#observer = new IntersectionObserver(
@@ -1131,15 +1237,20 @@ export class CloudPanel {
   }
   #releaseImages(): void {
     this.#imageVersion++;
+    for (const timer of this.#imageRetries.values()) clearTimeout(timer);
+    this.#imageRetries.clear();
     for (const entry of this.#urls.values()) URL.revokeObjectURL(entry.url);
     this.#urls.clear();
     this.#urlBytes = 0;
   }
   destroy(): void {
+    document.removeEventListener("visibilitychange", this.#resumeFeed);
+    clearTimeout(this.#feedUpdateTimer);
+    this.#reportDialog.destroy();
     this.#ui.destroy();
     clearTimeout(this.#groupUpdateTimer); this.inbox.destroy(); this.#surfaces.clear();
     this.#thread?.stop();
-    this.#feedView.clear();
+    this.#feedView.destroy();
     this.#destroyed = true;
     this.#renderToken++;
     this.#observer?.disconnect();

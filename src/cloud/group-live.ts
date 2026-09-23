@@ -5,6 +5,7 @@ import type { CloudGroup, CloudGroupLive } from "./types";
 /** Bounded hints only: no draft contents, durable typing records or per-member polling. */
 export class GroupLiveView {
   readonly element = element("div", { className: "kl-typing-indicator kl-group-typing", role: "status", hidden: true });
+  readonly #names = element("span", { className: "kl-typing-name" });
   #active = false;
   #disposed = false;
   #task: Promise<void> | undefined;
@@ -19,6 +20,7 @@ export class GroupLiveView {
   #unsubscribe: () => void;
   readonly #visibility = () => { if (document.visibilityState === "hidden") this.signal(false); else if (this.#active) void this.refresh(); };
   constructor(readonly ui: SocialUI, readonly group: CloudGroup, readonly changed: (live: CloudGroupLive) => void) {
+    this.element.append(this.#names, element("span", { className: "kl-typing-dots", ariaHidden: "true" }, element("i"), element("i"), element("i")));
     this.#unsubscribe = ui.options.client.subscribe(kind => {
       if (kind === "typing" && this.#active && !this.#refreshTimer) this.#refreshTimer = setTimeout(() => {
         this.#refreshTimer = undefined; void this.refresh();
@@ -60,8 +62,8 @@ export class GroupLiveView {
       const paint = () => {
         const valid = typists.flatMap((t, i) => t.expiresInMs > Date.now() - receipt ? [names[i]!] : []);
         this.element.hidden = !valid.length;
-        this.element.replaceChildren(element("span", { className: "kl-typing-name", text: `${valid.join(", ")} ${valid.length === 1 ? "is" : "are"} typing` }),
-          element("span", { className: "kl-typing-dots", ariaHidden: "true" }, element("i"), element("i"), element("i")));
+        const text = valid.length ? `${valid.join(", ")} ${valid.length === 1 ? "is" : "are"} typing` : "";
+        if (this.#names.textContent !== text) this.#names.textContent = text;
         const remaining = typists.map(t => t.expiresInMs - (Date.now() - receipt)).filter(ms => ms > 0);
         if (remaining.length) this.#expires = setTimeout(paint, Math.min(...remaining) + 20);
       };

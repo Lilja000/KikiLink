@@ -1,8 +1,8 @@
 /** Group conversations use the same surfaces, accent and geometry as Direct. */
 export const GROUP_CHAT_STYLES = `
-.kl-cloud-group-menu { position: fixed; inset: auto; margin: 0; width: min(220px, calc(100vw - 16px)); padding: 8px; border: 1px solid var(--kl-border-strong); border-radius: 12px; background: var(--kl-surface); color: var(--kl-text); box-shadow: 0 12px 40px #0006; }
+.kl-cloud-group-menu { position: fixed; inset: auto; margin: 0; width: min(220px, calc(100vw - 16px)); max-width:var(--kl-surface-width,calc(100vw - 16px)); max-height:var(--kl-surface-height,calc(100dvh - 16px)); overflow:auto; padding: 8px; border: 1px solid var(--kl-border-strong); border-radius: 12px; background: var(--kl-surface); color: var(--kl-text); box-shadow: 0 12px 40px #0006; }
 .kl-cloud-group-menu::backdrop { background: #0002; }
-.kl-cloud-group-menu button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 40px; text-align: left; }
+.kl-cloud-group-menu button:not(.kl-mailbox-icon-button) { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 40px; text-align: left; }
 .kl-group-inbox-status svg { width: 13px; height: 13px; color: var(--kl-muted); }
 .kl-group-settings-section { min-width: 0; padding-block: 12px; border-top: 1px solid var(--kl-border); display: grid; gap: 10px; }
 .kl-group-settings-section h4 { margin: 0; color: var(--kl-text); font-size: var(--kl-type-sm); }
@@ -54,10 +54,12 @@ export const GROUP_CHAT_STYLES = `
 .kl-group-message>.kl-social-author { display:contents; }
 .kl-cloud .kl-group-message .kl-social-avatar { grid-area:1/1/3/2; width:36px; min-width:36px; height:36px; min-height:36px; }
 .kl-group-message .kl-social-author-copy { grid-area:1/2; display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 8px; }
-.kl-group-message .kl-social-meta>span { display:none; }
+.kl-group-message .kl-social-meta>span:not(.kl-message-stamp) { display:none; }
 .kl-group-message .kl-social-meta time::before { content:none; }
 .kl-cloud .kl-group-message .kl-social-name { font-size:12px; min-height:22px; }
 .kl-group-message .kl-social-meta { font-size:10px; }
+.kl-group-message .kl-social-meta .kl-message-stamp { display:inline-grid; }
+.kl-group-message[data-own="true"] .kl-social-meta { color:color-mix(in srgb,var(--kl-accent-foreground),transparent 32%); }
 .kl-group-message[data-own="true"] .kl-social-avatar { display:none; }
 .kl-group-message[data-own="true"] .kl-social-author-copy { justify-content:flex-end; }
 .kl-group-message-line { grid-area:2/2; }

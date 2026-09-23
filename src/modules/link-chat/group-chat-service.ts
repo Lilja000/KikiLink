@@ -1034,16 +1034,22 @@ export class GroupChatService {
     });
   }
 
-  async setDraft(groupId: string, value: string): Promise<string> {
+  async setDraft(groupId: string, value: string, expectedDraft?: string): Promise<string> {
     this.#assertOpen();
     return this.#enqueue(groupId, () => {
       this.#assertBoundAccount();
       const group = this.#requireGroup(groupId);
+      const maxChars = group.protocolVersion === 2
+        ? GROUP_MANAGED_MESSAGE_MAX_CONTENT
+        : GROUP_DRAFT_MAX_CHARS;
+      // A completed send may clear only its own draft, even when newer writes
+      // were queued before it (for example while switching between groups).
+      if (expectedDraft !== undefined && group.draft !== normalizeDraft(expectedDraft, maxChars)) {
+        return group.draft;
+      }
       const draft = normalizeDraft(
         value,
-        group.protocolVersion === 2
-          ? GROUP_MANAGED_MESSAGE_MAX_CONTENT
-          : GROUP_DRAFT_MAX_CHARS,
+        maxChars,
       );
       if (draft === group.draft) return draft;
       group.draft = draft;

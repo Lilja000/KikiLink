@@ -82,6 +82,14 @@ export class Social {
       );
       const { revision, visible, avatarId, bannerId, ...payload } = input;
       this.db.run("DELETE FROM profile_preferences WHERE member_number=?", actor);
+      if (old) {
+        const savedAppearance = this.keys.open(this.db.get("SELECT payload FROM profiles WHERE member_number=?", actor).payload, `profile:${actor}`);
+        for (const field of ["avatarDecoration", "publicTags"]) if (payload[field] === undefined && savedAppearance[field] !== undefined) payload[field] = savedAppearance[field];
+        // Clients predating gradient direction still send the two colors. Preserve
+        // the saved angle instead of resetting it during an otherwise valid edit.
+        if (payload.profileGradient && payload.profileGradient.angle === undefined && savedAppearance.profileGradient?.angle !== undefined)
+          payload.profileGradient.angle = savedAppearance.profileGradient.angle;
+      }
       // Older clients do not know custom status. Preserve it on their updates.
       if (payload.statusMessage === undefined && old) {
         const saved = this.db.get("SELECT payload FROM profiles WHERE member_number=?", actor);
@@ -190,12 +198,12 @@ export class Social {
   message(actor, conversationId, messageId) {
     const row = this.readableMessage(actor, conversationId, messageId);
     requireThat(row);
-    return this.messageView(row);
+    return this.messageView(row, actor);
   }
   groupPin(actor, groupId, membership = this.membership(actor, groupId)) {
     const pin = this.db.get("SELECT * FROM group_pins WHERE group_id=?", groupId);
     const message = pin?.message_id ? this.readableMessage(actor, membership.conversation_id, pin.message_id, membership) : undefined;
-    return { pinRevision: pin?.revision ?? 0, pinnedMessage: message ? this.messageView(message) : null };
+    return { pinRevision: pin?.revision ?? 0, pinnedMessage: message ? this.messageView(message, actor) : null };
   }
   pinMessage(actor, groupId, { messageId, revision }) {
     return this.db.transaction(() => {
@@ -315,8 +323,10 @@ export class Social {
       "membership_quota",
     );
   }
-  invite(actor, groupId, target) {
+  invite(actor, groupId, target) { return this.inviteMany(actor, groupId, [target]); }
+  inviteMany(actor, groupId, targets) {
     this.db.transaction(() => {
+      for (const target of targets) {
       this.membership(actor, groupId, ["owner", "admin"]);
       this.visibleActor(actor, target);
       this.groupCapacity(target);
@@ -343,6 +353,7 @@ export class Social {
         target,
         this.now(),
       );
+      }
     });
   }
   accept(actor, groupId) {
@@ -424,8 +435,12 @@ export class Social {
     const args = [membership.conversation_id, membership.joined_sequence, this.now() - 30 * 86400000, actor, actor];
     const last = this.db.get(`SELECT m.* ${where} ORDER BY m.sequence DESC LIMIT 1`, ...args);
     const incoming = this.db.all(`SELECT m.sender AS memberNumber, MAX(m.sequence) AS sequence ${where} AND m.sender<>? GROUP BY m.sender`, ...args, actor);
-    const message = last ? this.messageView(last) : null;
+    const message = last ? this.messageView(last, actor) : null;
+    const read = this.db.get("SELECT cursor FROM social_cursors WHERE owner=? AND scope=?", actor, `group:${membership.group_id}`)?.cursor ?? 0;
+    const unread = this.db.get(`SELECT COUNT(*) AS n ${where} AND m.sender<>? AND m.sequence>?`, ...args, actor, read).n;
     return {
+      ...(this.config.communityEnabled ? { readCursor: read, unreadMessages: unread,
+        unreadBySender: this.db.all(`SELECT m.sender AS memberNumber,COUNT(*) AS count ${where} AND m.sender<>? AND m.sequence>? GROUP BY m.sender`, ...args, actor, read) } : {}),
       lastMessage: message ? { ...message, text: message.text?.slice(0, 160) ?? null } : null,
       lastIncomingSequence: Math.max(0, ...incoming.map(m => m.sequence)), incomingSequences: incoming,
     };
@@ -481,7 +496,49 @@ export class Social {
       "base64",
     );
   }
-  messageView(row) {
+  messageReceiptState(row, actor) {
+    if (row.sender !== actor) return undefined;
+    const counts = this.db.get(`SELECT COUNT(*) AS total,COUNT(r.delivered_at) AS delivered,COUNT(r.read_at) AS read
+      FROM conversations c JOIN group_members gm ON gm.group_id=c.group_id
+      LEFT JOIN message_receipts r ON r.message_id=? AND r.recipient=gm.member_number
+      WHERE c.id=? AND gm.status='active' AND gm.member_number<>? AND gm.joined_sequence<=?`,
+      row.id, row.conversation_id, row.sender, row.sequence);
+    if (!counts?.total) return null;
+    if (counts.read === counts.total) return "read";
+    if (counts.delivered === counts.total) return "delivered";
+    return null;
+  }
+  acknowledgeMessages(actor, conversationId, deliveredIds, readIds) {
+    const membership = this.conversation(actor, conversationId);
+    const read = new Set(readIds), ids = [...new Set([...deliveredIds, ...readIds])];
+    const senders = new Set();
+    this.db.transaction(() => {
+      for (const messageId of ids) {
+        const row = this.readableMessage(actor, conversationId, messageId, membership);
+        requireThat(row && row.sender !== actor, 404, "message_unavailable");
+        const at = this.now(), readAt = read.has(messageId) ? at : null;
+        this.db.run(`INSERT INTO message_receipts(message_id,recipient,delivered_at,read_at) VALUES(?,?,?,?)
+          ON CONFLICT(message_id,recipient) DO UPDATE SET
+          delivered_at=MIN(message_receipts.delivered_at,excluded.delivered_at),
+          read_at=CASE WHEN excluded.read_at IS NULL THEN message_receipts.read_at
+            WHEN message_receipts.read_at IS NULL THEN excluded.read_at
+            ELSE MIN(message_receipts.read_at,excluded.read_at) END`,
+          messageId, actor, at, readAt);
+        senders.add(row.sender);
+      }
+    });
+    return { acknowledged: ids, senders: [...senders] };
+  }
+  receiptStates(actor, conversationId, ids) {
+    const membership = this.conversation(actor, conversationId);
+    const items = [];
+    for (const messageId of [...new Set(ids)]) {
+      const row = this.db.get("SELECT * FROM messages WHERE id=? AND conversation_id=? AND sender=? AND sequence>=?", messageId, conversationId, actor, membership.joined_sequence);
+      if (row) items.push({ messageId, state: this.messageReceiptState(row, actor) });
+    }
+    return { items };
+  }
+  messageView(row, actor) {
     const body = row.envelope
       ? decrypt(
           this.conversationKey(row.conversation_id, row.key_version),
@@ -502,6 +559,7 @@ export class Social {
       keyVersion: row.key_version,
       createdAt: row.created_at,
       deletedAt: row.deleted_at,
+      ...(actor === row.sender ? { receiptState: this.messageReceiptState(row, actor) } : {}),
     };
   }
   send(actor, conversationId, input) {
@@ -515,7 +573,7 @@ export class Social {
       );
       if (old) {
         requireThat(old.sequence >= m.joined_sequence);
-        const view = this.messageView(old);
+        const view = this.messageView(old, actor);
         requireThat(view.text === input.text, 409, "idempotency_conflict");
         return view;
       }
@@ -559,6 +617,7 @@ export class Social {
       );
       return this.messageView(
         this.db.get("SELECT * FROM messages WHERE id=?", msgId),
+        actor,
       );
     });
   }
@@ -577,7 +636,7 @@ export class Social {
       actor,
       limit + 1,
     );
-    const items = rows.slice(0, limit).map((r) => this.messageView(r));
+    const items = rows.slice(0, limit).map((r) => this.messageView(r, actor));
     if (backward) items.reverse();
     return {
       items,

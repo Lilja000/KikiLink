@@ -63,11 +63,71 @@ async function setup() {
   const root = document.querySelector("#kikilink-root")!.shadowRoot!;
   const get = <T extends Element = HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
   const click = (selector: string) => get<HTMLButtonElement>(selector).click();
-  return { adapter, settings, people, service, view, root, get, click, presence,
+  return { adapter, settings, people, service, view, root, get, click, presence, rooms,
     stale: () => { fresh = false; }, leave: () => { currentName = undefined; characters = []; }, readonly: () => { admin = false; } };
 }
 
 describe("Rooms and Players browsing", () => {
+  it("keeps room people before variable metadata and retains their action after Full/Locked updates", async () => {
+    const f = await setup();
+    const room = f.rooms[1]!;
+    try {
+      f.click('[data-target="room"]');
+      await vi.waitFor(() => expect(f.root.querySelector('[data-room-name="Dungeon"] .kl-room-people-button')).not.toBeNull());
+      const footer = f.get('[data-room-name="Dungeon"] .kl-lobby-card-footer');
+      const people = footer.querySelector<HTMLButtonElement>(".kl-room-people-button")!;
+      for (const [canJoin, memberCount, label] of [[false, 10, "Full"], [false, 3, "Locked"], [true, 3, "Join"]] as const) {
+        Object.assign(room, { canJoin, memberCount, language: "RU", creator: "A creator with a much longer display name" });
+        f.click(".kl-lobby-refresh");
+        await vi.waitFor(() => expect(footer.querySelector(".kl-lobby-join")?.textContent).toBe(label));
+        expect([...footer.children].map(child => child.className)).toEqual(["kl-lobby-people", "kl-lobby-flags", "kl-text-button kl-lobby-join"]);
+        expect(footer.querySelector(".kl-room-people-button")).toBe(people);
+        expect(footer.querySelector(".kl-lobby-flags")?.getAttribute("title")).toContain("RU · by A creator with a much longer display name");
+        expect(people.textContent).toContain("1 friend");
+      }
+      people.click();
+      expect(f.get(".kl-roster-list").textContent).toContain("Nikki");
+    } finally { f.view.destroy(); }
+  });
+
+  it("renders live current-room metadata in the same order as lobby cards and updates it on refresh", async () => {
+    const f = await setup();
+    try {
+      Object.assign(f.rooms[0]!, { description: "A live description", creator: "Room host", mapType: "Never", locked: true });
+      f.click('[data-target="room"]');
+      await vi.waitFor(() => expect(f.get(".kl-current-room-summary .kl-lobby-flags").textContent).toBe("EN · by Room host · Character view · Locked"));
+      const main = f.get(".kl-current-room-summary .kl-lobby-card-main");
+      expect([...main.children].map(n => n.className)).toEqual(["kl-lobby-name", "kl-lobby-current", "kl-lobby-count", "kl-lobby-indicators"]);
+      expect(f.root.querySelector(".kl-current-room-summary .kl-room-people-label")).toBeNull();
+      f.click(".kl-current-room-summary .kl-lobby-description");
+      expect(f.get(".kl-content-dialog .kl-room-description-full").textContent).toBe("A live description");
+      f.get<HTMLDialogElement>(".kl-content-dialog").close();
+      Object.assign(f.rooms[0]!, { description: "Updated description", creator: "New host", mapType: "Always", locked: false });
+      f.click(".kl-lobby-refresh");
+      await vi.waitFor(() => expect(f.get(".kl-current-room-summary .kl-lobby-flags").textContent).toBe("EN · by New host · Map view"));
+      expect(f.get(".kl-current-room-summary .kl-lobby-description").textContent).toBe("Updated description");
+      expect(f.get(".kl-current-room-summary .kl-lobby-locked").hidden).toBe(true);
+    } finally { f.view.destroy(); }
+  });
+
+  it("shows public tags only and opens private details from the row without deleting notebook data", async () => {
+    const f = await setup();
+    try {
+      const original = f.presence.get.bind(f.presence);
+      vi.spyOn(f.presence, "get").mockImplementation(member => ({ ...original(member), publicTags: ["Tea lover"] }));
+      vi.spyOn(f.adapter, "getPlayerRelationships").mockReturnValue(["lover", "whitelist"]);
+      f.click('[data-target="roster"]'); f.click('[data-scope="friends"]');
+      const row = f.get('.kl-roster-entry[data-member-number="2"]');
+      expect(row.querySelector(".kl-player-tags")?.textContent).toBe("Tea lover");
+      expect(row.textContent).not.toContain("whitelist");
+      expect(row.textContent).not.toContain("trusted");
+      row.click();
+      expect(f.get(".kl-roster-detail").hidden).toBe(false);
+      expect(f.get<HTMLTextAreaElement>(".kl-roster-note").value).toBe("Keep this note");
+      expect(f.get<HTMLDialogElement>(".kl-addon-profile-dialog").open).toBe(false);
+      expect(f.people.get(2)?.tags).toEqual(["trusted"]);
+    } finally { f.view.destroy(); }
+  });
   it("labels inaccessible lobbies Locked and removes the small lock when access returns", async () => {
     const f = await setup();
     const room = { name: "Closed room", description: "", language: "EN", memberCount: 2, memberLimit: 10,

@@ -38,6 +38,9 @@ test("Explicit production mode retains listener, origin, service-identity and se
     R2_SECRET_ACCESS_KEY: "local-test",
   };
   assert.equal(loadConfig(env).host, "127.0.0.1");
+  assert.equal(loadConfig(env).communityEnabled, false);
+  assert.equal(loadConfig({ ...env, CLOUD_COMMUNITY_ENABLED: "true" }).communityEnabled, true);
+  assert.throws(() => loadConfig({ ...env, CLOUD_COMMUNITY_ENABLED: "yes" }));
   assert.equal(loadConfig({ ...env, CLOUD_MODE: "production" }).mode, "production");
   for (const jurisdiction of ["eu", "us"])
     assert.ok(

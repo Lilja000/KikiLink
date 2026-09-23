@@ -13,7 +13,7 @@ export async function syncInitialProfile(client: CloudClient, settings: KikiLink
   let pendingImages = false;
   try { migrated = storage?.getItem(key) === "1"; pendingImages = storage?.getItem(key) === "images-pending"; } catch { /* Revision guards remain. */ }
   if (current && !current.isDefault && !pendingImages && current.statusMessage !== undefined) return current;
-  const info = await client.request<{ features?: { fullProfile?: boolean } }>("GET", "/v1/me");
+  const info = await client.request<{ features?: { fullProfile?: boolean; profileGradientAngle?: boolean } }>("GET", "/v1/me");
   if (!info?.features?.fullProfile || !valid()) return current;
   const saved = current?.isDefault ? undefined : current, local = settings.linkPresence;
   const authoritative = saved?.statusMessage !== undefined;
@@ -23,9 +23,16 @@ export async function syncInitialProfile(client: CloudClient, settings: KikiLink
     bio: saved?.bio || (legacy ? local.bio : ""),
     statusMessage: saved?.statusMessage ?? local.statusMessage,
     avatarFrame: saved && (authoritative || migrated || saved.avatarFrame !== "none") ? saved.avatarFrame : local.avatarFrame,
+    avatarDecoration: saved?.avatarDecoration ?? local.avatarDecoration,
+    publicTags: saved?.publicTags ?? local.publicTags,
     profileStyle: saved && (authoritative || migrated || saved.profileStyle !== "classic") ? saved.profileStyle : local.profileStyle,
     profileOutlineColor: saved?.profileOutlineColor || (legacy ? local.profileOutlineColor || undefined : undefined),
-    profileGradient: saved?.profileGradient ?? (legacy && local.profileGradient.enabled ? { start: local.profileGradient.primary, end: local.profileGradient.secondary } : undefined),
+    profileGradient: saved?.profileGradient ?? (legacy ? {
+      start: local.profileGradient.primary,
+      end: local.profileGradient.secondary,
+      ...(info.features?.profileGradientAngle ? { angle: local.profileGradient.angle ?? 135 } : {}),
+      enabled: local.profileGradient.enabled,
+    } : undefined),
     visible: saved?.visible ?? local.enabled, revision: saved?.revision ?? 0,
     avatarId: saved?.avatarId ?? null, bannerId: saved?.bannerId ?? null,
   };

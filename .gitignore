@@ -1,5 +1,6 @@
 node_modules/
 node_modules
+__pycache__/
 .local-dev/
 dist/*
 !dist/KikiLink.user.js
@@ -10,3 +11,6 @@ design/references/Screenshot_*.jpg
 *.openai-download-*
 *.log
 .DS_Store
+tests/manual-ui/*.bundle.js
+tests/manual-ui/preview.html
+*.rej

@@ -106,6 +106,43 @@ function setup(): {
 }
 
 describe("ChatService", () => {
+  it("hides saved self reconnect notices without deleting announcements, normal messages or raw history", async () => {
+    const { repository, settings, service: legacy } = setup();
+    const base = { direction: "incoming" as const, peerNumber: 999, peerName: "Kiki", includeRoom: true, roomName: "VOID" };
+    await legacy.capture({ ...base, content: "An addon update is available.", sentAt: 100 }, false);
+    await legacy.capture({ ...base, content: "Reconnected!", sentAt: 200 }, false);
+    await legacy.capture({ ...base, content: "Reconnected!", sentAt: 300 }, false);
+    const raw = await repository.getMessages(999);
+    const service = new ChatService(repository, settings, 999);
+    expect(await service.getMessages(999, 1)).toMatchObject([{ content: "An addon update is available." }]);
+    expect(await service.getConversation(999)).toMatchObject({ lastMessage: "An addon update is available.", lastMessageAt: 100, unread: 1 });
+    expect(await service.listConversations()).toMatchObject([{ lastMessage: "An addon update is available.", unread: 1 }]);
+    expect(await service.captureRecent({ ...base, content: "Reconnected!", sentAt: 400 })).toBe(false);
+    expect(await repository.getMessages(999)).toEqual(raw);
+    await service.capture({ ...base, direction: "outgoing", content: "Reconnected!", sentAt: 500 }, false);
+    await service.capture({ ...base, peerNumber: 123, content: "Reconnected!", sentAt: 600 }, false);
+    await service.capture({ ...base, includeRoom: false, roomName: "Actual room", content: "Reconnected!", sentAt: 700 }, false);
+    await service.captureCloud({ ...base, content: "Reconnected!", sentAt: 800 }, { id: "cloud-self", cloudId: "cloud-1" }, false);
+    expect(await service.getMessages(999)).toHaveLength(4);
+    expect(await service.getMessages(123)).toHaveLength(1);
+    const reopened = new ChatService(repository, settings, 999);
+    expect(await reopened.getMessages(999)).toHaveLength(4);
+    expect(await new ChatService(repository, settings, 123).getMessages(999)).toHaveLength(6);
+  });
+
+  it("hides reconnect-only history and its unread preview in both durable and session history", async () => {
+    for (const saveHistory of [true, false]) {
+      const { repository, settings } = setup();
+      settings.update(draft => { draft.linkChat.saveHistory = saveHistory; });
+      const service = new ChatService(repository, settings, 999);
+      await service.capture({ direction: "incoming", peerNumber: 999, peerName: "VOID", includeRoom: true,
+        roomName: "VOID", content: "Reconnected!", sentAt: 100 }, false);
+      expect(await service.getMessages(999)).toEqual([]);
+      expect(await service.getConversation(999)).toMatchObject({ lastMessage: "", lastMessageAt: 0, unread: 0 });
+      expect(await service.listConversations()).toMatchObject([{ lastMessage: "", unread: 0 }]);
+    }
+  });
+
   it("stores incoming Beeps and increments unread state", async () => {
     const { service } = setup();
     await service.capture(

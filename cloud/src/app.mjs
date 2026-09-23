@@ -7,7 +7,9 @@ import { Social } from "./social.mjs";
 import { GroupLive } from "./group-live.mjs";
 import { Feed } from "./feed.mjs";
 import { Media } from "./media.mjs";
+import { communityApi } from "./community-api.mjs";
 import { constantEqual } from "./crypto.mjs";
+import reportReasons from "../shared/report-reasons.json" with { type: "json" };
 import {
   requireThat,
   id,
@@ -32,8 +34,8 @@ const target = z
     reason: text(1000).trim().min(5),
   })
   .strict();
-function parseTarget(input) {
-  const t = target.parse(input);
+function parseTarget(input, minimumReasonLength = 5) {
+  const t = target.extend({ reason: text(1000).trim().min(minimumReasonLength) }).parse(input);
   if (["profile", "post", "comment"].includes(t.targetType))
     pageId.parse(t.targetId);
   else id.parse(t.targetId);
@@ -71,6 +73,13 @@ export function createApp({
   let uploads = 0;
   const changed = (kind, actor, groupId, recipients = []) =>
     events.emit("change", { kind, actor, groupId, recipients });
+  const community = communityApi({ app, db, social, auth, changed });
+  const refreshFeatured = () => { if (feed.highlights.refresh()) changed("feed"); };
+  const featuredTimer = setInterval(() => {
+    try { refreshFeatured(); } catch { app.log.error({ event: "featured_refresh_failed" }); }
+  }, 60000);
+  featuredTimer.unref();
+  app.addHook("onClose", async () => { clearInterval(featuredTimer); });
   app.decorateRequest("identity", null);
   app.decorateRequest("uploadSlot", false);
   app.decorateRequest("uploadProcessing", false);
@@ -131,6 +140,8 @@ export function createApp({
     ].includes(route);
     if (!publicAuth) {
       req.identity = auth.authenticate(req.headers.authorization, origin);
+      if (!config.communityEnabled && (/^\/v1\/(capabilities|relationships|mailbox|direct|read-cursors|preferences|compatibility)(?:\/|$)/u.test(route ?? "") || route === "/v1/feed/unread"))
+        requireThat(false, 404, "community_unavailable");
       auth.rate(`read:${req.identity.member}`, 180, MINUTE);
       if (req.method !== "GET") {
         const ephemeral = route === "/v1/conversations/:id/typing";
@@ -250,7 +261,7 @@ export function createApp({
     expiresAt: req.identity.expiresAt,
     moderator: config.moderators.has(req.identity.member),
     apiVersion: 1,
-    features: { groupPins: true, groupLive: true, groupInbox: true, groupAvatar: true, fullProfile: true, feedSearch: true, messageChanges: true, reactions: ["heart", "like", "laugh", "support", "dislike", "wow", "sad"] },
+    features: { feedPins: true, feedFeatured: true, reactionDetails: true, preferences: !!config.communityEnabled, community: !!config.communityEnabled, directMessages: !!config.communityEnabled, readCursors: !!config.communityEnabled, messageReceipts: !!config.communityEnabled, reportReasons: true, groupPins: true, groupLive: true, groupInbox: true, groupAvatar: true, fullProfile: true, profileGradientAngle: true, feedSearch: true, messageChanges: true, reactions: ["heart", "like", "laugh", "support", "dislike", "wow", "sad"] },
   }));
   app.get("/v1/privacy", async () => ({
     version: 1,
@@ -261,11 +272,16 @@ export function createApp({
       "feed posts, images, comments and reactions",
       "groups, accepted membership and encrypted messages",
       "blocks and encrypted reports",
+      "opt-in friend requests, mailbox and encrypted offline Direct messages",
+      "private encrypted interest preferences (separate explicit consent)",
     ],
     messageProtection:
       "TLS and server encryption at rest; not end-to-end encryption",
     retention: {
       messagesDays: 30,
+      directMessagePayloadDays: 30,
+      directDeduplicationMetadataDays: 60,
+      mailboxDays: 30,
       presenceSeconds: 180,
       abandonedMediaHours: 24,
       reportsDays: 30,
@@ -307,6 +323,7 @@ export function createApp({
       "block_quota",
     );
     social.block(req.identity.member, pageId.parse(req.params.member), true);
+    community.relationships.revoke(req.identity.member, pageId.parse(req.params.member));
     reply.code(204).send();
   });
   app.delete("/v1/blocks/:member", async (req, reply) => {
@@ -342,6 +359,7 @@ export function createApp({
     auth.rate(`groups:${req.identity.member}`, 10, DAY);
     const group = social.createGroup(req.identity.member, data);
     changed("groups", req.identity.member, group.id);
+    community.mailbox.invitations(group.id, req.identity.member);
     return reply.code(201).send(group);
   });
   app.get("/v1/groups/:id", async (req) =>
@@ -372,10 +390,14 @@ export function createApp({
     return g;
   });
   app.post("/v1/groups/:id/invitations", async (req, reply) => {
-    const data = z.object({ memberNumber: member }).strict().parse(req.body);
+    const data = z.union([z.object({ memberNumber: member }).strict(), z.object({ members: z.array(member).min(1).max(4) }).strict()]).parse(req.body);
     const g = id.parse(req.params.id);
-    social.invite(req.identity.member, g, data.memberNumber);
+    const targets = "members" in data ? [...new Set(data.members)] : [data.memberNumber];
+    // A timeout retry skips invitations already saved by this same operation.
+    social.membership(req.identity.member, g, ["owner", "admin"]);
+    social.inviteMany(req.identity.member, g, targets.filter(target => !db.get("SELECT 1 FROM group_members WHERE group_id=? AND member_number=? AND status<>'removed'", g, target)));
     changed("groups", req.identity.member, g);
+    community.mailbox.invitations(g, req.identity.member);
     reply.code(204).send();
   });
   app.post("/v1/groups/:id/accept", async (req) => {
@@ -389,6 +411,7 @@ export function createApp({
       id.parse(req.params.id),
       req.identity.member,
     );
+    changed("mailbox", req.identity.member, undefined, [req.identity.member]);
     reply.code(204).send();
   });
   app.delete("/v1/groups/:id/members/:member", async (req, reply) => {
@@ -449,6 +472,22 @@ export function createApp({
     );
     return reply.code(201).send(result);
   });
+  app.put("/v1/conversations/:id/receipts", async req => {
+    const conversationId = id.parse(req.params.id);
+    const input = z.object({
+      deliveredIds: z.array(id).max(40),
+      readIds: z.array(id).max(40),
+    }).strict().refine(value => value.deliveredIds.length + value.readIds.length > 0, "empty_receipts").parse(req.body);
+    auth.rate(`message-receipts:${req.identity.member}`, 240, MINUTE);
+    const result = social.acknowledgeMessages(req.identity.member, conversationId, input.deliveredIds, input.readIds);
+    changed("receipts", req.identity.member, social.conversation(req.identity.member, conversationId).group_id, result.senders);
+    return { acknowledged: result.acknowledged };
+  });
+  app.post("/v1/conversations/:id/receipts/query", async req => {
+    const conversationId = id.parse(req.params.id);
+    const input = z.object({ ids: z.array(id).min(1).max(200) }).strict().parse(req.body);
+    return social.receiptStates(req.identity.member, conversationId, input.ids);
+  });
   app.get("/v1/conversations/:id/messages/:messageId", async req =>
     social.message(req.identity.member, id.parse(req.params.id), id.parse(req.params.messageId)));
   app.delete(
@@ -503,7 +542,15 @@ export function createApp({
 
   app.get("/v1/feed", async (req) => {
     const p = paging.extend({ q: text(100).trim().default("") }).parse(req.query);
+    refreshFeatured();
     return feed.list(req.identity.member, p.cursor, p.limit, p.q);
+  });
+  app.put("/v1/feed/:id/pin", async req => {
+    auth.moderator(req.identity.member);
+    const data = z.object({ pinned: z.boolean() }).strict().parse(req.body);
+    const result = feed.highlights.pin(req.identity.member, pageId.parse(req.params.id), data.pinned);
+    changed("feed");
+    return result;
   });
   app.post("/v1/feed", async (req, reply) => {
     auth.rate(`posts:${req.identity.member}`, 20, DAY);
@@ -555,8 +602,10 @@ export function createApp({
       data.text,
     );
     changed("feed", req.identity.member);
+    community.mailbox.comment(req.identity.member, pageId.parse(req.params.id), result.id);
     return reply.code(201).send(result);
   });
+  app.get("/v1/comments/:id", async req => feed.commentView(req.identity.member, feed.target(req.identity.member, "comment", pageId.parse(req.params.id))));
   app.patch("/v1/comments/:id", async (req) => {
     const data = z
       .object({
@@ -577,6 +626,10 @@ export function createApp({
     changed("feed", req.identity.member);
     reply.code(204).send();
   });
+  app.get("/v1/reactions/:type/:id", async req => {
+    const p = paging.parse(req.query);
+    return feed.reactionList(req.identity.member, z.enum(["post", "comment"]).parse(req.params.type), pageId.parse(req.params.id), p.cursor, p.limit);
+  });
   app.put("/v1/reactions/:type/:id", async (req) => {
     const data = z
       .object({
@@ -584,6 +637,7 @@ export function createApp({
       })
       .strict()
       .parse(req.body);
+    const previous = db.get("SELECT reaction FROM reactions WHERE target_type=? AND target_id=? AND member_number=?", req.params.type, Number(req.params.id), req.identity.member)?.reaction ?? null;
     const result = feed.react(
       req.identity.member,
       z.enum(["post", "comment"]).parse(req.params.type),
@@ -591,16 +645,18 @@ export function createApp({
       data.reaction,
     );
     changed("feed", req.identity.member);
+    if (previous !== data.reaction) community.mailbox.reaction(req.identity.member, req.params.type, Number(req.params.id), data.reaction);
     return result;
   });
   app.post("/v1/reports", async (req, reply) => {
     auth.rate(`reports:${req.identity.member}`, 10, DAY);
-    const t = parseTarget(req.body);
-    return reply
-      .code(201)
-      .send(
-        feed.report(req.identity.member, t.targetType, t.targetId, t.reason),
-      );
+    const data = target.extend({ reason: text(1000).trim().min(1), reasonCode: z.enum(reportReasons.map(r => r.id)).optional(), clientId: id.optional() }).strict().parse(req.body);
+    const t = parseTarget({ targetType: data.targetType, targetId: data.targetId, reason: data.reason }, data.reasonCode ? 1 : 5);
+    requireThat(data.reasonCode !== "other" || data.reason.replace(/^Other(?::\s*)?/u, "").trim().length >= 5, 400, "explanation_required");
+    const result = feed.report(req.identity.member, t.targetType, t.targetId, data.reason, data.reasonCode, data.clientId);
+    changed("reports", req.identity.member);
+    community.mailbox.report(result.id, req.identity.member);
+    return reply.code(201).send(result);
   });
   app.get("/v1/moderation/reports", async (req) => {
     auth.moderator(req.identity.member);
@@ -611,6 +667,7 @@ export function createApp({
     auth.moderator(req.identity.member);
     const t = parseTarget(req.body);
     feed.moderate(req.identity.member, t.targetType, t.targetId, t.reason);
+    changed("reports", req.identity.member);
     changed("feed", req.identity.member);
     changed("groups", req.identity.member);
     reply.code(204).send();
@@ -642,6 +699,7 @@ export function createApp({
       now(),
       pageId.parse(req.params.id),
     );
+    changed("reports", req.identity.member);
     reply.code(204).send();
   });
   app.post("/v1/moderation/users/:member/suspend", async (req, reply) => {
@@ -760,6 +818,8 @@ export function createApp({
         return;
       }
       if (event.kind === "session") return;
+      if (["relationships", "mailbox", "direct", "read", "feed-read", "preferences"].includes(event.kind) && event.recipients?.includes(actor)) send(event.kind);
+      if (event.kind === "reports" && config.moderators.has(actor)) send("reports");
       if (event.kind === "typing" && !social.blocked(actor, event.actor) &&
         db.get("SELECT 1 FROM group_members WHERE group_id=? AND member_number=? AND status='active'", event.groupId, actor)) send("typing");
       if (
@@ -769,17 +829,19 @@ export function createApp({
         send("feed");
       // Only invalidation hints, never content, keys, presence or message bodies.
       if (
-        ["groups", "messages"].includes(event.kind) &&
-        (!event.groupId ||
-          event.recipients?.includes(actor) ||
-          db.get(
-            "SELECT 1 FROM group_members WHERE group_id=? AND member_number=? AND (status='active' OR (?='groups' AND status='invited'))",
-            event.groupId,
-            actor,
-            event.kind,
-          ))
+        ["groups", "messages", "receipts"].includes(event.kind) &&
+        (event.kind === "receipts"
+          ? event.recipients?.includes(actor)
+          : !event.groupId ||
+            event.recipients?.includes(actor) ||
+            db.get(
+              "SELECT 1 FROM group_members WHERE group_id=? AND member_number=? AND (status='active' OR (?='groups' AND status='invited'))",
+              event.groupId,
+              actor,
+              event.kind,
+            ))
       )
-        send("groups");
+        send(event.kind === "receipts" ? "receipts" : "groups");
     };
     const heartbeat = setInterval(() => {
       try {
@@ -807,6 +869,8 @@ export function createApp({
   });
   async function cleanup() {
     auth.cleanup();
+    community.direct.cleanup();
+    db.run("DELETE FROM mailbox WHERE created_at<?", now() - 30 * DAY);
     db.run("DELETE FROM messages WHERE created_at<?", now() - 30 * DAY);
     db.run(
       "UPDATE group_members SET status='removed' WHERE status='invited' AND invited_at<?",
@@ -824,7 +888,7 @@ export function createApp({
     );
     return media.cleanup();
   }
-  return { app, auth, social, feed, media, cleanup, events };
+  return { app, auth, social, feed, media, ...community, cleanup, events };
 }
 
 export function createVerifier({ auth, config }) {

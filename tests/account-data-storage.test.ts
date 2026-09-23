@@ -187,6 +187,7 @@ describe("BC account-scoped KikiLink storage", () => {
       enabled: true,
       primary: "#8a1538",
       secondary: "#2a9d8f",
+      angle: 135,
     });
     expect(mobileSettings.linkActivities.customActivities).toMatchObject([
       { id: "elbow-touch", targetGroup: "ItemArms", arousal: 4 },

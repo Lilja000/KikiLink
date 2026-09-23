@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LINK_CHAT_STYLES } from "../src/modules/link-chat/styles";
+import { GROUP_CHAT_STYLES } from "../src/cloud/group-styles";
 
 function declaration(selector: string): string {
   const start = LINK_CHAT_STYLES.indexOf(`\n${selector} {`);
@@ -70,6 +71,23 @@ describe("LinkChat visual safeguards", () => {
   it("does not reserve an empty status row below the compact group composer", () => {
     expect(declaration(".kl-group-feedback")).toMatch(/min-height:\s*0/u);
     expect(declaration(".kl-group-feedback:empty")).toMatch(/display:\s*none/u);
+  });
+
+  it("reserves one fixed inline slot for 12/24-hour time and one/two receipt checks", () => {
+    const stamp = declaration(".kl-message-stamp");
+    const time = declaration(".kl-message-time");
+    const receipt = declaration(".kl-message-receipt");
+    const conversationTime = declaration(".kl-time");
+    expect(stamp).toMatch(/grid-template-columns:\s*8ch 20px/u);
+    expect(stamp).toMatch(/min-width:\s*calc\(8ch \+ 22px\)/u);
+    expect(time).toMatch(/inline-size:\s*8ch/u);
+    expect(time).toMatch(/font-variant-numeric:\s*tabular-nums/u);
+    expect(conversationTime).toMatch(/inline-size:\s*8ch/u);
+    expect(receipt).toMatch(/inline-size:\s*20px/u);
+    expect(LINK_CHAT_STYLES).toContain('.kl-message-receipt[data-state="pending"] { visibility:hidden; }');
+    expect(LINK_CHAT_STYLES).toContain('.kl-message-receipt[data-state="sent"] .kl-message-receipt-left { visibility:hidden; }');
+    expect(LINK_CHAT_STYLES).not.toMatch(/data-state="read"[^}]*color:/u);
+    expect(GROUP_CHAT_STYLES).toContain('.kl-group-message .kl-social-meta>span:not(.kl-message-stamp)');
   });
 
   it("renders Reply as a compact single-line context rather than a second message", () => {

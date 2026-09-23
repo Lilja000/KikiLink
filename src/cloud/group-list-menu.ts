@@ -1,5 +1,19 @@
 import { element } from "./dom";
 
+export function anchorSurface(surface: HTMLElement, anchor: HTMLElement): void {
+  const rect = anchor.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
+  const viewportWidth = viewport?.width ?? window.innerWidth, viewportHeight = viewport?.height ?? window.innerHeight;
+  surface.style.setProperty("--kl-surface-width", `${Math.max(0, viewportWidth - 16)}px`);
+  surface.style.setProperty("--kl-surface-height", `${Math.max(0, viewportHeight - 16)}px`);
+  const width = surface.offsetWidth || 220, height = surface.offsetHeight || 120;
+  const minimumLeft = left + 8, maximumLeft = Math.max(minimumLeft, left + viewportWidth - width - 8);
+  const minimumTop = top + 8, maximumTop = Math.max(minimumTop, top + viewportHeight - height - 8);
+  surface.style.left = `${Math.max(minimumLeft, Math.min(rect.right - width, maximumLeft))}px`;
+  surface.style.top = `${Math.max(minimumTop, Math.min(rect.bottom + 6, maximumTop))}px`;
+}
+
 /** One contextual menu and cancellable touch hold for the entire group list. */
 export class GroupListMenu {
   readonly element = element("dialog", { className: "kl-cloud-group-menu", ariaLabel: "Group actions" });
@@ -16,9 +30,7 @@ export class GroupListMenu {
       this.#anchor = row; this.element.replaceChildren(...items);
       this.element.setAttribute("aria-label", `Group actions: ${row.getAttribute("aria-label") ?? "Group"}`);
       try { this.element.showModal(); } catch { this.element.setAttribute("open", ""); }
-      const rect = row.getBoundingClientRect(), width = this.element.offsetWidth || 220, height = this.element.offsetHeight || 120;
-      this.element.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
-      this.element.style.top = `${Math.max(8, Math.min(rect.bottom, window.innerHeight - height - 8))}px`;
+      anchorSurface(this.element, row);
       this.element.querySelector<HTMLButtonElement>("button")?.focus();
     };
     root.addEventListener("contextmenu", event => { const row = rowAt(event); if (!row) return;

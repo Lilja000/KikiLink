@@ -1,4 +1,5 @@
 import { element } from "./dom";
+import { syncDateSeparators } from "../modules/link-chat/date-separators";
 import { SocialUI } from "./social-ui";
 import { GroupLiveView } from "./group-live";
 import { CloudError } from "./client";
@@ -7,6 +8,10 @@ import { messageActions, copyMessageText, shouldSendMessage } from "../modules/l
 import { ReplyComposer, replyPreview } from "../modules/link-chat/reply-composer";
 import { parseInlineReplyContext } from "../modules/link-chat/message-reply";
 import { kikiIcon } from "../modules/link-chat/icons";
+import { bindClockText } from "../core/time-format";
+import { messageReceiptIndicator, updateMessageReceipt } from "../modules/link-chat/message-receipt";
+import { appendFormattedText, TEXT_FORMAT_HINT } from "../modules/link-chat/text-format";
+import { parseMessageLinks } from "../modules/link-chat/media";
 import type { CloudGroup, CloudMessage, CloudPage, CloudGroupLive } from "./types";
 
 export class CloudGroupThread {
@@ -19,13 +24,18 @@ export class CloudGroupThread {
   #lastSequence = 0;
   #count = 0;
   #seen = new Set<string>();
+  #loadedMessages = new Map<string, CloudMessage>();
   #loading = false;
   #updating = false;
   #sending = false;
   #updateAgain = false;
   #scroll: HTMLElement | null = null;
   readonly #onScroll = () => {
-    if (!this.#browsingPin && this.#canRead() && this.#atBottom()) { this.options.readUntil?.(this.#lastSequence); this.#new.hidden = true; }
+    if (!this.#browsingPin && this.#canRead() && this.#atBottom()) {
+      this.options.readUntil?.(this.#lastSequence);
+      this.#acknowledge([...this.#loadedMessages.values()], true);
+      this.#new.hidden = true;
+    }
   };
   readonly #more: HTMLButtonElement;
   readonly #draft: HTMLTextAreaElement;
@@ -45,12 +55,13 @@ export class CloudGroupThread {
 
   constructor(readonly ui: SocialUI, readonly group: CloudGroup,
     readonly draft: { text: string; clientId: string },
-    readonly options: { enterToSend(): boolean; messageChanges?: boolean; groupLive?: boolean; groupPins?: boolean; liveChanged?(live: CloudGroupLive): void; membershipChanged(): Promise<void>; report(row: HTMLElement, id: string): void;
-      observed?(messages: CloudMessage[], read: boolean): void; draftChanged?(text: string): void; canRead?(): boolean; readUntil?(sequence: number): void }) {
+    readonly options: { enterToSend(): boolean; messageChanges?: boolean; groupLive?: boolean; groupPins?: boolean; messageReceipts?: boolean; liveChanged?(live: CloudGroupLive): void; membershipChanged(): Promise<void>; report(row: HTMLElement, id: string): void;
+      observed?(messages: CloudMessage[], read: boolean): void; acknowledgeReceipts?(deliveredIds: string[], readIds: string[]): void; draftChanged?(text: string): void; canRead?(): boolean; readUntil?(sequence: number): void }) {
     if (options.groupLive) this.#live = new GroupLiveView(ui, group, live => options.liveChanged?.(live));
     this.#list.setAttribute("aria-live", "polite");
     this.#more = ui.button("Load earlier messages", () => this.loadOlder(), "previous", "kl-social-button kl-group-load");
     this.#draft = element("textarea", { className: "kl-group-input", value: draft.text, maxLength: 4000, ariaLabel: "Message this Cloud group", placeholder: `Message ${group.title}…` });
+    this.#draft.title = TEXT_FORMAT_HINT;
     this.#reply = new ReplyComposer(this.#draft, 4000);
     const count = element("span", { className: "kl-composer-count", text: `${draft.text.length} / 4000` });
     this.#draft.addEventListener("input", () => {
@@ -59,7 +70,7 @@ export class CloudGroupThread {
       this.#send.disabled = !this.#reply.hasContent || this.#sending;
     });
     this.#draft.addEventListener("blur", () => this.#live?.signal(false));
-    this.#send = ui.button("Send", () => this.send(), "send", "kl-social-button kl-social-primary");
+    this.#send = ui.button("Send", () => this.send(), "send", "kl-social-button kl-social-primary", false);
     this.#send.disabled = !this.#reply.hasContent;
     this.#draft.addEventListener("keydown", event => {
       if (shouldSendMessage(event, options.enterToSend())) {
@@ -93,18 +104,20 @@ export class CloudGroupThread {
       for (const message of page.items) {
         this.#lastSequence = Math.max(this.#lastSequence, message.sequence);
         if (this.ui.options.isBlocked(message.sender) || this.#seen.has(message.id)) continue;
-        this.#seen.add(message.id); fragment.append(this.#row(message)); this.#count++;
+        this.#seen.add(message.id); this.#loadedMessages.set(message.id, message); fragment.append(this.#row(message)); this.#count++;
       }
       const anchor = this.#list.querySelector<HTMLElement>("[data-message-id]");
       const top = anchor?.getBoundingClientRect().top;
-      this.#more.after(fragment); this.#olderCursor = page.nextCursor ?? 0;
+      this.#more.after(fragment); syncDateSeparators(this.#list); this.#olderCursor = page.nextCursor ?? 0;
       const scroll = this.#list;
       if (!this.#scroll && scroll) { this.#scroll = scroll; scroll.addEventListener("scroll", this.#onScroll, { passive: true }); }
       if (anchor && top !== undefined && scroll) scroll.scrollTop += anchor.getBoundingClientRect().top - top;
       this.#more.hidden = page.nextCursor === null || this.#count >= 200;
       if (!this.#count) this.#list.append(element("p", { className: "kl-group-empty", text: "Say hello. This is the start of your conversation." }));
       if (!anchor) { this.#list.lastElementChild?.scrollIntoView?.({ block: "nearest" }); this.#live?.resume(); }
-      this.options.observed?.(page.items, !this.#browsingPin && this.#canRead() && (!anchor || this.#atBottom()));
+      const read = !this.#browsingPin && this.#canRead() && (!anchor || this.#atBottom());
+      this.options.observed?.(page.items, read);
+      this.#acknowledge(page.items, read);
     } finally { this.#loading = false; }
   }
   async updates(): Promise<void> {
@@ -134,15 +147,25 @@ export class CloudGroupThread {
         if (this.ui.options.isBlocked(message.sender)) continue;
         if (this.#seen.has(message.id)) continue;
         this.#list.querySelector(".kl-group-empty")?.remove();
-        this.#seen.add(message.id); this.#lastSequence = Math.max(this.#lastSequence, message.sequence);
+        this.#seen.add(message.id); this.#loadedMessages.set(message.id, message); this.#lastSequence = Math.max(this.#lastSequence, message.sequence);
         this.#insert(message); this.#count++;
       }
-      while (this.#list.querySelectorAll("[data-message-id]").length > 200) { const first = this.#list.querySelector("[data-message-id]")!; if (first instanceof HTMLElement) this.#seen.delete(first.dataset.messageId ?? ""); first.remove(); this.#count--; }
+      while (this.#list.querySelectorAll("[data-message-id]").length > 200) {
+        const first = this.#list.querySelector("[data-message-id]")!;
+        if (first instanceof HTMLElement) {
+          const id = first.dataset.messageId ?? "";
+          this.#seen.delete(id); this.#loadedMessages.delete(id);
+        }
+        first.remove(); this.#count--;
+      }
+      syncDateSeparators(this.#list);
       this.#new.onclick = null;
       this.#new.hidden = atBottom && page.nextCursor === null;
       if (page.nextCursor !== null) { this.#new.hidden = false; this.#new.onclick = () => void this.ui.options.run(() => this.updates()); }
       if (atBottom) this.#list.lastElementChild?.scrollIntoView?.({ block: "nearest" });
-      this.options.observed?.(page.items, this.#canRead() && atBottom);
+      const read = this.#canRead() && atBottom;
+      this.options.observed?.(page.items, read);
+      this.#acknowledge(page.items, read);
     } finally {
       this.#updating = false;
       if (this.#updateAgain && this.#active) { this.#updateAgain = false; void this.ui.options.run(() => this.updates()); }
@@ -152,39 +175,58 @@ export class CloudGroupThread {
     if (this.#sending || !this.#active || !this.#reply.hasContent) return;
     const version = this.#version, text = this.draft.text, clientId = this.draft.clientId;
     this.#live?.signal(false);
-    this.#sending = true; this.#draft.disabled = true; this.#send.disabled = true;
+    this.#draft.focus({ preventScroll: true });
+    this.#sending = true; this.#send.disabled = true;
     try {
       const message = await this.ui.options.client.request<CloudMessage>("POST", `/v1/conversations/${this.group.conversationId}/messages`, {
         text, clientId, membershipVersion: this.group.membershipVersion, keyVersion: this.group.keyVersion,
         schemaVersion: 1, encryption: "server-aes-256-gcm",
       });
       const unchanged = this.draft.text === text && this.draft.clientId === clientId;
-      if (unchanged) { this.draft.text = ""; this.draft.clientId = crypto.randomUUID(); this.options.draftChanged?.(""); }
+      if (this.draft.clientId === clientId) this.draft.clientId = crypto.randomUUID();
+      if (unchanged) { this.draft.text = ""; this.options.draftChanged?.(""); }
       if (unchanged && this.#reply.value === text) { this.#reply.load(""); this.#draft.dispatchEvent(new Event("input")); }
       if (version !== this.#version) return;
-      if (!this.#seen.has(message.id)) { this.#list.querySelector(".kl-group-empty")?.remove(); this.#seen.add(message.id); this.#insert(message); this.#count++; }
+      if (!this.#seen.has(message.id)) {
+        this.#list.querySelector(".kl-group-empty")?.remove();
+        this.#seen.add(message.id); this.#loadedMessages.set(message.id, message); this.#insert(message); this.#count++;
+      }
       // Keep the receive cursor before this send: another user's intervening
       // messages must still be fetched even if the send response arrived first.
       await this.updates();
       this.#list.lastElementChild?.scrollIntoView?.({ block: "nearest" });
-    } finally { this.#sending = false; this.#draft.disabled = false; this.#send.disabled = !this.#reply.hasContent; if (version === this.#version) this.#draft.focus({ preventScroll: true }); }
+    } finally { this.#sending = false; this.#send.disabled = !this.#reply.hasContent; }
   }
   #insert(message: CloudMessage): void {
     const next = [...this.#list.children].find(node => node instanceof HTMLElement && Number(node.dataset.sequence) > message.sequence);
     this.#list.insertBefore(this.#row(message), next ?? null);
+    syncDateSeparators(this.#list);
   }
   #row(message: CloudMessage): HTMLElement {
     if (this.ui.options.isBlocked(message.sender)) return element("div", { hidden: true });
     const author = this.ui.member(message.sender, message.createdAt);
+    const time = author.querySelector("time");
+    const own = message.sender === this.ui.options.client.memberNumber;
+    if (time) {
+      time.classList.add("kl-message-time");
+      bindClockText(time, message.createdAt);
+      // Rows only enter this thread through a successful Cloud response, so
+      // saving is confirmed even before any recipient acknowledges the message.
+      if (own) {
+        const stamp = element("span", { className: "kl-message-stamp", ariaLabel: "Message time and receipt" });
+        time.replaceWith(stamp); stamp.append(time, messageReceiptIndicator(message.receiptState === "read" ? "read" : "sent", "Read by everyone"));
+      }
+    }
     const content = element("div", { className: "kl-group-message-text" });
     const reply = message.text ? parseInlineReplyContext(message.text) : undefined;
     if (reply) content.append(replyPreview(reply));
-    content.append(document.createTextNode(reply?.content ?? message.text ?? "Message removed"));
+    const text = reply?.content ?? message.text ?? "Message removed";
+    appendFormattedText(content, text, parseMessageLinks(text));
     const bubble = element("div", { className: "kl-group-message-bubble kl-message-bubble" }, content);
     const line = element("div", { className: "kl-message-line kl-group-message-line" }, bubble);
     const row = element("article", { className: "kl-group-message kl-message-interaction" }, author, line);
-    const own = message.sender === this.ui.options.client.memberNumber;
     row.dataset.messageId = message.id; row.dataset.sequence = String(message.sequence); row.dataset.own = String(own);
+    row.dataset.messageTime = String(message.createdAt);
     row.dataset.direction = line.dataset.direction = own ? "outgoing" : "incoming";
     this.#messages.set(row, message);
     if (message.text) {
@@ -197,6 +239,30 @@ export class CloudGroupThread {
       line.append(actions);
     }
     return row;
+  }
+  #acknowledge(messages: CloudMessage[], read: boolean): void {
+    if (!this.options.messageReceipts || !messages.length) return;
+    const deliveredIds = messages.filter(message => message.sender !== this.ui.options.client.memberNumber).map(message => message.id);
+    const readIds = read ? messages.filter(message => message.sender !== this.ui.options.client.memberNumber && !this.ui.options.isBlocked(message.sender)).map(message => message.id) : [];
+    if (deliveredIds.length || readIds.length) this.options.acknowledgeReceipts?.(deliveredIds, readIds);
+  }
+  async refreshReceipts(): Promise<void> {
+    if (!this.options.messageReceipts || !this.#active) return;
+    const messageIds = [...this.#loadedMessages.values()]
+      .filter(message => message.sender === this.ui.options.client.memberNumber)
+      .map(message => message.id);
+    if (!messageIds.length) return;
+    const result = await this.ui.options.client.request<{ items: Array<{ messageId: string; state: "delivered" | "read" | null }> }>(
+      "POST", `/v1/conversations/${this.group.conversationId}/receipts/query`, { ids: messageIds },
+    );
+    for (const { messageId: id, state } of result.items) {
+      const message = this.#loadedMessages.get(id);
+      const row = [...this.#list.querySelectorAll<HTMLElement>("[data-message-id]")].find(node => node.dataset.messageId === id);
+      const indicator = row?.querySelector<HTMLElement>(".kl-message-receipt");
+      if (!message || !indicator) continue;
+      message.receiptState = state;
+      updateMessageReceipt(indicator, state === "read" ? "read" : "sent", "Read by everyone");
+    }
   }
   #replyTo(row: HTMLElement): void {
     const message = this.#messages.get(row);
@@ -242,6 +308,7 @@ export class CloudGroupThread {
     row.querySelector(".kl-message-side-actions")?.remove();
     row.querySelector(".kl-message-bubble")?.removeAttribute("tabindex");
     this.#messages.delete(row);
+    if (row.dataset.messageId) this.#loadedMessages.delete(row.dataset.messageId);
     delete row.dataset.actionable; this.#controls.close();
   }
   #renderPin(): void {
@@ -295,6 +362,7 @@ export class CloudGroupThread {
           this.#seen.add(message.id); this.#list.append(this.#row(message)); this.#count++;
         }
         this.#olderCursor = page.nextCursor ?? 0; this.#more.hidden = page.nextCursor === null;
+        syncDateSeparators(this.#list);
         this.#browsingPin = true; this.#new.hidden = false; this.#new.textContent = "Back to latest"; this.#new.onclick = null;
         row = [...this.#list.querySelectorAll<HTMLElement>("[data-message-id]")].find(row => row.dataset.messageId === pin.id);
       }
@@ -326,6 +394,7 @@ export class CloudGroupThread {
         this.#seen.add(message.id); this.#list.append(this.#row(message)); this.#count++;
       }
       this.#more.hidden = page.nextCursor === null;
+      syncDateSeparators(this.#list);
       this.#list.lastElementChild?.scrollIntoView?.({ block: "nearest" });
       this.options.observed?.(page.items, this.#canRead());
     } finally { this.#loading = false; }

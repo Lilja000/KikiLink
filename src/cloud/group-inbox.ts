@@ -1,5 +1,5 @@
 import { element } from "./dom";
-import type { CloudClient } from "./client";
+import { CloudError, type CloudClient } from "./client";
 import { SocialUI, initials, timeLabel } from "./social-ui";
 import type { CloudGroup, CloudMessage, CloudPage } from "./types";
 import type { KeyValueStorage } from "../core/settings";
@@ -8,6 +8,7 @@ import { GroupListMenu } from "./group-list-menu";
 
 interface Preview { items: CloudMessage[]; at: number }
 interface Invitation { id: string; title: string; owner: number }
+interface PendingReceipt { groupId: string; conversationId: string; state: "delivered" | "read" }
 
 /** Account-local read cursors; message contents stay in memory, bounded to 40 per group. */
 export class CloudGroupInbox {
@@ -31,6 +32,11 @@ export class CloudGroupInbox {
   readonly #preferences = new Map<string, { pinned: boolean; muted: boolean }>();
   readonly #menu: GroupListMenu;
   readonly #preferencesKey: string;
+  readonly #receiptKey: string;
+  readonly #receiptQueue = new Map<string, PendingReceipt>();
+  readonly #acknowledgedReceipts = new Map<string, "delivered" | "read">();
+  #receiptsEnabled = false;
+  #receiptTask: Promise<void> | undefined;
   #baseline = false;
 
   constructor(readonly client: CloudClient, readonly ui: SocialUI, readonly storage: KeyValueStorage,
@@ -50,6 +56,19 @@ export class CloudGroupInbox {
         this.#preferences.set(id, { pinned: entry.pinned === true, muted: entry.muted === true });
       }
     } catch { /* Default preferences remain usable. */ }
+    this.#receiptKey = `kikilink:cloud:group-receipts:${client.memberNumber}:v1`;
+    try {
+      const stored = JSON.parse(storage.getItem(this.#receiptKey) ?? "[]");
+      if (Array.isArray(stored)) for (const item of stored.slice(-500)) {
+        if (!item || typeof item !== "object") continue;
+        const value = item as { messageId?: unknown; groupId?: unknown; conversationId?: unknown; state?: unknown };
+        if (typeof value.messageId !== "string" || value.messageId.length > 80 ||
+          typeof value.groupId !== "string" || value.groupId.length > 80 ||
+          typeof value.conversationId !== "string" || value.conversationId.length > 80 ||
+          (value.state !== "delivered" && value.state !== "read")) continue;
+        this.#receiptQueue.set(value.messageId, { groupId: value.groupId, conversationId: value.conversationId, state: value.state });
+      }
+    } catch { /* A malformed retry queue cannot acknowledge anything. */ }
     this.#menu = new GroupListMenu(this.element, id => this.groups.some(g => g.id === id) ? [
       this.ui.button(this.isPinned(id) ? "Unpin group" : "Pin group", () => { this.togglePinned(id); this.#menu.close(); }, "pin"),
       this.ui.button(this.isMuted(id) ? "Unmute group" : "Mute group", () => { this.toggleMuted(id); this.#menu.close(); }, "notifications"),
@@ -66,6 +85,64 @@ export class CloudGroupInbox {
     try { this.storage.setItem(this.#preferencesKey, JSON.stringify(Object.fromEntries(this.#preferences))); }
     catch { /* Session preference still suppresses alerts. */ }
     this.render(); this.options.changed();
+  }
+  get unreadMessages(): number {
+    return this.groups.filter(g => !this.isMuted(g.id)).reduce((sum, g) => sum + (g.unreadMessages !== undefined
+      ? g.unreadBySender ? g.unreadBySender.filter(m => !this.ui.options.isBlocked(m.memberNumber)).reduce((n, m) => n + m.count, 0) : g.unreadMessages
+      : (this.#previews.get(g.id)?.items ?? []).filter(m => m.sequence > (this.#reads.get(g.id) ?? 0) && m.sender !== this.client.memberNumber && m.text !== null && !this.ui.options.isBlocked(m.sender)).length), 0);
+  }
+  enableMessageReceipts(enabled: boolean): void {
+    this.#receiptsEnabled = enabled;
+    if (enabled) void this.flushReceipts().catch(() => {});
+  }
+  acknowledgeReceipts(groupId: string, conversationId: string, deliveredIds: string[], readIds: string[]): void {
+    if (!this.#receiptsEnabled) return;
+    for (const messageId of deliveredIds) if (!this.#receiptQueue.has(messageId) && !this.#acknowledgedReceipts.has(messageId))
+      this.#receiptQueue.set(messageId, { groupId, conversationId, state: "delivered" });
+    for (const messageId of readIds) if (this.#receiptQueue.get(messageId)?.state !== "read" && this.#acknowledgedReceipts.get(messageId) !== "read")
+      this.#receiptQueue.set(messageId, { groupId, conversationId, state: "read" });
+    while (this.#receiptQueue.size > 500) this.#receiptQueue.delete(this.#receiptQueue.keys().next().value!);
+    this.#saveReceiptQueue();
+    void this.flushReceipts().catch(() => {});
+  }
+  #saveReceiptQueue(): void {
+    const rows = [...this.#receiptQueue].map(([messageId, value]) => ({ messageId, ...value }));
+    try { this.storage.setItem(this.#receiptKey, JSON.stringify(rows)); }
+    catch { /* The in-memory retry queue remains usable for this session. */ }
+  }
+  flushReceipts(): Promise<void> {
+    if (this.#receiptTask) return this.#receiptTask;
+    if (!this.#receiptsEnabled || !this.client.connected || !this.#receiptQueue.size) return Promise.resolve();
+    const task = (async () => {
+      while (this.#receiptsEnabled && this.client.connected && this.#receiptQueue.size) {
+        const first = this.#receiptQueue.entries().next().value as [string, PendingReceipt] | undefined;
+        if (!first) return;
+        const [, seed] = first;
+        const batch = [...this.#receiptQueue].filter(([, value]) => value.conversationId === seed.conversationId).slice(0, 40);
+        const deliveredIds = batch.filter(([, value]) => value.state === "delivered").map(([id]) => id);
+        const readIds = batch.filter(([, value]) => value.state === "read").map(([id]) => id);
+        try {
+          await this.client.request("PUT", `/v1/conversations/${seed.conversationId}/receipts`, { deliveredIds, readIds });
+        } catch (error) {
+          if (error instanceof CloudError && [403, 404].includes(error.status)) {
+            for (const [messageId, value] of [...this.#receiptQueue]) if (value.groupId === seed.groupId) this.#receiptQueue.delete(messageId);
+            this.#saveReceiptQueue();
+            continue;
+          }
+          throw error;
+        }
+        for (const [messageId, sent] of batch) if (this.#receiptQueue.get(messageId)?.state === sent.state) {
+          this.#receiptQueue.delete(messageId);
+          this.#acknowledgedReceipts.delete(messageId);
+          this.#acknowledgedReceipts.set(messageId, sent.state);
+        }
+        while (this.#acknowledgedReceipts.size > 1000)
+          this.#acknowledgedReceipts.delete(this.#acknowledgedReceipts.keys().next().value!);
+        this.#saveReceiptQueue();
+      }
+    })().finally(() => { if (this.#receiptTask === task) this.#receiptTask = undefined; });
+    this.#receiptTask = task;
+    return task;
   }
   get unreadGroups(): number { return this.groups.filter(group => this.hasUnread(group.id)).length; }
   hasUnread(id: string): boolean {
@@ -98,7 +175,14 @@ export class CloudGroupInbox {
       for (const m of items) {
         if (m.text !== null && !this.ui.options.isBlocked(m.sender)) {
           if (m.sequence > (group.lastMessage?.sequence ?? 0)) group.lastMessage = m;
-          if (m.sender !== this.client.memberNumber) group.lastIncomingSequence = Math.max(group.lastIncomingSequence, m.sequence);
+          if (m.sender !== this.client.memberNumber) {
+            if (m.sequence > group.lastIncomingSequence && group.unreadMessages !== undefined) {
+              group.unreadMessages++;
+              const count = group.unreadBySender?.find(s => s.memberNumber === m.sender);
+              if (count) count.count++; else group.unreadBySender?.push({ memberNumber: m.sender, count: 1 });
+            }
+            group.lastIncomingSequence = Math.max(group.lastIncomingSequence, m.sequence);
+          }
           if (m.sender !== this.client.memberNumber && group.incomingSequences) {
             const entry = group.incomingSequences.find(s => s.memberNumber === m.sender);
             if (entry) entry.sequence = Math.max(entry.sequence, m.sequence);
@@ -110,9 +194,28 @@ export class CloudGroupInbox {
     if (read && items.length) this.markRead(id, Math.max(...items.map(m => m.sequence)));
     else { this.render(); this.options.changed(); }
   }
+  #readUpdates = new Map<string, number>();
+  #readFlush = false;
+  #queueRead(id: string, sequence: number): void {
+    this.#readUpdates.set(id, Math.max(this.#readUpdates.get(id) ?? 0, sequence));
+    if (this.#readFlush) return;
+    this.#readFlush = true;
+    queueMicrotask(() => {
+      this.#readFlush = false;
+      const items = [...this.#readUpdates].slice(0, 100).map(([id, cursor]) => ({ scope: `group:${id}`, cursor }));
+      this.#readUpdates.clear();
+      if (items.length && this.client.connected) void this.client.request("PUT", "/v1/read-cursors", { items }).catch(() => { this.#dirty = true; });
+    });
+  }
   markRead(id: string, sequence: number, batch = false): void {
     if (sequence > (this.#reads.get(id) ?? 0)) {
       this.#reads.set(id, sequence);
+      const group = this.groups.find(g => g.id === id);
+      if (group?.readCursor !== undefined) {
+        if (sequence >= (group.lastIncomingSequence ?? 0)) { group.unreadMessages = 0; group.unreadBySender = []; }
+        group.readCursor = Math.max(group.readCursor, sequence);
+        this.#queueRead(id, sequence);
+      }
       while (this.#reads.size > 100) this.#reads.delete(this.#reads.keys().next().value!);
       if (!batch) this.#saveReads();
     }
@@ -121,6 +224,7 @@ export class CloudGroupInbox {
   #saveReads(): void { try { this.storage.setItem(this.#storageKey, JSON.stringify(Object.fromEntries(this.#reads))); } catch { /* Session read state still works. */ } }
   refresh(force = false): Promise<void> {
     if (!this.client.connected) { this.render(); return Promise.resolve(); }
+    if (this.#receiptsEnabled) void this.flushReceipts().catch(() => {});
     if (this.#task) return this.#task;
     if (!force && !this.#dirty && Date.now() - this.#updatedAt < 30000) return Promise.resolve();
     const generation = this.#generation;
@@ -138,6 +242,13 @@ export class CloudGroupInbox {
       if (generation !== this.#generation || !this.client.connected) return;
       const previous = new Map(this.groups.map(g => [g.id, g.lastMessage?.sequence ?? 0]));
       this.groups = groups.items.slice(0, 100); this.#invitations = invitations.items.slice(0, 100); this.#error = "";
+      for (const group of this.groups) if (group.readCursor !== undefined) {
+        const local = this.#reads.get(group.id) ?? 0;
+        if (local > group.readCursor) {
+          this.#reads.set(group.id, group.readCursor); this.markRead(group.id, local, true);
+        } else this.#reads.set(group.id, group.readCursor);
+      }
+      this.#saveReads();
       if (this.#baseline) for (const group of this.groups) {
         const message = group.lastMessage;
         if (previous.has(group.id) && message?.text && message.sequence > (previous.get(group.id) ?? 0) &&

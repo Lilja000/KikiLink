@@ -5,6 +5,7 @@ import type { BCAdapter } from "../src/bc/adapter";
 import { EventBus } from "../src/core/event-bus";
 import * as distribution from "../src/core/distribution";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
+import { setTimeFormatPreference } from "../src/core/time-format";
 import type { ConversationMeta, KikiLinkEvents } from "../src/core/types";
 import { LinkActivitiesService } from "../src/modules/link-activities/link-activities-service";
 import { ChatService } from "../src/modules/link-chat/chat-service";
@@ -28,6 +29,7 @@ import type { DeviceGalleryImage, GalleryStore } from "../src/storage/device-gal
 import type { DeviceMusicTrack, MusicStore } from "../src/storage/device-music-store";
 
 afterEach(() => {
+  setTimeFormatPreference("24-hour");
   vi.useRealTimers();
   document.body.replaceChildren();
   vi.unstubAllGlobals();
@@ -46,6 +48,65 @@ function deferred<Value>(): {
 }
 
 describe("LinkChatView", () => {
+  it.each([
+    ["comfortable", 1024], ["comfortable", 390],
+    ["compact", 1024], ["compact", 390],
+    ["super-compact", 1024], ["super-compact", 390],
+  ] as const)("patches confirmed Cloud send/read checks and time format without rebuilding in %s density at %ipx", async (density, viewport) => {
+    vi.stubGlobal("innerWidth", viewport);
+    const adapter = {
+      getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
+      getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999,
+      getOwnName: () => "Kiki",
+      getKnownContacts: () => [{ memberNumber: 123, memberName: "Reina" }],
+      canSendBeep: () => true,
+      isReady: () => true,
+      sendBeep: vi.fn(),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update(draft => { draft.ui.density = density; draft.ui.timeFormat = "24-hour"; });
+    const service = new ChatService(new MemoryChatRepository(), settings);
+    const sentAt = new Date(2026, 8, 22, 21, 0).getTime();
+    await service.captureCloud({ direction: "outgoing", peerNumber: 123, peerName: "Reina", content: "Stable Direct",
+      sentAt, includeRoom: false }, { id: "cloud-out:test", clientMessageId: crypto.randomUUID(), cloudId: "server-id",
+      cloudSequence: 1, delivery: "waiting" }, false);
+    const view = new LinkChatView(adapter, service, settings, "0.30.0");
+    view.mount(); await view.openChat(123, "Reina");
+    const shadow = document.querySelector("#kikilink-root")!.shadowRoot!;
+    const row = shadow.querySelector<HTMLElement>('[data-message-id="cloud-out:test"]')!;
+    const bubble = row.querySelector(".kl-message-bubble");
+    const time = row.querySelector<HTMLElement>(".kl-message-time")!;
+    const indicator = row.querySelector<HTMLElement>(".kl-message-receipt")!;
+    const composer = shadow.querySelector<HTMLTextAreaElement>(".kl-composer-input")!;
+    const scroller = shadow.querySelector<HTMLElement>(".kl-messages")!;
+    composer.focus(); scroller.scrollTop = 19;
+    expect(indicator.dataset.state).toBe("pending");
+    expect(row.textContent).not.toMatch(/waiting|delivered|sending|read by/iu);
+    expect(indicator.getAttribute("aria-hidden")).toBe("true");
+    const sent = await service.updateDelivery(123, "cloud-out:test", { delivery: "sent" });
+    await view.onMessage(123, false, sent);
+    expect(indicator.dataset.state).toBe("sent");
+    expect(indicator.title).toBe("Sent to Cloud");
+    expect(indicator.hasAttribute("aria-hidden")).toBe(false);
+    const delivered = await service.updateDelivery(123, "cloud-out:test", { delivery: "delivered" });
+    await view.onMessage(123, false, delivered);
+    expect(indicator.dataset.state).toBe("sent");
+    expect(indicator.title).toBe("Sent to Cloud");
+    const read = await service.updateDelivery(123, "cloud-out:test", { delivery: "read" });
+    await view.onMessage(123, false, read);
+    expect(indicator.dataset.state).toBe("read");
+    expect(indicator.title).toBe("Read by recipient");
+    settings.update(draft => { draft.ui.timeFormat = "12-hour"; });
+    expect(time.textContent).toMatch(/9:00\s*PM/iu);
+    expect(shadow.querySelector('[data-message-id="cloud-out:test"]')).toBe(row);
+    expect(row.querySelector(".kl-message-bubble")).toBe(bubble);
+    expect(row.querySelector(".kl-message-receipt")).toBe(indicator);
+    expect(scroller.scrollTop).toBe(19);
+    expect(shadow.activeElement).toBe(composer);
+    view.destroy();
+  });
+
   it("keeps Blossom out of fixed DOM and exposes settings-only character placement", () => {
     let renderOverlay: ((character: BCCharacter, x: number, y: number, zoom: number) => void) | undefined;
     const adapter = {
@@ -202,8 +263,8 @@ describe("LinkChatView", () => {
       expect(replyRow?.querySelector(".kl-message-content")?.textContent).not.toContain(
         "> Reply to",
       );
-      const action = replyRow?.querySelector("em.kl-message-action-text");
-      expect(action?.textContent).toBe("*Acknowledged*");
+      const action = replyRow?.querySelector(".kl-formatted-text em");
+      expect(action?.textContent).toBe("Acknowledged");
       expect(action?.closest(".kl-message-content")?.lastChild).toBe(action);
     });
     expect(shadow?.querySelector(".kl-conversation-preview")?.textContent).toContain(
@@ -219,12 +280,12 @@ describe("LinkChatView", () => {
     await vi.waitFor(() => {
       expect(
         shadow?.querySelector<HTMLElement>(".kl-message-row:last-child")
-          ?.querySelector("em.kl-message-action-text")?.textContent,
-      ).toBe("*shares https://example.com/page *");
+          ?.querySelector(".kl-formatted-text em")?.textContent,
+      ).toBe("shares https://example.com/page ");
     });
     const richActionRow = shadow?.querySelector<HTMLElement>(".kl-message-row:last-child");
-    const richAction = richActionRow?.querySelector("em.kl-message-action-text");
-    expect(richAction?.textContent).toBe("*shares https://example.com/page *");
+    const richAction = richActionRow?.querySelector(".kl-formatted-text em");
+    expect(richAction?.textContent).toBe("shares https://example.com/page ");
     expect(richAction?.querySelector<HTMLAnchorElement>(".kl-message-link")?.href).toBe(
       "https://example.com/page",
     );
@@ -501,8 +562,8 @@ describe("LinkChatView", () => {
     );
     expect(
       messageAvatar.closest(".kl-group-message")
-        ?.querySelector("em.kl-message-action-text")?.textContent,
-    ).toBe("*waves*");
+        ?.querySelector(".kl-formatted-text em")?.textContent,
+    ).toBe("waves");
     messageAvatar.click();
     await vi.waitFor(() => {
       expect(shadow.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.open).toBe(true);
@@ -511,11 +572,11 @@ describe("LinkChatView", () => {
     });
     shadow.querySelector<HTMLDialogElement>(".kl-addon-profile-dialog")?.close();
 
+    adapter.isMemberInCurrentRoom = () => true;
     shadow.querySelector<HTMLButtonElement>(".kl-group-new")?.click();
-    const groupDialog = shadow.querySelector<HTMLDialogElement>(".kl-group-dialog");
-    const contactProfile = groupDialog?.querySelector<HTMLButtonElement>(
-      '.kl-group-contact-profile[data-group-member-number="20"]',
-    );
+    const groupDialog = shadow.querySelector<HTMLDialogElement>(".kl-new-chat-dialog");
+    await vi.waitFor(() => expect(groupDialog?.querySelector('[data-member-number="20"]')).not.toBeNull());
+    const contactProfile = groupDialog?.querySelector<HTMLButtonElement>('.kl-contact[data-member-number="20"]');
     if (!groupDialog?.open || !contactProfile) {
       throw new Error("Missing modal group-contact profile target");
     }
@@ -550,7 +611,7 @@ describe("LinkChatView", () => {
     });
 
     let replacement = groupDialog.querySelector<HTMLButtonElement>(
-      '.kl-group-contact-profile[data-group-member-number="20"]',
+      '.kl-contact[data-member-number="20"]',
     );
     if (replacement === contactProfile) {
       replacement = contactProfile.cloneNode(true) as HTMLButtonElement;
@@ -1078,6 +1139,66 @@ describe("LinkChatView", () => {
     await groups.destroy();
   });
 
+  it.each([
+    { next: "", moveFocus: false },
+    { next: "Next message", moveFocus: false },
+    { next: "Next message", moveFocus: true },
+  ])("keeps Direct Enter away from page-wide chat shortcuts and preserves newer typing: %j", async ({ next, moveFocus }) => {
+    const nativeChat = document.createElement("textarea");
+    nativeChat.id = "InputChat"; document.body.append(nativeChat);
+    const pageShortcut = vi.fn((event: Event) => { if ((event as KeyboardEvent).key === "Enter") nativeChat.focus(); });
+    for (const type of ["keydown", "keypress", "keyup"]) document.addEventListener(type, pageShortcut);
+    const sendBeep = vi.fn((peerNumber: number, content: string, includeRoom: boolean) => ({
+      direction: "outgoing" as const, peerNumber, peerName: "Reina", content, sentAt: 500, includeRoom,
+    }));
+    const adapter = {
+      getMemberName: () => "Reina", getMemberNickname: () => undefined,
+      getOwnMemberNumber: () => 999, getOwnName: () => "Kiki", getKnownContacts: () => [],
+      canSendBeep: () => true, isReady: () => true, sendBeep,
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const chats = new ChatService(new MemoryChatRepository(), settings);
+    const gate = deferred<void>();
+    const capture = chats.capture.bind(chats);
+    vi.spyOn(chats, "capture").mockImplementationOnce(async (...args) => {
+      await gate.promise; return capture(...args);
+    });
+    const view = new LinkChatView(adapter, chats, settings, "0.30.0");
+    view.mount();
+    try {
+      await view.openChat(123, "Reina");
+      const shadow = document.querySelector("#kikilink-root")!.shadowRoot!;
+      const composer = shadow.querySelector<HTMLTextAreaElement>(".kl-composer-input")!;
+      const search = shadow.querySelector<HTMLInputElement>(".kl-search-wrap > .kl-search")!;
+      const send = shadow.querySelector<HTMLButtonElement>(".kl-send")!;
+      composer.focus();
+      composer.value = "First message";
+      composer.dispatchEvent(new Event("input", { bubbles: true }));
+      const enter = () => {
+        for (const type of ["keydown", "keypress", "keyup"]) composer.dispatchEvent(new KeyboardEvent(type, {
+          key: "Enter", code: "Enter", bubbles: true, composed: true, cancelable: true,
+        }));
+      };
+      enter();
+      expect(composer.disabled).toBe(false);
+      expect(shadow.activeElement).toBe(composer);
+      enter();
+      expect(sendBeep).toHaveBeenCalledOnce();
+      if (next) { composer.value = next; composer.dispatchEvent(new Event("input", { bubbles: true })); }
+      if (moveFocus) search.focus();
+      gate.resolve();
+      await vi.waitFor(() => expect(send.disabled).toBe(false));
+      expect(composer.value).toBe(next);
+      expect((await chats.getConversation(123))?.draft).toBe(next);
+      expect(shadow.activeElement).toBe(moveFocus ? search : composer);
+      expect(shadow.querySelector(".kl-composer-input")).toBe(composer);
+      expect(pageShortcut).not.toHaveBeenCalled();
+    } finally {
+      view.destroy();
+      for (const type of ["keydown", "keypress", "keyup"]) document.removeEventListener(type, pageShortcut);
+    }
+  });
+
   it("deduplicates a deferred direct send and keeps a newly selected peer draft intact", async () => {
     const names = new Map<number, string>([
       [20, "Reina"],
@@ -1218,12 +1339,12 @@ describe("LinkChatView", () => {
     shadow?.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar")?.click();
     await vi.waitFor(() => {
       const card = shadow?.querySelector<HTMLElement>(".kl-addon-profile-card");
-      expect(card?.textContent).toContain("SAVED PROFILE");
-      expect(card?.textContent).toContain("Saved ·");
+      expect(card?.textContent).not.toContain("SAVED PROFILE");
+      expect(card?.textContent).toContain("Last saved public details · live status unavailable");
       expect(card?.textContent).toContain("Status unavailable");
       expect(card?.dataset.customGradient).toBe("true");
-      expect(card?.dataset.profileStyle).toBe("garden");
-      expect(card?.querySelector<HTMLElement>(".kl-addon-profile-avatar-shell")?.dataset.frame)
+      expect(card?.dataset.profileStyle).toBe("gradient");
+      expect(card?.querySelector<HTMLElement>(".kl-addon-profile-avatar")?.dataset.avatarFrame)
         .toBe("rose");
     });
     expect(
@@ -1247,9 +1368,10 @@ describe("LinkChatView", () => {
     });
     await vi.waitFor(() => {
       const card = shadow?.querySelector<HTMLElement>(".kl-addon-profile-card");
-      expect(card?.textContent).toContain("SAVED DETAILS");
+      expect(card?.textContent).toContain("Some public details are from the last saved profile");
       expect(card?.textContent).not.toContain("SAVED PROFILE");
-      expect(card?.textContent).toContain("Live v0.26.1 · details saved");
+      expect(card?.textContent).not.toContain("v0.26.1");
+      expect(card?.textContent).not.toContain("live status unavailable");
       expect(card?.textContent).toContain("Online");
     });
 
@@ -1518,7 +1640,7 @@ describe("LinkChatView", () => {
     }
     vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
 
-    const peerNumbers = Array.from({ length: 13 }, (_, index) => 20 + index);
+    const peerNumbers = Array.from({ length: 27 }, (_, index) => 20 + index);
     const names = new Map<number, string>([
       [10, "Kiki"],
       ...peerNumbers.map((memberNumber) => [memberNumber, `Member ${memberNumber}`] as const),
@@ -1646,7 +1768,7 @@ describe("LinkChatView", () => {
       ),
       {} as IntersectionObserver,
     );
-    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(15));
+    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(29));
     expect(remoteImageLoader.load).toHaveBeenCalledWith(
       groupAvatarUrl,
       expect.any(AbortSignal),
@@ -1659,7 +1781,7 @@ describe("LinkChatView", () => {
 
     const connectedTargets = visibleTargets.filter((target) => target.isConnected);
     await vi.waitFor(() => {
-      expect(connectedTargets.filter((target) => target.querySelector(":scope > img"))).toHaveLength(13);
+      expect(connectedTargets.filter((target) => target.querySelector(":scope > img"))).toHaveLength(27);
     });
     for (const target of connectedTargets) {
       const image = target.querySelector<HTMLImageElement>(":scope > img");
@@ -1668,7 +1790,7 @@ describe("LinkChatView", () => {
       image.dispatchEvent(new Event("load"));
     }
     await vi.waitFor(() => {
-      expect(connectedTargets.filter((target) => target.querySelector(":scope > img"))).toHaveLength(12);
+      expect(connectedTargets.filter((target) => target.querySelector(":scope > img"))).toHaveLength(24);
     });
     expect(chatHeaderAvatar.querySelector(":scope > img")).not.toBeNull();
     const failedAvatar = directAvatars[2];
@@ -1677,23 +1799,23 @@ describe("LinkChatView", () => {
 
     await view.openChat(21, names.get(21));
     await Promise.resolve();
-    expect(remoteImageLoader.load).toHaveBeenCalledTimes(15);
+    expect(remoteImageLoader.load).toHaveBeenCalledTimes(29);
     visibilityCallback?.(
       [{ target: failedAvatar, isIntersecting: true } as unknown as IntersectionObserverEntry],
       {} as IntersectionObserver,
     );
     await Promise.resolve();
-    expect(remoteImageLoader.load).toHaveBeenCalledTimes(15);
+    expect(remoteImageLoader.load).toHaveBeenCalledTimes(29);
     visibilityCallback?.(
       [{ target: failedAvatar, isIntersecting: false } as unknown as IntersectionObserverEntry],
       {} as IntersectionObserver,
     );
-    expect(remoteImageLoader.load).toHaveBeenCalledTimes(15);
+    expect(remoteImageLoader.load).toHaveBeenCalledTimes(29);
     visibilityCallback?.(
       [{ target: failedAvatar, isIntersecting: true } as unknown as IntersectionObserverEntry],
       {} as IntersectionObserver,
     );
-    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(16));
+    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(30));
     const retriedImage = await vi.waitFor(() => {
       const image = failedAvatar.querySelector<HTMLImageElement>(":scope > img");
       expect(image).not.toBeNull();
@@ -1709,25 +1831,25 @@ describe("LinkChatView", () => {
     await view.openChat(21, names.get(21));
     await Promise.resolve();
     expect(capacityPaused.dataset.avatarState).toBe("paused");
-    expect(remoteImageLoader.load).toHaveBeenCalledTimes(16);
+    expect(remoteImageLoader.load).toHaveBeenCalledTimes(30);
 
     visibilityCallback?.(
       [{ target: capacityPaused, isIntersecting: true } as unknown as IntersectionObserverEntry],
       {} as IntersectionObserver,
     );
     await Promise.resolve();
-    expect(remoteImageLoader.load).toHaveBeenCalledTimes(16);
+    expect(remoteImageLoader.load).toHaveBeenCalledTimes(30);
 
     visibilityCallback?.(
       [{ target: capacityPaused, isIntersecting: false } as unknown as IntersectionObserverEntry],
       {} as IntersectionObserver,
     );
-    expect(remoteImageLoader.load).toHaveBeenCalledTimes(16);
+    expect(remoteImageLoader.load).toHaveBeenCalledTimes(30);
     visibilityCallback?.(
       [{ target: capacityPaused, isIntersecting: true } as unknown as IntersectionObserverEntry],
       {} as IntersectionObserver,
     );
-    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(17));
+    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(31));
 
     const resumedImage = await vi.waitFor(() => {
       const image = capacityPaused.querySelector<HTMLImageElement>(":scope > img");
@@ -1751,7 +1873,7 @@ describe("LinkChatView", () => {
       [{ target: reopenedHeaderAvatar, isIntersecting: true } as unknown as IntersectionObserverEntry],
       {} as IntersectionObserver,
     );
-    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(18));
+    await vi.waitFor(() => expect(remoteImageLoader.load).toHaveBeenCalledTimes(32));
     const reopenedImage = await vi.waitFor(() => {
       const image = reopenedHeaderAvatar.querySelector<HTMLImageElement>(":scope > img");
       expect(image).not.toBeNull();
@@ -2305,6 +2427,19 @@ describe("LinkChatView", () => {
     const settingsPage = shadow?.querySelector<HTMLElement>(".kl-settings-page");
     expect(settingsPage?.hidden).toBe(false);
     expect(settingsPage?.querySelectorAll('[role="tab"]')).toHaveLength(7);
+    const appearanceTab = settingsPage?.querySelector<HTMLButtonElement>(
+      '[role="tab"][data-section="appearance"]',
+    );
+    appearanceTab?.click();
+    const homeStyle = settingsPage?.querySelector<HTMLSelectElement>('[data-setting="home-layout"]');
+    const timeFormat = settingsPage?.querySelector<HTMLSelectElement>('[data-setting="time-format"]');
+    expect([...timeFormat!.options].map((option) => option.textContent)).toEqual(["12-Hour", "24-Hour"]);
+    timeFormat!.value = "12-hour";
+    timeFormat!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(settings.get().ui.timeFormat).toBe("12-hour");
+    expect(homeStyle?.closest(".kl-setting-row")?.nextElementSibling).toBe(
+      timeFormat?.closest(".kl-setting-row"),
+    );
     const navigationTab = settingsPage?.querySelector<HTMLButtonElement>(
       '[role="tab"][data-section="navigation"]',
     );
@@ -2747,15 +2882,17 @@ describe("LinkChatView", () => {
     }
     expect([...frameSelect.options].map((option) => option.value)).toEqual([
       "none",
+      "solid",
+      "gradient",
       "blossom",
       "rose",
       "starlight",
       "laurel",
       "thorn",
       "moon",
-      "ribbon",
+      "ribbon", "wings", "lotus", "constellation", "crest",
     ]);
-    expect([...frameSelect.options].filter((option) => option.value !== "none")).toHaveLength(7);
+    expect([...frameSelect.options].filter((option) => !["none", "solid", "gradient"].includes(option.value))).toHaveLength(11);
     expect(shadow.querySelector(".kl-profile-banner-field")?.textContent).toContain(
       "1200 × 400 px (3:1)",
     );
@@ -2924,6 +3061,7 @@ describe("LinkChatView", () => {
     const bitmap = { width: 1200, height: 400, close: vi.fn() } as unknown as ImageBitmap;
     vi.stubGlobal("createImageBitmap", vi.fn(async () => bitmap));
     const context = {
+      clearRect: vi.fn(),
       drawImage: vi.fn(),
       imageSmoothingEnabled: false,
       imageSmoothingQuality: "low",
@@ -3043,6 +3181,11 @@ describe("LinkChatView", () => {
     });
 
     headerClose.click();
+    const warning = shadow.querySelector<HTMLDialogElement>(".kl-unsaved-dialog")!;
+    expect(dialog.open).toBe(true);
+    expect(warning.open).toBe(true);
+    [...warning.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Discard Changes")!.click();
     expect(dialog.open).toBe(false);
     view.close();
     expect(shadow.querySelector<HTMLElement>(".kl-panel")?.hidden).toBe(true);
@@ -3238,9 +3381,9 @@ describe("LinkChatView", () => {
       expect(profileCard?.textContent).toContain("Moon Garden");
       expect(profileCard?.textContent).toContain("Do not disturb");
       expect(profileCard?.textContent).toContain("In a scene");
-      expect(profileCard?.textContent).toContain("v0.24.0");
+      expect(profileCard?.textContent).not.toContain("v0.24.0");
       expect(profileCard?.dataset.profileStyle).toBe("midnight");
-      expect(profileCard?.querySelector<HTMLElement>(".kl-addon-profile-avatar-shell")?.dataset.frame).toBe(
+      expect(profileCard?.querySelector<HTMLElement>(".kl-addon-profile-avatar")?.dataset.avatarFrame).toBe(
         "starlight",
       );
       expect(profileCard?.querySelector(".kl-addon-profile-facts")?.textContent).not.toContain(
@@ -3445,14 +3588,18 @@ describe("LinkChatView", () => {
       'input[aria-label="Send an automatic reply while Idle or DND"]',
     );
     const afkMessage = shadow?.querySelector<HTMLTextAreaElement>(".kl-afk-reply-message");
-    const gradientToggle = shadow?.querySelector<HTMLInputElement>(
-      'input[aria-label="Use a two-color profile gradient"]',
+    const gradientToggle = shadow?.querySelector<HTMLSelectElement>(
+      'select[aria-label="Profile card style"]',
     );
+    expect([...gradientToggle!.options].slice(0, 2).map(option => option.value)).toEqual(["classic", "gradient"]);
     const gradientPrimary = shadow?.querySelector<HTMLInputElement>(
       'input[aria-label="First profile gradient color"]',
     );
     const gradientSecondary = shadow?.querySelector<HTMLInputElement>(
       'input[aria-label="Second profile gradient color"]',
+    );
+    const gradientAngle = shadow?.querySelector<HTMLSelectElement>(
+      'select[aria-label="Profile card gradient direction"]',
     );
     if (
       !avatarUrl ||
@@ -3461,7 +3608,8 @@ describe("LinkChatView", () => {
       !afkMessage ||
       !gradientToggle ||
       !gradientPrimary ||
-      !gradientSecondary
+      !gradientSecondary ||
+      !gradientAngle
     ) {
       throw new Error("Missing KikiLink profile controls");
     }
@@ -3476,10 +3624,11 @@ describe("LinkChatView", () => {
     afkToggle.checked = true;
     afkToggle.dispatchEvent(new Event("change", { bubbles: true }));
     afkMessage.value = "Back later!";
-    gradientToggle.checked = true;
+    gradientToggle.value = "gradient";
     gradientToggle.dispatchEvent(new Event("change", { bubbles: true }));
     gradientPrimary.value = "#8a1538";
     gradientSecondary.value = "#2a9d8f";
+    gradientAngle.value = "225";
     shadow
       ?.querySelector<HTMLButtonElement>(".kl-presence-dialog .kl-text-button--primary")
       ?.click();
@@ -3487,7 +3636,7 @@ describe("LinkChatView", () => {
       avatarUrl: "https://i.imgur.com/kiki.png",
       autoIdleMinutes: 7,
       afkAutoReply: { enabled: true, message: "Back later!" },
-      profileGradient: { enabled: true, primary: "#8a1538", secondary: "#2a9d8f" },
+      profileGradient: { enabled: true, primary: "#8a1538", secondary: "#2a9d8f", angle: 225 },
     });
 
     settings.update((draft) => {

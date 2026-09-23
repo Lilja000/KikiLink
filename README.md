@@ -9,6 +9,8 @@ not connected to Velvet District or any previous Kiki project.
 
 Install [FUSAM Loader](https://gitlab.com/Sidiousious/bc-addon-loader), then enable KikiLink from its
 addon list. FUSAM owns update discovery for this distribution.
+Its stable entry follows the official `main/dist/KikiLink.fusam.js` build directly;
+new KikiLink releases do not require a separate FUSAM manifest change.
 
 FUSAM can use device-local files, direct HTTPS links, and supported temporary Litterbox uploads.
 Long-lived Catbox uploads are unavailable because Catbox does not allow the required cross-origin page
@@ -123,6 +125,10 @@ unencrypted BC `ExtensionSettings` mirror so they can follow that account to ano
 - Automatic verification with the signed-in BC account; remembered browsers reconnect without a BC password prompt
 - Public profiles with bio, custom status, decorations, gradients and supported avatar/banner images
 - Feed posts, comments and reactions, with owner controls, blocking and scoped reporting
+- Mailbox notifications open the relevant Feed post and comment in the main view
+- Administrator-pinned posts, a gold Featured post for 12 hours below pins, and reaction details
+- Optional private Preferences and controlled compatibility sharing across 225 categorized interests
+- Bilateral friend requests and automatic offline Direct delivery between eligible confirmed Cloud friends
 - Persistent groups with explicit invitations, owner/admin roles, ownership transfer and pinned messages
 - Cached profiles and stable loading states, targeted refresh and bounded requests
 
@@ -135,6 +141,9 @@ See [Cloud privacy information](cloud/PRIVACY.md) for retention and deletion con
 
 - Direct / Groups / Unread filters include both chat types in Unread
 - Shared Reply and Copy actions, composer reply state and compact quote previews
+- Combined `*italic*`, `**bold**`, `__underline__`, `~~strikethrough~~` and line-start `# headings`
+  in messages and Feed bodies; profile names, bios and tags remain plain text
+- Compact delivery/read checkmarks and a 12-hour default clock, with a 24-hour option in Settings
 - Group participant headers, author avatars, own messages on the right and live typing
 - Group Pin/Mute shortcuts and compact pinned-message navigation
 

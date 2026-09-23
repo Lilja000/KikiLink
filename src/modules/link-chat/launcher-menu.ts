@@ -1,6 +1,7 @@
 import type { SettingsStore } from "../../core/settings";
 import { element } from "../../utils/dom";
 import { kikiIcon } from "./icons";
+import { bindClockText, clearClockBinding } from "../../core/time-format";
 
 export function notificationsAreMuted(until: number, now = Date.now()): boolean {
   return until === -1 || until > now;
@@ -107,9 +108,12 @@ export class LauncherMenu {
     const describeMute = (): void => {
       const until = this.settings.getSection("ui").notificationsMutedUntil;
       const muted = notificationsAreMuted(until);
-      notificationStatus.textContent = muted
-        ? until === -1 ? "Muted until you unmute" : `Muted until ${new Date(until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-        : this.isDoNotDisturb() ? "Paused by Do Not Disturb" : "Notifications on";
+      if (muted && until !== -1) bindClockText(notificationStatus, until, "muted-time");
+      else {
+        clearClockBinding(notificationStatus);
+        notificationStatus.textContent = muted ? "Muted until you unmute"
+          : this.isDoNotDisturb() ? "Paused by Do Not Disturb" : "Notifications on";
+      }
       muteOptions.hidden = muted;
       resume.hidden = !muted;
       clearTimeout(this.#muteTimer);

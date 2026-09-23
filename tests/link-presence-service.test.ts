@@ -77,6 +77,23 @@ function setup(options: {
 afterEach(() => vi.useRealTimers());
 
 describe("LinkPresenceService", () => {
+  it("retains one interactive capability probe through cooldown without per-peer polling", () => {
+    vi.useFakeTimers(); const { service, sendKikiLinkProtocol } = setup(); service.start();
+    try {
+      service.request(123, true); const before = sendKikiLinkProtocol.mock.calls.length;
+      service.requestMany([123], { interactive: true }); service.requestMany([123], { interactive: true });
+      vi.advanceTimersByTime(1999); expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(before);
+      vi.advanceTimersByTime(1); expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(before + 1);
+      vi.advanceTimersByTime(5000); expect(sendKikiLinkProtocol).toHaveBeenCalledTimes(before + 1);
+    } finally { service.stop(); }
+  });
+  it("does not consume the initial native-friend refresh window before the adapter is ready", () => {
+    const { service, adapter, bus } = setup();
+    const refresh = vi.mocked(adapter.refreshOnlineFriends).mockReturnValueOnce(false).mockReturnValue(true);
+    service.start();
+    try { bus.emit("bc:ready", { memberNumber: 999 }); expect(refresh).toHaveBeenCalledTimes(2); }
+    finally { service.stop(); }
+  });
   it("combines native online friends with a truthful offline fallback", () => {
     const { service } = setup();
 
@@ -2109,11 +2126,12 @@ describe("LinkPresenceService", () => {
       broadcastKikiLinkProtocol.mock.calls.at(-1)?.[0] ?? "{}",
     ) as Record<string, unknown>;
 
-    expect(Object.keys(packet).sort()).toEqual(["a", "c", "f", "g", "m", "s", "t", "u", "v"]);
+    expect(Object.keys(packet).sort()).toEqual(["a", "c", "f", "g", "j", "k", "m", "s", "t", "u", "v"]);
     expect(service.getOwnProfileGradient()).toEqual({
       enabled: true,
       primary: "#8a1538",
       secondary: "#2a9d8f",
+      angle: 135,
     });
     expect(JSON.stringify(packet)).not.toMatch(
       /secret-sub|do-not-share-this-note|private-alias|private-room-name|lover/u,

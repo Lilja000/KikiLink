@@ -1,4 +1,4 @@
-import type { AvatarFrame, ProfileCardStyle } from "../core/types";
+import type { AvatarFrame, AvatarDecoration, ProfileCardStyle } from "../core/types";
 
 export interface CloudProfile {
   memberNumber: number;
@@ -10,9 +10,11 @@ export interface CloudProfile {
   revision: number;
   visible: boolean;
   avatarFrame: AvatarFrame;
+  avatarDecoration?: AvatarDecoration;
+  publicTags?: string[];
   profileStyle: ProfileCardStyle;
   profileOutlineColor?: string;
-  profileGradient?: { start: string; end: string };
+  profileGradient?: { start: string; end: string; angle?: number; enabled?: boolean };
   avatarId: string | null;
   bannerId: string | null;
   updatedAt: number;
@@ -28,6 +30,9 @@ export interface CloudGroup {
   pinRevision?: number;
   lastMessage?: CloudMessage | null;
   lastIncomingSequence?: number;
+  unreadMessages?: number;
+  readCursor?: number;
+  unreadBySender?: Array<{ memberNumber: number; count: number }>;
   incomingSequences?: Array<{memberNumber: number; sequence: number}>;
   conversationId: string;
   membershipVersion: number;
@@ -52,6 +57,8 @@ export interface CloudMessage {
   keyVersion: number;
   createdAt: number;
   deletedAt: number | null;
+  /** Present only for the author's own message and only after every current recipient confirms it. */
+  receiptState?: "delivered" | "read" | null;
 }
 export interface CloudReactions {
   counts: Array<{ reaction: string; count: number }>;
@@ -62,7 +69,7 @@ export interface CloudPost {
   author: number;
   profile: Pick<
     CloudProfile,
-    "memberNumber" | "displayName" | "avatarId" | "avatarFrame"
+    "memberNumber" | "displayName" | "avatarId" | "avatarFrame" | "avatarDecoration" | "publicTags"
   >;
   text: string;
   revision: number;
@@ -71,6 +78,9 @@ export interface CloudPost {
   mediaIds: string[];
   reactions: CloudReactions;
   commentCount?: number;
+  pinnedAt?: number | null;
+  featuredAt?: number | null;
+  featuredUntil?: number | null;
 }
 export interface CloudComment extends Omit<CloudPost, "mediaIds"> {
   postId: number;
@@ -78,6 +88,12 @@ export interface CloudComment extends Omit<CloudPost, "mediaIds"> {
 export interface CloudPage<T> {
   items: T[];
   nextCursor: number | null;
+}
+export interface CloudFeedPage extends CloudPage<CloudPost> { promoted?: CloudPost[] }
+export interface CloudReactionMember {
+  memberNumber: number;
+  reaction: string;
+  profile: CloudPost["profile"];
 }
 export interface CloudMedia {
   id: string;

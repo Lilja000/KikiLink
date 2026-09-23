@@ -5,6 +5,7 @@ export function loadConfig(env = process.env) {
   const s = z
     .object({
       CLOUD_MODE: z.enum(["development", "staging", "production"]).default("development"),
+      CLOUD_COMMUNITY_ENABLED: z.enum(["true", "false"]).default("false"),
       CLOUD_BIND: z.literal("127.0.0.1").default("127.0.0.1"),
       CLOUD_PORT: positive.max(65535).default(8791),
       CLOUD_VERIFIER_PORT: positive.max(65535).default(8792),
@@ -75,6 +76,7 @@ export function loadConfig(env = process.env) {
     throw new Error("Moderators must be explicit verified testers");
   return {
     mode: s.CLOUD_MODE,
+    communityEnabled: s.CLOUD_COMMUNITY_ENABLED === "true",
     host: s.CLOUD_BIND,
     port: s.CLOUD_PORT,
     verifierPort: s.CLOUD_VERIFIER_PORT,

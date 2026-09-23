@@ -14,7 +14,15 @@ const cloud = process.argv.includes("--cloud");
 const bundle = await readFile(resolve(root, cloud ? ".local-dev/cloud/KikiLink.fusam.js" : ".local-dev/dist/KikiLink.fusam.js"), "utf8");
 const mixed = process.argv.includes("--mixed");
 const releaseRef = process.env.KIKILINK_RELEASE_REF || "refs/tags/v0.29.0";
-const peerBundle = mixed ? execFileSync("git", ["show", `${releaseRef}:dist/KikiLink.fusam.js`], {
+const peerSource = process.env.KIKILINK_PEER_SOURCE;
+// Build the preserved stable source with local flags so a mixed test cannot contact production Cloud.
+const stableLocal = mixed && peerSource ? await build({ entryPoints: [resolve(peerSource, "src/index.ts")],
+  bundle: true, write: false, platform: "browser", format: "iife", target: "es2022", minify: true,
+  nodePaths: [resolve(root, "node_modules")], loader: { ".png": "dataurl", ".webp": "dataurl", ".svg": "dataurl" },
+  define: { __KIKILINK_VERSION__: '"0.30.0"', __KIKILINK_DISTRIBUTION__: '"fusam"', __KIKILINK_DEV_TEST__: "true",
+    __KIKILINK_TRAFFIC_AUDIT__: "false", __KIKILINK_CATBOX_RELAY_URL__: '""', __KIKILINK_CLOUD_ORIGIN__: '""',
+    __KIKILINK_CLOUD_TEST_MEMBER__: "0", __KIKILINK_CLOUD_TEST_MEMBERS__: "[]" }, logLevel: "silent" }) : undefined;
+const peerBundle = stableLocal ? stableLocal.outputFiles[0].text : mixed ? execFileSync("git", ["show", `${releaseRef}:dist/KikiLink.fusam.js`], {
   cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
 }) : bundle;
 const manifest = await readFile(resolve(fusamRoot, "manifest.json"), "utf8");
@@ -49,7 +57,7 @@ if (cloud) {
     },
   }));
 }
-const clients = new Map(); const network = []; const errors = []; let ownerOnline = true;
+const clients = new Map(); const network = []; const errors = []; const warnings = []; let ownerOnline = true;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 async function until(predicate, message) {
   const deadline = realNow() + 5_000;
@@ -72,7 +80,7 @@ try {
     win.requestAnimationFrame = (callback) => win.setTimeout(() => callback(win.performance.now()), 16);
     win.cancelAnimationFrame = (id) => win.clearTimeout(id);
     win.console.error = (...args) => errors.push(args.map(String).join(" "));
-    win.console.warn = () => {}; win.console.info = () => {}; win.console.log = () => {};
+    win.console.warn = (...args) => warnings.push(args.map(String).join(" ")); win.console.info = (...args) => warnings.push(args.map(String).join(" ")); win.console.log = () => {};
     const appendScript = win.document.head.appendChild.bind(win.document.head);
     win.document.head.appendChild = (node) => {
       if (node.tagName === "SCRIPT" && node.src?.startsWith("http://localhost:3001/KikiLink.fusam.js?")) {
@@ -111,7 +119,7 @@ try {
     })) });
     win.ServerSend = (event, data) => {
       if (network.length > 1_000) throw new Error("Unbounded synthetic protocol traffic");
-      if (event === "AccountQuery" && data.Query === "OnlineFriends") { queueMicrotask(() => friends(win, person.id)); return; }
+      if (event === "AccountQuery" && data.Query === "OnlineFriends") { network.push({ from: person.id, event }); queueMicrotask(() => friends(win, person.id)); return; }
       if (event !== "AccountBeep") return;
       const target = Number(data.MemberNumber);
       if (nativeCloud && target === 909) {
@@ -140,10 +148,19 @@ try {
   }
   const owner = clients.get(910001);
   await owner.KikiLink.open();
+  if (mixed && !cloud) {
+    // The old addon can mount after the initial probe. Exercise the real interactive
+    // discovery path once all peers are ready instead of injecting capabilities.
+    click(910001, '[data-target="chat"]');
+    click(910001, '.kl-toolbar-group-button');
+    await until(() => shadow(910001).querySelectorAll('.kl-new-chat-dialog .kl-contact[data-member-number]').length === 2, 'Mixed-version interactive discovery did not find both friends');
+    click(910001, '.kl-new-chat-dialog [aria-label="Close new chat"]');
+  }
   click(910001, '[data-target="room"]');
   await until(() => shadow(910001).querySelectorAll('.kl-lobby-list .kl-lobby-card').length === 2, "Room directory did not open through FUSAM");
   assert.equal(shadow(910001).querySelector('.kl-room-current-panel').hidden, true);
   click(910001, '[data-room-name="Moon Garden"] .kl-room-people-button');
+  await until(() => shadow(910001).querySelector('.kl-roster-entry-name')?.textContent === 'Reina', 'Remote room player did not render');
   assert.equal(shadow(910001).querySelector('.kl-roster-entry-name').textContent, 'Reina');
   assert.equal(shadow(910001).querySelector('.kl-roster-detail').hidden, true);
   assert.equal(shadow(910001).querySelectorAll('.kl-roster-entry').length, 1);
@@ -161,11 +178,18 @@ try {
   console.log("Rooms, remote Players, flower badges, cross-navigation, and session restoration passed through FUSAM.");
   click(910001, '[data-target="chat"]');
   console.log("Creator opened Chat.");
+  if (cloud) {
+    // Cloud now owns new groups. Its toolbar opens a creation form, not the
+    // legacy native-Beep picker exercised by the non-Cloud compatibility run.
+    click(910001, '.kl-toolbar-group-button');
+    await until(() => shadow(910001).querySelector('.kl-group-create[open] input'), "Cloud group creation did not open");
+    assert.ok(shadow(910001).querySelector('.kl-group-create').textContent.includes('Create and invite'));
+  } else {
   click(910001, '.kl-toolbar-group-button');
-  await until(() => shadow(910001).querySelectorAll('.kl-group-contact:not(:disabled)').length === 2, "Cross-room friends were not discovered");
+  await until(() => shadow(910001).querySelectorAll('.kl-new-chat-dialog .kl-contact[data-member-number]').length === 2, "Cross-room friends were not discovered");
   console.log("Both cross-room friends were discovered.");
-  click(910001, '[data-member-number="910002"].kl-group-contact'); click(910001, '[data-member-number="910003"].kl-group-contact');
-  click(910001, '[data-review="true"]'); click(910001, '[data-confirm-create="true"]');
+  click(910001, '.kl-new-chat-dialog [data-member-number="910002"].kl-contact'); click(910001, '.kl-new-chat-dialog [data-member-number="910003"].kl-contact');
+  click(910001, '.kl-new-chat-dialog .kl-dialog-actions .kl-text-button--primary');
   await until(() => people.every((p) => shadow(p.id).querySelector('.kl-group-conversation')), "Group invitation did not reach all accounts");
   console.log("Group invitations reached all accounts.");
   const groupId = shadow(910001).querySelector('.kl-group-conversation').dataset.groupId;
@@ -198,6 +222,7 @@ try {
     await until(() => shadow(910002).textContent.includes('Message not sent'), "Offline creator was reported as a successful handoff");
     assert.equal(shadow(910002).querySelector('.kl-group-composer').value, 'Keep this draft while Kiki is offline');
   }
+  }
   assert.equal(network.some((item) => item.url?.includes('github')), false, "FUSAM must never query GitHub updates");
   if (cloud) {
     const count = mixed ? 1 : people.length;
@@ -207,12 +232,14 @@ try {
   } else assert.equal(network.some((item) => item.url?.includes('cloud-staging.example.invalid')),false,"Ordinary builds must never contact Cloud");
   assert.equal(errors.length, 0, errors.join('\n'));
   checkPassed = true;
-  console.log(JSON.stringify({ passed: true, loader: "unmodified FUSAM Local Development (script mode)", artifact: "KikiLink.fusam.js", clients: 3, peerBuild: mixed ? releaseRef : "local development", creatorLocation: "Lobby", nonMutualFriends: true, bidirectionalRelay: true, roomsPlayersNavigation: true, sessionRestoration: true, offlineDraftPreserved: mixed ? "not checked on old peers" : true, lobbyLabel: mixed ? "not checked on old peers" : true, avatarBadge: mixed ? "not checked on old peers" : true, githubUpdateRequests: 0, transport: "synthetic BC in isolated DOM realms", visualBrowserCheck: "not performed by this DOM check" }, null, 2));
+  console.log(JSON.stringify({ passed: true, loader: "unmodified FUSAM Local Development (script mode)", artifact: "KikiLink.fusam.js", clients: 3, peerBuild: mixed ? (peerSource ? "preserved 0.30.0 source" : releaseRef) : "local development", creatorLocation: "Lobby", nonMutualFriends: true, bidirectionalRelay: cloud ? "covered by non-Cloud run" : true, cloudEnrollmentAndGroupCreation: cloud, roomsPlayersNavigation: true, sessionRestoration: true, offlineDraftPreserved: cloud || mixed ? "covered by client/server tests" : true, lobbyLabel: cloud || mixed ? "covered by client tests" : true, avatarBadge: cloud || mixed ? "covered by client tests" : true, githubUpdateRequests: 0, transport: "synthetic BC in isolated DOM realms", visualBrowserCheck: "not performed by this DOM check" }, null, 2));
 } catch (error) {
   console.error(error);
   console.error(errors.join('\n'));
   console.error(JSON.stringify(network.slice(-24).map((packet) => ({ ...packet, message: packet.message?.slice(0, 180) })), null, 2));
-  for (const p of people) console.error(p.name, shadow(p.id)?.querySelector('.kl-group-contact-list')?.textContent);
+  console.error(warnings.slice(-20).join("\n"));
+  console.error(JSON.stringify(network.filter(x=>x.message?.startsWith('KIKILINK/1 ')).map(x=>{const p=JSON.parse(x.message.slice(11));return{from:x.from,to:x.to,t:p.t,g:p.g};})));
+  for (const p of people) console.error(p.name, shadow(p.id)?.querySelector('.kl-new-chat-dialog')?.textContent);
   process.exitCode = 1;
 } finally {
   for (const win of clients.values()) {

@@ -166,6 +166,8 @@ declare global {
 
   interface BCChatRoomData {
     Name?: string;
+    Creator?: string;
+    MapType?: string;
     Description?: string;
     Admin?: number[];
     Whitelist?: number[];

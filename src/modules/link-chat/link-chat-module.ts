@@ -35,7 +35,7 @@ export class LinkChatModule implements KikiLinkModule {
   start(context: KikiLinkContext): void {
     this.#context = context;
     const accountStorage = context.accountStorage ?? new MemoryKeyValueStorage();
-    this.#service = new ChatService(context.repository, context.settings);
+    this.#service = new ChatService(context.repository, context.settings, context.memberNumber ?? context.adapter.getOwnMemberNumber());
     this.#activities = new LinkActivitiesService(context.adapter, context.settings);
     this.#activities.start();
     this.#roster = new LinkRosterService(

@@ -30,6 +30,40 @@ function uiFor(client: CloudClient) {
 }
 
 describe("stable Cloud profile rendering", () => {
+  it("keeps a visible avatar during a failed replacement and lets that same wrapper recover", async () => {
+    const { client } = await setup(async () => Response.json(profile()));
+    const { ui, image } = uiFor(client);
+    const author = ui.author(profile()); document.body.append(author);
+    const avatar = author.querySelector<HTMLElement>(".kl-social-avatar")!;
+    const old = avatar.firstElementChild as HTMLElement; old.className = "kl-social-avatar-media"; old.dataset.state = "ready";
+    ui.updateAuthor(author, { ...profile(), avatarId: "new" });
+    const replacement = image.mock.results.at(-1)!.value as HTMLElement;
+    replacement.dataset.state = "error"; replacement.dataset.errorStatus = "0";
+    replacement.dispatchEvent(new Event("cloud-image-error"));
+    expect(old.parentElement).toBe(avatar); expect(replacement.parentElement).toBe(avatar);
+    expect(replacement.style.visibility).toBe("hidden");
+    replacement.dataset.state = "ready"; replacement.dispatchEvent(new Event("cloud-image-ready"));
+    expect(avatar.firstElementChild).toBe(replacement); expect(replacement.style.visibility).toBe("");
+    expect(old.isConnected).toBe(false);
+  });
+
+  it("puts the Feed administrator shield beside member 72385's name and retains the avatar on renames", async () => {
+    const { client } = await setup(async () => Response.json(profile(72385)));
+    const { ui, image } = uiFor(client);
+    const admin = ui.author(profile(72385), undefined, undefined, true);
+    const shield = admin.querySelector<HTMLElement>(".kl-feed-administrator")!;
+    const avatar = admin.querySelector(".kl-social-avatar")!.firstElementChild;
+    expect(shield.title).toBe("Administrator");
+    expect(shield.previousElementSibling?.classList.contains("kl-social-name")).toBe(true);
+    expect(ui.author({ ...profile(202), displayName: "Administrator Kiki" }, undefined, undefined, true).querySelector(".kl-feed-administrator")).toBeNull();
+    expect(ui.author(profile(72385)).querySelector(".kl-feed-administrator")).toBeNull();
+    const imageCalls = image.mock.calls.length;
+    ui.updateAuthor(admin, { ...profile(72385), displayName: "A much longer new nickname" });
+    expect(shield.previousElementSibling?.textContent).toBe("A much longer new nickname");
+    expect(admin.querySelector(".kl-feed-administrator")).toBe(shield);
+    expect(admin.querySelector(".kl-social-avatar")!.firstElementChild).toBe(avatar);
+    expect(image).toHaveBeenCalledTimes(imageCalls);
+  });
   it("does not let a delayed old session error disconnect a refreshed session", async () => {
     const late = deferred<Response>();
     const { client } = await setup(async path => path === "/v1/late" ? late.promise : Response.json({}));

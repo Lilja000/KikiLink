@@ -22,6 +22,7 @@ export function profileImportDraft(
           profileGradient: {
             start: p.profileGradient.primary,
             end: p.profileGradient.secondary,
+            angle: p.profileGradient.angle ?? 135,
           },
         }
       : {}),

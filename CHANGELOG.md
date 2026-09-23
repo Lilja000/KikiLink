@@ -21,6 +21,31 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.0.0 - 2026-09-23
+
+- Added optional Preferences with 225 categorized interests, explicit sharing controls,
+  compatibility comparison, and Maledom, Femdom, Lezdom and Futanari entries.
+- Added Mailbox, bilateral friend requests, offline Direct delivery, and delivery/read receipts.
+  New messages between eligible confirmed Cloud friends use automatic Cloud delivery; existing
+  history is not imported. Signing out of Cloud pauses the connection on that browser.
+- Added composable `*italic*`, `**bold**`, `__underline__`, `~~strikethrough~~` and line-start
+  `# headings` to chat/group messages and Feed posts/comments. Names, bios and tags remain literal.
+- Feed notification links open the post in the main column and locate the requested comment.
+  Opened posts now receive live updates without replacing media, comment drafts or focus.
+- Administrators can pin Feed posts. A post with the most eligible reactions in the preceding
+  24 hours can be Featured for 12 hours below pins, with a gold outline; past winners are not repeated.
+  Post and comment menus include a paginated list of people and their reactions.
+- Refined profile editing, avatar decorations, contact menus, group navigation, mute controls,
+  account synchronization and keyboard boundaries with the native game.
+- Defaulted clocks to 12-hour time while preserving a saved 24-hour choice. Aligned and narrowed
+  message checkmarks and brought timestamps closer in both formats.
+- Excluded only the native self-sent `Reconnected!` notice from KikiLink message history while
+  preserving the game's corner notice and other addon announcements.
+- Reused bounded date/time formatters and retained typing dots and unchanged highlight badges
+  across refreshes. Existing drafts, focus, image nodes and scroll anchors remain stable.
+- Rechecked account isolation, API permissions, safe text rendering, migration/receipt behavior,
+  the BC R132 Beep handler, mixed-version FUSAM loading and dependency/security regression checks.
+
 ## 0.30.0 - 2026-09-15
 
 ### New

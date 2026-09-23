@@ -37,12 +37,16 @@ export type KikiLinkIconName =
   | "reactions"
   | "refresh"
   | "reply"
+  | "requests"
   | "search"
   | "send"
   | "settings"
+  | "shield"
   | "star"
   | "status"
   | "trash"
+  | "thumb-down"
+  | "thumb-up"
   | "unread"
   | "users"
   | "warning"
@@ -54,6 +58,10 @@ type Shape = readonly [ShapeName, Readonly<Record<string, string>>, fillable?: b
 // KikiLink's icons deliberately use the same rounded, slightly asymmetrical line language.
 // They are drawn here from simple geometry so the addon owns the set and ships no icon library.
 const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
+  shield: [
+    ["path", { d: "M12 2.4C9.4 4.5 6.5 4.8 3.7 4.7C2.9 14.2 5.1 18.6 12 21.8C18.9 18.6 21.1 14.2 20.3 4.7C17.5 4.8 14.6 4.5 12 2.4Z", "stroke-width": "2" }],
+    ["path", { d: "M12 5.9C10.4 7 8.5 7.5 6.4 7.5C6.2 12.6 7.2 16.3 12 19Z", fill: "currentColor", stroke: "none" }],
+  ],
   notifications: [["path", { d: "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" }]],
   muted: [["path", { d: "M18 12V8a6 6 0 0 0-9-5M6 6v2c0 7-3 7-3 9h14M10 21h4M3 3l18 18" }]],
   heart: [["path", { d: "M20.3 5.6a5.1 5.1 0 0 0-7.2 0L12 6.7l-1.1-1.1a5.1 5.1 0 0 0-7.2 7.2L12 21l8.3-8.2a5.1 5.1 0 0 0 0-7.2Z" }, true]],
@@ -206,6 +214,12 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
     ["polyline", { points: "9.5 7 4.2 11.7 9.5 16.4" }],
     ["path", { d: "M5 11.7h7.4c4.6 0 7.1 2.25 7.1 6.3" }],
   ],
+  requests: [
+    ["circle", { cx: "8", cy: "7", r: "3" }],
+    ["path", { d: "M2.8 19c.55-3.7 2.3-5.5 5.2-5.5 1.2 0 2.2.3 3 .9" }],
+    ["circle", { cx: "17", cy: "16.5", r: "4.2" }],
+    ["path", { d: "M17 14.2v2.6l1.8 1" }],
+  ],
   search: [
     ["circle", { cx: "10.5", cy: "10.5", r: "6.2" }],
     ["line", { x1: "15.1", y1: "15.1", x2: "20", y2: "20" }],
@@ -232,6 +246,12 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
     ["path", { d: "M9 7V4.5h6V7" }],
     ["line", { x1: "10", y1: "10.5", x2: "10.5", y2: "17" }],
     ["line", { x1: "14", y1: "10.5", x2: "13.5", y2: "17" }],
+  ],
+  "thumb-down": [
+    ["path", { d: "M7.5 5.5H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2.5M7.5 5.5v11h3.1l2.1 4c.45.85 1.75.55 1.75-.42V16.5H18a3 3 0 0 0 2.9-3.75l-1.3-5a3 3 0 0 0-2.9-2.25H7.5Z" }],
+  ],
+  "thumb-up": [
+    ["path", { d: "M7.5 18.5H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h2.5M7.5 18.5v-11h3.1l2.1-4c.45-.85 1.75-.55 1.75.42V7.5H18a3 3 0 0 1 2.9 3.75l-1.3 5a3 3 0 0 1-2.9 2.25H7.5Z" }],
   ],
   unread: [
     ["circle", { cx: "12", cy: "12", r: "8" }],
@@ -264,6 +284,7 @@ export function kikiIcon(
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("focusable", "false");
   svg.setAttribute("class", className === "kl-icon" ? className : `kl-icon ${className}`);
+  svg.dataset.icon = name;
   if (filled) svg.dataset.filled = "true";
 
   for (const [shapeName, attributes, fillable] of ICONS[name]) {

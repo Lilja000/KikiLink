@@ -69,7 +69,7 @@ describe("ProfileCacheRepository", () => {
       bannerUrl: "https://cdn.example/banner.png?size=wide",
       bio: "Tea, stories, and quiet rooms.",
       profileOutlineColor: "#a1b2c3",
-      profileGradient: { enabled: true, primary: "#d71932", secondary: "#112233" },
+      profileGradient: { enabled: true, primary: "#d71932", secondary: "#112233", angle: 135 },
       richSyncedAt: now,
       profileRevision: "revision_25-A",
       addonVersion: "0.26.0-beta.1",

@@ -1095,6 +1095,7 @@ function sanitizeConversation(value: unknown): ConversationMeta | undefined {
     lastDirection,
     unread: integerInRange(value.unread, 0, 100_000, 0),
     pinned: value.pinned === true,
+    ...(typeof value.muteUntil === "number" && Number.isSafeInteger(value.muteUntil) && value.muteUntil >= -1 ? { muteUntil: value.muteUntil } : {}),
     draft: cleanText(value.draft, 1000),
   };
 }
@@ -1121,6 +1122,11 @@ function sanitizeMessage(value: unknown): LinkMessage | undefined {
     includeRoom: value.includeRoom === true,
     ...(roomName ? { roomName } : {}),
     read: value.read === true,
+    ...(typeof value.clientMessageId === "string" && /^[a-f0-9-]{36}$/u.test(value.clientMessageId) ? { clientMessageId: value.clientMessageId } : {}),
+    ...(typeof value.cloudId === "string" && /^[a-f0-9-]{36}$/u.test(value.cloudId) ? { cloudId: value.cloudId } : {}),
+    ...(typeof value.cloudSequence === "number" && Number.isSafeInteger(value.cloudSequence) && value.cloudSequence > 0 ? { cloudSequence: value.cloudSequence } : {}),
+    ...(["waiting", "sent", "delivered", "read", "failed"].includes(String(value.delivery)) ? { delivery: value.delivery as NonNullable<LinkMessage["delivery"]> } : {}),
+    ...(typeof value.deliveryError === "string" ? { deliveryError: cleanText(value.deliveryError, 100) } : {}),
   };
 }
 

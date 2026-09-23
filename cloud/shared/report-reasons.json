@@ -1,0 +1,9 @@
+[
+  { "id": "hate", "label": "Racism / hate speech" },
+  { "id": "harassment", "label": "Harassment" },
+  { "id": "spam", "label": "Spam" },
+  { "id": "fraud", "label": "Scam / fraud" },
+  { "id": "privacy", "label": "Privacy violation" },
+  { "id": "impersonation", "label": "Impersonation" },
+  { "id": "other", "label": "Other" }
+]

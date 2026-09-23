@@ -1,3 +1,4 @@
+import { activeAvatarFrame, normalizeAvatarDecoration, effectiveProfileStyle, publicProfileTags, DEFAULT_AVATAR_DECORATION } from "./profile-appearance";
 import type { KikiLinkSettings, QuickAction } from "./types";
 import {
   migrateLegacyCustomActivities,
@@ -20,11 +21,12 @@ export interface KeyValueStorage {
 }
 
 export const DEFAULT_SETTINGS: KikiLinkSettings = {
-  schemaVersion: 29,
+  schemaVersion: 30,
   ui: {
     accent: "#d71932",
     theme: "dark",
     density: "comfortable",
+    timeFormat: "12-hour",
     textScale: "normal",
     homeLayout: "showcase",
     launcherSide: "right",
@@ -73,12 +75,15 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     avatarUrl: "",
     bannerUrl: "",
     avatarFrame: "none",
+    avatarDecoration: { ...DEFAULT_AVATAR_DECORATION },
+    publicTags: [],
     profileStyle: "classic",
     profileOutlineColor: "",
     profileGradient: {
       enabled: false,
       primary: "#d71932",
       secondary: "#d8b65d",
+      angle: 135,
     },
     autoIdleMinutes: 10,
     afkAutoReply: {
@@ -254,7 +259,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const linkMusic = isRecord(source.linkMusic) ? source.linkMusic : {};
 
   return {
-    schemaVersion: 29,
+    schemaVersion: 30,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
       theme:
@@ -265,6 +270,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         ui.density === "compact" || ui.density === "super-compact"
           ? ui.density
           : DEFAULT_SETTINGS.ui.density,
+      timeFormat: ui.timeFormat === "24-hour" ? "24-hour" : "12-hour",
       textScale:
         ui.textScale === "large" || ui.textScale === "extra-large"
           ? ui.textScale
@@ -346,20 +352,10 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           : DEFAULT_SETTINGS.linkPresence.profileImagePreviews,
       avatarUrl: sanitizeAvatarUrl(linkPresence.avatarUrl),
       bannerUrl: sanitizeAvatarUrl(linkPresence.bannerUrl),
-      avatarFrame:
-        linkPresence.avatarFrame === "blossom" ||
-        linkPresence.avatarFrame === "rose" ||
-        linkPresence.avatarFrame === "starlight" ||
-        linkPresence.avatarFrame === "laurel" ||
-        linkPresence.avatarFrame === "thorn" ||
-        linkPresence.avatarFrame === "moon" ||
-        linkPresence.avatarFrame === "ribbon"
-          ? linkPresence.avatarFrame
-          : DEFAULT_SETTINGS.linkPresence.avatarFrame,
-      profileStyle:
-        linkPresence.profileStyle === "garden" || linkPresence.profileStyle === "midnight"
-          ? linkPresence.profileStyle
-          : DEFAULT_SETTINGS.linkPresence.profileStyle,
+      avatarFrame: activeAvatarFrame(normalizeAvatarDecoration(linkPresence.avatarDecoration, linkPresence.avatarFrame)),
+      avatarDecoration: normalizeAvatarDecoration(linkPresence.avatarDecoration, linkPresence.avatarFrame),
+      publicTags: publicProfileTags(linkPresence.publicTags),
+      profileStyle: effectiveProfileStyle(linkPresence.profileStyle, sanitizeProfileGradient(linkPresence.profileGradient)),
       profileOutlineColor: sanitizeOptionalColor(linkPresence.profileOutlineColor),
       profileGradient: sanitizeProfileGradient(linkPresence.profileGradient),
       autoIdleMinutes: integerInRange(
@@ -650,6 +646,9 @@ function sanitizeProfileGradient(
     enabled: value.enabled === true && validPair,
     primary: validPair ? primary : DEFAULT_SETTINGS.linkPresence.profileGradient.primary,
     secondary: validPair ? secondary : DEFAULT_SETTINGS.linkPresence.profileGradient.secondary,
+    angle: typeof value.angle === "number" && Number.isFinite(value.angle)
+      ? ((Math.round(value.angle / 45) * 45 % 360) + 360) % 360
+      : DEFAULT_SETTINGS.linkPresence.profileGradient.angle ?? 135,
   };
 }
 
