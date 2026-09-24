@@ -24,7 +24,6 @@ const SOCKET_REBIND_MS = 2_000;
 const BEEP_LOG_POLL_MS = 1_000;
 const RECENT_INCOMING_TTL_MS = 10_000;
 const RECENT_OUTGOING_TTL_MS = 10_000;
-const OUTGOING_DEDUPE_WINDOW_MS = 250;
 const KIKILINK_BEEP_TYPE = "KikiLink";
 const KIKILINK_PROTOCOL_PREFIX = "KIKILINK/1 ";
 const MAX_PROTOCOL_PAYLOAD = 700;
@@ -45,7 +44,6 @@ interface RecentOutgoing {
   fingerprint: string;
   sentAt: number;
   capturedAt: number;
-  source: "transport" | "log" | "kikilink";
 }
 
 type ResilientHook = (args: any[], next: (args: any[]) => any) => any;
@@ -469,16 +467,15 @@ export class BCAdapter {
     const event = this.#normalizeOutgoing(target, message, { includeRoom });
     if (!event) throw new Error("Unable to prepare this Beep");
 
-    // LinkChat saves the returned event itself. Remember it so the low-level AccountBeep hook and
-    // BC's native FriendListBeepLog recovery cannot save the same message a second time.
-    this.#rememberOutgoing(event, "kikilink");
-
+    // LinkChat saves the returned event itself, so suppress the synchronous transport hook.
     this.#sendingViaKikiLink = true;
     try {
       withBCNetworkReason("direct-message", () => ServerSendBeepMessage(target, message, { includeRoom }));
     } finally {
       this.#sendingViaKikiLink = false;
     }
+    // Remember only successful sends for the later native-log recovery pass.
+    this.#rememberOutgoing(event);
     return event;
   }
 
@@ -1777,29 +1774,31 @@ export class BCAdapter {
     }
   }
 
-  #captureOutgoing(event: BeepEvent, source: RecentOutgoing["source"]): void {
+  #captureOutgoing(event: BeepEvent, source: "transport" | "log"): void {
     this.#pruneRememberedOutgoing();
-    const fingerprint = outgoingFingerprint(event);
-    if (
-      this.#recentOutgoing.some(
-        (candidate) =>
-          candidate.source !== source &&
-          candidate.fingerprint === fingerprint &&
-          Math.abs(candidate.sentAt - event.sentAt) <= OUTGOING_DEDUPE_WINDOW_MS,
-      )
-    ) {
-      return;
+    if (source === "log") {
+      const fingerprint = outgoingFingerprint(event);
+      const index = this.#recentOutgoing.findIndex(candidate =>
+        candidate.fingerprint === fingerprint &&
+        Math.abs(candidate.sentAt - event.sentAt) <= RECENT_OUTGOING_TTL_MS,
+      );
+      if (index >= 0) {
+        // Pair observations once, allowing slow native hooks without swallowing
+        // a second intentional send of the same text (including log-only sends).
+        this.#recentOutgoing.splice(index, 1);
+        return;
+      }
+    } else {
+      this.#rememberOutgoing(event);
     }
-    this.#rememberOutgoing(event, source);
     this.bus.emit("beep:sent", event);
   }
 
-  #rememberOutgoing(event: BeepEvent, source: RecentOutgoing["source"]): void {
+  #rememberOutgoing(event: BeepEvent): void {
     this.#recentOutgoing.push({
       fingerprint: outgoingFingerprint(event),
       sentAt: event.sentAt,
       capturedAt: Date.now(),
-      source,
     });
     this.#pruneRememberedOutgoing();
   }
@@ -2265,7 +2264,9 @@ function incomingFingerprint(event: BeepEvent): string {
 }
 
 function outgoingFingerprint(event: BeepEvent): string {
-  return [event.peerNumber, event.content, event.includeRoom ? 1 : 0].join("\u001f");
+  // The native log records the actual room, not the requested includeRoom flag.
+  // Room sharing in the lobby has no room name in either observation.
+  return JSON.stringify([event.peerNumber, event.content, cleanName(event.roomName) ?? ""]);
 }
 
 function isBondageClubReady(): boolean {

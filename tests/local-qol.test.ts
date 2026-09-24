@@ -117,11 +117,11 @@ describe("local FUSAM QoL", () => {
     expect(required(h.shadow, '.kl-panel').dataset.workspace).toBe("home");
   });
 
-  it("opens quick actions on a long hold without accidentally toggling the panel", async () => {
+  it.each(["touch", "pen"])("opens quick actions on a %s hold without accidentally toggling the panel", async pointerType => {
     const h = setup(); await h.view.refresh();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const launcher = required(h.shadow, ".kl-launcher");
-    launcher.dispatchEvent(new PointerEvent("pointerdown", { button: 0, pointerId: 1, clientX: 20, clientY: 20 }));
+    launcher.dispatchEvent(new PointerEvent("pointerdown", { button: 0, pointerId: 1, pointerType, clientX: 20, clientY: 20 }));
     await vi.advanceTimersByTimeAsync(2_000);
     expect(required<HTMLDialogElement>(h.shadow, ".kl-launcher-menu").open).toBe(true);
     launcher.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1 })); launcher.click();
@@ -133,12 +133,57 @@ describe("local FUSAM QoL", () => {
     const h = setup(); await h.view.refresh();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const launcher = required(h.shadow, ".kl-launcher");
-    launcher.dispatchEvent(new PointerEvent("pointerdown", { button: 0, pointerId: 2, clientX: 20, clientY: 20 }));
+    launcher.dispatchEvent(new PointerEvent("pointerdown", { button: 0, pointerId: 2, pointerType: "touch", clientX: 20, clientY: 20 }));
     launcher.dispatchEvent(new PointerEvent("pointermove", { pointerId: 2, clientX: 50, clientY: 50 }));
     await vi.advanceTimersByTimeAsync(600);
     expect(required<HTMLDialogElement>(h.shadow, ".kl-launcher-menu").open).toBe(false);
     launcher.dispatchEvent(new PointerEvent("pointerup", { pointerId: 2 }));
     launcher.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true }));
+    expect(required<HTMLDialogElement>(h.shadow, ".kl-launcher-menu").open).toBe(true);
+  });
+
+  it("lets the mouse pause before a drag without opening quick actions or toggling the panel", async () => {
+    const h = setup(); await h.view.refresh();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const launcher = required(h.shadow, ".kl-launcher");
+    const menu = required<HTMLDialogElement>(h.shadow, ".kl-launcher-menu");
+    launcher.dispatchEvent(new PointerEvent("pointerdown", { button: 0, pointerId: 3, pointerType: "mouse", clientX: 20, clientY: 20 }));
+    launcher.dispatchEvent(new PointerEvent("pointermove", { pointerId: 3, pointerType: "mouse", clientX: 22, clientY: 21 }));
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(menu.open).toBe(false);
+    launcher.dispatchEvent(new PointerEvent("pointermove", { pointerId: 3, pointerType: "mouse", clientX: 70, clientY: 80 }));
+    expect(launcher.dataset.dragging).toBe("true");
+    expect(launcher.style.left).toBe("50px");
+    launcher.dispatchEvent(new MouseEvent("contextmenu", { button: 2, cancelable: true }));
+    expect(menu.open).toBe(false);
+    launcher.dispatchEvent(new PointerEvent("pointerup", { pointerId: 3, pointerType: "mouse" }));
+    launcher.click();
+    expect(required(h.shadow, ".kl-panel").hidden).toBe(true);
+    expect(h.settings.getSection("ui").launcherPosition).toBeDefined();
+    launcher.dispatchEvent(new MouseEvent("contextmenu", { button: 2, cancelable: true }));
+    expect(menu.open).toBe(true);
+  });
+
+  it.each(["pointercancel", "lostpointercapture"])("cancels the launcher hold on %s", async eventType => {
+    const h = setup(); await h.view.refresh();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const launcher = required(h.shadow, ".kl-launcher");
+    launcher.dispatchEvent(new PointerEvent("pointerdown", { button: 0, pointerId: 4, pointerType: "touch" }));
+    launcher.dispatchEvent(new PointerEvent(eventType, { pointerId: 4, pointerType: "touch" }));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(required<HTMLDialogElement>(h.shadow, ".kl-launcher-menu").open).toBe(false);
+    expect(launcher.dataset.dragging).toBe("false");
+  });
+
+  it("does not replace or cancel a launcher gesture when another pointer touches the icon", async () => {
+    const h = setup(); await h.view.refresh();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const launcher = required(h.shadow, ".kl-launcher");
+    launcher.dispatchEvent(new PointerEvent("pointerdown", { button: 0, pointerId: 5, pointerType: "touch" }));
+    await vi.advanceTimersByTimeAsync(300);
+    launcher.dispatchEvent(new PointerEvent("pointerdown", { button: 0, pointerId: 6, pointerType: "touch" }));
+    launcher.dispatchEvent(new PointerEvent("pointerup", { pointerId: 6, pointerType: "touch" }));
+    await vi.advanceTimersByTimeAsync(250);
     expect(required<HTMLDialogElement>(h.shadow, ".kl-launcher-menu").open).toBe(true);
   });
 

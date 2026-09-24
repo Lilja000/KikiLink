@@ -1952,10 +1952,12 @@ export class LinkChatView {
     this.#launcher.addEventListener("pointermove", (event) => this.#moveLauncher(event));
     this.#launcher.addEventListener("pointerup", (event) => this.#finishLauncherDrag(event));
     this.#launcher.addEventListener("pointercancel", (event) => this.#cancelLauncherDrag(event));
+    this.#launcher.addEventListener("lostpointercapture", (event) => this.#cancelLauncherDrag(event));
     this.#launcher.setAttribute("aria-haspopup", "dialog");
     this.#launcher.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       this.#cancelLauncherHold();
+      if (this.#launcherDrag?.moved) return;
       this.#launcherMenu.open(this.#launcher);
     });
     this.#launcher.addEventListener("keydown", (event) => {
@@ -14003,18 +14005,21 @@ export class LinkChatView {
   }
 
   #startLauncherDrag(event: PointerEvent): void {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || this.#launcherDrag) return;
     this.#ignoreLauncherClick = false;
     this.#cancelLauncherHold();
-    this.#launcherHoldTimer = setTimeout(() => {
-      this.#launcherHoldTimer = undefined;
-      if (!this.#mounted || !this.#launcherDrag || this.#launcherDrag.moved) return;
-      this.#launcherDrag = undefined;
-      this.#ignoreLauncherClick = true;
-      this.#suppressLauncherClickUntil = Date.now() + 800;
-      try { this.#launcher.releasePointerCapture(event.pointerId); } catch { /* already released */ }
-      this.#launcherMenu.open(this.#launcher);
-    }, 520);
+    // A mouse may pause before dragging; its menu belongs to right-click.
+    if (event.pointerType === "touch" || event.pointerType === "pen") {
+      this.#launcherHoldTimer = setTimeout(() => {
+        this.#launcherHoldTimer = undefined;
+        if (!this.#mounted || !this.#launcherDrag || this.#launcherDrag.moved) return;
+        this.#launcherDrag = undefined;
+        this.#ignoreLauncherClick = true;
+        this.#suppressLauncherClickUntil = Date.now() + 800;
+        try { this.#launcher.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+        this.#launcherMenu.open(this.#launcher);
+      }, 520);
+    }
     const rect = this.#launcher.getBoundingClientRect();
     this.#launcherDrag = {
       pointerId: event.pointerId,
@@ -14046,9 +14051,9 @@ export class LinkChatView {
   }
 
   #finishLauncherDrag(event: PointerEvent): void {
-    this.#cancelLauncherHold();
     const drag = this.#launcherDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    this.#cancelLauncherHold();
     this.#launcherDrag = undefined;
     this.#launcher.dataset.dragging = "false";
     try {
@@ -14063,8 +14068,8 @@ export class LinkChatView {
   }
 
   #cancelLauncherDrag(event: PointerEvent): void {
-    this.#cancelLauncherHold();
     if (!this.#launcherDrag || this.#launcherDrag.pointerId !== event.pointerId) return;
+    this.#cancelLauncherHold();
     this.#launcherDrag = undefined;
     this.#launcher.dataset.dragging = "false";
     this.#positionLauncher();

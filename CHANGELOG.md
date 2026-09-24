@@ -21,6 +21,14 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.0.2 - 2026-09-23
+
+- Kept launcher long-press actions on touch and pen while mouse dragging uses right-click for its
+  menu. Cancelled pointer capture and additional fingers no longer leave stale launcher gestures.
+- Fixed duplicate outgoing Beeps imported from the native log when sharing a room from the lobby
+  or when native send hooks run slowly. Pairing consumes one log entry per send and preserves
+  intentional repeated messages. No in-app News announcement for this hotfix.
+
 ## 1.0.1 - 2026-09-23
 
 - Honor the launcher preference on the first open after a page/browser restart. Remember
