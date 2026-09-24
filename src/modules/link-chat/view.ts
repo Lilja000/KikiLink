@@ -7592,9 +7592,7 @@ export class LinkChatView {
       selectOption("X", "♀♂ Mixed"),
       selectOption("M", "♂ Male"),
     );
-    this.#lobbySpaceSelect.value = typeof this.adapter.getRoomSearchSpace === "function"
-      ? this.adapter.getRoomSearchSpace()
-      : "";
+    this.#lobbySpaceSelect.value = "X";
     this.#lobbySpaceSelect.addEventListener("change", () => {
       this.#lobbyRooms = [];
       this.#lobbyError = "";

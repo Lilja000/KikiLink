@@ -21,6 +21,11 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.0.3 - 2026-09-24
+
+- Default Lobbies room searches to Mixed instead of inheriting the current or last room's space.
+  Female and Male remain available in the space selector.
+
 ## 1.0.2 - 2026-09-23
 
 - Kept launcher long-press actions on touch and pen while mouse dragging uses right-click for its

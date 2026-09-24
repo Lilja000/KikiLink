@@ -1991,7 +1991,7 @@ describe("LinkChatView", () => {
       updateRoomCustomization,
       runRoomMemberAction,
       applyRoomPreset,
-      getRoomSearchSpace: () => "X",
+      getRoomSearchSpace: () => "", // Native Female space must not replace the Mixed lobby default.
       searchRooms,
       joinRoom,
       canSendBeep: () => true,
