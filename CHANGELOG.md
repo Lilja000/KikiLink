@@ -21,6 +21,15 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.0.4 - 2026-09-25
+
+- Fixed Preferences autosaving hitting an hourly budget while filling out the list. Batch rapid
+  edits, honor the actual Cloud retry delay, preserve pending choices, and distinguish rate limits
+  and outdated catalogs from connection failures. The server change requires a separate Cloud update.
+- Added Zip Ties under Bondage & Restraints, searchable as zipties and cable ties.
+- Added small Export and Import buttons at the end of Preferences. JSON exports include unsaved
+  choices; imports merge validated ratings while preserving visibility and unrelated choices.
+
 ## 1.0.3 - 2026-09-24
 
 - Default Lobbies room searches to Mixed instead of inheriting the current or last room's space.

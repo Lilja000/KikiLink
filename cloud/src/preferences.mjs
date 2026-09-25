@@ -87,7 +87,9 @@ export function preferencesApi({ app, social, auth, relationships, changed }) {
     const previous = own(actor);
     requireThat(revision === previous.revision, 409, "preferences_changed_on_another_device");
     validateIds(ratings, previous.ratings);
-    auth.rate(`preferences-save:${actor}`, 60, 3_600_000);
+    // A full catalog can produce hundreds of autosaves. Keep an hourly budget
+    // for abuse protection; the shared per-minute write limit still applies.
+    auth.rate(`preferences-save:${actor}`, 600, 3_600_000);
     // Preferences stay in their own encrypted row. Updating this row cannot erase
     // profile, bio, banner, tags, or any other Cloud profile field.
     db.run(`INSERT INTO interest_preferences VALUES(?,?,?,?,1,?) ON CONFLICT(owner) DO UPDATE SET mode=excluded.mode,ratings=excluded.ratings,

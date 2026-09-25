@@ -29,7 +29,7 @@ it("places the requested additions in their categories and beside related entrie
   const additions = {
     "Maledom": "Dynamics", "Femdom": "Dynamics", "Lezdom": "Dynamics", "Futanari": "Fetishes",
     "ABDL": "Roleplay", "Foxy Play": "Roleplay", "Transformation": "Roleplay", "Magic": "Roleplay", "Sci-fi": "Roleplay",
-    "Stuffing Gags": "Bondage & Restraints", "Nose Hooks": "Bondage & Restraints",
+    "Stuffing Gags": "Bondage & Restraints", "Nose Hooks": "Bondage & Restraints", "Zip Ties": "Bondage & Restraints",
     "Smell Play": "Sensory", "Sweat": "Sensory",
     "Body Modification": "Fetishes", "Socks": "Fetishes",
     "Milking": "Physical / Sexual", "Spitting": "Physical / Sexual",
@@ -54,7 +54,7 @@ it("places the requested additions in their categories and beside related entrie
 
 it("finds the new preferences by common names without conflating Femdom and Lezdom", () => {
   for (const [id, alias] of [["dynamics.maledom", "male dominance"], ["dynamics.femdom", "female dominance"],
-    ["dynamics.lezdom", "lesbian dominance"], ["fetish.futanari", "futa"]]) {
+    ["dynamics.lezdom", "lesbian dominance"], ["fetish.futanari", "futa"], ["restraint.zip-ties", "zipties"], ["restraint.zip-ties", "cable ties"]]) {
     const item = catalog.items.find(item => item.id === id)!;
     expect(preferenceMatchesSearch(item, alias!)).toBe(true);
     expect(configuredPreferenceGroups({ [id!]: "love" })[0]!.items[0]!.id).toBe(id);

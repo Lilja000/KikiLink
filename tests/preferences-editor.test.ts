@@ -6,6 +6,7 @@ import { CLOUD_STYLES } from "../src/cloud/styles";
 import { LINK_CHAT_STYLES } from "../src/modules/link-chat/styles";
 import type { PreferenceLevel, Preferences } from "../src/cloud/preference-model";
 import catalog from "../cloud/shared/preferences-catalog.json";
+import { exportPreferences } from "../src/cloud/preference-transfer";
 
 const cleanup: Array<() => void> = [];
 
@@ -13,6 +14,7 @@ afterEach(() => {
   cleanup.splice(0).forEach(fn => fn());
   document.body.replaceChildren();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -263,7 +265,7 @@ it.each(["like", "dislike"] as const)("cancels a quick %s before the save delay 
   expect(h.editor.element.querySelector(".kl-preferences-status")!.textContent).not.toContain("Saving");
 });
 
-it.each(["like", "dislike"] as const)("keeps a second %s tap cleared when the first save finishes later", async level => {
+it.each(["like", "dislike"] as const)("keeps a second %s tap cleared and finishes both writes before Save resolves", async level => {
   const h = setup(); await h.editor.load();
   const row = firstRow(h.editor), id = row.dataset.preferenceId!;
   const tap = () => row.querySelector<HTMLButtonElement>(`.kl-preference-quick--${level}`)!.click();
@@ -276,8 +278,8 @@ it.each(["like", "dislike"] as const)("keeps a second %s tap cleared when the fi
   expect(row.dataset.level).toBe("not_set");
   await finish(); await saving;
   expect(h.editor.preferences!.ratings).not.toHaveProperty(id);
-  expect(h.editor.dirty).toBe(true);
-  await h.editor.save();
+  expect(h.data().ratings).not.toHaveProperty(id);
+  expect(h.editor.dirty).toBe(false);
   expect(h.request.mock.calls.filter(call => call[0] === "PATCH").map(call => call[2].updates)).toEqual([{ [id]: level }, { [id]: null }]);
   await h.editor.load();
   expect(firstRow(h.editor).dataset.level).toBe("not_set");
@@ -366,6 +368,108 @@ it("keeps failed edits without an unbounded automatic retry loop", async () => {
   expect(h.editor.element.textContent).toContain("Your changes are kept");
   await h.editor.save();
   expect(h.editor.dirty).toBe(false);
+});
+
+it("batches fast follow-up choices without sending an autosave for every tap", async () => {
+  vi.useFakeTimers();
+  const h = setup(); await h.editor.load();
+  const rows = [...h.editor.element.querySelectorAll<HTMLElement>(".kl-preference-row")];
+  rows[0]!.querySelector<HTMLButtonElement>(".kl-preference-quick--like")!.click();
+  await vi.advanceTimersByTimeAsync(700);
+  rows[1]!.querySelector<HTMLButtonElement>(".kl-preference-quick--like")!.click();
+  await vi.advanceTimersByTimeAsync(800);
+  rows[2]!.querySelector<HTMLButtonElement>(".kl-preference-quick--like")!.click();
+  await vi.advanceTimersByTimeAsync(2_199);
+  expect(h.request.mock.calls.filter(call => call[0] === "PATCH")).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(h.request.mock.calls.filter(call => call[0] === "PATCH")).toHaveLength(2);
+  expect(Object.keys(h.data().ratings)).toHaveLength(3);
+});
+
+it("honors the rate-limit delay, keeps new edits, and retries once when it expires", async () => {
+  vi.useFakeTimers();
+  const h = setup(); await h.editor.load();
+  h.request.mockRejectedValueOnce(new CloudError("rate_limited", 429, 45_000));
+  const rows = [...h.editor.element.querySelectorAll<HTMLElement>(".kl-preference-row")];
+  rows[0]!.querySelector<HTMLButtonElement>(".kl-preference-quick--like")!.click();
+  await vi.advanceTimersByTimeAsync(700);
+  expect(h.editor.element.textContent).toContain("Cloud save limit reached");
+  rows[1]!.querySelector<HTMLButtonElement>(".kl-preference-quick--like")!.click();
+  await expect(h.editor.save()).rejects.toThrow("save limit");
+  await vi.advanceTimersByTimeAsync(44_999);
+  expect(h.request.mock.calls.filter(call => call[0] === "PATCH")).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(h.request.mock.calls.filter(call => call[0] === "PATCH")).toHaveLength(2);
+  expect(Object.keys(h.data().ratings)).toHaveLength(2);
+  expect(h.editor.dirty).toBe(false);
+});
+
+it("stops automatic retries if Cloud keeps rejecting saves", async () => {
+  vi.useFakeTimers();
+  const h = setup(); await h.editor.load();
+  h.request.mockRejectedValueOnce(new CloudError("rate_limited", 429, 10_000))
+    .mockRejectedValueOnce(new CloudError("rate_limited", 429, 10_000));
+  firstRow(h.editor).querySelector<HTMLButtonElement>(".kl-preference-quick--like")!.click();
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(h.request.mock.calls.filter(call => call[0] === "PATCH")).toHaveLength(2);
+  expect(h.editor.dirty).toBe(true);
+});
+
+it("exports unsaved choices from the small controls at the end of the editor", async () => {
+  const h = setup(); await h.editor.load();
+  const footer = h.editor.element.querySelector(".kl-preferences-body")!.lastElementChild!;
+  expect(footer.className).toBe("kl-preferences-transfer");
+  expect([...footer.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Export", "Import"]);
+  const id = firstRow(h.editor).dataset.preferenceId!;
+  firstRow(h.editor).querySelector<HTMLButtonElement>(".kl-preference-quick--like")!.click();
+  let blob!: Blob;
+  vi.spyOn(URL, "createObjectURL").mockImplementation(value => { blob = value as Blob; return "blob:preferences"; });
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  h.button("Export").click();
+  expect(click).toHaveBeenCalledOnce();
+  expect(JSON.parse(await blob.text()).ratings).toEqual({ [id]: "like" });
+  expect(h.data().ratings).toEqual({});
+  expect(h.editor.dirty).toBe(true);
+});
+
+it.each([false, true])("imports the full list in bounded batches and preserves visibility (explicit save: %s)", async explicitSave => {
+  vi.useFakeTimers();
+  const h = setup();
+  h.set({ mode: "friends", ratings: { "retired.example": "love" }, revision: 1, catalogVersion: catalog.version });
+  await h.editor.load();
+  vi.stubGlobal("confirm", vi.fn(() => true));
+  const imported = Object.fromEntries(catalog.items.map(item => [item.id, "hard_limit" as const]));
+  const file = new File([exportPreferences(imported)], "preferences.json", { type: "application/json" });
+  const input = h.editor.element.querySelector<HTMLInputElement>('input[type="file"]')!;
+  const choose = vi.spyOn(input, "click").mockImplementation(() => {});
+  h.button("Import").click(); expect(choose).toHaveBeenCalledOnce();
+  Object.defineProperty(input, "files", { value: [file] });
+  input.dispatchEvent(new Event("change"));
+  await vi.advanceTimersByTimeAsync(0);
+  if (explicitSave) await h.editor.save();
+  else await vi.advanceTimersByTimeAsync(10_000);
+  expect(h.data().ratings).toEqual({ "retired.example": "love", ...imported });
+  expect(h.data().mode).toBe("friends");
+  expect(h.editor.dirty).toBe(false);
+  const writes = h.request.mock.calls.filter(call => call[0] === "PATCH");
+  expect(writes).toHaveLength(2);
+  expect(writes.every(call => Object.keys(call[2].updates).length <= 200)).toBe(true);
+});
+
+it("ignores an import that finishes after the account session has changed", async () => {
+  const h = setup(); await h.editor.load();
+  let finish!: (text: string) => void;
+  const file = new File([], "preferences.json");
+  vi.spyOn(file, "text").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const input = h.editor.element.querySelector<HTMLInputElement>('input[type="file"]')!;
+  Object.defineProperty(input, "files", { value: [file] });
+  input.dispatchEvent(new Event("change"));
+  h.session();
+  finish(exportPreferences({ "restraint.zip-ties": "love" }));
+  await Promise.resolve(); await Promise.resolve();
+  expect(h.editor.preferences).toBeUndefined();
+  expect(h.request.mock.calls.filter(call => call[0] !== "GET")).toHaveLength(0);
 });
 
 it("keeps a preference draft across expired authentication but clears it on explicit logout", async () => {

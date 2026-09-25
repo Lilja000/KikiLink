@@ -211,7 +211,7 @@ export function createApp({
   app.setErrorHandler((error, req, reply) => {
     releaseUpload(req);
     const out = apiError(error);
-    if (out.status === 429) reply.header("Retry-After", "60");
+    if (out.status === 429) reply.header("Retry-After", String(out.retryAfterSeconds ?? 60));
     if (out.status >= 500)
       app.log.error({ requestId: req.id, code: out.code }, "request failed");
     reply.code(out.status).send({ error: out.code, requestId: req.id });

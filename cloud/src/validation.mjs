@@ -81,10 +81,11 @@ export const targetType = z.enum([
   "message",
 ]);
 export class ApiError extends Error {
-  constructor(status, code) {
+  constructor(status, code, retryAfterSeconds) {
     super(code);
     this.status = status;
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 export const requireThat = (condition, status = 404, code = "not_found") => {
