@@ -28,6 +28,7 @@ export class CloudError extends Error {
   constructor(
     readonly code: string,
     readonly status = 0,
+    readonly retryAfterMs = 0,
   ) {
     super(code);
   }
@@ -560,7 +561,11 @@ export class CloudClient {
           this.#notify("session");
         }
         if (response.status >= 500) this.#failure();
-        throw new CloudError(code, response.status);
+        const retryAfter = response.headers.get("Retry-After");
+        const retryDelay = retryAfter === null ? 0 : /^\d+$/.test(retryAfter)
+          ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - this.#now();
+        throw new CloudError(code, response.status,
+          Number.isFinite(retryDelay) ? Math.max(0, Math.min(retryDelay, 86_400_000)) : 0);
       }
       this.#failures = 0;
       return response;

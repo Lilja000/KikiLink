@@ -31,6 +31,19 @@ const response = (data: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 describe("Cloud client account and migration boundaries", () => {
+  it("carries the server's Retry-After delay to callers", async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/auth/challenges") return response({ challengeId: crypto.randomUUID(), proof: "a".repeat(43), exchange: "b".repeat(43), verifierMember: 909, expiresAt: Date.now() + 60000 });
+      if (path === "/v1/auth/exchange") return response({ memberNumber: 101, token: "t".repeat(43), expiresAt: Date.now() + 3600000 });
+      return new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "Retry-After": "3475" } });
+    });
+    const { client } = setup(fetchImpl); await client.connect();
+    try {
+      await expect(client.request("PATCH", "/v1/preferences/me", { updates: {}, revision: 0 }))
+        .rejects.toMatchObject({ code: "rate_limited", status: 429, retryAfterMs: 3_475_000 });
+    } finally { client.destroy(); }
+  });
   it("shares concurrent avatar reads and rejects their result after an account switch", async () => {
     let complete!: (response: Response) => void;
     const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {

@@ -80,6 +80,7 @@ def main() -> None:
         ("restraint.shibari", "Shibari", ("Japanese rope", "kinbaku"), False),
         ("restraint.cuffs", "Cuffs", ("wrist cuffs", "leather cuffs"), True),
         ("restraint.handcuffs", "Handcuffs", ("metal cuffs",), False),
+        ("restraint.zip-ties", "Zip Ties", ("zipties", "zip tie", "cable ties", "plastic cuffs"), False),
         ("restraint.ankle-cuffs", "Ankle Cuffs", ("ankle restraints",), False),
         ("restraint.elbow-cuffs", "Elbow Cuffs", ("elbow restraints",), False),
         ("restraint.chains", "Chains", (), False),
@@ -292,7 +293,7 @@ def main() -> None:
             "checked": "2026-09-19",
         })
     output = {
-        "version": "2026.09.23-1",
+        "version": "2026.09.25-1",
         "audience": "Consenting adults only",
         "sources": sources,
         "retiredIds": previous["retiredIds"],

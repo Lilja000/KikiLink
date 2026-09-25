@@ -28,13 +28,14 @@ export class Auth {
     const row = this.db.get(
       `INSERT INTO rate_limits(key,count,expires_at) VALUES(?,1,?)
       ON CONFLICT(key) DO UPDATE SET count=CASE WHEN expires_at<=? THEN 1 ELSE count+1 END,
-      expires_at=CASE WHEN expires_at<=? THEN excluded.expires_at ELSE expires_at END RETURNING count`,
+      expires_at=CASE WHEN expires_at<=? THEN excluded.expires_at ELSE expires_at END RETURNING count,expires_at`,
       key,
       now + duration,
       now,
       now,
     );
-    requireThat(row.count <= max, 429, "rate_limited");
+    if (row.count > max)
+      throw new ApiError(429, "rate_limited", Math.max(1, Math.ceil((row.expires_at - now) / 1000)));
   }
   ipKey(ip) {
     return digest(
@@ -247,7 +248,8 @@ export function apiError(error) {
   if (error instanceof z.ZodError)
     return { status: 400, code: "invalid_input" };
   if (error instanceof ApiError)
-    return { status: error.status, code: error.code };
+    return { status: error.status, code: error.code,
+      ...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}) };
   if (error.code === "FST_ERR_CTP_BODY_TOO_LARGE")
     return { status: 413, code: "body_too_large" };
   if (error.code === "FST_ERR_CTP_INVALID_JSON_BODY")

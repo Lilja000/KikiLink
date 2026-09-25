@@ -9,6 +9,35 @@ const ratings = level => Object.fromEntries(ids.map(id => [id, level]));
 async function setup(t) { const f = await fixture(t); for (const n of [101, 202, 303]) await f.login(n); return f; }
 async function save(f, member, mode, scores = ratings("love"), revision = 0) { return f.ok("PUT", "/v1/preferences/me", { mode, ratings: scores, revision }, member); }
 
+test("a person can fill the whole catalog while autosaving without an hour-long lockout", async t => {
+  const f = await setup(t);
+  let revision = 0;
+  for (const item of catalog.items) {
+    const saved = await f.ok("PATCH", "/v1/preferences/me", { updates: { [item.id]: "like" }, revision });
+    revision = saved.revision;
+    f.advance(3_000);
+  }
+  const saved = await f.ok("GET", "/v1/preferences/me");
+  assert.equal(Object.keys(saved.ratings).length, catalog.items.length);
+  assert.equal(saved.mode, "private");
+});
+
+test("exhausted preference writes report the actual cooldown and leave saved ratings intact", async t => {
+  const f = await setup(t);
+  await save(f, 101, "private");
+  f.db.run("UPDATE rate_limits SET count=600 WHERE key=?", "preferences-save:101");
+  f.advance(125_000);
+  const response = await f.request("PATCH", "/v1/preferences/me", { updates: { [ids[0]]: "hate" }, revision: 1 }, 101);
+  assert.equal(response.statusCode, 429);
+  assert.equal(response.json().error, "rate_limited");
+  assert.equal(response.headers["retry-after"], "3475");
+  assert.equal((await f.ok("GET", "/v1/preferences/me")).ratings[ids[0]], "love");
+  f.advance(3_475_000);
+  await f.login(101);
+  const saved = await f.ok("PATCH", "/v1/preferences/me", { updates: { [ids[0]]: "hate" }, revision: 1 });
+  assert.equal(saved.ratings[ids[0]], "hate");
+});
+
 test("Compatibility is symmetric, distinguishes Not Set from Neutral, and reports hard-limit conflicts", () => {
   assert.deepEqual(comparePreferences(ratings("love"), ratings("love")), { status: "available", count: 8, score: 100 });
   assert.equal(comparePreferences(ratings("love"), ratings("hate")).score, 0);

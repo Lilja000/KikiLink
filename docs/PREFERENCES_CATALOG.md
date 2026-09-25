@@ -1,8 +1,8 @@
 # Preferences catalog source registry
 
-Catalog `2026.09.23-1`, updated 2026-09-23. Source of truth:
+Catalog `2026.09.25-1`, updated 2026-09-25. Source of truth:
 `cloud/shared/preferences-catalog.json`. The addon and API bundle this same reviewed file.
-There are **225 unique semantic IDs** in 11 browsable categories. Twenty-four common
+There are **226 unique semantic IDs** in 11 browsable categories. Twenty-four common
 entries are marked for Quick Setup; this flag controls presentation only and has no
 effect on compatibility. These are category choices for browsing, not claims about the
 popularity or psychology of an item.
@@ -10,7 +10,7 @@ popularity or psychology of an item.
 | Category | Entries |
 | --- | ---: |
 | Dynamics | 18 |
-| Bondage & Restraints | 52 |
+| Bondage & Restraints | 53 |
 | Impact & Pain | 11 |
 | Control | 10 |
 | Psychological | 10 |
@@ -84,10 +84,19 @@ values from the private prototype are accepted only as an in-place read/write up
 responses and new writes are canonical strings.
 
 The editor applies a choice immediately in memory, batches small partial `PATCH` updates,
-and uses revision compare-and-swap to prevent silent overwrites. If another client saved
+spaces automatic writes at least three seconds apart, and respects the server's
+`Retry-After` delay with one automatic retry. The hourly save budget supports configuring
+the full catalog; the shared per-minute write limit still applies.
+It uses revision compare-and-swap to prevent silent overwrites. If another client saved
 first, untouched remote fields are merged with the local pending fields and retried.
 Removing a choice sends `null` for that ID and restores Not Set. Preference writes use
 their own encrypted record and cannot replace unrelated profile fields.
+
+Small Export and Import controls sit at the end of the editor. Export includes current
+ratings and unsaved edits, with no account identity or visibility setting. Import accepts
+a versioned KikiLink JSON file of at most 64 KB and 500 entries, validates it before applying
+anything, and merges supported ratings after confirmation. Matching ratings are replaced;
+other ratings and visibility are preserved. Unsupported entries are counted and skipped.
 
 Compatibility includes only IDs explicitly configured by both people, including an
 explicit Neutral. Unknown, retired, and Not Set entries do not contribute. Like/Love

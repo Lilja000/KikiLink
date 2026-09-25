@@ -317,6 +317,9 @@ ${TEXT_FORMAT_STYLES}
 .kl-preferences-maintenance { color:var(--kl-muted); font-size:var(--kl-type-xs); }
 .kl-preferences-maintenance>summary { min-height:36px; display:flex; align-items:center; cursor:pointer; }
 .kl-preferences-maintenance p { margin:0 0 8px; line-height:1.5; }
+.kl-preferences-transfer { display:flex; justify-content:flex-end; align-items:center; gap:6px; padding-top:4px; }
+.kl-preferences-transfer .kl-text-button,.kl-preferences-status .kl-text-button { min-height:30px; padding:4px 9px; font-size:var(--kl-type-xs); }
+.kl-preferences-status .kl-text-button { margin-inline-start:6px; }
 .kl-preferences-empty { margin:0; padding:18px; color:var(--kl-muted); text-align:center; }
 .kl-profile-preferences { display:grid; gap:8px; padding:11px 13px; border:1px solid var(--kl-profile-border,var(--kl-border)); border-radius:13px; background:color-mix(in srgb,var(--kl-profile-panel,var(--kl-surface-2)),transparent 7%); }
 .kl-profile-preferences-heading { min-height:34px; display:flex; align-items:center; justify-content:space-between; gap:9px; padding:0; border:0; background:transparent; color:var(--kl-profile-text,var(--kl-text)); font:inherit; font-weight:850; text-align:start; }

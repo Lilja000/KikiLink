@@ -1,6 +1,7 @@
 import { CloudError, type CloudClient } from "./client";
 import { element } from "./dom";
 import { kikiIcon } from "../modules/link-chat/icons";
+import { exportPreferences, importPreferences, MAX_PREFERENCES_FILE_BYTES } from "./preference-transfer";
 import {
   PREFERENCE_LEVEL_LABELS,
   PREFERENCE_LEVELS,
@@ -23,6 +24,7 @@ export type { Compatibility, PreferenceLevel, Preferences, SharedPreference } fr
 export { PREFERENCE_LEVEL_LABELS, PREFERENCE_LEVELS } from "./preference-model";
 
 const AUTO_SAVE_DELAY_MS = 700;
+const MIN_AUTO_SAVE_INTERVAL_MS = 3_000;
 const MAX_PATCH_ENTRIES = 200;
 const LEGACY_CATALOG_VERSION = "2026.09.19-1";
 // Schema 7's first public Preferences release contains the imported BC/F-List
@@ -62,6 +64,7 @@ export class PreferencesEditor {
     ariaLabel: "Search preferences",
   });
   readonly #mode = element("select", { ariaLabel: "Preference privacy" });
+  readonly #importFile = element("input", { type: "file", hidden: true });
   readonly #listeners = new Set<() => void>();
   readonly #pending = new Map<string, PreferenceLevel | null>();
   #data: Preferences | undefined;
@@ -75,6 +78,10 @@ export class PreferencesEditor {
   #savePromise: Promise<void> | undefined;
   #resumeDraft = false;
   #legacyCatalog = false;
+  #lastSaveAt = 0;
+  #retryAt = 0;
+  #rateLimitRetries = 0;
+  #importToken = 0;
   #unsubscribe: () => void;
 
   constructor(readonly client: CloudClient) {
@@ -105,6 +112,12 @@ export class PreferencesEditor {
       this.#changed("Visibility changed. Saving…");
     });
     this.#search.addEventListener("input", () => this.#renderBrowser());
+    this.#importFile.accept = ".json,application/json";
+    this.#importFile.addEventListener("change", () => {
+      const file = this.#importFile.files?.[0];
+      this.#importFile.value = "";
+      if (file) void this.#importPreferences(file);
+    });
     this.element.addEventListener("toggle", () => {
       if (this.element.open && !this.#data && !this.#busy) void this.load();
     });
@@ -119,7 +132,8 @@ export class PreferencesEditor {
       }
       if (client.connected && this.#resumeDraft) {
         this.#resumeDraft = false;
-        this.#status.textContent = "Connected. Save your pending preference changes.";
+        this.#status.textContent = "Connected. Saving your pending preference changes…";
+        this.#scheduleSave();
         return;
       }
       this.#reset();
@@ -215,12 +229,17 @@ export class PreferencesEditor {
       element("summary", { text: "Privacy and data" }),
       element("p", { text: "Not Set is omitted. Neutral is an explicit choice. Preferences describe consenting adult interests; they never grant consent." }),
       element("div", { className: "kl-cloud-actions" },
-        this.#textButton("Save now", () => this.save()),
+        this.#textButton("Save now", () => this.save().catch(() => {})),
         this.#textButton("Clear configured preferences", () => this.#confirmClear()),
         this.#textButton("Delete saved preferences", () => this.#confirmDelete()),
       ),
     );
-    this.#body.replaceChildren(intro, tools, content, this.#status, maintenance);
+    const exportButton = this.#textButton("Export", () => this.#exportPreferences());
+    exportButton.title = "Download your current preference list, including unsaved changes";
+    const importButton = this.#textButton("Import", () => this.#importFile.click());
+    importButton.title = "Import a KikiLink preferences JSON file";
+    const transfer = element("div", { className: "kl-preferences-transfer" }, exportButton, importButton, this.#importFile);
+    this.#body.replaceChildren(intro, tools, content, this.#status, maintenance, transfer);
     this.#renderBrowser();
     this.#updateCount();
   }
@@ -361,19 +380,32 @@ export class PreferencesEditor {
     this.#status.textContent = message;
     this.#updateCount();
     this.#emit();
-    clearTimeout(this.#saveTimer);
-    this.#saveTimer = setTimeout(() => void this.save().catch(() => {}), AUTO_SAVE_DELAY_MS);
+    this.#scheduleSave();
   }
 
-  async save(): Promise<void> {
+  #scheduleSave(): void {
+    clearTimeout(this.#saveTimer);
+    if (!this.dirty || !this.client.connected) return;
+    const delay = Math.max(AUTO_SAVE_DELAY_MS, this.#lastSaveAt + MIN_AUTO_SAVE_INTERVAL_MS - Date.now(), this.#retryAt - Date.now());
+    this.#saveTimer = setTimeout(() => void this.#save(false).catch(() => {}), delay);
+  }
+
+  save(): Promise<void> { return this.#save(true); }
+
+  async #save(drain: boolean): Promise<void> {
     clearTimeout(this.#saveTimer);
     this.#saveTimer = undefined;
     if (this.#savePromise) {
       await this.#savePromise;
-      if (this.dirty) return this.save();
+      if (this.dirty) return this.#save(drain);
       return;
     }
     if (!this.#data || !this.dirty) return;
+    if (Date.now() < this.#retryAt) {
+      const message = this.#showSaveError(new CloudError("rate_limited", 429, this.#retryAt - Date.now()));
+      if (this.#rateLimitRetries <= 1) this.#scheduleSave();
+      throw new Error(message);
+    }
     const task = this.#flush(true);
     this.#savePromise = task;
     let saved = false;
@@ -381,8 +413,10 @@ export class PreferencesEditor {
     finally {
       if (this.#savePromise === task) this.#savePromise = undefined;
       // Drain newer edits after a successful batch, never loop on a failed API.
-      if (saved && this.dirty && this.client.connected) this.#saveTimer = setTimeout(() => void this.save().catch(() => {}), AUTO_SAVE_DELAY_MS);
+      if (saved && this.dirty && this.client.connected && !drain) this.#scheduleSave();
     }
+    // An explicit profile save must finish the entire imported list before closing.
+    if (drain && this.dirty) return this.#save(true);
   }
 
   async #flush(retryConflict: boolean): Promise<void> {
@@ -391,6 +425,7 @@ export class PreferencesEditor {
     const updates = Object.fromEntries([...this.#pending.entries()].slice(0, MAX_PATCH_ENTRIES));
     const mode = this.#modeDirty ? this.#data.mode : undefined;
     const revision = this.#data.revision;
+    this.#lastSaveAt = Date.now();
     this.#status.textContent = "Saving preferences…";
     try {
       const saved = this.#legacyCatalog
@@ -406,6 +441,8 @@ export class PreferencesEditor {
         });
       if (generation !== this.#generation || !this.#data) throw new CloudError("session_changed");
       const canonical = { ...saved, ratings: normalizePreferenceRatings(saved.ratings) };
+      this.#retryAt = 0;
+      this.#rateLimitRetries = 0;
       this.#legacyCatalog = saved.catalogVersion === LEGACY_CATALOG_VERSION;
       for (const [id, value] of Object.entries(updates)) if (sameUpdate(this.#pending.get(id), value)) this.#pending.delete(id);
       if (mode && this.#data.mode === mode) this.#modeDirty = false;
@@ -423,21 +460,82 @@ export class PreferencesEditor {
     } catch (error) {
       if (generation !== this.#generation || !this.#data) throw new CloudError("session_changed");
       if (retryConflict && error instanceof CloudError && error.status === 409) {
-        const latestRaw = await this.client.request<Preferences>("GET", "/v1/preferences/me");
+        let latestRaw: Preferences | undefined;
+        try { latestRaw = await this.client.request<Preferences>("GET", "/v1/preferences/me"); }
+        catch (refreshError) { error = refreshError; }
         if (generation !== this.#generation || !this.#data) throw new CloudError("session_changed");
-        const latest = { ...latestRaw, ratings: normalizePreferenceRatings(latestRaw.ratings) };
-        const ratings = { ...latest.ratings };
-        for (const [id, value] of this.#pending) {
-          if (value === null) delete ratings[id]; else ratings[id] = value;
+        if (latestRaw) {
+          const latest = { ...latestRaw, ratings: normalizePreferenceRatings(latestRaw.ratings) };
+          const ratings = { ...latest.ratings };
+          for (const [id, value] of this.#pending) {
+            if (value === null) delete ratings[id]; else ratings[id] = value;
+          }
+          this.#base = structuredClone(latest);
+          this.#data = { ...latest, mode: this.#modeDirty ? this.#data.mode : latest.mode, ratings };
+          this.#status.textContent = "Preferences changed on another device. Merged safely and retrying…";
+          await this.#flush(false);
+          return;
         }
-        this.#base = structuredClone(latest);
-        this.#data = { ...latest, mode: this.#modeDirty ? this.#data.mode : latest.mode, ratings };
-        this.#status.textContent = "Preferences changed on another device. Merged safely and retrying…";
-        await this.#flush(false);
-        return;
       }
-      this.#status.textContent = "Could not sync preferences. Your changes are kept on this screen; retry when connected.";
-      throw new Error(this.#status.textContent);
+      if (error instanceof CloudError && error.status === 429) {
+        this.#retryAt = Date.now() + Math.max(1_000, error.retryAfterMs || 60_000);
+        // One timed retry handles a temporary limit without polling a failing API.
+        if (++this.#rateLimitRetries === 1) this.#scheduleSave();
+      }
+      const message = this.#showSaveError(error);
+      throw new Error(message);
+    }
+  }
+
+  #showSaveError(error: unknown): string {
+    const message = error instanceof CloudError && error.status === 429
+      ? `Cloud save limit reached. Your changes are kept on this screen; retry in ${Math.max(1, Math.ceil((this.#retryAt - Date.now()) / 1000))} seconds.`
+      : error instanceof CloudError && error.code === "unknown_preference"
+        ? "Cloud needs a preferences catalog update. Your changes are kept on this screen; export them as a backup."
+        : error instanceof CloudError && error.status === 401
+          ? "Reconnect to KikiLink Cloud to save. Your changes are kept on this screen."
+          : "Could not sync preferences. Your changes are kept on this screen; retry when connected.";
+    this.#status.replaceChildren(element("span", { text: message }), this.#textButton("Retry", () => this.save().catch(() => {})));
+    return message;
+  }
+
+  #exportPreferences(): void {
+    if (!this.#data) return;
+    if (typeof URL.createObjectURL !== "function") throw new Error("This browser cannot create a preferences download.");
+    const url = URL.createObjectURL(new Blob([exportPreferences(this.#data.ratings)], { type: "application/json" }));
+    const anchor = element("a", { hidden: true });
+    anchor.href = url;
+    anchor.download = `KikiLink-preferences-${new Date().toISOString().slice(0, 10)}.json`;
+    this.element.append(anchor);
+    try { anchor.click(); } finally { anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 0); }
+    this.#status.textContent = "Preference list exported, including any unsaved changes.";
+  }
+
+  async #importPreferences(file: File): Promise<void> {
+    const generation = this.#generation, token = ++this.#importToken;
+    try {
+      if (!this.#data) return;
+      if (file.size > MAX_PREFERENCES_FILE_BYTES) throw new Error("That preferences file is too large (maximum 64 KB).");
+      const imported = importPreferences(await file.text());
+      if (generation !== this.#generation || token !== this.#importToken || !this.#data) return;
+      const entries = Object.entries(imported.ratings).filter(([id, level]) => this.#supportsItem(id) && (!this.#legacyCatalog || level !== "hard_limit"));
+      const skipped = imported.skipped + Object.keys(imported.ratings).length - entries.length;
+      if (!entries.length) throw new Error("This file has no preferences supported by your current Cloud server.");
+      if (!window.confirm(`Import ${entries.length} preferences? Matching choices will be replaced; other choices and visibility stay the same.`)) return;
+      let changed = 0;
+      for (const [id, level] of entries) {
+        if (this.#data.ratings[id] === level) continue;
+        this.#data.ratings[id] = level;
+        if (this.#base?.ratings[id] === level && !this.#savePromise) this.#pending.delete(id);
+        else this.#pending.set(id, level);
+        changed++;
+      }
+      this.#activeSelector = undefined;
+      this.#render();
+      this.#changed(`Imported ${changed} changed preferences.${skipped ? ` ${skipped} unsupported entries skipped.` : ""}${this.dirty ? " Saving…" : ""}`);
+    } catch (error) {
+      if (generation === this.#generation && token === this.#importToken)
+        this.#status.textContent = error instanceof Error ? error.message : "Could not import that preferences file.";
     }
   }
 
@@ -517,9 +615,11 @@ export class PreferencesEditor {
     const button = element("button", { className: "kl-text-button", type: "button", text: label });
     button.addEventListener("click", () => {
       button.disabled = true;
-      void Promise.resolve(action()).catch(error => {
+      const failed = (error: unknown): void => {
         this.#status.textContent = error instanceof Error ? error.message : "Could not complete the action.";
-      }).finally(() => { button.disabled = false; });
+      };
+      try { void Promise.resolve(action()).catch(failed).finally(() => { button.disabled = false; }); }
+      catch (error) { failed(error); button.disabled = false; }
     });
     return button;
   }
@@ -541,6 +641,7 @@ export class PreferencesEditor {
     this.#pending.clear();
     this.#modeDirty = false;
     this.#legacyCatalog = false;
+    this.#lastSaveAt = this.#retryAt = this.#rateLimitRetries = 0;
     this.#activeSelector = undefined;
     this.#busy = false;
     this.#body.replaceChildren();
