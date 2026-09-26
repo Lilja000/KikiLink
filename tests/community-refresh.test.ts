@@ -63,3 +63,31 @@ it("clears account-specific counters and capability flags on logout", async () =
   expect(h.service.feedUnread).toBe(0); expect(h.service.feedLatest).toBe(0);
   expect(h.service.directEnabled).toBe(false); expect(h.release).toHaveBeenCalledOnce();
 });
+
+it("does not let an older unread fetch restore the Feed badge after a read acknowledgement", async () => {
+  const h = setup(); h.state.unread = 4; await h.service.start();
+  let resolve!: (value: unknown) => void;
+  h.request.mockImplementationOnce(async () => ({ items: [], nextCursor: null }));
+  h.request.mockImplementationOnce(async () => ({ items: [], unread: 0, nextCursor: null }));
+  h.request.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  const observed: number[] = [];
+  h.service.subscribe(() => observed.push(h.service.feedUnread));
+  const old = h.service.refresh();
+  h.state.unread = 0;
+  const read = h.service.readFeed(20);
+  await Promise.resolve();
+  resolve({ unread: 4, latest: 20 });
+  await Promise.all([old, read]);
+  expect(h.service.feedUnread).toBe(0);
+  expect(observed.slice(observed.indexOf(0))).not.toContain(4);
+  expect(h.request.mock.calls.filter(([method, path]) => method === "GET" && path === "/v1/feed/unread")).toHaveLength(3);
+});
+
+it("mark-all uses the latest server post rather than a stale displayed count, and reports failures", async () => {
+  const h = setup(); await h.service.start();
+  h.service.feedLatest = 5;
+  await h.service.markAllFeedRead();
+  expect(h.request).toHaveBeenCalledWith("PUT", "/v1/read-cursors/feed", { cursor: 20 });
+  h.client.connected = false;
+  await expect(h.service.markAllFeedRead()).rejects.toThrow("not connected");
+});

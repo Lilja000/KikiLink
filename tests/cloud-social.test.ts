@@ -822,3 +822,50 @@ describe("Feed navigation, highlights and reaction details", () => {
     await vi.waitFor(()=>expect(request.mock.calls.some(([,path])=>path.startsWith('/v1/reactions/comment/9'))).toBe(true));
   });
 });
+
+describe("Feed read visibility", () => {
+  it("observes the latest ordinary post behind pinned posts and clears it when partially visible while scrolling", async () => {
+    const observed: Element[] = [];
+    const original = globalThis.IntersectionObserver;
+    vi.stubGlobal("IntersectionObserver", class {
+      observe(target: Element) { observed.push(target); }
+      disconnect() {}
+    });
+    dispose.push(() => { globalThis.IntersectionObserver = original; });
+    const { ui } = setup(async () => ({ items: [post(20), post(19)], promoted: [{ ...post(2), pinnedAt: Date.now() }], nextCursor: null }));
+    const read = vi.fn(async () => {});
+    const view = new CloudFeedView(ui, { openOwnProfile: vi.fn(), openGroups: vi.fn(), report: vi.fn(), canRead: () => true, readFresh: read });
+    dispose.push(() => view.destroy());
+    const scroll = document.createElement("div"); scroll.className = "kl-cloud"; scroll.append(view.element); document.body.append(scroll);
+    vi.spyOn(scroll, "getBoundingClientRect").mockReturnValue({ top: 100, bottom: 500 } as DOMRect);
+    await view.render();
+    expect(observed.at(-1)?.getAttribute("data-post-id")).toBe("20");
+    expect(read).not.toHaveBeenCalled();
+    const latest = view.element.querySelector<HTMLElement>('[data-post-id="20"]')!;
+    vi.spyOn(latest, "getBoundingClientRect").mockReturnValue({ top: 70, bottom: 200, width: 400 } as DOMRect);
+    scroll.dispatchEvent(new Event("scroll"));
+    await vi.waitFor(() => expect(read).toHaveBeenCalledWith(20));
+    scroll.dispatchEvent(new Event("scroll"));
+    expect(read).toHaveBeenCalledOnce();
+    view.destroy(); scroll.dispatchEvent(new Event("scroll")); expect(read).toHaveBeenCalledOnce();
+  });
+
+  it("keeps failed read acknowledgements retryable, and never reads a hidden panel", async () => {
+    let reading = false;
+    const { ui } = setup(async () => ({ items: [post(20)], nextCursor: null }));
+    const read = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+    const view = new CloudFeedView(ui, { openOwnProfile: vi.fn(), openGroups: vi.fn(), report: vi.fn(), canRead: () => reading, readFresh: read });
+    document.body.append(view.element); dispose.push(() => view.destroy());
+    await view.render();
+    const latest = view.element.querySelector<HTMLElement>('[data-post-id="20"]')!;
+    vi.spyOn(latest, "getBoundingClientRect").mockReturnValue({ top: 20, bottom: 200, width: 400 } as DOMRect);
+    view.observeFresh(); await Promise.resolve(); expect(read).not.toHaveBeenCalled();
+    reading = true; view.observeFresh();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    for (let i = 0; i < 10; i++) view.observeFresh();
+    expect(read).toHaveBeenCalledOnce();
+    window.dispatchEvent(new Event("online"));
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    view.observeFresh(); expect(read).toHaveBeenCalledTimes(2);
+  });
+});

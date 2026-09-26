@@ -316,20 +316,22 @@ export class ChatService {
   }
 
   async markRead(peerNumber: number): Promise<void> {
-    await this.#enqueuePeerMutation(peerNumber, async () => {
-      const conversation = await this.#getVisibleConversationUnlocked(peerNumber);
-      if (!conversation) return;
-      const messages = await this.#getMessagesUnlocked(peerNumber, this.settings.getSection("linkChat").maxMessagesPerConversation);
-      let sequence = 0;
-      for (const message of messages) {
-        if (message.direction !== "incoming") continue;
-        sequence = Math.max(sequence, message.cloudSequence ?? 0);
-        if (!message.read && this.settings.getSection("linkChat").saveHistory) await this.repository.addMessage({ ...message, read: true });
-      }
-      for (const message of this.#ephemeralMessages.get(peerNumber) ?? []) message.read = true;
-      if (conversation.unread) await this.#saveConversation({ ...conversation, unread: 0 });
-      if (sequence) this.onCloudRead?.(peerNumber, sequence);
-    });
+    await this.#enqueuePeerMutation(peerNumber, () => this.#markReadUnlocked(peerNumber));
+  }
+
+  async #markReadUnlocked(peerNumber: number): Promise<void> {
+    const conversation = await this.#getVisibleConversationUnlocked(peerNumber);
+    if (!conversation) return;
+    const messages = await this.#getMessagesUnlocked(peerNumber, this.settings.getSection("linkChat").maxMessagesPerConversation);
+    let sequence = 0;
+    for (const message of messages) {
+      if (message.direction !== "incoming") continue;
+      sequence = Math.max(sequence, message.cloudSequence ?? 0);
+      if (!message.read && this.settings.getSection("linkChat").saveHistory) await this.repository.addMessage({ ...message, read: true });
+    }
+    for (const message of this.#ephemeralMessages.get(peerNumber) ?? []) message.read = true;
+    if (conversation.unread) await this.#saveConversation({ ...conversation, unread: 0 });
+    if (sequence) this.onCloudRead?.(peerNumber, sequence);
   }
 
   async markUnread(peerNumber: number): Promise<void> {
@@ -344,7 +346,7 @@ export class ChatService {
   async markAllRead(): Promise<void> {
     await this.#enqueueGlobalMutation(async () => {
       for (const conversation of await this.listConversations()) {
-        if (conversation.unread > 0) await this.#saveConversation({ ...conversation, unread: 0 });
+        await this.#markReadUnlocked(conversation.peerNumber);
       }
     });
   }

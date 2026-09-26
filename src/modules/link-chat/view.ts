@@ -17,6 +17,7 @@ import type {
   BCConnectionState,
   ConversationMeta,
   KikiLinkSettings,
+  NavigationTab,
   LinkNotification,
   LinkReactionFired,
   LinkMessage,
@@ -170,6 +171,10 @@ import type { KeyValueStorage } from "../../core/settings";
 type WorkspaceView = "home" | "news" | "chat" | "gallery" | "roster" | "room" | "music" | "activities" | "settings" | "cloud";
 type PrimaryWorkspaceView = Exclude<WorkspaceView, "settings">;
 const LAST_WORKSPACE_KEY = "kikilink:launcher:last-section:v1";
+const NAVIGATION_TABS: ReadonlyArray<readonly [NavigationTab, string]> = [
+  ["home", "Home"], ["cloud", "Feed"], ["chat", "Chat"], ["roster", "Players"],
+  ["room", "Rooms"], ["music", "Music"], ["activities", "Custom"],
+];
 type RoomSubView = "current" | "lobbies" | "presets";
 type GalleryFileStorage = "device" | "catbox" | "litterbox";
 type KnownContact = ReturnType<BCAdapter["getKnownContacts"]>[number];
@@ -347,7 +352,7 @@ export class LinkChatView {
     } });
     this.#community.subscribe(() => {
       if (!this.#mounted) return;
-      updateBadge(this.#feedCount, this.#community?.feedUnread ?? 0);
+      this.#updateFeedBadge();
       if (this.#newChatDialog.open) this.#renderKnownContacts();
       if (this.#workspaceView === "roster") this.#renderRoster();
       for (const [root, peer] of this.#friendNodes) {
@@ -396,7 +401,7 @@ export class LinkChatView {
       enterToSend: () => this.settings.getSection("linkChat").enterToSend,
       embeddedGroups: true,
       choosePeople: request => this.#openPeoplePicker(request),
-      readFeed: id => { void this.#community?.readFeed(id).catch(() => {}); },
+      readFeed: id => this.#community?.readFeed(id),
       canReadFeed: () => !this.#panel.hidden && this.#workspaceView === "cloud",
       groupSelection: selected => {
         this.#cloudChatSelected = selected;
@@ -768,6 +773,9 @@ export class LinkChatView {
     text: "Save changes",
   });
   readonly #themeSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
+  readonly #tabVisibility = new Map<NavigationTab, HTMLInputElement>();
+  readonly #tabAlertSelects = new Map<"feed" | "chat", HTMLSelectElement>();
+  readonly #tabMuteButtons = new Map<"feed" | "chat", HTMLButtonElement>();
   readonly #accentInput = element("input", { className: "kl-color-input" }) as HTMLInputElement;
   readonly #densitySelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
   readonly #textScaleSelect = element("select", { className: "kl-select" }) as HTMLSelectElement;
@@ -1529,6 +1537,13 @@ export class LinkChatView {
     this.#settingsUnsubscribe = this.settings.subscribe((settings) => {
       this.#applyTheme(settings);
       this.#syncNotificationState();
+      this.#updateNavigation();
+      if (settings.ui.hiddenTabs.includes(this.#workspaceView as NavigationTab)) {
+        const next = this.#availableWorkspace(this.#workspaceView, settings);
+        if (next === "settings") this.#openSettings("navigation");
+        else this.#showWorkspace(next);
+      }
+      void this.#updateUnreadBadge(false);
       setTimeFormatPreference(settings.ui.timeFormat);
       refreshClockText(this.#shadow, settings.ui.timeFormat);
       this.#scheduleClockUpdate();
@@ -1706,6 +1721,7 @@ export class LinkChatView {
     if (
       incoming &&
       !this.#notificationsMuted() &&
+      !this.#tabMuted("chat") &&
       this.settings.getSection("linkChat").openOnIncoming
     ) {
       await this.openChat(peerNumber, this.adapter.getMemberName(peerNumber), false);
@@ -1731,7 +1747,8 @@ export class LinkChatView {
   }
 
   onNotification(notification: LinkNotification, group = false): void {
-    if (this.#notificationsMuted()) return;
+    if (this.#notificationsMuted() || (notification.kind === "chat" &&
+      (this.#tabMuted("chat") || (group && this.settings.getSection("ui").tabAlerts.chat.mode === "personal")))) return;
     if (notification.kind === "chat" && !group) {
       void this.service.getConversation(notification.memberNumber).then(conversation => {
         if (this.#mounted && !conversationMuted(conversation?.muteUntil)) this.#deliverNotification(notification);
@@ -1742,7 +1759,7 @@ export class LinkChatView {
   }
 
   #deliverNotification(notification: LinkNotification): void {
-    if (this.#notificationsMuted()) return;
+    if (this.#notificationsMuted() || (notification.kind === "chat" && this.#tabMuted("chat"))) return;
     if (notification.showToast) this.#toast(notification.message);
     const sounds = this.settings.getSection("linkReactions").sounds;
     if (!sounds.enabled) return;
@@ -1786,7 +1803,7 @@ export class LinkChatView {
     if (this.#workspaceView === "home") {
       void this.#renderHome(this.#cachedDirectConversations);
     }
-    if (this.#notificationsMuted()) return;
+    if (this.#notificationsMuted() || this.#tabMuted("chat") || this.settings.getSection("ui").tabAlerts.chat.mode === "personal") return;
 
     if (update.kind === "group-added" && update.incoming) {
       this.#toast(`${update.group.title} was added to your group chats.`);
@@ -1821,7 +1838,8 @@ export class LinkChatView {
     this.#panel.hidden = false;
     this.#positionPanel();
     this.#launcher.setAttribute("aria-expanded", "true");
-    this.#showWorkspace(view);
+    if (view === "settings") this.#openSettings();
+    else this.#showWorkspace(view);
     if (view === "roster") this.#renderRoster();
     if (view === "room") this.#showRoomSubView(this.#roomSubView);
     await this.refresh();
@@ -1866,10 +1884,10 @@ export class LinkChatView {
     view: WorkspaceView,
     settings = this.settings.get(),
   ): WorkspaceView {
-    if (view === "roster" && !settings.linkRoster.enabled) return "home";
-    if (view === "activities" && !settings.linkActivities.enabled) return "home";
-    if (view === "cloud" && !this.#cloud) return "home";
-    return view;
+    const available = (candidate: WorkspaceView) => !settings.ui.hiddenTabs.includes(candidate as NavigationTab) &&
+      (candidate !== "roster" || settings.linkRoster.enabled) &&
+      (candidate !== "activities" || settings.linkActivities.enabled) && (candidate !== "cloud" || Boolean(this.#cloud));
+    return available(view) ? view : NAVIGATION_TABS.find(([candidate]) => available(candidate))?.[0] ?? "settings";
   }
 
   async openChat(memberNumber: number, memberName?: string, focusComposer = true): Promise<void> {
@@ -2268,6 +2286,43 @@ export class LinkChatView {
       element("span", { className: "kl-nav-label", text: label }),
     );
     button.addEventListener("click", () => this.#activateFeature(target));
+    if (target !== "settings") this.#bindActionMenu(button, (x, y) => this.#openTabMenu(target as NavigationTab, label, x, y, button), false);
+  }
+
+  #openTabMenu(tab: NavigationTab, label: string, x: number, y: number, target: HTMLElement): void {
+    ++this.#profileMenuToken;
+    if (!this.#mounted || this.#panel.hidden) return;
+    const group = element("div", { className: "kl-profile-menu-group" });
+    const alertTab = tab === "cloud" ? "feed" : tab === "chat" ? "chat" : undefined;
+    if (alertTab) {
+      group.append(this.#profileMenuAction("read-all", "Mark all as read", `Clear unread ${label.toLowerCase()} items`, async () => {
+        if (alertTab === "feed") await this.#community?.markAllFeedRead();
+        else await Promise.all([this.service.markAllRead(), this.#groupChatService?.markAllRead(), this.#cloud?.inbox.markAllRead()]);
+        await this.refresh(); this.#updateFeedBadge();
+        this.#toast(`${label} marked as read.`);
+      }));
+      const muted = conversationMuted(this.settings.getSection("ui").tabAlerts[alertTab].mutedUntil);
+      group.append(this.#profileMenuAction(muted ? "notifications" : "muted", muted ? "Unmute tab" : "Mute tab",
+        muted ? "Resume this tab's notification settings" : "Choose how long to silence this tab", () => {
+          if (muted) this.settings.update(draft => { draft.ui.tabAlerts[alertTab].mutedUntil = 0; });
+          else this.#openTabMuteChoices(alertTab);
+        }));
+    }
+    group.append(this.#profileMenuAction("close", "Hide tab", "Restore it in Settings → Navigation", () => {
+      this.settings.update(draft => { if (!draft.ui.hiddenTabs.includes(tab)) draft.ui.hiddenTabs.push(tab); });
+      const toggle = this.#tabVisibility.get(tab); if (toggle) toggle.checked = false;
+      this.#featureNav.querySelector<HTMLButtonElement>('.kl-nav-item:not([hidden])')?.focus();
+    }));
+    this.#profileMenu.replaceChildren(element("div", { className: "kl-profile-menu-header" }, element("strong", { text: label })), group);
+    delete this.#profileMenu.dataset.memberNumber;
+    this.#showActionMenu(x, y, target, `${label} tab actions`);
+  }
+
+  #openTabMuteChoices(tab: "feed" | "chat"): void {
+    const label = tab === "feed" ? "Feed" : "Chat";
+    this.#openMuteChoices(label, "Pause this tab's alerts and badge. Unread items are kept. You can unmute at any time.", async until => {
+      this.settings.update(draft => { draft.ui.tabAlerts[tab].mutedUntil = until; });
+    });
   }
 
   #activateFeature(target: FeatureTarget): void {
@@ -2670,7 +2725,10 @@ export class LinkChatView {
   }
 
   #updateNavigation(): void {
+    const settings = this.settings.get();
     for (const button of this.#featureNav.querySelectorAll<HTMLButtonElement>(".kl-nav-item")) {
+      const tab = button.dataset.target as NavigationTab;
+      button.hidden = settings.ui.hiddenTabs.includes(tab) || (tab === "activities" && !settings.linkActivities.enabled);
       const active =
         button.dataset.target === this.#workspaceView ||
         (this.#workspaceView === "gallery" && button.dataset.target === "chat");
@@ -3185,6 +3243,15 @@ export class LinkChatView {
       "Decide where KikiLink lives and what you see first.",
       launcherOpen,
       launcherSide,
+      ...NAVIGATION_TABS.filter(([tab]) => tab !== "cloud" || this.#cloud).map(([tab, label]) => {
+        const toggle = element("input", { ariaLabel: `Show ${label} tab` }) as HTMLInputElement;
+        toggle.type = "checkbox";
+        toggle.dataset.navigationTab = tab;
+        toggle.addEventListener("change", () => { if (tab === "activities" && toggle.checked) this.#activitiesToggle.checked = true; });
+        this.#tabVisibility.set(tab, toggle);
+        return this.#settingRow(`Show ${label} tab`, "Keep this tab in the navigation bar.",
+          element("label", { className: "kl-switch" }, toggle, element("span", { className: "kl-switch-track" })));
+      }),
       element(
         "div",
         { className: "kl-setting-action-row" },
@@ -3590,6 +3657,25 @@ export class LinkChatView {
       "reactions",
       "Notifications",
       "Turn on only the alerts you want. Everything else stays out of the way.",
+      ...(["feed", "chat"] as const).filter(tab => tab !== "feed" || this.#cloud).map(tab => {
+        const label = tab === "feed" ? "Feed" : "Chat";
+        const select = element("select", { className: "kl-select", ariaLabel: `${label} alerts` }) as HTMLSelectElement;
+        select.dataset.tabAlerts = tab;
+        const modes: Array<[string, string]> = tab === "feed" ? [["all", "All new posts"], ["off", "Off"]]
+          : [["all", "All chats"], ["personal", "Direct chats only"], ["off", "Off"]];
+        for (const [value, text] of modes) { const option = element("option", { text }); option.value = value; select.append(option); }
+        this.#tabAlertSelects.set(tab, select);
+        const mute = element("button", { type: "button", className: "kl-text-button", text: "Mute tab", ariaLabel: `Mute ${label} tab`, onClick: () => {
+          if (conversationMuted(this.settings.getSection("ui").tabAlerts[tab].mutedUntil))
+            this.settings.update(draft => { draft.ui.tabAlerts[tab].mutedUntil = 0; });
+          else this.#openTabMuteChoices(tab);
+        } });
+        this.#tabMuteButtons.set(tab, mute);
+        return element("div", {}, this.#settingRow(`${label} alerts`, tab === "feed"
+          ? "Control the new-post badge. Replies and reactions to you remain in Mailbox."
+          : "Control chat badges, popups and sounds. Unread conversations are kept.", select),
+          this.#settingRow(`Pause ${label}`, "Temporarily silence this tab using the usual mute durations.", mute));
+      }),
       friendOnlineAlerts,
       roomJoinAlerts,
       notificationSounds,
@@ -10549,7 +10635,7 @@ export class LinkChatView {
     this.#homeRosterAction.textContent = settings.linkRoster.enabled ? "View players" : "Turn on Players";
 
     this.#activitiesButton.dataset.available = String(settings.linkActivities.enabled);
-    this.#activitiesButton.hidden = !settings.linkActivities.enabled;
+    this.#activitiesButton.hidden = !settings.linkActivities.enabled || settings.ui.hiddenTabs.includes("activities");
     this.#homeActivitiesCard.dataset.available = String(settings.linkActivities.enabled);
     this.#homeActivitiesMetric.textContent = settings.linkActivities.enabled
       ? settings.linkActivities.customActivities.length > 0
@@ -12447,90 +12533,56 @@ export class LinkChatView {
   }
 
   #bindProfileMenu(target: HTMLElement, profile: () => ProfileTarget | undefined): void {
+    this.#bindActionMenu(target, (x, y) => {
+      const value = profile();
+      if (value) void this.#openProfileMenu(value.memberNumber, value.displayName, x, y, target);
+    });
+  }
+
+  #bindActionMenu(target: HTMLElement, open: (x: number, y: number) => void, annotateTitle = true): void {
     if (!(target instanceof HTMLButtonElement) && target === this.#chatAvatar) {
-      target.tabIndex = 0;
-      target.setAttribute("role", "button");
+      target.tabIndex = 0; target.setAttribute("role", "button");
     }
     target.classList.add("kl-profile-menu-target");
-    const existingTitle = target.title.trim();
-    target.title = existingTitle
-      ? `${existingTitle} · Right-click or hold for actions`
-      : "Right-click or hold for player actions";
-
-    target.addEventListener("contextmenu", (event) => {
+    if (annotateTitle) target.title = `${target.title.trim()}${target.title.trim() ? " · " : ""}Right-click or hold for actions`;
+    target.setAttribute("aria-haspopup", "menu");
+    target.addEventListener("contextmenu", event => {
       if (!isNearestProfileMenuTarget(event, target)) return;
-      const value = profile();
-      if (!value) return;
-      event.preventDefault();
-      event.stopPropagation();
-      void this.#openProfileMenu(
-        value.memberNumber,
-        value.displayName,
-        event.clientX,
-        event.clientY,
-        target,
-      );
+      event.preventDefault(); event.stopPropagation(); cancel();
+      open(event.clientX, event.clientY);
     });
-    target.addEventListener("keydown", (event) => {
-      if (!isNearestProfileMenuTarget(event, target)) return;
-      if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
-      const value = profile();
-      if (!value) return;
+    target.addEventListener("keydown", event => {
+      if (!isNearestProfileMenuTarget(event, target) || (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey))) return;
       event.preventDefault();
       const bounds = target.getBoundingClientRect();
-      void this.#openProfileMenu(
-        value.memberNumber,
-        value.displayName,
-        bounds.left + bounds.width / 2,
-        bounds.top + Math.min(bounds.height, 44),
-        target,
-      );
+      open(bounds.left + bounds.width / 2, bounds.top + Math.min(bounds.height, 44));
     });
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let startX = 0;
-    let startY = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined, startX = 0, startY = 0;
     const cancel = (): void => {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-        this.#profileMenuLongPressTimers.delete(timer);
-      }
+      if (timer !== undefined) { clearTimeout(timer); this.#profileMenuLongPressTimers.delete(timer); }
       timer = undefined;
     };
-    target.addEventListener("pointerdown", (event) => {
-      if (!isNearestProfileMenuTarget(event, target)) return;
-      if (event.pointerType === "mouse" || event.button !== 0) return;
-      const value = profile();
-      if (!value) return;
-      startX = event.clientX;
-      startY = event.clientY;
-      cancel();
+    target.addEventListener("pointerdown", event => {
+      if (!isNearestProfileMenuTarget(event, target) || event.pointerType === "mouse" || event.button !== 0) return;
+      startX = event.clientX; startY = event.clientY; cancel();
       const pending = setTimeout(() => {
         this.#profileMenuLongPressTimers.delete(pending);
         if (timer === pending) timer = undefined;
         if (!this.#mounted || this.#panel.hidden || !target.isConnected) return;
         this.#suppressProfileClickUntil.set(target, Date.now() + 700);
-        void this.#openProfileMenu(value.memberNumber, value.displayName, startX, startY, target);
+        open(startX, startY);
       }, 520);
-      timer = pending;
-      this.#profileMenuLongPressTimers.add(pending);
+      timer = pending; this.#profileMenuLongPressTimers.add(pending);
     });
-    target.addEventListener("pointermove", (event) => {
-      if (timer === undefined) return;
-      if (Math.hypot(event.clientX - startX, event.clientY - startY) > 9) cancel();
+    target.addEventListener("pointermove", event => {
+      if (timer !== undefined && Math.hypot(event.clientX - startX, event.clientY - startY) > 9) cancel();
     });
     target.addEventListener("pointerup", cancel);
     target.addEventListener("pointercancel", cancel);
-    target.addEventListener(
-      "click",
-      (event) => {
-        if (!isNearestProfileMenuTarget(event, target)) return;
-        if (Date.now() >= (this.#suppressProfileClickUntil.get(target) ?? 0)) return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-      },
-      true,
-    );
+    target.addEventListener("click", event => {
+      if (!isNearestProfileMenuTarget(event, target) || Date.now() >= (this.#suppressProfileClickUntil.get(target) ?? 0)) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+    }, true);
   }
 
   async #openProfileMenu(
@@ -12742,10 +12794,16 @@ export class LinkChatView {
         )
       : null;
     if (!this.#isProfileMenuOperationCurrent(token)) return;
-    this.#profileMenuReturnFocus = returnFocus?.isConnected ? returnFocus : undefined;
     this.#profileMenu.replaceChildren(header, primary, organize);
     this.#profileMenu.dataset.memberNumber = memberNumber.toString();
     if (remove) this.#profileMenu.append(remove);
+    this.#showActionMenu(x, y, returnFocus, "Player actions");
+  }
+
+  #showActionMenu(x: number, y: number, returnFocus: HTMLElement | undefined, label: string): void {
+    this.#profileMenuReturnFocus = returnFocus?.isConnected ? returnFocus : undefined;
+    this.#profileMenu.setAttribute("aria-label", label);
+    this.#profileMenuLayer.setAttribute("aria-label", label);
     this.#profileMenu.hidden = false;
     if (!this.#profileMenuLayer.open) {
       try {
@@ -12800,37 +12858,40 @@ export class LinkChatView {
     button.disabled = disabled;
     button.addEventListener("click", () => {
       this.#closeProfileMenu();
-      this.#runPlayerAction(action, "Player action could not be completed.");
+      this.#runPlayerAction(action, "Action could not be completed.");
     });
     return button;
   }
 
   #openConversationMuteChoices(memberNumber: number, shownName: string): void {
+    this.#openMuteChoices(shownName, "Mute notifications for this chat. Messages and unread counts are kept. You can unmute at any time.", async until => {
+      await this.service.mute(memberNumber, until);
+      await this.#renderConversations(); await this.#updateUnreadBadge();
+    });
+  }
+
+  #openMuteChoices(shownName: string, help: string, save: (until: number) => Promise<void>): void {
     const status = element("p", { className: "kl-cloud-status" });
     status.setAttribute("role", "status");
     const choices = element("div", { className: "kl-mute-choice-list" });
     for (const [label, duration] of MUTE_DURATIONS) {
       const choice = element("button", { className: "kl-text-button kl-mute-choice", type: "button" },
-        kikiIcon("muted"),
-        element("span", {}, element("strong", { text: label })),
-      );
+        kikiIcon("muted"), element("span", {}, element("strong", { text: label })));
       choice.addEventListener("click", () => {
         for (const button of choices.querySelectorAll<HTMLButtonElement>("button")) button.disabled = true;
         status.textContent = `Muting ${shownName}…`;
-        void this.service.mute(memberNumber, duration < 0 ? -1 : Date.now() + duration).then(async () => {
-          await this.#renderConversations();
-          await this.#updateUnreadBadge();
-          this.#contentDialog.close();
-          this.#toast(`${shownName} muted · ${label}.`);
+        void save(duration < 0 ? -1 : Date.now() + duration).then(() => {
+          if (!this.#mounted) return;
+          this.#contentDialog.close(); this.#toast(`${shownName} muted · ${label}.`);
         }).catch(error => {
           for (const button of choices.querySelectorAll<HTMLButtonElement>("button")) button.disabled = false;
-          status.textContent = error instanceof Error ? error.message : "Could not mute this chat.";
+          status.textContent = error instanceof Error ? error.message : "Could not mute notifications.";
         });
       });
       choices.append(choice);
     }
     this.#contentDialog.show(`Mute ${shownName}`, element("div", { className: "kl-mute-sheet" },
-      element("p", { text: "Mute notifications for this chat. Messages and unread counts are kept. You can unmute at any time." }), choices, status));
+      element("p", { text: help }), choices, status));
   }
 
   #runPlayerAction(action: () => void | Promise<void>, fallbackMessage: string): void {
@@ -13483,6 +13544,8 @@ export class LinkChatView {
     this.#homeLayoutSelect.value = settings.ui.homeLayout;
     this.#launcherSideSelect.value = settings.ui.launcherSide;
     this.#launcherOpenSelect.value = settings.ui.launcherOpen;
+    for (const [tab, toggle] of this.#tabVisibility) toggle.checked = !settings.ui.hiddenTabs.includes(tab) && (tab !== "activities" || settings.linkActivities.enabled);
+    for (const [tab, select] of this.#tabAlertSelects) select.value = settings.ui.tabAlerts[tab].mode;
     this.#reducedMotionToggle.checked = settings.ui.reducedMotion;
     this.#historyToggle.checked = settings.linkChat.saveHistory;
     this.#enterToSendToggle.checked = settings.linkChat.enterToSend;
@@ -13704,6 +13767,10 @@ export class LinkChatView {
       };
       draft.ui.reducedMotion = this.#reducedMotionToggle.checked;
       draft.ui.settingsSection = this.#settingsSection;
+      draft.ui.hiddenTabs = [...draft.ui.hiddenTabs.filter(tab => !this.#tabVisibility.has(tab)),
+        ...[...this.#tabVisibility].filter(([, toggle]) => !toggle.checked).map(([tab]) => tab)];
+      for (const [tab, select] of this.#tabAlertSelects)
+        draft.ui.tabAlerts[tab].mode = select.value === "off" ? "off" : select.value === "personal" ? "personal" : "all";
       draft.linkChat.saveHistory = this.#historyToggle.checked;
       draft.linkChat.enterToSend = this.#enterToSendToggle.checked;
       draft.linkChat.typingIndicators = this.#typingIndicatorsToggle.checked;
@@ -13966,9 +14033,10 @@ export class LinkChatView {
     }
     const unread = this.#directUnreadCount + (this.#cloud ? this.#cloud.inbox.unreadMessages : this.#groupChatService?.totalUnread() ?? 0);
     this.#unreadCount = unread;
-    updateBadge(this.#chatCount, unread);
-    this.#badge.hidden = unread === 0;
-    this.#badge.textContent = unread > 99 ? "99+" : unread.toString();
+    const alerts = this.#tabMuted("chat") ? 0 : this.settings.getSection("ui").tabAlerts.chat.mode === "personal" ? this.#directUnreadCount : unread;
+    updateBadge(this.#chatCount, alerts);
+    this.#badge.hidden = alerts === 0;
+    this.#badge.textContent = alerts > 99 ? "99+" : alerts.toString();
     clearTimeout(this.#conversationMuteTimer);
     const next = Math.min(...(this.#cachedDirectConversations ?? []).map(c => c.muteUntil ?? 0).filter(t => t > Date.now()));
     if (Number.isFinite(next)) this.#conversationMuteTimer = setTimeout(() => {
@@ -14100,6 +14168,15 @@ export class LinkChatView {
       notificationsAreMuted(this.settings.getSection("ui").notificationsMutedUntil);
   }
 
+  #tabMuted(tab: "feed" | "chat"): boolean {
+    const alerts = this.settings.getSection("ui").tabAlerts[tab];
+    return alerts.mode === "off" || conversationMuted(alerts.mutedUntil);
+  }
+
+  #updateFeedBadge(): void {
+    updateBadge(this.#feedCount, this.#tabMuted("feed") ? 0 : this.#community?.feedUnread ?? 0);
+  }
+
   #syncNotificationState(): void {
     if (this.#notificationResumeTimer !== undefined) clearTimeout(this.#notificationResumeTimer);
     this.#notificationResumeTimer = undefined;
@@ -14107,11 +14184,20 @@ export class LinkChatView {
     const muted = this.#notificationsMuted();
     this.#launcher.dataset.muted = String(muted);
     this.#launcher.title = `KikiLink${muted ? " · Notifications paused" : ""} · Hold or right-click for quick actions`;
-    if (until > Date.now()) {
+    this.#updateFeedBadge();
+    for (const [tab, button] of this.#tabMuteButtons) {
+      const muteUntil = this.settings.getSection("ui").tabAlerts[tab].mutedUntil;
+      const paused = conversationMuted(muteUntil), label = tab === "feed" ? "Feed" : "Chat";
+      button.textContent = paused ? "Unmute tab" : "Mute tab";
+      button.setAttribute("aria-label", `${paused ? "Unmute" : "Mute"} ${label} tab`);
+      button.title = muteDescription(muteUntil);
+    }
+    const next = Math.min(...[until, ...Object.values(this.settings.getSection("ui").tabAlerts).map(value => value.mutedUntil)].filter(time => time > Date.now()));
+    if (Number.isFinite(next)) {
       this.#notificationResumeTimer = setTimeout(() => {
         this.#notificationResumeTimer = undefined;
-        if (this.#mounted) this.#syncNotificationState();
-      }, Math.min(until - Date.now() + 1, 2_147_483_647));
+        if (this.#mounted) { this.#syncNotificationState(); void this.#updateUnreadBadge(false); }
+      }, Math.min(next - Date.now() + 1, 2_147_483_647));
     }
   }
 

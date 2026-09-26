@@ -21,6 +21,21 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.0.5 - 2026-09-26
+
+- Fixed a stuck Feed badge around pinned/featured posts, partially visible posts, failed read
+  acknowledgements and unread requests that were already in flight.
+- Reused the Direct chat interaction menu for navigation tabs. Chat and Feed offer Mark all as read
+  and timed Mute/Unmute; every optional navigation tab offers Hide tab. Touch hold and keyboard
+  context-menu actions use the same interaction handling.
+- Added tab alert controls to Settings → Alerts: Feed new-post badges on/off; Chat all chats,
+  Direct chats only, or off. Muted tabs keep their unread content, and personal Feed replies and
+  reactions remain in Mailbox. Existing global and per-conversation mute settings still apply.
+- Restore hidden tabs in Settings → Navigation. The remaining tabs close the gap, Settings stays
+  accessible, and hidden/mute preferences are saved per account.
+- Mark all chats as read now persists message read markers and queues existing Cloud read cursors,
+  keeping messages and drafts intact. This update does not require a VPS package or schema change.
+
 ## 1.0.4 - 2026-09-25
 
 - Fixed Preferences autosaving hitting an hourly budget while filling out the list. Batch rapid

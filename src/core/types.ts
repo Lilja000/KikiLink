@@ -331,6 +331,12 @@ export interface KikiLinkEvents {
   "settings:changed": KikiLinkSettings;
 }
 
+export type NavigationTab = "home" | "cloud" | "chat" | "roster" | "room" | "music" | "activities";
+export interface TabAlerts {
+  mode: "all" | "personal" | "off";
+  mutedUntil: number;
+}
+
 export interface KikiLinkSettings {
   schemaVersion: 30;
   ui: {
@@ -345,6 +351,8 @@ export interface KikiLinkSettings {
     launcherSize: number;
     /** Zero enables alerts, -1 mutes until resumed, otherwise a Unix timestamp in ms. */
     notificationsMutedUntil: number;
+    hiddenTabs: NavigationTab[];
+    tabAlerts: { feed: TabAlerts; chat: TabAlerts };
     launcherPosition: { x: number; y: number } | null;
     panelPosition: { x: number; y: number } | null;
     roomBadge: {
