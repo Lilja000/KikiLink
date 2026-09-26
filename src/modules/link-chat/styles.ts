@@ -177,7 +177,8 @@ button { color: inherit; }
 
 .kl-launcher {
   position: fixed;
-  z-index: 2147483000;
+  /* Above BC's canvas, below other addons' overlay menus. */
+  z-index: 1;
   bottom: max(20px, env(safe-area-inset-bottom));
   width: var(--kl-launcher-size, 58px);
   height: var(--kl-launcher-size, 58px);
