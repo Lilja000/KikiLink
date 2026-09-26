@@ -33,6 +33,8 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     launcherOpen: "last",
     launcherSize: 58,
     notificationsMutedUntil: 0,
+    hiddenTabs: [],
+    tabAlerts: { feed: { mode: "all", mutedUntil: 0 }, chat: { mode: "all", mutedUntil: 0 } },
     launcherPosition: null,
     panelPosition: null,
     roomBadge: {
@@ -284,6 +286,9 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
           : DEFAULT_SETTINGS.ui.launcherOpen,
       launcherSize: integerInRange(ui.launcherSize, 40, 88, DEFAULT_SETTINGS.ui.launcherSize),
       notificationsMutedUntil: integerInRange(ui.notificationsMutedUntil, -1, Number.MAX_SAFE_INTEGER, 0),
+      hiddenTabs: Array.isArray(ui.hiddenTabs) ? [...new Set(ui.hiddenTabs.filter((tab): tab is KikiLinkSettings["ui"]["hiddenTabs"][number] =>
+        ["home", "cloud", "chat", "roster", "room", "music", "activities"].includes(tab)))].slice(0, 7) : [],
+      tabAlerts: sanitizeTabAlerts(ui.tabAlerts),
       launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
       panelPosition: sanitizeLauncherPosition(ui.panelPosition),
       roomBadge: sanitizeRoomBadge(ui.roomBadge, sourceSchema),
@@ -811,6 +816,16 @@ function sanitizeLauncherPosition(value: unknown): { x: number; y: number } | nu
   if (!isRecord(value)) return null;
   if (!finiteNumberInRange(value.x, 0, 1) || !finiteNumberInRange(value.y, 0, 1)) return null;
   return { x: value.x, y: value.y };
+}
+
+function sanitizeTabAlerts(value: unknown): KikiLinkSettings["ui"]["tabAlerts"] {
+  const source = isRecord(value) ? value : {};
+  const read = (tab: "feed" | "chat"): KikiLinkSettings["ui"]["tabAlerts"]["feed"] => {
+    const item = isRecord(source[tab]) ? source[tab] : {};
+    return { mode: item.mode === "off" ? "off" : tab === "chat" && item.mode === "personal" ? "personal" : "all",
+      mutedUntil: integerInRange(item.mutedUntil, -1, Number.MAX_SAFE_INTEGER, 0) };
+  };
+  return { feed: read("feed"), chat: read("chat") };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

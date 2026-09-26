@@ -23,7 +23,7 @@ import type {
 
 interface PanelOptions {
   choosePeople?(request: PeoplePickerRequest): void;
-  readFeed?(id: number): void;
+  readFeed?(id: number): void | Promise<void>;
   canReadFeed?(): boolean;
   settings(): KikiLinkSettings;
   ownName(): string;

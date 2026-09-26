@@ -172,3 +172,36 @@ describe("Cloud portraits in Direct Chat", () => {
     expect(h.avatar().querySelector(".kl-social-avatar-media")).toBeNull();
   });
 });
+
+it("lets the Feed tab silence its badge, restore it, and mark server posts read without touching chat counts", async () => {
+  let unread = 4;
+  const h = await setup({ response: async path => {
+    if (path === "/v1/me") return Response.json({ features: { community: true } });
+    if (path === "/v1/feed/unread") return Response.json({ unread, latest: 20 });
+    if (path === "/v1/mailbox") return Response.json({ items: [], unread: 0, nextCursor: null });
+    return undefined;
+  } });
+  const original = h.client.request.bind(h.client);
+  const request = vi.spyOn(h.client, "request").mockImplementation(async (method, path, body, signal) => {
+    if (method === "PUT" && path === "/v1/read-cursors/feed") unread = 0;
+    return original(method, path, body, signal);
+  });
+  const tab = h.root.querySelector<HTMLButtonElement>('.kl-nav-item[data-target="cloud"]')!;
+  const badge = () => tab.querySelector<HTMLElement>(".kl-roster-count")!;
+  await vi.waitFor(() => expect(tab.textContent).toContain("4"));
+  const openMenu = () => tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+  const action = (label: string) => [...h.root.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action")].find(b => b.querySelector(".kl-profile-menu-label")?.textContent === label)!;
+  openMenu();
+  expect([...h.root.querySelectorAll(".kl-profile-menu-label")].map(n => n.textContent)).toEqual(["Mark all as read", "Mute tab", "Hide tab"]);
+  action("Mute tab").click();
+  [...h.root.querySelectorAll<HTMLButtonElement>(".kl-mute-choice")].at(-1)!.click();
+  await vi.waitFor(() => expect(h.settings.get().ui.tabAlerts.feed.mutedUntil).toBe(-1));
+  expect(badge().hidden).toBe(true); expect(unread).toBe(4);
+  openMenu(); action("Unmute tab").click(); expect(badge().hidden).toBe(false);
+  openMenu(); action("Mark all as read").click();
+  await vi.waitFor(() => expect(unread).toBe(0));
+  await vi.waitFor(() => expect(badge().hidden).toBe(true));
+  expect(request).toHaveBeenCalledWith("PUT", "/v1/read-cursors/feed", { cursor: 20 });
+  expect(request.mock.calls.some(([method, path]) => method === "POST" && path === "/v1/mailbox/read")).toBe(false);
+  expect(h.settings.get().ui.tabAlerts.chat.mutedUntil).toBe(0);
+});

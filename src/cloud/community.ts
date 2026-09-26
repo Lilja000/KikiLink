@@ -28,6 +28,7 @@ export class CommunityService {
   #bootComplete = false;
   #refresh: Promise<void> | undefined;
   #refreshAgain = false;
+  #feedReadVersion = 0;
   #destroyed = false;
   #epoch = 0;
   #nativeChanging = false;
@@ -137,6 +138,7 @@ export class CommunityService {
     const epoch = this.#epoch;
     const task = (async () => {
       const current = () => epoch === this.#epoch && !this.#destroyed;
+      const feedReadVersion = this.#feedReadVersion;
       // These surfaces are independent: a mailbox or relationship error must not
       // discard a successfully fetched unread count after an offline interval.
       const results = await Promise.allSettled([
@@ -157,7 +159,7 @@ export class CommunityService {
           if (current()) { this.mailbox = mailbox; this.#changed(); }
         }),
         this.client.request<{ unread: number; latest: number }>("GET", "/v1/feed/unread").then(feed => {
-          if (current()) { this.feedUnread = feed.unread; this.feedLatest = feed.latest; this.#changed(); }
+          if (current() && feedReadVersion === this.#feedReadVersion) { this.feedUnread = feed.unread; this.feedLatest = feed.latest; this.#changed(); }
         }),
       ]);
       if (!current()) return;
@@ -242,8 +244,24 @@ export class CommunityService {
     this.mailbox = { ...page, items: [...unique.values()] }; this.#changed();
   }
   async readFeed(id: number): Promise<void> {
-    if (!this.supported || !id) return;
-    await this.client.request("PUT", "/v1/read-cursors/feed", { cursor: id }); await this.refresh();
+    if (!this.supported || !this.client.connected || this.#destroyed) throw new Error("Feed is not connected. Please retry when connected.");
+    if (!id) return;
+    const epoch = this.#epoch;
+    this.#feedReadVersion++;
+    await this.client.request("PUT", "/v1/read-cursors/feed", { cursor: id });
+    if (epoch !== this.#epoch || this.#destroyed) return;
+    this.#feedReadVersion++;
+    // An older unread request must not restore the badge after the cursor write.
+    if (this.#refresh) await this.#refresh.catch(() => {});
+    if (epoch === this.#epoch && !this.#destroyed) await this.refresh();
+  }
+  async markAllFeedRead(): Promise<void> {
+    if (!this.supported || !this.client.connected || this.#destroyed) throw new Error("Feed is not connected. Please retry when connected.");
+    const epoch = this.#epoch;
+    const feed = await this.client.request<{ latest: number }>("GET", "/v1/feed/unread");
+    if (epoch !== this.#epoch || this.#destroyed) return;
+    if (feed.latest) await this.readFeed(feed.latest);
+    else { this.feedUnread = 0; this.feedLatest = 0; this.#changed(); }
   }
   destroy(): void { this.#releaseEvents?.(); this.#releaseEvents = undefined; this.#destroyed = true; this.#epoch++; for (const dispose of this.#disposers.splice(0)) dispose(); this.#listeners.clear(); this.relationships.clear(); }
 }

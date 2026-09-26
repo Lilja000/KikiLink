@@ -294,3 +294,103 @@ describe("local FUSAM QoL", () => {
     expect(h.groups.listGroups()).toHaveLength(0);
   });
 });
+
+describe("navigation tab actions", () => {
+  function menu(h: ReturnType<typeof setup>, tab: string) {
+    required(h.shadow, `.kl-nav-item[data-target="${tab}"]`).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 40 }));
+    return required(h.shadow, ".kl-profile-menu");
+  }
+  function action(root: ParentNode, label: string) {
+    const item = [...root.querySelectorAll<HTMLButtonElement>(".kl-profile-menu-action")].find(button => button.querySelector(".kl-profile-menu-label")?.textContent === label);
+    if (!item) throw new Error(`Missing action: ${label}`); return item;
+  }
+  it("offers read/mute/hide only on Chat, hide on other tabs, and no hide action on Settings", async () => {
+    const h = setup(); await h.view.open();
+    expect([...menu(h, "chat").querySelectorAll(".kl-profile-menu-label")].map(n => n.textContent)).toEqual(["Mark all as read", "Mute tab", "Hide tab"]);
+    required<HTMLDialogElement>(h.shadow, ".kl-profile-menu-layer").dispatchEvent(new Event("cancel"));
+    for (const tab of ["home", "roster", "room", "music", "activities"]) {
+      expect([...menu(h, tab).querySelectorAll(".kl-profile-menu-label")].map(n => n.textContent)).toEqual(["Hide tab"]);
+    }
+    required<HTMLDialogElement>(h.shadow, ".kl-profile-menu-layer").dispatchEvent(new Event("cancel"));
+    required(h.shadow, '.kl-nav-item[data-target="settings"]').dispatchEvent(new MouseEvent("contextmenu", { cancelable: true }));
+    expect(required(h.shadow, ".kl-profile-menu").hidden).toBe(true);
+  });
+  it("hides the active tab, persists it per account, and restores it from Navigation settings", async () => {
+    const storage = new MemoryKeyValueStorage(), h = setup(new SettingsStore(storage), storage); await h.view.open();
+    required(h.shadow, '.kl-nav-item[data-target="music"]').click();
+    action(menu(h, "music"), "Hide tab").click();
+    expect(required(h.shadow, '.kl-nav-item[data-target="music"]').hidden).toBe(true);
+    expect(required(h.shadow, ".kl-panel").dataset.workspace).toBe("home");
+    expect(new SettingsStore(storage).get().ui.hiddenTabs).toEqual(["music"]);
+    expect(new SettingsStore(new MemoryKeyValueStorage()).get().ui.hiddenTabs).toEqual([]);
+    required(h.shadow, '.kl-nav-item[data-target="settings"]').click();
+    const toggle = required<HTMLInputElement>(h.shadow, '[data-navigation-tab="music"]');
+    expect(toggle.checked).toBe(false); toggle.checked = true;
+    [...h.shadow.querySelectorAll<HTMLButtonElement>(".kl-settings-page button")].find(b => b.textContent === "Save changes")!.click();
+    expect(required(h.shadow, '.kl-nav-item[data-target="music"]').hidden).toBe(false);
+    expect(h.settings.get().ui.hiddenTabs).toEqual([]);
+  });
+  it("leaves Settings reachable even when every optional tab is hidden", async () => {
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    settings.update(draft => { draft.ui.hiddenTabs = ["home", "cloud", "chat", "roster", "room", "music", "activities"]; });
+    const h = setup(settings); await h.view.open();
+    expect(required(h.shadow, ".kl-panel").dataset.workspace).toBe("settings");
+    expect(required(h.shadow, '.kl-nav-item[data-target="settings"]').hidden).toBe(false);
+    expect(sanitizeSettings({ ui: { hiddenTabs: ["settings", "chat", "chat", "__proto__", 42] } }).ui.hiddenTabs).toEqual(["chat"]);
+  });
+  it("marks all chats read without deleting messages or drafts", async () => {
+    const h = setup(); await h.direct.capture(incoming(), false); await h.direct.setDraft(20, "Friend 20", "Keep this draft"); await h.view.open();
+    action(menu(h, "chat"), "Mark all as read").click();
+    await vi.waitFor(async () => expect(await h.direct.totalUnread()).toBe(0));
+    expect(await h.direct.getMessages(20)).toHaveLength(1);
+    expect((await h.direct.getMessages(20))[0]?.read).toBe(true);
+    expect((await h.direct.getConversation(20))?.draft).toBe("Keep this draft");
+  });
+  it("reuses the direct-chat mute choices, preserves unread data, and restores alerts on unmute", async () => {
+    const h = setup(); await h.direct.capture(incoming(), false); await h.view.open();
+    action(menu(h, "chat"), "Mute tab").click();
+    expect([...h.shadow.querySelectorAll(".kl-mute-choice strong")].map(n => n.textContent)).toEqual(["15 minutes", "1 hour", "8 hours", "24 hours", "Until I turn it back on"]);
+    [...h.shadow.querySelectorAll<HTMLButtonElement>(".kl-mute-choice")].at(-1)!.click();
+    await vi.waitFor(() => expect(h.settings.get().ui.tabAlerts.chat.mutedUntil).toBe(-1));
+    expect(await h.direct.totalUnread()).toBe(1);
+    expect(required(h.shadow, ".kl-launcher .kl-badge").hidden).toBe(true);
+    h.shadow.querySelectorAll(".kl-toast").forEach(node => node.remove());
+    const notice = { kind: "chat" as const, message: "Tab mute test", showToast: true, memberNumber: 20, occurredAt: Date.now() };
+    h.view.onNotification(notice); await Promise.resolve(); expect(h.shadow.querySelector(".kl-toast")).toBeNull();
+    action(menu(h, "chat"), "Unmute tab").click();
+    h.view.onNotification(notice);
+    await vi.waitFor(() => expect(h.shadow.querySelector(".kl-toast")?.textContent).toContain("Tab mute test"));
+    expect(h.settings.get().ui.tabAlerts.chat.mutedUntil).toBe(0);
+  });
+  it("supports keyboard and touch actions while a mouse hold remains a normal click", async () => {
+    const h = setup(); await h.view.open();
+    const tab = required(h.shadow, '.kl-nav-item[data-target="music"]');
+    tab.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true }));
+    expect(required(h.shadow, ".kl-profile-menu").textContent).toContain("Hide tab");
+    required<HTMLDialogElement>(h.shadow, ".kl-profile-menu-layer").dispatchEvent(new Event("cancel"));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    tab.dispatchEvent(new PointerEvent("pointerdown", { pointerType: "mouse", button: 0 }));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(required(h.shadow, ".kl-profile-menu").hidden).toBe(true);
+    tab.dispatchEvent(new PointerEvent("pointerdown", { pointerType: "touch", button: 0 }));
+    await vi.advanceTimersByTimeAsync(600); tab.dispatchEvent(new PointerEvent("pointerup")); tab.click();
+    expect(required(h.shadow, ".kl-profile-menu").hidden).toBe(false);
+    expect(required(h.shadow, ".kl-panel").dataset.workspace).toBe("home");
+  });
+  it("persists Alerts choices, suppresses groups in direct-only mode, and expires timed tab mutes", async () => {
+    const storage = new MemoryKeyValueStorage(), h = setup(new SettingsStore(storage)); await h.view.open();
+    required(h.shadow, '.kl-nav-item[data-target="settings"]').click();
+    required<HTMLSelectElement>(h.shadow, '[data-tab-alerts="chat"]').value = "personal";
+    [...h.shadow.querySelectorAll<HTMLButtonElement>(".kl-settings-page button")].find(b => b.textContent === "Save changes")!.click();
+    expect(new SettingsStore(storage).get().ui.tabAlerts.chat.mode).toBe("personal");
+    h.shadow.querySelectorAll(".kl-toast").forEach(node => node.remove());
+    const notice = { kind: "chat" as const, message: "Personal only", showToast: true, memberNumber: 20, occurredAt: Date.now() };
+    h.view.onNotification(notice, true); await Promise.resolve(); expect(h.shadow.querySelector(".kl-toast")).toBeNull();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    h.settings.update(draft => { draft.ui.tabAlerts.chat.mutedUntil = Date.now() + 1000; });
+    h.view.onNotification(notice); await vi.advanceTimersByTimeAsync(0); expect(h.shadow.querySelector(".kl-toast")).toBeNull();
+    await vi.advanceTimersByTimeAsync(1002);
+    h.view.onNotification(notice); await vi.advanceTimersByTimeAsync(0);
+    expect(h.shadow.querySelector(".kl-toast")?.textContent).toContain("Personal only");
+  });
+});

@@ -730,3 +730,20 @@ describe("ChatService", () => {
     expect((await restarted.listConversations()).map((conversation) => conversation.peerNumber)).toEqual([77, 88]);
   });
 });
+
+it("mark-all persists incoming read markers, queues Cloud read cursors, and keeps later arrivals unread", async () => {
+  const { service, repository, settings } = setup();
+  const reads: Array<[number, number]> = [];
+  service.onCloudRead = (peer, sequence) => { reads.push([peer, sequence]); };
+  const incoming = { direction: "incoming" as const, peerNumber: 202, peerName: "Friend", content: "Read this", sentAt: Date.now(), includeRoom: false };
+  await service.captureCloud(incoming, { id: "cloud-10", cloudId: "c10", cloudSequence: 10 }, false);
+  await service.setDraft(202, "Friend", "Do not lose this draft");
+  await service.markAllRead();
+  expect(reads).toEqual([[202, 10]]);
+  expect((await repository.getMessages(202))[0]?.read).toBe(true);
+  const reloaded = new ChatService(repository, settings);
+  expect(await reloaded.totalUnread()).toBe(0);
+  expect((await reloaded.getConversation(202))?.draft).toBe("Do not lose this draft");
+  await reloaded.captureCloud({ ...incoming, content: "Arrived later" }, { id: "cloud-11", cloudId: "c11", cloudSequence: 11 }, false);
+  expect(await reloaded.totalUnread()).toBe(1);
+});

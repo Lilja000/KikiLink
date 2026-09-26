@@ -12,7 +12,7 @@ interface FeedOptions {
   openGroups(): void;
   report(container: HTMLElement, type: string, id: string): void;
   relatedMembers?(): ReadonlySet<number>;
-  readFresh?(id: number): void;
+  readFresh?(id: number): void | Promise<void>;
   canRead?(): boolean;
   canPin?(): boolean;
 }
@@ -34,6 +34,9 @@ export class CloudFeedView {
   #loaded = new Map<number, CloudPost>();
   #fresh: number | undefined;
   #observer: IntersectionObserver | undefined;
+  #readTask: Promise<void> | undefined;
+  #retryReadAfter = 0;
+  #scrollSurface: HTMLElement | undefined;
   #postCreated: ((post: CloudPost) => void) | undefined;
   #postDeleted: ((id: number) => void) | undefined;
   #syncPosts: (() => Promise<boolean>) | undefined;
@@ -46,10 +49,12 @@ export class CloudFeedView {
   readonly #discussion = element("section", { className: "kl-cloud-card kl-feed-discussions", ariaLabel: "From your circle" });
 
   readonly #onVisible = () => this.observeFresh();
+  readonly #onOnline = () => { this.#retryReadAfter = 0; this.observeFresh(); };
   constructor(readonly ui: SocialUI, readonly options: FeedOptions) {
     document.addEventListener("visibilitychange", this.#onVisible);
+    window.addEventListener("online", this.#onOnline);
   }
-  destroy(): void { document.removeEventListener("visibilitychange", this.#onVisible); this.clear(); this.#postDialog.destroy(); this.#reactionDialog.destroy(); }
+  destroy(): void { document.removeEventListener("visibilitychange", this.#onVisible); window.removeEventListener("online", this.#onOnline); this.clear(); this.#postDialog.destroy(); this.#reactionDialog.destroy(); }
   async sync(): Promise<boolean> {
     if (this.#syncTask) return this.#syncTask;
     if (!this.#syncPosts) return true;
@@ -57,19 +62,47 @@ export class CloudFeedView {
     try { return await task; } finally { if (this.#syncTask === task) this.#syncTask = undefined; }
   }
   observeFresh(): void {
-    if (!this.#fresh || document.visibilityState === "hidden" || !this.options.canRead?.()) return;
+    if (!this.#fresh || this.#readTask || Date.now() < this.#retryReadAfter || document.visibilityState === "hidden" || !this.options.canRead?.()) return;
     const card = this.element.querySelector<HTMLElement>(`[data-post-id="${this.#fresh}"]`);
     if (!card?.isConnected) return;
     const bounds = card.getBoundingClientRect();
     const scrollSurface = this.element.closest<HTMLElement>(".kl-cloud");
     const clip = scrollSurface?.getBoundingClientRect();
-    if (clip && (bounds.top < clip.top || bounds.top >= clip.bottom)) return;
-    if (bounds.bottom > 0 && bounds.top >= 0 && bounds.top < window.innerHeight && bounds.width > 0) {
-      this.options.readFresh?.(this.#fresh); this.#fresh = undefined; this.#observer?.disconnect();
+    const top = Math.max(0, clip?.top ?? 0), bottom = Math.min(window.innerHeight, clip?.bottom ?? window.innerHeight);
+    if (bounds.bottom > top && bounds.top < bottom && bounds.width > 0) {
+      const id = this.#fresh, generation = this.#generation;
+      const task = Promise.resolve().then(() => this.options.readFresh?.(id)).then(() => {
+        if (generation === this.#generation && this.#fresh === id) {
+          this.#fresh = undefined; this.#stopObserving();
+        }
+      }).catch(() => { if (generation === this.#generation) this.#retryReadAfter = Date.now() + 3_000; })
+        .finally(() => {
+          if (this.#readTask !== task) return;
+          this.#readTask = undefined;
+          if (this.#fresh !== id || generation !== this.#generation) this.observeFresh();
+        });
+      this.#readTask = task;
     }
+  }
+  #stopObserving(): void {
+    this.#observer?.disconnect();
+    this.#scrollSurface?.removeEventListener("scroll", this.#onVisible);
+    this.#scrollSurface = undefined;
+  }
+  #watchFresh(id: number): void {
+    this.#stopObserving(); this.#fresh = id;
+    this.#scrollSurface = this.element.closest<HTMLElement>(".kl-cloud") ?? this.element;
+    this.#scrollSurface.addEventListener("scroll", this.#onVisible, { passive: true });
+    const card = this.element.querySelector(`[data-post-id="${id}"]`);
+    if (card && typeof IntersectionObserver !== "undefined") {
+      this.#observer = new IntersectionObserver(() => this.observeFresh(), { root: this.#scrollSurface });
+      this.#observer.observe(card);
+    }
+    this.observeFresh();
   }
   async openPost(id: number, commentId?: number): Promise<void> {
     const generation = ++this.#generation;
+    this.#stopObserving(); this.#fresh = undefined;
     this.#syncPosts = undefined; this.#postCreated = undefined; this.#postDeleted = undefined;
     this.#postDialog.close(); this.#reactionDialog.close(); clearTimeout(this.#promotionTimer);
     this.element.dataset.focusedPost = "true";
@@ -130,7 +163,7 @@ export class CloudFeedView {
     this.#renderDiscussions();
   }
 
-  pause(): void { clearTimeout(this.#promotionTimer); this.#reactionDialog.close(); this.#generation++; this.#syncPosts = undefined; this.#releasePreviews(); this.#postDialog.close(); }
+  pause(): void { this.#stopObserving(); this.#fresh = undefined; clearTimeout(this.#promotionTimer); this.#reactionDialog.close(); this.#generation++; this.#syncPosts = undefined; this.#releasePreviews(); this.#postDialog.close(); }
   clear(): void {
     this.#postCreated = undefined; this.#postDeleted = undefined;
     this.#observer?.disconnect(); this.#fresh = undefined;
@@ -144,6 +177,7 @@ export class CloudFeedView {
     this.#previews.clear();
   }
   async render(features: SocialFeatures = {}): Promise<void> {
+    this.#stopObserving(); this.#fresh = undefined;
     this.#postDialog.close(); this.#reactionDialog.close(); clearTimeout(this.#promotionTimer);
     delete this.element.dataset.focusedPost;
     this.#features = features;
@@ -239,15 +273,11 @@ export class CloudFeedView {
           seen.add(post.id);
           this.#loaded.set(post.id, post); list.append(this.#post(post)); total++;
         }
-        if (cursor === 0 && !this.#query && this.#filter === "all" && page.items[0]) {
-          this.#fresh = page.items[0].id; this.#observer?.disconnect();
-          if (typeof IntersectionObserver !== "undefined") {
-            this.#observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) this.observeFresh(); });
-            const first = list.querySelector("[data-post-id]"); if (first) this.#observer.observe(first);
-          }
-          this.observeFresh();
-        }
         this.#orderPosts(list); this.#schedulePromotionSync();
+        if (cursor === 0 && !this.#query && this.#filter === "all") {
+          const newest = Math.max(0, ...this.#loaded.keys());
+          if (newest) this.#watchFresh(newest);
+        }
         this.#renderDiscussions();
         if (page.nextCursor !== null && (page.nextCursor <= 0 || (cursor > 0 && page.nextCursor >= cursor)))
           throw new CloudError("invalid_cursor");
@@ -331,14 +361,12 @@ export class CloudFeedView {
       more.querySelector("span")!.textContent = total >= 100 ? "Continue to older posts" : "Load more posts";
       updateStatus(); this.#renderDiscussions();
       if (anchor?.isConnected && anchorTop !== undefined) scroll.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
-      if (fresh && !this.#query && this.#filter === "all") {
-        this.#fresh = fresh; this.#observer?.disconnect();
-        if (typeof IntersectionObserver !== "undefined") {
-          this.#observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) this.observeFresh(); });
-          const first = list.querySelector(`[data-post-id="${fresh}"]`); if (first) this.#observer.observe(first);
-        }
-        this.observeFresh();
+      if ((fresh || (this.#fresh && !this.#loaded.has(this.#fresh))) && !this.#query && this.#filter === "all") {
+        const newest = Math.max(0, ...this.#loaded.keys());
+        if (newest) this.#watchFresh(newest);
+        else { this.#fresh = undefined; this.#stopObserving(); }
       }
+      this.observeFresh();
       return true;
     };
     await load();
