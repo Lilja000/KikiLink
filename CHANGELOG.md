@@ -21,6 +21,11 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.0.6 - 2026-09-26
+
+- Lowered the flower launcher's stacking priority so it no longer sits above other addons' overlay
+  menus. It stays above the game canvas, with the same drag, click and touch-hold behavior.
+
 ## 1.0.5 - 2026-09-26
 
 - Fixed a stuck Feed badge around pinned/featured posts, partially visible posts, failed read
