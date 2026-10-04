@@ -115,6 +115,7 @@ ${FEED_IDENTITY_STYLES}
 .kl-reaction-member>.kl-social-author { min-width:0; flex:1; }
 .kl-reaction-member-emoji { font-size:22px; flex:none; }
 .kl-feed-aside { position:sticky; top:0; display:grid; align-content:start; grid-auto-rows:max-content; gap:16px; min-width:0; min-height:0; max-height:var(--kl-feed-aside-height,70dvh); overflow-y:auto; overscroll-behavior-y:contain; scrollbar-width:thin; }
+.kl-feed-aside { mask-image:linear-gradient(to bottom,transparent,#000 var(--kl-feed-aside-fade-top,0px),#000 calc(100% - var(--kl-feed-aside-fade-bottom,0px)),transparent); }
 .kl-feed-aside:focus-visible { outline:2px solid var(--kl-gold); outline-offset:3px; }
 .kl-feed-self { background:linear-gradient(145deg,color-mix(in srgb,var(--kl-gold) 9%,var(--kl-surface)),var(--kl-surface)); }
 .kl-feed-aside h3 { font-size:16px; line-height:1.4; }

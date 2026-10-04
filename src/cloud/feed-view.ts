@@ -61,7 +61,7 @@ export class CloudFeedView {
   #loaded = new Map<number, CloudPost>();
   #fresh: number | undefined;
   #observer: IntersectionObserver | undefined;
-  #asideObserver: ResizeObserver | undefined;
+  #stopAsideSizing: (() => void) | undefined;
   #readTask: Promise<void> | undefined;
   #retryReadAfter = 0;
   #scrollSurface: HTMLElement | undefined;
@@ -131,23 +131,43 @@ export class CloudFeedView {
   #sizeAside(sidebar: HTMLElement): void {
     const viewport = this.element.closest<HTMLElement>(".kl-cloud");
     if (!viewport || typeof ResizeObserver === "undefined") return;
-    const update = () => {
-      if (!this.element.isConnected || !viewport.clientHeight) return;
-      // Keep the existing Feed scroll owner. Reserve its headings and padding
-      // so the entire separate sidebar fits even before the Feed is scrolled.
-      const offset = this.element.getBoundingClientRect().top - viewport.getBoundingClientRect().top - viewport.clientTop + viewport.scrollTop;
-      const bottom = parseFloat(getComputedStyle(viewport).paddingBottom) || 0;
-      const height = `${Math.max(0, Math.floor(viewport.clientHeight - Math.max(0, offset) - bottom))}px`;
-      if (sidebar.style.getPropertyValue("--kl-feed-aside-height") !== height) sidebar.style.setProperty("--kl-feed-aside-height", height);
+    let frame = 0;
+    const set = (property: string, value: string) => {
+      if (sidebar.style.getPropertyValue(property) !== value) sidebar.style.setProperty(property, value);
     };
-    this.#asideObserver = new ResizeObserver(update);
-    this.#asideObserver.observe(viewport);
-    this.#asideObserver.observe(this.element);
-    for (const child of viewport.children) if (!child.contains(this.element)) this.#asideObserver.observe(child);
+    const update = () => {
+      frame = 0;
+      if (!this.element.isConnected || !viewport.clientHeight) return;
+      // Reclaim the headings' space as they scroll away and the sidebar sticks.
+      // The Feed remains the scroll owner; the sidebar has its own scroll range.
+      const offset = this.element.getBoundingClientRect().top - viewport.getBoundingClientRect().top - viewport.clientTop;
+      const bottom = parseFloat(getComputedStyle(viewport).paddingBottom) || 0;
+      const height = Math.max(0, Math.floor(viewport.clientHeight - Math.max(0, offset) - bottom));
+      const visibleHeight = Math.min(height, sidebar.scrollHeight);
+      set("--kl-feed-aside-height", `${height}px`);
+      set("--kl-feed-aside-fade-top", sidebar.scrollTop > 1 ? "16px" : "0px");
+      set("--kl-feed-aside-fade-bottom", sidebar.scrollHeight - sidebar.scrollTop - visibleHeight > 1 ? "16px" : "0px");
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(viewport);
+    observer.observe(this.element);
+    observer.observe(sidebar);
+    for (const child of sidebar.children) observer.observe(child);
+    for (const child of viewport.children) if (!child.contains(this.element)) observer.observe(child);
+    viewport.addEventListener("scroll", schedule, { passive: true });
+    sidebar.addEventListener("scroll", schedule, { passive: true });
+    this.#stopAsideSizing = () => {
+      observer.disconnect();
+      viewport.removeEventListener("scroll", schedule);
+      sidebar.removeEventListener("scroll", schedule);
+      if (frame) cancelAnimationFrame(frame);
+      this.#stopAsideSizing = undefined;
+    };
     update();
   }
   async openPost(id: number, commentId?: number): Promise<void> {
-    this.#asideObserver?.disconnect(); this.#asideObserver = undefined;
+    this.#stopAsideSizing?.();
     const generation = ++this.#generation;
     this.#stopObserving(); this.#fresh = undefined;
     this.#syncPosts = undefined; this.#postCreated = undefined; this.#postDeleted = undefined;
@@ -215,7 +235,7 @@ export class CloudFeedView {
     this.#renderDiscussions();
   }
 
-  pause(): void { this.#asideObserver?.disconnect(); this.#asideObserver = undefined; this.#stopObserving(); this.#fresh = undefined; clearTimeout(this.#promotionTimer); this.#reactionDialog.close(); this.#generation++; this.#syncPosts = undefined; this.#releasePreviews(); this.#postDialog.close(); this.#clearPollViews(); }
+  pause(): void { this.#stopAsideSizing?.(); this.#stopObserving(); this.#fresh = undefined; clearTimeout(this.#promotionTimer); this.#reactionDialog.close(); this.#generation++; this.#syncPosts = undefined; this.#releasePreviews(); this.#postDialog.close(); this.#clearPollViews(); }
   clear(): void {
     this.#postCreated = undefined; this.#postDeleted = undefined;
     this.#observer?.disconnect(); this.#fresh = undefined;
@@ -278,7 +298,7 @@ export class CloudFeedView {
     this.#draftStatus.dataset.error = String(this.#draftStore?.status === "error");
   }
   async render(features: SocialFeatures = {}): Promise<void> {
-    this.#asideObserver?.disconnect(); this.#asideObserver = undefined;
+    this.#stopAsideSizing?.();
     this.#stopObserving(); this.#fresh = undefined;
     this.#postDialog.close(); this.#reactionDialog.close(); clearTimeout(this.#promotionTimer);
     delete this.element.dataset.focusedPost;
