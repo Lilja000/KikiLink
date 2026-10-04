@@ -4,12 +4,9 @@ import { kikiIcon, type KikiLinkIconName } from "../modules/link-chat/icons";
 import type { CloudClient } from "./client";
 import type { CloudPost } from "./types";
 import { bindClockTitle } from "../core/time-format";
+import feedReactions from "../../cloud/shared/feed-reactions.json";
 
-export const REACTIONS = [
-  ["heart", "❤️", "Love"], ["like", "👍", "Like"], ["dislike", "👎", "Dislike"],
-  ["laugh", "😂", "Laugh"], ["support", "🫶", "Support"],
-  ["wow", "😮", "Wow"], ["sad", "😢", "Sad"],
-] as const;
+export const REACTIONS = feedReactions.map(({ id, emoji, label }): readonly [string, string, string] => [id, emoji, label]);
 export type Reaction = typeof REACTIONS[number][0];
 export type Author = CloudPost["profile"];
 export interface SocialUIOptions {
@@ -97,6 +94,7 @@ export class SocialUI {
     root.setAttribute("aria-busy", String(loading));
     name.querySelector("span")!.textContent = loading ? "\u00a0" : profile.displayName;
     name.dataset.loading = String(loading);
+    name.dataset.creator = String(profile.memberNumber === 72385);
     name.title = loading ? "Loading profile" : profile.displayName;
     name.setAttribute("aria-label", name.title);
     avatar.title = state.openMembers ? "Show group members" : `Open ${profile.displayName}'s profile`;

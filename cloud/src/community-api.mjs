@@ -71,14 +71,15 @@ export function communityApi({ app, db, social, auth, changed }) {
     return direct.acknowledge(req.identity.member, [...new Set(input.ids)]);
   });
   const visiblePosts = `FROM posts p JOIN users u ON u.member_number=p.author WHERE p.deleted_at IS NULL AND u.disabled=0
-    AND NOT EXISTS(SELECT 1 FROM blocks WHERE (owner=? AND target=p.author) OR (target=? AND owner=p.author))`;
+    AND NOT EXISTS(SELECT 1 FROM blocks WHERE (owner=? AND target=p.author) OR (target=? AND owner=p.author))
+    AND NOT EXISTS(SELECT 1 FROM feed_preferences fp WHERE fp.owner=? AND fp.post_id=p.id AND fp.hidden=1)`;
   app.get("/v1/feed/unread", async req => {
     const actor = req.identity.member;
-    const latest = db.get(`SELECT COALESCE(MAX(p.id),0) AS n ${visiblePosts}`, actor, actor).n;
+    const latest = db.get(`SELECT COALESCE(MAX(p.id),0) AS n ${visiblePosts}`, actor, actor, actor).n;
     // First use establishes a baseline, without treating the entire old Feed as unread.
     db.run("INSERT OR IGNORE INTO social_cursors VALUES(?,'feed',?,?)", actor, latest, social.now());
     const read = db.get("SELECT cursor FROM social_cursors WHERE owner=? AND scope='feed'", actor).cursor;
-    return { cursor: read, latest, unread: db.get(`SELECT COUNT(*) AS n ${visiblePosts} AND p.author<>? AND p.id>?`, actor, actor, actor, read).n };
+    return { cursor: read, latest, unread: db.get(`SELECT COUNT(*) AS n ${visiblePosts} AND p.author<>? AND p.id>?`, actor, actor, actor, actor, read).n };
   });
   const cursorInput = z.object({ scope: z.string().max(80), cursor }).strict();
   const writeCursor = (actor, scope, value) => {

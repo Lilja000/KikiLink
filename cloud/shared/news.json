@@ -1,5 +1,19 @@
 [
   {
+    "version": "1.1.0",
+    "date": "2026-10-04",
+    "title": "A Feed with more ways to connect",
+    "summary": "Save your favorite posts, start a poll, and keep conversations going. Feed is now more personal, expressive, and comfortable to use.",
+    "highlights": [
+      "Save posts for later and browse Everyone, Friends, My posts, Saved or Hidden; restore hidden posts whenever you want.",
+      "Reply directly to comments and follow a post's conversation through Mailbox.",
+      "Create polls with one or multiple answers, a closing time, private votes and shared results.",
+      "Hide surprises behind text or image spoilers, with a simple corner control on attached photos.",
+      "Keep unfinished posts, photos and poll settings in drafts on your device, including new edits made while a post is sending.",
+      "Choose from 20 emoji reactions in a compact picker, with clearer controls and a separately scrolling sidebar on desktop."
+    ]
+  },
+  {
     "version": "1.0.0",
     "date": "2026-09-23",
     "title": "KikiLink 1.0: your conversations and community",

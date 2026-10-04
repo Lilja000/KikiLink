@@ -21,6 +21,28 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.1.0 - 2026-10-04
+
+- Expand Feed with private Saved posts, Friends/My posts filters, recoverable hidden posts,
+  comment replies and subscriptions using the existing Mailbox. Keep personal choices in Cloud.
+- Add single- and multiple-choice polls with closing times, private votes and aggregate results;
+  include poll content in search and moderation previews.
+- Add opt-in text and image spoilers. Conceal text in previews and defer protected image loading
+  until the reader reveals it. Place the photo spoiler control below Remove in the right corner.
+- Save post drafts, attachments and poll settings on the current device per account. Preserve
+  new typing and images when a submitted post is accepted.
+- Expand post and comment reactions to 20 emoji, reusing the existing keyboard- and touch-friendly
+  menu. Preserve older reactions and their dates through the Cloud migration.
+- Refine poll and composer controls, add a replaceable spoiler-text placeholder, and let the
+  desktop sidebar scroll independently within the addon window.
+- Match administrator shields to the gold accent and apply the creator's red-to-gold name
+  gradient only to account 72385.
+- Allow Featured replacement after an active Featured post is deleted, retaining the existing
+  selection rules and history.
+- Reuse Feed menus, icons, formatting and responsive density styles. Capability flags preserve
+  compatibility with older Cloud servers; Cloud schema 11 enables the complete feature set.
+- Add the 1.1.0 announcement to News.
+
 ## 1.0.7 - 2026-10-04
 
 - Remove accepted message text from Direct and group composers while preserving text typed during

@@ -1,0 +1,22 @@
+[
+  { "id": "heart", "emoji": "❤️", "label": "Love" },
+  { "id": "like", "emoji": "👍", "label": "Like" },
+  { "id": "dislike", "emoji": "👎", "label": "Dislike" },
+  { "id": "laugh", "emoji": "😂", "label": "Laugh" },
+  { "id": "support", "emoji": "🫶", "label": "Support" },
+  { "id": "wow", "emoji": "😮", "label": "Wow" },
+  { "id": "sad", "emoji": "😢", "label": "Sad" },
+  { "id": "fire", "emoji": "🔥", "label": "Fire" },
+  { "id": "sparkles", "emoji": "✨", "label": "Sparkles" },
+  { "id": "celebrate", "emoji": "🎉", "label": "Celebrate" },
+  { "id": "eyes", "emoji": "👀", "label": "Curious" },
+  { "id": "thinking", "emoji": "🤔", "label": "Thinking" },
+  { "id": "hug", "emoji": "🤗", "label": "Hug" },
+  { "id": "kiss", "emoji": "😘", "label": "Kiss" },
+  { "id": "smirk", "emoji": "😏", "label": "Smirk" },
+  { "id": "cry", "emoji": "😭", "label": "Cry" },
+  { "id": "angry", "emoji": "😠", "label": "Angry" },
+  { "id": "skull", "emoji": "💀", "label": "Dead" },
+  { "id": "clap", "emoji": "👏", "label": "Applause" },
+  { "id": "star", "emoji": "🤩", "label": "Star-struck" }
+]

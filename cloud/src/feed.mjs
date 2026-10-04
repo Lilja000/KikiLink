@@ -1,6 +1,7 @@
 import { requireThat } from "./validation.mjs";
 import { hash } from "./crypto.mjs";
 import { FeedHighlights } from "./feed-highlights.mjs";
+import { FeedTools } from "./feed-tools.mjs";
 
 export class Feed {
   constructor(social) {
@@ -8,6 +9,7 @@ export class Feed {
     const { db, keys, now } = social;
     Object.assign(this, { db, keys, now });
     this.highlights = new FeedHighlights(this);
+    this.tools = new FeedTools(this);
   }
   visiblePost(actor, id) {
     const p = this.db.get(
@@ -69,9 +71,14 @@ export class Feed {
         )?.reaction ?? null,
     };
   }
-  view(actor, p) {
+  views(actor, rows) {
+    const metadata = this.tools.metadataMany(actor, rows);
+    return rows.map(row => this.view(actor, row, metadata.get(row.id)));
+  }
+  view(actor, p, toolsMetadata) {
     return {
       ...this.highlights.metadata(p.id),
+      ...(toolsMetadata ?? this.tools.metadata(actor, p.id)),
       id: p.id,
       author: p.author,
       profile: this.profileSummary(actor, p.author),
@@ -94,46 +101,50 @@ export class Feed {
       ).n,
     };
   }
-  list(actor, before, limit, query = "") {
-    if (query) return this.search(actor, before, limit, query);
+  list(actor, before, limit, query = "", filter = "all") {
+    if (query) return this.search(actor, before, limit, query, filter);
+    const selection = this.tools.filter(actor, filter);
     const rows = this.db.all(
       `SELECT p.* FROM posts p JOIN users u ON p.author=u.member_number AND u.disabled=0 WHERE p.deleted_at IS NULL AND (?=0 OR p.id<?)
-      AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner=? AND b.target=p.author) OR (b.target=? AND b.owner=p.author)) ORDER BY p.id DESC LIMIT ?`,
+      AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner=? AND b.target=p.author) OR (b.target=? AND b.owner=p.author)) ${selection.sql} ORDER BY p.id DESC LIMIT ?`,
       before,
       before,
       actor,
       actor,
+      ...selection.args,
       limit + 1,
     );
     return {
-      items: rows.slice(0, limit).map((p) => this.view(actor, p)),
+      items: this.views(actor, rows.slice(0, limit)),
       nextCursor: rows.length > limit ? rows[limit - 1].id : null,
-      ...(before === 0 ? { promoted: this.highlights.promoted(actor) } : {}),
+      ...(before === 0 ? { promoted: this.highlights.promoted(actor, filter) } : {}),
     };
   }
-  search(actor, before, limit, query) {
+  search(actor, before, limit, query, filter = "all") {
     // Payloads stay encrypted on disk. Scan at most 200 visible candidates per
     // request; the cursor also advances over pages with no matching posts.
     const author = /^#\d+$/.test(query) ? Number(query.slice(1)) : 0;
     if (/^#\d+$/.test(query) && (!Number.isSafeInteger(author) || author <= 0)) return { items: [], nextCursor: null };
     const terms = query.normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
+    const selection = this.tools.filter(actor, filter);
     const rows = this.db.all(
       `SELECT p.* FROM posts p JOIN users u ON p.author=u.member_number AND u.disabled=0
        WHERE p.deleted_at IS NULL AND (?=0 OR p.id<?) AND (?=0 OR p.author=?)
        AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner=? AND b.target=p.author) OR (b.target=? AND b.owner=p.author))
-       ORDER BY p.id DESC LIMIT 201`,
-      before, before, author, author, actor, actor,
+       ${selection.sql} ORDER BY p.id DESC LIMIT 201`,
+      before, before, author, author, actor, actor, ...selection.args,
     );
     const items = [];
+    const pollTexts = author ? new Map() : this.tools.pollTexts(rows.slice(0, 200));
     for (const row of rows.slice(0, 200)) {
-      const content = author ? "" : this.keys.open(row.payload, `post:${row.id}`).normalize("NFKC").toLowerCase();
+      const content = author ? "" : `${this.keys.open(row.payload, `post:${row.id}`)}\n${pollTexts.get(row.id) ?? ""}`.normalize("NFKC").toLowerCase();
       if (!author && !terms.every(term => content.includes(term))) continue;
-      if (items.length === limit) return { items, nextCursor: items[items.length - 1].id };
-      items.push(this.view(actor, row));
+      if (items.length === limit) return { items: this.views(actor, items), nextCursor: items[items.length - 1].id };
+      items.push(row);
     }
-    return { items, nextCursor: rows.length > 200 ? rows[199].id : null };
+    return { items: this.views(actor, items), nextCursor: rows.length > 200 ? rows[199].id : null };
   }
-  attach(actor, postId, mediaIds) {
+  attach(actor, postId, mediaIds, spoilerMediaIds = []) {
     for (const asset of mediaIds) {
       this.social.assetFor(actor, asset, "feed");
       const linked = this.db.get(
@@ -148,13 +159,13 @@ export class Feed {
     }
     this.db.run("DELETE FROM feed_media WHERE post_id=?", postId);
     mediaIds.forEach((asset, pos) =>
-      this.db.run("INSERT INTO feed_media VALUES(?,?,?)", postId, asset, pos),
+      this.db.run("INSERT INTO feed_media(post_id,asset_id,position,spoiler) VALUES(?,?,?,?)", postId, asset, pos, Number(spoilerMediaIds.includes(asset))),
     );
   }
   create(actor, input) {
     return this.db.transaction(() => {
       const fingerprint = hash(
-        JSON.stringify({ text: input.text, mediaIds: input.mediaIds }),
+        JSON.stringify({ text: input.text, mediaIds: input.mediaIds, ...(input.spoilerMediaIds?.length ? { spoilerMediaIds: [...input.spoilerMediaIds].sort() } : {}), ...(input.poll ? { poll: input.poll } : {}) }),
       );
       if (input.clientId) {
         const old = this.db.get(
@@ -196,7 +207,8 @@ export class Feed {
         this.keys.seal(input.text, `post:${id}`),
         id,
       );
-      this.attach(actor, id, input.mediaIds);
+      this.attach(actor, id, input.mediaIds, input.spoilerMediaIds);
+      this.tools.createPoll(id, input.poll);
       return this.view(actor, this.visiblePost(actor, id));
     });
   }
@@ -205,13 +217,15 @@ export class Feed {
       const old = this.visiblePost(actor, id);
       requireThat(old.author === actor, 403, "owner_required");
       requireThat(old.revision === input.revision, 409, "revision_conflict");
+      requireThat(input.text.trim() || input.mediaIds.length || this.db.get("SELECT 1 FROM feed_polls WHERE post_id=?", id), 400, "empty_post");
+      const spoilers = input.spoilerMediaIds ?? this.db.all("SELECT asset_id FROM feed_media WHERE post_id=? AND spoiler=1", id).map(row => row.asset_id);
       this.db.run(
         "UPDATE posts SET payload=?,revision=revision+1,updated_at=? WHERE id=?",
         this.keys.seal(input.text, `post:${id}`),
         this.now(),
         id,
       );
-      this.attach(actor, id, input.mediaIds);
+      this.attach(actor, id, input.mediaIds, spoilers);
       return this.view(actor, this.visiblePost(actor, id));
     });
   }
@@ -226,8 +240,19 @@ export class Feed {
         this.now(),
         id,
       );
+      // A deleted Featured must not reserve the rest of its twelve-hour slot.
+      // Keep its history, but let the next refresh select another eligible post.
+      this.db.run(
+        `UPDATE feed_feature_state SET next_check_at=? WHERE id=1
+         AND EXISTS(SELECT 1 FROM feed_features WHERE post_id=? AND featured_until>?)`,
+        this.now(),
+        id,
+        this.now(),
+      );
       this.db.run("DELETE FROM feed_media WHERE post_id=?", id);
       this.db.run("DELETE FROM feed_pins WHERE post_id=?", id);
+      this.db.run("DELETE FROM feed_preferences WHERE post_id=?", id);
+      this.db.run("DELETE FROM feed_polls WHERE post_id=?", id);
       this.db.run(
         "DELETE FROM reactions WHERE (target_type='post' AND target_id=?) OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE post_id=?))",
         id,
@@ -251,6 +276,8 @@ export class Feed {
       createdAt: c.created_at,
       updatedAt: c.updated_at,
       reactions: this.reactions(actor, "comment", c.id),
+      parentId: c.parent_id ?? null,
+      replyTo: this.tools.replyContext(actor, c.parent_id),
     };
   }
   comments(actor, postId, after, limit) {
@@ -269,9 +296,10 @@ export class Feed {
       nextCursor: rows.length > limit ? rows[limit - 1].id : null,
     };
   }
-  comment(actor, postId, text) {
+  comment(actor, postId, text, parentId = null) {
     return this.db.transaction(() => {
       this.visiblePost(actor, postId);
+      if (parentId !== null) requireThat(this.target(actor, "comment", parentId).post_id === postId, 400, "reply_post_mismatch");
       requireThat(
         this.db.get(
           "SELECT COUNT(*) AS n FROM comments WHERE post_id=? AND deleted_at IS NULL",
@@ -291,11 +319,12 @@ export class Feed {
       const at = this.now(),
         id = Number(
           this.db.run(
-            "INSERT INTO comments(post_id,author,created_at,updated_at) VALUES(?,?,?,?)",
+            "INSERT INTO comments(post_id,author,created_at,updated_at,parent_id) VALUES(?,?,?,?,?)",
             postId,
             actor,
             at,
             at,
+            parentId,
           ).lastInsertRowid,
         );
       this.db.run(
@@ -463,13 +492,16 @@ export class Feed {
       requireThat(row);
       author = row.author;
       text = this.keys.open(row.payload, `${type}:${id}`);
-      if (type === "post")
+      if (type === "post") {
         mediaIds = this.db
           .all(
             "SELECT asset_id FROM feed_media WHERE post_id=? ORDER BY position",
             Number(id),
           )
           .map((row) => row.asset_id);
+        const poll = this.db.get("SELECT post_id,payload FROM feed_polls WHERE post_id=?", Number(id));
+        if (poll) text = [text, "Poll", this.tools.pollText(poll)].filter(Boolean).join("\n");
+      }
     } else if (type === "group") {
       const row = this.db.get("SELECT owner,title FROM groups WHERE id=?", id);
       requireThat(row);

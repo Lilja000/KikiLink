@@ -76,8 +76,19 @@ export function appendFormattedText<Range extends MessageTextRange>(
     }
   };
   let chunkStart = 0;
+  const headingProtectedRanges = [...ranges.values()];
+  let headingRangeIndex = 0;
   for (const match of value.matchAll(/^# [^\r\n]*/gmu)) {
     const start = match.index!;
+    while ((headingProtectedRanges[headingRangeIndex]?.end ?? Infinity) <= start) headingRangeIndex++;
+    const protectedRange = headingProtectedRanges[headingRangeIndex];
+    if (protectedRange && protectedRange.start <= start) continue;
+    const headingEnd = start + match[0].length;
+    // A protected block can start inside a heading and continue on the next
+    // line. Keep it in one inline chunk instead of splitting its hidden text.
+    let boundaryRangeIndex = headingRangeIndex;
+    while ((headingProtectedRanges[boundaryRangeIndex]?.end ?? Infinity) <= headingEnd) boundaryRangeIndex++;
+    if ((headingProtectedRanges[boundaryRangeIndex]?.start ?? Infinity) < headingEnd) continue;
     if (start > chunkStart) inline(target, chunkStart, start);
     const heading = doc.createElement("span"); heading.className = "kl-format-heading";
     heading.setAttribute("role", "heading"); heading.setAttribute("aria-level", "1");

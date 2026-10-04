@@ -37,6 +37,28 @@ test("Featured chooses recent distinct reactions, persists for twelve hours, and
   assert.equal(f.db.get("SELECT count(*) AS n FROM feed_features").n,2);
 });
 
+test("Deleting the current Featured allows an eligible replacement without waiting twelve hours", async t => {
+  const f = await fixture(t); for (const n of [101,202,303]) await f.login(n);
+  const featured = f.feed.create(101, { text: "Current Featured", mediaIds: [] });
+  f.feed.react(202, "post", featured.id, "heart");
+  let page = await f.ok("GET", "/v1/feed");
+  assert.deepEqual(page.promoted.map(p => p.id), [featured.id]);
+  const scheduled = f.db.get("SELECT next_check_at FROM feed_feature_state WHERE id=1").next_check_at;
+  const replacement = f.feed.create(101, { text: "Next eligible post", mediaIds: [] });
+  f.feed.react(303, "post", replacement.id, "like");
+  const ordinary = f.feed.create(101, { text: "Unfeatured post", mediaIds: [] });
+  await f.ok("DELETE", `/v1/feed/${ordinary.id}`, undefined, 101, 204);
+  assert.equal(f.db.get("SELECT next_check_at FROM feed_feature_state WHERE id=1").next_check_at, scheduled);
+  f.advance(60000);
+  await f.ok("DELETE", `/v1/feed/${featured.id}`, undefined, 101, 204);
+  page = await f.ok("GET", "/v1/feed");
+  assert.deepEqual(page.promoted.map(p => p.id), [replacement.id]);
+  const promotion = page.promoted[0];
+  assert.equal(promotion.featuredAt, f.feed.now());
+  assert.equal(promotion.featuredUntil - promotion.featuredAt, 12 * 3600000);
+  assert.equal(f.db.get("SELECT count(*) AS n FROM feed_features").n, 2);
+});
+
 test("Expired reactions, self votes, disabled members and pins cannot become Featured", async t => {
   const f=await fixture(t); for(const n of [101,202,303,404,606]) await f.login(n);
   const stale=f.feed.create(101,{text:"Old votes",mediaIds:[]});f.feed.react(202,"post",stale.id,"heart");

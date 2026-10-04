@@ -9,12 +9,15 @@ export type KikiLinkIconName =
   | "activities"
   | "appearance"
   | "back"
+  | "bookmark"
   | "chat"
   | "check"
   | "close"
   | "copy"
   | "edit"
   | "external"
+  | "eye"
+  | "eye-off"
   | "home"
   | "heart"
   | "id"
@@ -30,6 +33,7 @@ export type KikiLinkIconName =
   | "notifications"
   | "muted"
   | "play"
+  | "poll"
   | "pause"
   | "previous"
   | "plus"
@@ -58,6 +62,10 @@ type Shape = readonly [ShapeName, Readonly<Record<string, string>>, fillable?: b
 // KikiLink's icons deliberately use the same rounded, slightly asymmetrical line language.
 // They are drawn here from simple geometry so the addon owns the set and ships no icon library.
 const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
+  bookmark: [["path", { d: "M6.5 3.5h11v17L12 17l-5.5 3.5V3.5Z" }]],
+  poll: [["path", { d: "M5 19V12M12 19V5M19 19V9" }], ["path", { d: "M3 21h18" }]],
+  eye: [["path", { d: "M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12Z" }], ["circle", { cx: "12", cy: "12", r: "2.5" }]],
+  "eye-off": [["path", { d: "m3 3 18 18M9.5 5.8a10 10 0 0 1 2.5-.3c6 0 9.5 6.5 9.5 6.5a19 19 0 0 1-3.2 3.9M6.2 6.7A20 20 0 0 0 2.5 12s3.5 6.5 9.5 6.5a12 12 0 0 0 5-1.2" }]],
   shield: [
     ["path", { d: "M12 2.4C9.4 4.5 6.5 4.8 3.7 4.7C2.9 14.2 5.1 18.6 12 21.8C18.9 18.6 21.1 14.2 20.3 4.7C17.5 4.8 14.6 4.5 12 2.4Z", "stroke-width": "2" }],
     ["path", { d: "M12 5.9C10.4 7 8.5 7.5 6.4 7.5C6.2 12.6 7.2 16.3 12 19Z", fill: "currentColor", stroke: "none" }],

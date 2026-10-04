@@ -20,7 +20,35 @@ export class Mailbox {
   }
   comment(actor, postId, commentId) {
     const p = this.db.get("SELECT author FROM posts WHERE id=? AND deleted_at IS NULL", postId);
-    if (p) this.notify(p.author, actor, "comment", "comment", String(commentId), `comment:${commentId}`);
+    if (!p || !this.social.config.communityEnabled) return;
+    const recipients = new Set([actor]);
+    const notifyOnce = (recipient, kind) => {
+      if (recipients.has(recipient) || this.social.blocked(recipient, p.author)) return;
+      recipients.add(recipient);
+      this.notify(recipient, actor, kind, "comment", String(commentId), `comment:${commentId}`);
+    };
+    notifyOnce(p.author, "comment");
+    const parent = this.db.get(`SELECT parent.author FROM comments c JOIN comments parent ON parent.id=c.parent_id
+      WHERE c.id=? AND parent.deleted_at IS NULL`, commentId);
+    if (parent) notifyOnce(parent.author, "comment_reply");
+    const watchers = this.db.all(`SELECT fp.owner FROM feed_preferences fp JOIN users u ON u.member_number=fp.owner AND u.disabled=0
+      WHERE fp.post_id=? AND fp.watching=1 AND fp.hidden=0
+      AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner=fp.owner AND b.target IN (?,?)) OR (b.target=fp.owner AND b.owner IN (?,?)))`, postId, actor, p.author, actor, p.author);
+    for (const { owner } of watchers) {
+      if (recipients.has(owner)) continue;
+      const key = `watch:${postId}`;
+      const old = this.db.get("SELECT id,count,read_at,created_at FROM mailbox WHERE recipient=? AND dedupe_key=?", owner, key);
+      if (old && old.read_at === null && old.created_at > this.now() - 30 * DAY) {
+        // Keep one unread notification: additional comments update its count
+        // without repeatedly triggering sounds/toasts on subscribed clients.
+        this.db.run("UPDATE mailbox SET count=count+1,actor=?,updated_at=? WHERE id=?", actor, this.now(), old.id);
+      } else {
+        // A new batch receives a fresh cursor/date and moves to the top. Reusing
+        // a month-old row would make a renewed notification immediately expire.
+        if (old) this.db.run("DELETE FROM mailbox WHERE id=?", old.id);
+        this.notify(owner, actor, "post_comment", "post", String(postId), key);
+      }
+    }
   }
   reaction(actor, type, id, reaction) {
     if (!this.social.config.communityEnabled) return;
@@ -51,6 +79,12 @@ export class Mailbox {
     if (row.actor && this.social.blocked(actor, row.actor)) return false;
     if (row.kind === "report" && !this.social.config.moderators.has(actor)) return false;
     if (row.actor && !this.db.get("SELECT 1 FROM users WHERE member_number=? AND disabled=0", row.actor)) return false;
+    if (row.target_type === "post" || row.target_type === "comment") {
+      const post = row.target_type === "post"
+        ? this.db.get("SELECT author,deleted_at FROM posts WHERE id=?", Number(row.target_id))
+        : this.db.get("SELECT p.author,p.deleted_at,c.deleted_at AS comment_deleted FROM comments c JOIN posts p ON p.id=c.post_id WHERE c.id=?", Number(row.target_id));
+      if (!post || post.deleted_at !== null || post.comment_deleted != null || this.social.blocked(actor, post.author) || !this.db.get("SELECT 1 FROM users WHERE member_number=? AND disabled=0", post.author)) return false;
+    }
     return true;
   }
   view(actor, row) {

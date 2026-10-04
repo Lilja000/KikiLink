@@ -73,8 +73,9 @@ and a cursor of 0 for newest. Comments/reports use ascending ID keysets. Message
 use sequences: `direction=forward` for after-cursor or `direction=backward` for tail/
 older history, returned in ascending display order. Clients must stop at null cursor.
 Feed create accepts text, up to 4 owned media IDs and an optional clientId; the addon
-always supplies one. Edits require the current revision. Reactions allow one of
-`heart`, `like`, `laugh`, `support`, or null to remove the actor's reaction.
+always supplies one. Edits require the current revision. Post/comment reactions
+allow one value from `/v1/me.features.reactions`, or null to remove the actor's
+reaction. Clients must offer only the values advertised by that server.
 
 Media input allows still PNG/JPEG/WebP, 5 MiB (2 MiB avatar), at least 16 pixels per
 side and at most 24 million pixels. Outputs are metadata-free WebP, at most 3 MiB,
@@ -97,3 +98,69 @@ Current membership is required for conversation hints; a removed member receives
 only the membership-change invalidation. Consumers refresh when appropriate, not
 on a fixed polling interval. No message body, key, typing state or room location
 is broadcast in these events.
+
+## Feed community tools (schema 010)
+
+Clients gate the additive controls on `/v1/me.features`: `feedBookmarks`,
+`feedReplies`, `feedFilters`, `feedPolls`, `feedWatch`, `feedHide`, `feedSpoilers`.
+Watch notifications additionally require community delivery to be enabled.
+
+| Operation | Request |
+| --- | --- |
+| Filter Feed | `GET /v1/feed?filter=all\|friends\|mine\|saved\|hidden` with the existing `cursor`, `limit`, and `q` |
+| Save / unsave | `PUT /v1/feed/:id/bookmark` with `{bookmarked:boolean}` |
+| Hide / restore | `PUT /v1/feed/:id/hide` with `{hidden:boolean}` |
+| Watch / unsubscribe | `PUT /v1/feed/:id/watch` with `{watching:boolean}` |
+| Reply | `POST /v1/feed/:id/comments` with `{text,parentId?}` |
+| Vote / change vote | `PUT /v1/feed/:id/poll/vote` with `{optionIds:number[]}`; an empty array clears the vote |
+
+Private choices belong to the authenticated account, never a supplied owner field.
+All lists and promoted entries exclude hidden posts except the explicit Hidden list.
+Opening a hidden post directly remains possible. Hiding also unsubscribes from its
+comments. Friends uses accepted Cloud relationships, including native friendships
+confirmed through the existing mutual-grant flow. Filters retain bounded keyset
+pagination and search. Each account can retain up to 1,000 choices of each type;
+each post supports up to 1,000 explicit watchers. Preference invalidations only reach
+that account's sessions. Owners, reply recipients and watchers are deduplicated;
+watch comments coalesce into one unread mailbox item rather than repeated alerts.
+
+Post responses add viewer-only `bookmarked`, `hidden`, `watching`, and
+`spoilerMediaIds` (an array of attached IDs), plus `poll` or null. Create/edit accepts
+optional `spoilerMediaIds`; omitted metadata on edits from older clients preserves
+existing spoiler choices for retained attachments. Text `||spoilers||` stays in the
+existing encrypted text field and is interpreted by capable clients. Spoilers are a
+presentation choice, not an access restriction.
+
+Creation accepts optional `poll:{question,options:string[],multiple,closesAt}`.
+Question is 1–200 characters, options are 2–6 distinct nonblank strings up to 100
+characters, and `closesAt` is an absolute millisecond timestamp 5 minutes–7 days
+after creation. A poll-only post is allowed. Poll definitions are immutable; editing
+text/media preserves the poll and votes. A poll response contains question,
+`options:[{id,text,votes}]`, multiple, closesAt, closed, totalVoters and myVotes.
+Option IDs are stable integers starting at 1. Total voters counts distinct eligible
+accounts, including for multiple choice; voter identities are never returned.
+Vote replacement is transactional and idempotent; invalid options, multiple votes
+on single-choice polls and all changes after expiry are rejected. Blocks, disabled
+accounts and ordinary post access apply. Questions/options use the server key ring.
+
+Comments add `parentId` and `replyTo:{id,author,profile,text}|null`. Parents must be
+visible comments on the same post; the relationship cannot be edited into a cycle.
+A deleted, disabled or blocked parent yields null context without hiding the reply.
+Mailbox adds `comment_reply` (target comment with postId) and `post_comment`
+(target post, coalesced count); existing owner notifications stay `comment`.
+
+## Expanded Feed reactions (schema 011)
+
+The shared catalog in `shared/feed-reactions.json` now defines 20 post/comment
+reactions. The original seven identifiers and emoji remain unchanged. The API
+advertises the supported identifiers through `/v1/me.features.reactions`, and
+validates writes against the same catalog. Group message reactions are unchanged.
+Each account still has one reaction per target. Counts, reactor lists, block rules,
+and notification behavior are unchanged. Migration 011 preserves existing reaction
+dates and the recent-reaction index used by Featured.
+
+The Feed11 installer upgrades the reviewed schema-009 runtime directly through
+migrations 010 and 011. The previous Feed10 installer is a historical schema-010
+artifact and is not a prerequisite. Publishing the addon does not execute the
+Cloud upgrade; new controls remain capability-gated until that separate deployment
+completes. See [FEED11_DEPLOYMENT.md](FEED11_DEPLOYMENT.md).

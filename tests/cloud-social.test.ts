@@ -14,6 +14,8 @@ const dispose: Array<() => void> = [];
 afterEach(() => {
   setTimeFormatPreference("24-hour");
   for (const close of dispose.splice(0)) close();
+  // Feed drafts now intentionally survive view teardown and reload per account.
+  localStorage.clear();
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
@@ -293,7 +295,7 @@ describe("bounded social feed", () => {
     expect(dialog.open).toBe(true); expect(dialog.querySelector("textarea")).toBe(newer); expect(newer.value).toBe("Another draft");
   });
 
-  it.each([false, true])("uses the correct post retry key when pending text changes: %s", async changed => {
+  it.each([false, true])("resolves an uncertain post with its original payload and preserves newer typing: %s", async changed => {
     let finish!: () => void;
     const gate = new Promise<void>(resolve => { finish = resolve; });
     let attempt = 0;
@@ -308,11 +310,18 @@ describe("bounded social feed", () => {
     if (changed) { input.value = "New post"; input.dispatchEvent(new Event("input")); }
     finish(); await vi.waitFor(() => expect(errors).toHaveLength(1));
     button(view.element, "Post").click();
-    await vi.waitFor(() => expect(input.value).toBe(""));
+    await vi.waitFor(() => expect(view.element.querySelector(".kl-feed-post-text")?.textContent).toBe("First post"));
+    expect(input.value).toBe(changed ? "New post" : "");
     const attempts = request.mock.calls.filter(([method]) => method === "POST").map(([, , body]) => body as { text: string; clientId: string });
     expect(attempts).toHaveLength(2);
-    expect(attempts[1]!.text).toBe(changed ? "New post" : "First post");
-    expect(attempts[1]!.clientId === attempts[0]!.clientId).toBe(!changed);
+    expect(attempts[1]).toEqual(attempts[0]);
+    if (changed) {
+      button(view.element, "Post").click();
+      await vi.waitFor(() => expect(input.value).toBe(""));
+      const last = request.mock.calls.filter(([method]) => method === "POST").at(-1)![2] as { text: string; clientId: string };
+      expect(last.text).toBe("New post");
+      expect(last.clientId).not.toBe(attempts[0]!.clientId);
+    }
   });
 
   it("bounds inserted confirmed posts and respects the current Feed search without rebuilding controls", async () => {
