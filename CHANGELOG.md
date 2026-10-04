@@ -21,6 +21,11 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.1.2 - 2026-10-04
+
+- Measure the Feed sidebar from its actual sticky position so cards keep the
+  current density's bottom spacing instead of touching the addon's window border.
+
 ## 1.1.1 - 2026-10-04
 
 - Let the Feed sidebar fill the available height as the Feed header scrolls away, keeping
