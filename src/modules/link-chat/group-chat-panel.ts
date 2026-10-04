@@ -2,6 +2,7 @@ import type { PeoplePickerRequest } from "./people-picker";
 import type { BCAdapter } from "../../bc/adapter";
 import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
 import { focusedElement as getFocusedElement } from "../../utils/dom";
+import { remainingDraftAfterSend } from "../../utils/sent-draft";
 import type { PresenceSnapshot } from "../../core/types";
 import type { LinkPresenceService } from "../link-presence/link-presence-service";
 import { kikiIcon } from "./icons";
@@ -1925,15 +1926,14 @@ export class GroupChatPanel {
     try {
       const result = await this.service.sendMessage(groupId, value);
       if (result.persisted) {
-        // Enqueue any newer draft before the conditional clear. The service checks
-        // inside its per-group queue so switching chats cannot erase later typing.
         if (this.#pendingDraft?.groupId === groupId) void this.#flushDraft();
-        const clearDraft = this.service.setDraft(groupId, "", value);
-        if (this.#currentGroupId === groupId && this.#composer.value === value) {
-          this.#composer.value = "";
+        if (this.#currentGroupId === groupId) {
+          const current = this.#composer.value, remaining = remainingDraftAfterSend(current, value);
+          if (remaining !== current) this.#composer.value = remaining;
+          this.#scheduleDraft(groupId, this.#composer.value);
           this.#renderActiveGroup(false, false);
-        }
-        await clearDraft;
+          await this.#flushDraft();
+        } else await this.service.consumeSentDraft(groupId, value);
       }
       if (this.#currentGroupId === groupId) this.#reportSendResult(groupId, result);
     } catch (error) {

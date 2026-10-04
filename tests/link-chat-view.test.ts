@@ -1142,6 +1142,7 @@ describe("LinkChatView", () => {
   it.each([
     { next: "", moveFocus: false },
     { next: "Next message", moveFocus: false },
+    { next: "First message", moveFocus: false },
     { next: "Next message", moveFocus: true },
   ])("keeps Direct Enter away from page-wide chat shortcuts and preserves newer typing: %j", async ({ next, moveFocus }) => {
     const nativeChat = document.createElement("textarea");
@@ -1181,10 +1182,11 @@ describe("LinkChatView", () => {
       };
       enter();
       expect(composer.disabled).toBe(false);
+      expect(composer.value).toBe("");
       expect(shadow.activeElement).toBe(composer);
       enter();
       expect(sendBeep).toHaveBeenCalledOnce();
-      if (next) { composer.value = next; composer.dispatchEvent(new Event("input", { bubbles: true })); }
+      if (next) { composer.value += next; composer.dispatchEvent(new Event("input", { bubbles: true })); }
       if (moveFocus) search.focus();
       gate.resolve();
       await vi.waitFor(() => expect(send.disabled).toBe(false));

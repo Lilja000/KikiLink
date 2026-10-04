@@ -1,4 +1,5 @@
 import { element } from "./dom";
+import { remainingDraftAfterSend } from "../utils/sent-draft";
 import { syncDateSeparators } from "../modules/link-chat/date-separators";
 import { SocialUI } from "./social-ui";
 import { GroupLiveView } from "./group-live";
@@ -182,10 +183,13 @@ export class CloudGroupThread {
         text, clientId, membershipVersion: this.group.membershipVersion, keyVersion: this.group.keyVersion,
         schemaVersion: 1, encryption: "server-aes-256-gcm",
       });
-      const unchanged = this.draft.text === text && this.draft.clientId === clientId;
-      if (this.draft.clientId === clientId) this.draft.clientId = crypto.randomUUID();
-      if (unchanged) { this.draft.text = ""; this.options.draftChanged?.(""); }
-      if (unchanged && this.#reply.value === text) { this.#reply.load(""); this.#draft.dispatchEvent(new Event("input")); }
+      if (this.draft.clientId === clientId) {
+        const current = this.draft.text;
+        this.draft.clientId = crypto.randomUUID();
+        this.draft.text = remainingDraftAfterSend(current, text);
+        this.options.draftChanged?.(this.draft.text);
+        if (this.draft.text !== current && this.#reply.value === current) { this.#reply.load(this.draft.text); this.#draft.dispatchEvent(new Event("input")); }
+      }
       if (version !== this.#version) return;
       if (!this.#seen.has(message.id)) {
         this.#list.querySelector(".kl-group-empty")?.remove();

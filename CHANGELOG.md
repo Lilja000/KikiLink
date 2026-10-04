@@ -21,6 +21,22 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.0.7 - 2026-10-04
+
+- Remove accepted message text from Direct and group composers while preserving text typed during
+  sending, so the next message does not accidentally include the previous one.
+- Clear native Direct messages as soon as they are handed off, without waiting for local history.
+  Failed sends keep their drafts; a history-write failure no longer leaves already-sent text to resend.
+- Keep saved drafts consistent when continuing to type or switching chats during a pending send.
+- Recover transient Direct send, inbox and receipt failures automatically with bounded backoff,
+  respecting server retry delays and preserving message IDs to prevent duplicate delivery.
+- Display captured Direct messages immediately even if their delivery acknowledgement fails.
+- Reconnect stalled Cloud event streams when server heartbeats stop, and reject native Beep sends
+  while BC is disconnected so their drafts are retained. No in-app News announcement for this hotfix.
+- Retry temporary Cloud session-renewal failures using the saved device grant; cancel recovery on
+  logout or account change without sending new BC verification proofs during a network outage.
+- Refresh locked Worker build-tool dependencies to pass the release dependency audit.
+
 ## 1.0.6 - 2026-09-26
 
 - Lowered the flower launcher's stacking priority so it no longer sits above other addons' overlay

@@ -100,6 +100,7 @@ import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
 import { parseInlineReplyContext } from "./message-reply";
 import { messageActions, copyMessageText as copyText, shouldSendMessage } from "./message-controls";
+import { remainingDraftAfterSend } from "../../utils/sent-draft";
 import { ReplyComposer, replyPreview } from "./reply-composer";
 import { MessageInteraction } from "./message-interaction";
 import { appendFormattedText, TEXT_FORMAT_HINT } from "./text-format";
@@ -11770,6 +11771,20 @@ export class LinkChatView {
     await this.#sendContent(message, true);
   }
 
+  async #consumeDirectDraft(peerNumber: number, peerName: string, submitted: string): Promise<void> {
+    if (this.#activePeer === peerNumber) {
+      const current = this.#reply.value, remaining = remainingDraftAfterSend(current, submitted);
+      // Update the input before persistence yields. Later keystrokes own a new draft.
+      if (remaining !== current) this.#reply.load(remaining);
+      this.#resizeComposer(); this.#updateCounter(); this.#updateLocalTyping();
+      this.#scheduleDirectDraft(peerNumber, peerName, remaining);
+      await this.#flushDirectDraft(peerNumber);
+    } else {
+      void this.#flushDirectDraft(peerNumber);
+      await this.service.consumeSentDraft(peerNumber, submitted).catch(() => {});
+    }
+  }
+
   async #sendContent(
     message: string,
     clearComposer: boolean,
@@ -11792,27 +11807,27 @@ export class LinkChatView {
         }
       }
       const cloud = this.#cloudDirect?.shouldUse(peerNumber);
-      const storedMessage = cloud
-        ? await this.#cloudDirect!.send(peerNumber, peerName, message, includeRoom ? this.adapter.getCurrentRoomName() : undefined)
-        : await this.service.capture(this.adapter.sendBeep(peerNumber, message, includeRoom), true);
-      sent = true;
-      if (this.#typingStopTimer !== undefined) clearTimeout(this.#typingStopTimer);
-      this.#typingStopTimer = undefined;
-      this.presence.setTyping(peerNumber, false, true);
-      if (clearComposer) {
-        await this.service.setDraft(peerNumber, peerName,
-          this.#activePeer === peerNumber && this.#reply.value !== composerValueAtSend ? this.#reply.value : "");
-        if (this.#activePeer === peerNumber && this.#reply.value === composerValueAtSend) {
-          this.#reply.load("");
-          this.#resizeComposer();
-          this.#updateCounter();
-        }
+      let storedMessage: LinkMessage;
+      if (cloud) {
+        storedMessage = await this.#cloudDirect!.send(peerNumber, peerName, message, includeRoom ? this.adapter.getCurrentRoomName() : undefined);
+        sent = true;
+        if (clearComposer) await this.#consumeDirectDraft(peerNumber, peerName, composerValueAtSend);
+      } else {
+        const event = this.adapter.sendBeep(peerNumber, message, includeRoom);
+        sent = true;
+        // Native delivery has already handed off: do not leave sent text in the
+        // composer while IndexedDB catches up, even if history storage fails.
+        const draftWrite = clearComposer ? this.#consumeDirectDraft(peerNumber, peerName, composerValueAtSend) : Promise.resolve();
+        storedMessage = await this.service.capture(event, true);
+        await draftWrite;
       }
+      if (clearComposer) await this.#flushDirectDraft(peerNumber);
+      if (this.#activePeer !== peerNumber) this.presence.setTyping(peerNumber, false, true);
       await this.onMessage(peerNumber, false, storedMessage);
       return true;
     } catch (error) {
       if (
-        clearComposer &&
+        !sent && clearComposer &&
         this.#activePeer === peerNumber &&
         this.#reply.value === composerValueAtSend
       ) {

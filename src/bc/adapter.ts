@@ -298,7 +298,11 @@ export class BCAdapter {
   }
 
   canSendBeep(): boolean {
-    return typeof ServerSendBeepMessage === "function";
+    try {
+      return typeof ServerSendBeepMessage === "function" &&
+        (typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn()) &&
+        (typeof ServerSocket !== "object" || ServerSocket === null || ServerSocket.connected !== false);
+    } catch { return false; }
   }
 
   canUseKikiLinkProtocol(): boolean {
@@ -462,6 +466,9 @@ export class BCAdapter {
     if (message.length > 1000) throw new Error("A Beep message cannot exceed 1000 characters");
     if (typeof ServerSendBeepMessage !== "function") {
       throw new Error("KikiLink is still connecting to Bondage Club");
+    }
+    if (!this.canSendBeep()) {
+      throw new Error("Bondage Club is reconnecting. Your message has not been sent.");
     }
 
     const event = this.#normalizeOutgoing(target, message, { includeRoom });

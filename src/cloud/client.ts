@@ -91,6 +91,7 @@ export class CloudClient {
   readonly #deviceStore: CloudDeviceStore | undefined;
   #connectTask: Promise<void> | undefined;
   #refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  #refreshFailures = 0;
   #autoStopped = false;
   #connectionState: CloudConnectionState = "idle";
   #connectionError = "";
@@ -183,6 +184,7 @@ export class CloudClient {
               ? error.code
               : "cloud_temporarily_unavailable",
           );
+          this.#scheduleDeviceRecovery(error, epoch);
         }
         throw error;
       })
@@ -191,6 +193,20 @@ export class CloudClient {
       });
     this.#connectTask = task;
     return task;
+  }
+  #scheduleDeviceRecovery(error: unknown, epoch: number): void {
+    // Retry only a transient failure with an existing, unexpired device grant.
+    // Fresh enrollment failures must not turn into repeated BC proof traffic.
+    if (this.#closed || this.#autoStopped || !this.#deviceKey?.device || this.#deviceKey.device.expiresAt <= this.#now()) return;
+    if (!(error instanceof CloudError) || !(error.status >= 500 || [408, 429].includes(error.status))) return;
+    const delay = Math.max(this.retryDelay, error.retryAfterMs,
+      Math.min(60000, 5000 * 2 ** Math.min(this.#refreshFailures++, 4)));
+    clearTimeout(this.#refreshTimer);
+    this.#refreshTimer = setTimeout(() => {
+      this.#refreshTimer = undefined;
+      if (this.#closed || this.#autoStopped || epoch !== this.#epoch || !this.#deviceKey?.device || this.#deviceKey.device.expiresAt <= this.#now()) return;
+      void this.connect(true, true).catch(() => {});
+    }, delay);
   }
   async #connect(epoch: number, automatic: boolean): Promise<void> {
     this.#checkEpoch(epoch);
@@ -337,6 +353,7 @@ export class CloudClient {
           session.device.expiresAt > this.#now() + 30 * 86400000 + 5000))
     )
       throw new CloudError("identity_mismatch");
+    this.#refreshFailures = 0;
     this.#session = session;
     this.#pending = undefined;
     if (session.device && this.#deviceKey) {
@@ -744,6 +761,16 @@ export class CloudClient {
       !controller.signal.aborted && this.connected;
       attempt++
     ) {
+      // The server sends a heartbeat every 25 seconds. A half-open connection
+      // can otherwise wait forever, losing all message hints until a tab reload.
+      const requestController = new AbortController();
+      const signal = AbortSignal.any([controller.signal, this.#lifetime.signal, requestController.signal]);
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      const armWatchdog = () => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => requestController.abort(), 60000);
+      };
+      armWatchdog();
       try {
         const response = await this.#fetch(this.#origin + "/v1/events", {
           headers: { Authorization: `Bearer ${this.#session!.token}` },
@@ -751,7 +778,7 @@ export class CloudClient {
           redirect: "error",
           cache: "no-store",
           referrerPolicy: "no-referrer",
-          signal: AbortSignal.any([controller.signal, this.#lifetime.signal]),
+          signal,
         });
         if (!response.ok || !response.body)
           throw new Error("stream_unavailable");
@@ -762,7 +789,8 @@ export class CloudClient {
           for (;;) {
             const part = await reader.read();
             this.#check();
-            if (part.done) break;
+            if (part.done || signal.aborted) break;
+            if (part.value.byteLength) { armWatchdog(); attempt = -1; }
             buffer += decoder.decode(part.value, { stream: true });
             if (buffer.length > 16384) throw new Error("stream_limit");
             let end;
@@ -777,7 +805,10 @@ export class CloudClient {
           await reader.cancel().catch(() => {});
         }
       } catch {
-        /* Native BC continues. Reconnect is bounded and only while this panel is open. */
+        /* Native BC continues. Reconnect only while an event consumer retains the stream. */
+      } finally {
+        clearTimeout(watchdog);
+        requestController.abort();
       }
       if (!controller.signal.aborted)
         await new Promise<void>((resolve) => {

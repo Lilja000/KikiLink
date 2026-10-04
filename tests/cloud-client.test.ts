@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { CloudClient, KIKILINK_CLOUD_ORIGIN } from "../src/cloud/client";
+import { createDeviceKey } from "../src/cloud/device-key";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import {
   profileImportDraft,
@@ -8,6 +9,7 @@ import {
 } from "../src/cloud/migration";
 
 const origin = "https://cloud.example.test";
+afterEach(() => vi.useRealTimers());
 function setup(fetchImpl: typeof fetch) {
   let member = 101;
   const client = new CloudClient({
@@ -31,6 +33,89 @@ const response = (data: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 describe("Cloud client account and migration boundaries", () => {
+  it.each(["recover", "logout", "account-switch"])("handles a temporary device-session renewal failure: %s", async action => {
+    vi.useFakeTimers();
+    const key = await createDeviceKey();
+    key.device = { id: crypto.randomUUID(), expiresAt: Date.now() + 86400000 };
+    let challenges = 0, member = 101;
+    const sendProof = vi.fn();
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/auth/device-challenges") {
+        if (++challenges === 2) return response({ error: "temporarily_unavailable" }, 503);
+        return response({ challengeId: crypto.randomUUID(), nonce: "n".repeat(43), expiresAt: Date.now() + 60000 });
+      }
+      if (path === "/v1/auth/device-exchange") return response({ memberNumber: 101, token: "t".repeat(43), expiresAt: Date.now() + 120000, device: key.device });
+      if (path === "/v1/auth/logout") return response({});
+      throw new Error("Unexpected authentication request");
+    });
+    const client = new CloudClient({ origin, memberNumber: 101, getMemberNumber: () => member, isBlocked: () => false, sendProof, fetchImpl,
+      pageOrigin: "https://bc.example.test", deviceStore: { load: async () => key, save: async () => {}, pause: async () => {} } });
+    try {
+      await client.connect();
+      await vi.advanceTimersByTimeAsync(90000);
+      expect(challenges).toBe(2); expect(client.connectionState).toBe("unavailable");
+      if (action === "logout") await client.logout();
+      if (action === "account-switch") member = 202;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(challenges).toBe(action === "recover" ? 3 : 2);
+      if (action === "recover") await vi.waitFor(() => expect(client.connectionState).toBe("connected"));
+      expect(sendProof).not.toHaveBeenCalled();
+    } finally { client.destroy(); }
+  });
+
+  it.each(["headers", "body"])("reconnects a stalled event stream at %s and catches up once", async stall => {
+    vi.useFakeTimers();
+    let streams = 0;
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/auth/challenges") return response({ challengeId: crypto.randomUUID(), proof: "a".repeat(43), exchange: "b".repeat(43), verifierMember: 909, expiresAt: Date.now() + 60000 });
+      if (path === "/v1/auth/exchange") return response({ memberNumber: 101, token: "t".repeat(43), expiresAt: Date.now() + 3600000 });
+      if (path !== "/v1/events") throw new Error("Unexpected path");
+      const signal = init!.signal!; signals.push(signal); streams++;
+      if (streams === 1 && stall === "headers") return new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      return new Response(new ReadableStream({ start(controller) {
+        signal.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+        controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
+      } }), { headers: { "content-type": "text/event-stream" } });
+    });
+    const { client } = setup(fetchImpl); await client.connect();
+    const hints = vi.fn(); client.subscribe(hints);
+    const release = client.retainEvents();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streams).toBe(1);
+      await vi.advanceTimersByTimeAsync(61000);
+      expect(signals[0]!.aborted).toBe(true);
+      expect(streams).toBe(2);
+      expect(hints.mock.calls.filter(([kind]) => kind === "ready")).toHaveLength(stall === "headers" ? 1 : 2);
+      release(); await vi.advanceTimersByTimeAsync(120000);
+      expect(streams).toBe(2);
+    } finally { client.destroy(); }
+  });
+
+  it("keeps a healthy event stream alive through server heartbeats", async () => {
+    vi.useFakeTimers();
+    let feed!: ReadableStreamDefaultController<Uint8Array>, streams = 0;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/auth/challenges") return response({ challengeId: crypto.randomUUID(), proof: "a".repeat(43), exchange: "b".repeat(43), verifierMember: 909, expiresAt: Date.now() + 60000 });
+      if (path === "/v1/auth/exchange") return response({ memberNumber: 101, token: "t".repeat(43), expiresAt: Date.now() + 3600000 });
+      streams++;
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) { feed = controller; } }));
+    });
+    const { client } = setup(fetchImpl); await client.connect(); client.retainEvents();
+    try {
+      for (let i = 0; i < 6; i++) {
+        await vi.advanceTimersByTimeAsync(25000);
+        feed.enqueue(new TextEncoder().encode(": keepalive\n\n"));
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(streams).toBe(1);
+    } finally { feed.close(); client.destroy(); }
+  });
+
   it("carries the server's Retry-After delay to callers", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
       const path = new URL(String(url)).pathname;

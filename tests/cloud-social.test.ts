@@ -666,7 +666,7 @@ describe("group conversation ordering and drafts", () => {
     expect(thread.element.querySelector(".kl-message-receipt")).toBeNull();
     expect(input.disabled).toBe(false);
     expect(shadow.activeElement).toBe(input);
-    if (next) { input.value = next; input.dispatchEvent(new Event("input", { bubbles: true })); }
+    if (next) { input.value = failed ? next : input.value + next; input.dispatchEvent(new Event("input", { bubbles: true })); }
     if (moveFocus) otherField.focus();
     finish();
     await vi.waitFor(() => {

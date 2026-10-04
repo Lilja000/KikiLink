@@ -1155,7 +1155,7 @@ describe("GroupChatPanel conversation pane", () => {
     expect(shadow.activeElement).toBe(composer);
     enter();
     expect(send).toHaveBeenCalledOnce();
-    if (next) { composer.value = next; composer.dispatchEvent(new Event("input", { bubbles: true })); }
+    if (next) { composer.value = failed ? next : composer.value + next; composer.dispatchEvent(new Event("input", { bubbles: true })); }
     if (moveFocus) otherField.focus();
     gate.resolve();
     await vi.waitFor(() => expect(harness.feedback.at(-1)?.tone).toBe(failed ? "error" : "success"));
@@ -1204,6 +1204,9 @@ describe("GroupChatPanel conversation pane", () => {
     click(harness.panel.chatPane, ".kl-group-send");
     expect(send).toHaveBeenCalledWith(first.group.groupId, "Message from the first group");
 
+    composer.value += "Keep the next draft";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+
     await harness.panel.activate(second.group.groupId);
     expect(composer.value).toBe("Second group draft");
 
@@ -1228,6 +1231,7 @@ describe("GroupChatPanel conversation pane", () => {
     expect(composer.value).toBe("Second group draft");
     expect(required(harness.panel.chatPane, ".kl-group-feedback").textContent).toBe("");
     expect(harness.feedback).toHaveLength(0);
+    expect(harness.service.getGroup(first.group.groupId)?.draft).toBe("Keep the next draft");
   });
 });
 

@@ -1,3 +1,4 @@
+import { remainingDraftAfterSend } from "../../utils/sent-draft";
 import type {
   KeyValueStorage,
   KeyValueStorageReadResult,
@@ -1063,6 +1064,21 @@ export class GroupChatService {
   async markAllRead(): Promise<void> {
     this.#assertOpen();
     await Promise.all(this.listGroups().map((group) => this.markRead(group.groupId)));
+  }
+
+  async consumeSentDraft(groupId: string, submitted: string): Promise<void> {
+    this.#assertOpen();
+    await this.#enqueue(groupId, () => {
+      this.#assertBoundAccount();
+      const group = this.#groups.get(groupId);
+      if (!group) return;
+      const draft = remainingDraftAfterSend(group.draft, submitted);
+      if (draft === group.draft) return;
+      group.draft = draft;
+      group.updatedAt = safeNow(this.#now);
+      this.#schedulePersistence(false);
+      this.#notify({ kind: "group-updated", groupId, group: cloneGroup(group) });
+    });
   }
 
   async togglePinned(groupId: string): Promise<boolean> {

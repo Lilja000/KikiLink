@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { CloudDirect } from "../src/cloud/direct";
 import { CloudError } from "../src/cloud/client";
 import { directReceiptState, messageReceiptIndicator, updateMessageReceipt } from "../src/modules/link-chat/message-receipt";
@@ -7,6 +7,9 @@ import type { CommunityService } from "../src/cloud/community";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
+
+const cleanup: Array<() => void> = [];
+afterEach(() => { for (const dispose of cleanup.splice(0)) dispose(); vi.useRealTimers(); });
 
 function setup(storage = new MemoryKeyValueStorage(), memberNumber = 101) {
   const repository = new MemoryChatRepository(), settings = new SettingsStore(storage), chat = new ChatService(repository, settings);
@@ -20,6 +23,7 @@ function setup(storage = new MemoryKeyValueStorage(), memberNumber = 101) {
     adapter: { getMemberName: (peer: number) => `Member ${peer}` }, subscribe: () => () => {} } as unknown as CommunityService;
   const options = { active: () => false, changed: vi.fn(), incoming: vi.fn() };
   const direct = new CloudDirect(community, chat, storage, options);
+  cleanup.push(() => direct.destroy());
   return { repository, settings, chat, request, community, options, direct, storage, hint: (kind: string) => eventListener(kind) };
 }
 it("keeps an ambiguous send unchecked, shows one check on confirmed retry after restart and waits for Read", async () => {
@@ -71,9 +75,74 @@ it("does not acknowledge before local storage and deduplicates a replay after an
   });
   capture.mockRejectedValueOnce(new Error("disk full")); await expect(h.direct.sync()).rejects.toThrow("disk full");
   expect(h.request.mock.calls.some(([, path]) => path.endsWith("acknowledge"))).toBe(false);
-  await expect(h.direct.sync()).rejects.toThrow("offline"); failAck = false; await h.direct.sync();
+  await expect(h.direct.sync()).rejects.toThrow("offline");
+  // Local delivery is visible even when its acknowledgement cannot reach Cloud.
+  expect(h.options.incoming).toHaveBeenCalledOnce();
+  expect(h.options.changed).toHaveBeenCalledWith(202, expect.objectContaining({ id: "cloud-in:remote" }));
+  failAck = false; await h.direct.sync();
+  expect(h.options.incoming).toHaveBeenCalledOnce();
   expect(await h.chat.getMessages(202)).toHaveLength(1); expect((await h.chat.getConversation(202))?.unread).toBe(1);
   h.direct.destroy();
+});
+
+it.each([
+  { status: 503, retryAfterMs: 0, cooldown: 0, delay: 5000 },
+  { status: 429, retryAfterMs: 45000, cooldown: 0, delay: 45000 },
+  { status: 503, retryAfterMs: 0, cooldown: 30000, delay: 30000 },
+])("recovers an ambiguous send without a new event, respecting backoff: %j", async ({ status, retryAfterMs, cooldown, delay }) => {
+  vi.useFakeTimers();
+  const h = setup(); let attempts = 0;
+  Object.defineProperty(h.community.client, "retryDelay", { get: () => cooldown });
+  h.request.mockImplementation(async (method, path) => {
+    if (method === "POST" && path.endsWith("/messages")) {
+      if (++attempts === 1) throw new CloudError("temporarily_unavailable", status, retryAfterMs);
+      return { id: "accepted-once", sequence: 1, state: "sent" };
+    }
+    return path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null };
+  });
+  await h.direct.send(202, "Friend", "Keep this exact message");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(attempts).toBe(1);
+  await vi.advanceTimersByTimeAsync(delay - 1); expect(attempts).toBe(1);
+  await vi.advanceTimersByTimeAsync(1); expect(attempts).toBe(2);
+  const posts = h.request.mock.calls.filter(([method, path]) => method === "POST" && path.endsWith("/messages"));
+  expect(posts[1]![2]).toEqual(posts[0]![2]);
+  expect(await h.chat.getMessages(202)).toHaveLength(1);
+  expect((await h.chat.getMessages(202))[0]?.delivery).toBe("sent");
+  const calls = h.request.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(120000);
+  expect(h.request).toHaveBeenCalledTimes(calls);
+});
+
+it("recovers a failed inbox read without waiting for another message or tab switch", async () => {
+  vi.useFakeTimers();
+  const h = setup(); let reads = 0;
+  h.request.mockImplementation(async (_method, path) => {
+    if (path.includes("/inbox")) {
+      if (++reads === 1) throw new CloudError("offline", 503);
+      return { items: [{ id: "missed-hint", clientMessageId: crypto.randomUUID(), sequence: 1, sender: 202, recipient: 101, text: "Recovered", createdAt: Date.now() }], cursor: 1, nextCursor: null };
+    }
+    return path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null };
+  });
+  await expect(h.direct.sync()).rejects.toThrow("offline");
+  await vi.advanceTimersByTimeAsync(5000);
+  expect((await h.chat.getMessages(202))[0]?.content).toBe("Recovered");
+  expect(h.options.incoming).toHaveBeenCalledOnce();
+});
+
+it.each(["denied", "destroyed", "stopped"])("does not retry a %s send", async mode => {
+  vi.useFakeTimers();
+  const h = setup();
+  h.request.mockImplementation(async (method, path) => {
+    if (method === "POST" && path.endsWith("/messages")) throw new CloudError("unavailable", mode === "denied" ? 403 : 503);
+    return path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null };
+  });
+  const message = await h.direct.send(202, "Friend", "Do not retry");
+  await vi.advanceTimersByTimeAsync(0);
+  if (mode === "destroyed") h.direct.destroy();
+  if (mode === "stopped") await h.direct.stopRetrying(message.id);
+  await vi.advanceTimersByTimeAsync(120000);
+  expect(h.request.mock.calls.filter(([method, path]) => method === "POST" && path.endsWith("/messages"))).toHaveLength(1);
 });
 it("removes a queue entry if local capture fails before network transmission", async () => {
   const h = setup(); vi.spyOn(h.chat, "captureCloud").mockRejectedValue(new Error("disk full"));

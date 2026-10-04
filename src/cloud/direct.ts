@@ -25,6 +25,9 @@ export class CloudDirect {
   #readTask: Promise<void> | undefined;
   #syncAgain = false;
   #syncTimer: ReturnType<typeof setTimeout> | undefined;
+  #retryTimer: ReturnType<typeof setTimeout> | undefined;
+  #retryAttempt = 0;
+  #retryNotBefore = 0;
   constructor(readonly community: CommunityService, readonly chat: ChatService, readonly storage: KeyValueStorage,
     readonly options: { active(peer: number): boolean; changed(peer?: number, message?: LinkMessage): void; incoming(message: LinkMessage): void }) {
     this.#key = `kikilink:cloud:direct-queue:${community.client.memberNumber}:v1`;
@@ -73,7 +76,8 @@ export class CloudDirect {
         for (const { scope, cursor } of items) if (this.#state.reads[scope] === cursor) delete this.#state.reads[scope];
         this.#save();
       }
-    })().finally(() => { this.#readTask = undefined; });
+    })().catch(error => { this.#scheduleRetry(error); throw error; })
+      .finally(() => { this.#readTask = undefined; });
     this.#readTask = task; return task;
   }
   retryable(localId: string): boolean { return this.#state.outgoing.some(m => m.localId === localId && !m.serverId); }
@@ -85,6 +89,23 @@ export class CloudDirect {
   }
   clearPending(peer?: number): void { this.#state.outgoing = peer === undefined ? [] : this.#state.outgoing.filter(m => m.peer !== peer); this.#save(); }
   #save(): void { this.storage.setItem(this.#key, JSON.stringify(this.#state)); }
+  // Recovery runs only after unfinished work fails. Successful catch-up stops it;
+  // there is no idle poll and ambiguous sends always retain their original ID.
+  #scheduleRetry(error?: unknown): void {
+    if (this.#closed || !this.community.client.connected || !this.community.supported || !this.community.directEnabled) return;
+    if (error instanceof CloudError && error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status)) return;
+    const serverDelay = error instanceof CloudError ? error.retryAfterMs : 0;
+    this.#retryNotBefore = Math.max(this.#retryNotBefore, Date.now() + Math.max(serverDelay, this.community.client.retryDelay ?? 0));
+    if (this.#retryTimer !== undefined) return;
+    const backoff = Math.min(60000, 5000 * 2 ** Math.min(this.#retryAttempt++, 4));
+    const retry = () => {
+      const remaining = this.#retryNotBefore - Date.now();
+      if (remaining > 0) { this.#retryTimer = setTimeout(retry, remaining); return; }
+      this.#retryTimer = undefined;
+      void this.sync().catch(() => {});
+    };
+    this.#retryTimer = setTimeout(retry, Math.max(backoff, this.#retryNotBefore - Date.now()));
+  }
   shouldUse(peer: number): boolean {
     return this.#state.cloudPeers.includes(peer) || this.community.supported && this.community.directEnabled && !!this.community.relationships.get(peer)?.directMessages;
   }
@@ -124,6 +145,7 @@ export class CloudDirect {
     if (this.#sending.has(queued.localId)) return this.#sending.get(queued.localId)!;
     const task = (async () => {
       if (this.#closed || !this.community.client.connected || !this.community.directEnabled || queued.serverId || queued.failed) return;
+      if (Date.now() < this.#retryNotBefore) { this.#scheduleRetry(); return; }
       if (Date.now() - queued.createdAt > 30 * 86400000) {
         this.#state.outgoing = this.#state.outgoing.filter(m => m !== queued); this.#save();
         const updated = await this.chat.updateDelivery(queued.peer, queued.localId, { delivery: "failed", deliveryError: "Delivery window expired" });
@@ -146,6 +168,7 @@ export class CloudDirect {
       } catch (error) {
         if (this.#closed || !this.#state.outgoing.includes(queued)) return;
         const definiteFailure = error instanceof CloudError && [400, 403, 404, 409, 413].includes(error.status);
+        if (!definiteFailure) this.#scheduleRetry(error);
         queued.failed = definiteFailure; this.#save();
         updated = await this.chat.updateDelivery(queued.peer, queued.localId, { delivery: definiteFailure ? "failed" : "waiting",
           deliveryError: definiteFailure ? "Delivery is not permitted. Check friendship and retry." : "Not confirmed. Retry with the same message ID when connected." });
@@ -159,18 +182,23 @@ export class CloudDirect {
   sync(): Promise<void> {
     if (this.#task) return this.#task;
     if (this.#closed || !this.community.supported || !this.community.directEnabled || !this.community.client.connected) return Promise.resolve();
+    if (Date.now() < this.#retryNotBefore) return Promise.resolve();
     clearTimeout(this.#syncTimer);
     const task = (async () => {
       for (let pass = 0; pass < 3; pass++) {
         this.#syncAgain = false; await this.#sync();
         if (!this.#syncAgain || this.#closed || !this.community.client.connected) break;
       }
-    })().finally(() => {
+      if (!this.#state.outgoing.some(queued => !queued.serverId && !queued.failed)) {
+        clearTimeout(this.#retryTimer); this.#retryTimer = undefined;
+        this.#retryAttempt = 0; this.#retryNotBefore = 0;
+      }
+    })().catch(error => { this.#scheduleRetry(error); throw error; }).finally(() => {
       if (this.#task !== task) return;
       this.#task = undefined;
       // A hint arriving after an inbox read is not lost just because catch-up is in flight.
       // One bounded follow-up services the event burst; there is no idle or per-peer poll.
-      if (this.#syncAgain && !this.#closed) this.#syncTimer = setTimeout(() => { void this.sync().catch(() => {}); }, 1000);
+      if (this.#syncAgain && !this.#closed && this.#retryTimer === undefined) this.#syncTimer = setTimeout(() => { void this.sync().catch(() => {}); }, 1000);
     });
     this.#task = task; return task;
   }
@@ -179,18 +207,20 @@ export class CloudDirect {
     for (let n = 0; n < 25 && !this.#closed; n++) {
       const page = await client.request<{ items: Envelope[]; cursor: number; nextCursor: number | null }>("GET", `/v1/direct/inbox?limit=40&cursor=${this.#state.inbox}`);
       if (this.#closed) return;
-      const received: LinkMessage[] = [];
       for (const envelope of page.items) {
         if (envelope.recipient !== client.memberNumber || typeof envelope.text !== "string") throw new Error("Invalid Direct envelope");
         const { message, fresh } = await this.chat.captureCloud({ direction: "incoming", peerNumber: envelope.sender,
           peerName: this.community.adapter.getMemberName(envelope.sender), content: envelope.text, sentAt: envelope.createdAt,
           includeRoom: !!envelope.roomName, ...(envelope.roomName ? { roomName: envelope.roomName } : {}) },
         { id: `cloud-in:${envelope.id}`, cloudId: envelope.id, cloudSequence: envelope.sequence, clientMessageId: envelope.clientMessageId }, this.options.active(envelope.sender));
-        // Acknowledge only after local capture, never when the server merely saved it.
-        if (fresh) received.push(message);
+        if (this.#closed) return;
+        // Show each captured message immediately. An acknowledgement failure or a
+        // later storage error in this page must not hide messages already received.
+        if (fresh) { this.options.changed(message.peerNumber, message); this.options.incoming(message); }
       }
+      // Acknowledge only after local capture, never when the server merely saved it.
       if (page.items.length) await client.request("POST", "/v1/direct/acknowledge", { ids: page.items.map(item => item.id) });
-      for (const message of received) { this.options.changed(message.peerNumber, message); this.options.incoming(message); }
+      if (this.#closed) return;
       this.#state.inbox = page.cursor; this.#save();
       if (page.nextCursor === null) break;
     }
@@ -241,5 +271,5 @@ export class CloudDirect {
     for (const read of reads.items) if (read.scope.startsWith("direct:")) await this.chat.reconcileCloudRead(Number(read.scope.slice(7)), read.cursor);
     this.options.changed();
   }
-  destroy(): void { this.#closed = true; clearTimeout(this.#readTimer); clearTimeout(this.#syncTimer); this.chat.onCloudRead = undefined; for (const fn of this.#unsubscribers.splice(0)) fn(); }
+  destroy(): void { this.#closed = true; clearTimeout(this.#readTimer); clearTimeout(this.#syncTimer); clearTimeout(this.#retryTimer); this.chat.onCloudRead = undefined; for (const fn of this.#unsubscribers.splice(0)) fn(); }
 }

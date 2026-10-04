@@ -5,6 +5,7 @@ import type { BeepEvent, ConversationMeta, LinkMessage } from "../../core/types"
 import type { ChatRepository } from "../../storage/chat-repository";
 import { sortConversations } from "../../storage/memory-chat-repository";
 import { createId } from "../../utils/id";
+import { remainingDraftAfterSend } from "../../utils/sent-draft";
 import { parseMessageLinks } from "./media";
 import { conversationMuted } from "./conversation-mute";
 
@@ -402,6 +403,15 @@ export class ChatService {
         (await this.#getVisibleConversationUnlocked(peerNumber)) ??
         (await this.#ensureConversationUnlocked(peerNumber, peerName));
       await this.#saveConversation({ ...conversation, draft });
+    });
+  }
+
+  async consumeSentDraft(peerNumber: number, submitted: string): Promise<void> {
+    await this.#enqueuePeerMutation(peerNumber, async () => {
+      const conversation = await this.#getVisibleConversationUnlocked(peerNumber);
+      if (!conversation) return;
+      const draft = remainingDraftAfterSend(conversation.draft, submitted);
+      if (draft !== conversation.draft) await this.#saveConversation({ ...conversation, draft });
     });
   }
 

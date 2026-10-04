@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter } from "../src/bc/adapter";
 import { CloudClient } from "../src/cloud/client";
+import { CloudDirect } from "../src/cloud/direct";
 import type { CloudProfile } from "../src/cloud/types";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import { ChatService } from "../src/modules/link-chat/chat-service";
@@ -68,8 +69,50 @@ async function setup(options: {
   const root = document.querySelector("#kikilink-root")!.shadowRoot!;
   const avatar = () => root.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar")!;
   const reads = (path: string) => fetchImpl.mock.calls.filter(([url]) => new URL(String(url)).pathname === path).length;
-  return { view, root, avatar, client, profiles, settings, decode, reads, fetchImpl };
+  return { view, root, avatar, client, profiles, settings, decode, reads, fetchImpl, service };
 }
+
+it.each([
+  { quoted: false, switchChat: false, failed: false },
+  { quoted: true, switchChat: false, failed: false },
+  { quoted: false, switchChat: true, failed: false },
+  { quoted: false, switchChat: false, failed: true },
+])("consumes only the accepted Cloud Direct draft: %j", async ({ quoted, switchChat, failed }) => {
+  const h = await setup(), gate = deferred<void>();
+  const submitted = (quoted ? "> Reply to Kiki: Earlier message\n" : "") + "First message";
+  await h.service.setDraft(202, "Person 202", submitted);
+  await h.view.openChat(202, "Person 202");
+  vi.spyOn(CloudDirect.prototype, "shouldUse").mockReturnValue(true);
+  const send = vi.spyOn(CloudDirect.prototype, "send").mockImplementation(async (peerNumber, peerName, content) => {
+    await gate.promise;
+    if (failed) throw new Error("Message has not been sent.");
+    return h.service.capture({ direction: "outgoing", peerNumber, peerName, content, sentAt: Date.now(), includeRoom: false }, true);
+  });
+  const composer = h.root.querySelector<HTMLTextAreaElement>(".kl-composer-input")!;
+  const button = h.root.querySelector<HTMLButtonElement>(".kl-send")!;
+  const enter = () => composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true, cancelable: true }));
+  enter(); enter();
+  expect(send).toHaveBeenCalledOnce();
+  composer.value += "Next message"; composer.dispatchEvent(new Event("input", { bubbles: true }));
+  if (switchChat) {
+    await h.service.setDraft(303, "Person 303", "Other person's draft");
+    await h.view.openChat(303, "Person 303");
+  }
+  gate.resolve();
+  await vi.waitFor(() => expect(button.disabled).toBe(false));
+  if (failed) {
+    expect(composer.value).toBe("First messageNext message");
+    expect(await h.service.getMessages(202)).toHaveLength(0);
+  } else {
+    expect((await h.service.getConversation(202))?.draft).toBe("Next message");
+    expect(composer.value).toBe(switchChat ? "Other person's draft" : "Next message");
+    if (!switchChat) {
+      expect(h.root.querySelector<HTMLElement>(".kl-composer-reply")!.hidden).toBe(true);
+      enter(); await vi.waitFor(() => expect(button.disabled).toBe(false));
+      expect(send.mock.calls.map(call => call[2])).toEqual([submitted, "Next message"]);
+    }
+  }
+});
 
 describe("Cloud portraits in Direct Chat", () => {
   it.each(["comfortable", "compact", "super-compact"] as const)("uses saved avatars without a native URL and keeps the image through refreshes in %s", async density => {

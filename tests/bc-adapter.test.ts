@@ -76,6 +76,23 @@ describe("BCAdapter", () => {
     expect(adapter.getOwnName()).toBe("me");
   });
 
+  it.each(["disconnected", "logged-out", "revoked"])("rejects a native send during %s instead of recording it as sent", state => {
+    const nativeSend = vi.fn();
+    globalThis.ServerSendBeepMessage = nativeSend;
+    globalThis.ServerIsLoggedIn = () => state !== "logged-out";
+    const socket = Proxy.revocable({ connected: state !== "disconnected" }, {});
+    globalThis.ServerSocket = socket.proxy as BCServerSocket;
+    if (state === "revoked") socket.revoke();
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "1.0.7");
+    expect(adapter.canSendBeep()).toBe(false);
+    expect(() => adapter.sendBeep(123, "Keep my draft", false)).toThrow("has not been sent");
+    expect(nativeSend).not.toHaveBeenCalled();
+    if (state !== "revoked") {
+      socket.proxy.connected = true; globalThis.ServerIsLoggedIn = () => true;
+      expect(adapter.canSendBeep()).toBe(true);
+    }
+  });
+
   it("sends through the native Beep function even before hook registration completes", () => {
     const nativeSend = vi.fn();
     globalThis.ServerSendBeepMessage = nativeSend;

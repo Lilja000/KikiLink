@@ -14,6 +14,31 @@ import type { BeepEvent } from "../src/core/types";
 const dispose: Array<() => void> = [];
 afterEach(() => { dispose.splice(0).forEach(fn => fn()); document.body.replaceChildren(); vi.restoreAllMocks(); });
 describe("social stability regressions", () => {
+  it.each([false, true])("preserves only unsent text when history fails after handoff=%s", async handedOff => {
+    const adapter = {
+      getOwnMemberNumber: () => 999, getOwnName: () => "Kiki", getMemberName: () => "Friend",
+      getMemberNickname: () => undefined, getKnownContacts: () => [], canSendBeep: () => true,
+      isReady: () => true, isInChatRoom: () => false,
+      sendBeep: vi.fn((peerNumber: number, content: string): BeepEvent => {
+        if (!handedOff) throw new Error("Offline before send");
+        return { peerNumber, peerName: "Friend", content, direction: "outgoing", sentAt: Date.now(), includeRoom: false };
+      }),
+    } as unknown as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage()), service = new ChatService(new MemoryChatRepository(), settings);
+    vi.spyOn(service, "capture").mockRejectedValue(new Error("History unavailable"));
+    const view = new LinkChatView(adapter, service, settings, "1.0.7"); dispose.push(() => view.destroy());
+    view.mount(); await view.openChat(123, "Friend");
+    const root = document.querySelector("#kikilink-root")!.shadowRoot!;
+    const input = root.querySelector<HTMLTextAreaElement>(".kl-composer-input")!;
+    const send = root.querySelector<HTMLButtonElement>(".kl-send")!;
+    input.value = "First"; input.dispatchEvent(new Event("input")); send.click();
+    expect(input.value).toBe(handedOff ? "" : "First");
+    input.value += "Next"; input.dispatchEvent(new Event("input"));
+    await vi.waitFor(() => expect(send.disabled).toBe(false));
+    expect(input.value).toBe(handedOff ? "Next" : "FirstNext");
+    expect(root.textContent).toContain(handedOff ? "Beep was sent" : "Offline before send");
+  });
+
   it("keeps the Direct composer enabled and focused after Send without stealing later focus", async () => {
     const adapter = {
       getOwnMemberNumber: () => 999, getOwnName: () => "Kiki", getMemberName: () => "Friend",
