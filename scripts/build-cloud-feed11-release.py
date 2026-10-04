@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Build, but never execute, the owner-operated Feed 11 Cloud update.
 
-The input is the previously delivered, hash-pinned Feed 9 handoff. Its complete
-packages are decoded as data, never imported or executed. This avoids keeping
+The inputs are the previously delivered, hash-pinned Feed 9, Preferences 1.0.4
+and original Feed 11 handoffs. Packages are decoded as data, never executed. This avoids keeping
 private deployment infrastructure or opaque base64 blobs in the repository.
 Current API sources, including migrations 010 and 011, are overlaid directly on
-both known Feed 9 lineages. The historical Feed 10 handoff is not required. The immutable
+the reviewed Preferences successors. Existing Feed 11 installers are preserved
+byte-for-byte. The historical Feed 10 handoff is not required. The immutable
 verifier and the installed image's dependencies remain unchanged.
 
 Usage:
   python3 scripts/build-cloud-feed11-release.py \
     --feed9-handoff /path/to/KikiLink-Cloud-Feed9-Update.txt \
+    --preferences-handoff /path/to/KikiLink-Cloud-Preferences-1.0.4.txt \
+    --feed11-handoff /path/to/original-KikiLink-Cloud-Feed11-Update.txt \
     --output .local-dev/feed11-release
 
 The output includes the handoff, readable package trees, readable installers,
@@ -43,6 +46,14 @@ LINEAGES = {
         "payload": "34d19b4d058d85a7203d9704c9cf065d3a0889e6a5ca16afe662a44b031c9100",
         "manifest": "5121f655c621b3ed08b8f26c0c4afed73cf537388add42c09c221301c63946d2",
     },
+}
+PREFERENCES_HANDOFF_SHA256 = "e5d6666c3d4f3bab1621a592a2170b074bd75be7d728bbb5ddf04d1cd5b8a3ee"
+ORIGINAL_FEED11_SHA256 = "ec10c70b731e378c1cac66c62db5a796f530f1134eecf25fadb874cd82a136a1"
+PREFERENCES_LINEAGES = {
+    "1d11cc2db7cc": {"release": "a09502488f4d",
+                     "manifest": "550f2613ddd0d637334ba6450ca533b4854643045755ccf99d3efc82c6305487"},
+    "c6f47ef3fe1d": {"release": "7fbcf099dc7e",
+                     "manifest": "64e64759301a87ed1e449a580c2e49677b17f080deb65d03a96d58b4475e84f7"},
 }
 MIGRATIONS = ["010_feed_community_tools.sql", "011_feed_reactions.sql"]
 MAX_FILE = 2 * 1024 * 1024
@@ -112,6 +123,61 @@ def read_predecessors(path):
     return result
 
 
+def read_pinned_handoff(path, digest, marker):
+    """Read exact delivered artifacts as data; never import embedded operators."""
+    raw = path.read_bytes()
+    need(sha(raw) == digest, "pinned_handoff_changed: " + marker)
+    shell = raw.decode()
+    need(shell.startswith("sudo /usr/bin/python3 -I -B - <<'" + marker + "'\n") and
+         shell.endswith("\n" + marker + "\n"), "unexpected_handoff_wrapper")
+    source = "\n".join(shell.splitlines()[1:-1])
+    installers = json.loads(gzip.decompress(packed_literal(source)))
+    route_nodes = [node.value for node in ast.parse(source).body
+                   if isinstance(node, ast.Assign) and any(
+                       isinstance(target, ast.Name) and target.id == "routes"
+                       for target in node.targets)]
+    need(len(route_nodes) == 1, "expected_one_routes_literal")
+    routes = ast.literal_eval(route_nodes[0])
+    packages = {}
+    expected_routes = {}
+    for previous, script in installers.items():
+        files = json.loads(gzip.decompress(packed_literal(script)))
+        manifest = json.loads(files["manifest.json"])
+        verify_package(files, manifest)
+        need(manifest["scope"]["predecessor"] == previous, "handoff_predecessor_changed")
+        packages[previous] = files
+        expected_routes.update({previous: previous, manifest["release"]: previous})
+    need(routes == expected_routes, "handoff_routes_changed")
+    return installers, packages, routes
+
+
+def preferences_predecessors(path, originals):
+    _, packages, _ = read_pinned_handoff(path, PREFERENCES_HANDOFF_SHA256,
+                                        "KIKILINK_PREFERENCES104")
+    need(set(packages) == set(PREFERENCES_LINEAGES), "preferences_lineages_changed")
+    changed = {"api/ops/private-community-upgrade.mjs", "api/shared/preferences-catalog.json",
+               "api/src/app.mjs", "api/src/auth.mjs", "api/src/preferences.mjs",
+               "api/src/validation.mjs", "api/test/preferences.test.mjs", "group-trial.json",
+               "manifest.json", "private-cloud.py", "private-group-dispatch.py",
+               "private-group-upgrade.py"}
+    for previous, files in packages.items():
+        manifest = json.loads(files["manifest.json"])
+        pin = PREFERENCES_LINEAGES[previous]
+        need(manifest["release"] == pin["release"] and
+             sha(files["manifest.json"].encode()) == pin["manifest"], "preferences_package_changed")
+        original = originals[previous]
+        old = json.loads(original["manifest.json"])
+        need(set(files) == set(original) and
+             {name for name in files if files[name] != original[name]} == changed,
+             "preferences_scope_changed")
+        need(manifest["scope"]["schemaVersion"] == 9 and
+             manifest["featureSourceLock"] == old["featureSourceLock"] and
+             manifest["dependency_locks"] == old["dependency_locks"] and
+             manifest["verifierSources"] == old["verifierSources"],
+             "preferences_runtime_or_dependencies_changed")
+    return packages
+
+
 def verify_package(files, manifest):
     hashes = manifest["files"]
     need(set(files) == set(hashes) | {"manifest.json"}, "package_files_mismatch")
@@ -156,7 +222,7 @@ def migration_operator(source):
     return replace_once(source, "KNOWN_MIGRATIONS_FUNCTION\n", known)
 
 
-def updated_package(repo, previous_files):
+def updated_package(repo, previous_files, migration_template=None):
     old = json.loads(previous_files["manifest.json"])
     previous = old["release"]
     files = {name: body for name, body in previous_files.items() if name != "manifest.json"}
@@ -198,7 +264,11 @@ def updated_package(repo, previous_files):
     need(files["private-cloud.py"].count("schemaVersion=9") == 2, "runtime_schema_labels_changed")
     files["private-cloud.py"] = files["private-cloud.py"].replace("schemaVersion=9", "schemaVersion=11")
 
-    controller = advance_schemas(files["private-group-upgrade.py"])
+    # Preferences 1.0.4 deliberately used a same-schema operator. The reviewed
+    # Feed9 template supplies the 9 -> 11 migration path, while all predecessor
+    # identity/source pins below refer to the actual Preferences installation.
+    template = migration_template if migration_template is not None else previous_files
+    controller = advance_schemas(template["private-group-upgrade.py"])
     controller = replace_once(controller, "migration 009", "migrations 010 and 011")
     for field, value in {
         "PREVIOUS": previous,
@@ -210,10 +280,10 @@ def updated_package(repo, previous_files):
         need(count == 1, "controller_pin_missing: " + field)
     files["private-group-upgrade.py"] = controller
     files["api/ops/private-community-upgrade.mjs"] = migration_operator(
-        files["api/ops/private-community-upgrade.mjs"])
+        template["api/ops/private-community-upgrade.mjs"])
     for name in ("private-group-upgrade.py", "api/ops/private-community-upgrade.mjs"):
         for expression in ("[a-f0-9]{64}", "[a-z0-9_]"):
-            need(previous_files[name].count(expression) == files[name].count(expression),
+            need(template[name].count(expression) == files[name].count(expression),
                  "security_expression_changed: " + name)
     # This test ships with the candidate and runs inside the existing isolated
     # pre-switch gate as well as locally against disposable SQLite databases.
@@ -344,34 +414,58 @@ def save(path, body):
     path.write_text(body)
 
 
+def release_lineages(repo, feed9_path, feed11_path, preferences_path):
+    originals = read_predecessors(feed9_path)
+    scripts, frozen, routes = read_pinned_handoff(
+        feed11_path, ORIGINAL_FEED11_SHA256, "KIKILINK_FEED11")
+    need(set(frozen) == set(originals), "original_feed11_lineages_changed")
+    entries = [(previous, files, scripts[previous], True)
+               for previous, files in frozen.items()]
+    preferences = preferences_predecessors(preferences_path, originals)
+    for original, previous_files in preferences.items():
+        previous = json.loads(previous_files["manifest.json"])["release"]
+        files = updated_package(repo, previous_files, originals[original])
+        manifest = json.loads(files["manifest.json"])
+        # This handoff correction changes installation lineage, not released API
+        # behavior. Keep every API file identical to the already tested Feed11.
+        need(manifest["apiSources"] == json.loads(frozen[original]["manifest.json"])["apiSources"],
+             "feed11_api_changed_requires_separate_release")
+        entries.append((previous, files, installer(previous_files, files), False))
+        routes.update({previous: previous, manifest["release"]: previous})
+    return entries, routes
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--feed9-handoff", type=Path, required=True)
+    parser.add_argument("--preferences-handoff", type=Path, required=True)
+    parser.add_argument("--feed11-handoff", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
-    predecessors = read_predecessors(args.feed9_handoff)
-    installers, routes, lineages = {}, {}, []
-    for previous, original in predecessors.items():
-        files = updated_package(repo, original)
+    entries, routes = release_lineages(repo, args.feed9_handoff, args.feed11_handoff,
+                                      args.preferences_handoff)
+    installers, lineages = {}, []
+    for previous, files, script, preserved in entries:
         manifest = json.loads(files["manifest.json"])
         release = manifest["release"]
         for name, body in files.items():
             save(args.output / "packages" / release / name, body)
-        script = installer(original, files)
         installers[previous] = script
         save(args.output / "installers" / (previous + ".py"), script)
-        routes.update({previous: previous, release: previous})
         lineages.append({"previous": previous, "release": release,
                          "manifestSha256": sha(files["manifest.json"].encode()),
                          "installerSha256": sha(script.encode()), "files": len(manifest["files"]),
                          "sourceRevision": manifest["sourceRevision"],
-                         "sourceTreeDirty": manifest["sourceTreeDirty"]})
+                         "sourceTreeDirty": manifest["sourceTreeDirty"],
+                         "preservedOriginalFeed11": preserved})
     script = handoff(installers, routes)
     artifact = args.output / "KikiLink-Cloud-Feed11-Update.txt"
     save(artifact, script)
     report = {"format": 1, "fromSchema": 9, "schemaVersion": 11,
               "predecessorHandoffPayloadSha256": HANDOFF_HASH, "lineages": lineages,
+              "preferencesHandoffSha256": PREFERENCES_HANDOFF_SHA256,
+              "originalFeed11Sha256": ORIGINAL_FEED11_SHA256,
               "artifact": artifact.name, "artifactSha256": sha(script.encode()),
               "deploymentExecuted": False, "features": FEATURES}
     save(args.output / "Feed11-build-report.json", json.dumps(report, indent=2) + "\n")
