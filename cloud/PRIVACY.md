@@ -115,6 +115,19 @@ Reaction details reveal each eligible reactor and emoji to users allowed to view
 comment. Feed promotion stores pin metadata and a past-winner record to avoid featuring a
 post repeatedly; blocking and moderation still restrict access to its content.
 
+Saved posts, hidden posts and explicit post subscriptions are private account choices;
+other members do not receive their state or change events. Hiding is reversible and
+also stops that post's subscription. Replies retain a parent reference but do not
+reveal a blocked or deleted parent's content. Poll questions and options are encrypted
+with the server key ring; votes associate the authenticated account with selected
+options to enforce one replaceable vote per account. Eligible viewers see totals and
+their own choices, never a voter list. Text and image spoilers conceal content in the
+interface only; they do not change who may read it. Older clients may reveal spoiler
+content. Post deletion removes poll definitions/votes and private post choices.
+Subscriptions reuse recipient-only Mailbox notifications with unread comments
+coalesced per post. Draft posts remain local to the current account/browser and are
+not automatically uploaded to Cloud.
+
 | Additional data | Retention / access |
 | --- | --- |
 | Direct message payload | Up to 30 days after server acceptance; permission checked on retrieval |

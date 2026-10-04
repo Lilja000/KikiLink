@@ -72,6 +72,7 @@ export class MailboxPopover {
     for (const item of this.community.mailbox.items) {
       const who = item.actor ? this.community.adapter.getMemberName(item.actor) : "KikiLink";
       const labels: Record<string, string> = { comment: `${who} commented on your post`, reaction: `${item.count} reaction${item.count === 1 ? "" : "s"} on your ${item.targetType}`,
+        comment_reply: `${who} replied to your comment`, post_comment: item.count > 1 ? `${item.count} new comments on a post you follow` : `${who} commented on a post you follow`,
         friend_request: `${who} sent a friend request`, friend_accepted: `${who} accepted your friend request`, group_invitation: `${who} invited you to a group`,
         report: "New report for review", release: `KikiLink ${item.targetId} is available` };
       const row = element("article", { className: "kl-mailbox-item" }); row.dataset.mailId = String(item.id); row.dataset.unread = String(!item.read);

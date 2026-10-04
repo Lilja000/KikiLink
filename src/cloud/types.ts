@@ -64,6 +64,21 @@ export interface CloudReactions {
   counts: Array<{ reaction: string; count: number }>;
   mine: string | null;
 }
+export interface CloudPollDraft {
+  question: string;
+  options: string[];
+  multiple: boolean;
+  closesAt: number;
+}
+export interface CloudPoll {
+  question: string;
+  options: Array<{ id: number; text: string; votes: number }>;
+  multiple: boolean;
+  closesAt: number;
+  totalVoters: number;
+  myVotes: number[];
+  closed: boolean;
+}
 export interface CloudPost {
   id: number;
   author: number;
@@ -81,9 +96,16 @@ export interface CloudPost {
   pinnedAt?: number | null;
   featuredAt?: number | null;
   featuredUntil?: number | null;
+  bookmarked?: boolean;
+  hidden?: boolean;
+  watching?: boolean;
+  spoilerMediaIds?: string[];
+  poll?: CloudPoll | null;
 }
 export interface CloudComment extends Omit<CloudPost, "mediaIds"> {
   postId: number;
+  parentId?: number | null;
+  replyTo?: { id: number; author: number; profile: CloudPost["profile"]; text: string } | null;
 }
 export interface CloudPage<T> {
   items: T[];

@@ -45,13 +45,14 @@ export class FeedHighlights {
       return Boolean(winner);
     });
   }
-  promoted(actor) {
+  promoted(actor, filter = "all") {
+    const selection = this.feed.tools.filter(actor, filter);
     const rows = this.db.all(`SELECT p.* FROM posts p JOIN users u ON u.member_number=p.author AND u.disabled=0
       LEFT JOIN feed_pins pin ON pin.post_id=p.id
       LEFT JOIN feed_features f ON f.post_id=p.id AND f.featured_until>?
       WHERE p.deleted_at IS NULL AND (pin.post_id IS NOT NULL OR f.post_id IS NOT NULL)
       AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner=? AND b.target=p.author) OR (b.target=? AND b.owner=p.author))
-      ORDER BY (pin.post_id IS NOT NULL) DESC,pin.pinned_at DESC,p.id DESC LIMIT 11`, this.now(), actor, actor);
-    return rows.map(row => this.feed.view(actor, row));
+      ${selection.sql} ORDER BY (pin.post_id IS NOT NULL) DESC,pin.pinned_at DESC,p.id DESC LIMIT 11`, this.now(), actor, actor, ...selection.args);
+    return this.feed.views(actor, rows);
   }
 }

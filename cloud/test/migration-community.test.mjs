@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { Database } from '../src/db.mjs';
 import { fixture } from './helpers.mjs';
 
-test('Migrations 006/007/008 preserve a five-migration database, repeat safely, and require explicit upgrade', t => {
+test('Migrations 006–011 preserve a five-migration database, repeat safely, and require explicit upgrade', t => {
   const dir=mkdtempSync(join(tmpdir(),'kikilink-upgrade-')), path=join(dir,'legacy.sqlite'); t.after(()=>rmSync(dir,{recursive:true,force:true}));
   const raw=new DatabaseSync(path), migrationDir=new URL('../migrations/',import.meta.url);
   raw.exec('CREATE TABLE schema_migrations(name TEXT PRIMARY KEY,hash TEXT NOT NULL,applied_at INTEGER NOT NULL) STRICT');
@@ -20,11 +20,11 @@ test('Migrations 006/007/008 preserve a five-migration database, repeat safely, 
   raw.prepare('INSERT INTO profiles VALUES(101,?,7,1,123)').run('encrypted-legacy-payload-canary');
   raw.prepare("INSERT INTO reports(reporter,target_type,target_id,reason,created_at) VALUES(101,'profile','202',?,123)").run('encrypted-legacy-reason-canary'); raw.close();
   assert.throws(()=>new Database(path),/explicit migration/);
-  let db=new Database(path,{migrate:true}); assert.equal(db.migrations().length,9);
+  let db=new Database(path,{migrate:true}); assert.equal(db.migrations().length,11);
   assert.equal(db.get('SELECT payload FROM profiles').payload,'encrypted-legacy-payload-canary');
   assert.equal(db.get('SELECT revision FROM profiles').revision,7); assert.equal(db.get('SELECT reason_code FROM reports').reason_code,null);
   assert.equal(db.get('SELECT reason FROM reports').reason,'encrypted-legacy-reason-canary'); db.close();
-  db=new Database(path,{migrate:true}); assert.equal(db.get('SELECT count(*) AS n FROM schema_migrations').n,9); assert.equal(db.healthy(),true); db.close();
+  db=new Database(path,{migrate:true}); assert.equal(db.get('SELECT count(*) AS n FROM schema_migrations').n,11); assert.equal(db.healthy(),true); db.close();
 });
 test('The explicit feature pause preserves new data and keeps stable profile/report APIs usable', async t=>{
   const f=await fixture(t); await f.login(101); await f.login(202);

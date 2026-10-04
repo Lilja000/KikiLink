@@ -10,6 +10,7 @@ import { Media } from "./media.mjs";
 import { communityApi } from "./community-api.mjs";
 import { constantEqual } from "./crypto.mjs";
 import reportReasons from "../shared/report-reasons.json" with { type: "json" };
+import feedReactions from "../shared/feed-reactions.json" with { type: "json" };
 import {
   requireThat,
   id,
@@ -20,12 +21,14 @@ import {
   text,
   profile,
   post,
+  postEdit,
   message,
   targetType,
 } from "./validation.mjs";
 
 const MINUTE = 60000,
   DAY = 86400000;
+const reactionIds = feedReactions.map(reaction => reaction.id);
 const paging = z.object({ cursor, limit: count }).strict();
 const target = z
   .object({
@@ -261,7 +264,7 @@ export function createApp({
     expiresAt: req.identity.expiresAt,
     moderator: config.moderators.has(req.identity.member),
     apiVersion: 1,
-    features: { feedPins: true, feedFeatured: true, reactionDetails: true, preferences: !!config.communityEnabled, community: !!config.communityEnabled, directMessages: !!config.communityEnabled, readCursors: !!config.communityEnabled, messageReceipts: !!config.communityEnabled, reportReasons: true, groupPins: true, groupLive: true, groupInbox: true, groupAvatar: true, fullProfile: true, profileGradientAngle: true, feedSearch: true, messageChanges: true, reactions: ["heart", "like", "laugh", "support", "dislike", "wow", "sad"] },
+    features: { feedBookmarks: true, feedReplies: true, feedFilters: true, feedPolls: true, feedWatch: !!config.communityEnabled, feedHide: true, feedSpoilers: true, feedPins: true, feedFeatured: true, reactionDetails: true, preferences: !!config.communityEnabled, community: !!config.communityEnabled, directMessages: !!config.communityEnabled, readCursors: !!config.communityEnabled, messageReceipts: !!config.communityEnabled, reportReasons: true, groupPins: true, groupLive: true, groupInbox: true, groupAvatar: true, fullProfile: true, profileGradientAngle: true, feedSearch: true, messageChanges: true, reactions: reactionIds },
   }));
   app.get("/v1/privacy", async () => ({
     version: 1,
@@ -541,9 +544,27 @@ export function createApp({
   });
 
   app.get("/v1/feed", async (req) => {
-    const p = paging.extend({ q: text(100).trim().default("") }).parse(req.query);
+    const p = paging.extend({ q: text(100).trim().default(""), filter: z.enum(["all", "friends", "mine", "saved", "hidden"]).default("all") }).parse(req.query);
     refreshFeatured();
-    return feed.list(req.identity.member, p.cursor, p.limit, p.q);
+    return feed.list(req.identity.member, p.cursor, p.limit, p.q, p.filter);
+  });
+  for (const [route, field] of [["bookmark", "bookmarked"], ["hide", "hidden"], ["watch", "watching"]]) {
+    app.put(`/v1/feed/:id/${route}`, async req => {
+      requireThat(field !== "watching" || config.communityEnabled, 409, "community_unavailable");
+      const data = z.object({ [field]: z.boolean() }).strict().parse(req.body);
+      auth.rate(`feed-preferences:${req.identity.member}`, 120, MINUTE);
+      const result = feed.tools.preference(req.identity.member, pageId.parse(req.params.id), field, data[field]);
+      changed("feed", req.identity.member, undefined, [req.identity.member]);
+      if (field !== "bookmarked") changed("mailbox", req.identity.member, undefined, [req.identity.member]);
+      return result;
+    });
+  }
+  app.put("/v1/feed/:id/poll/vote", async req => {
+    const data = z.object({ optionIds: z.array(z.number().int().min(1).max(6)).max(6) }).strict().parse(req.body);
+    auth.rate(`poll-votes:${req.identity.member}`, 120, MINUTE);
+    const result = feed.tools.vote(req.identity.member, pageId.parse(req.params.id), data.optionIds);
+    changed("feed", req.identity.member);
+    return result;
   });
   app.put("/v1/feed/:id/pin", async req => {
     auth.moderator(req.identity.member);
@@ -565,9 +586,7 @@ export function createApp({
     ),
   );
   app.patch("/v1/feed/:id", async (req) => {
-    const data = post
-      .safeExtend({ revision: z.number().int().positive() })
-      .parse(req.body);
+    const data = postEdit.parse(req.body);
     const result = feed.edit(
       req.identity.member,
       pageId.parse(req.params.id),
@@ -592,7 +611,7 @@ export function createApp({
   });
   app.post("/v1/feed/:id/comments", async (req, reply) => {
     const data = z
-      .object({ text: text(1000).trim().min(1) })
+      .object({ text: text(1000).trim().min(1), parentId: z.number().int().positive().safe().nullable().optional() })
       .strict()
       .parse(req.body);
     auth.rate(`comments:${req.identity.member}`, 60, DAY);
@@ -600,6 +619,7 @@ export function createApp({
       req.identity.member,
       pageId.parse(req.params.id),
       data.text,
+      data.parentId,
     );
     changed("feed", req.identity.member);
     community.mailbox.comment(req.identity.member, pageId.parse(req.params.id), result.id);
@@ -633,7 +653,7 @@ export function createApp({
   app.put("/v1/reactions/:type/:id", async (req) => {
     const data = z
       .object({
-        reaction: z.enum(["heart", "like", "laugh", "support", "dislike", "wow", "sad"]).nullable(),
+        reaction: z.enum(reactionIds).nullable(),
       })
       .strict()
       .parse(req.body);
@@ -824,6 +844,7 @@ export function createApp({
         db.get("SELECT 1 FROM group_members WHERE group_id=? AND member_number=? AND status='active'", event.groupId, actor)) send("typing");
       if (
         event.kind === "feed" &&
+        (!event.recipients?.length || event.recipients.includes(actor)) &&
         (!event.actor || !social.blocked(actor, event.actor))
       )
         send("feed");

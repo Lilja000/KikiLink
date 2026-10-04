@@ -48,21 +48,29 @@ export const profile = z
     revision: z.number().int().nonnegative(),
   })
   .strict();
-export const post = z
+const poll = z.object({
+  question: text(200).trim().min(1),
+  options: z.array(text(100).trim().min(1)).min(2).max(6)
+    .refine(options => new Set(options.map(option => option.normalize("NFKC").toLowerCase())).size === options.length, "Duplicate poll option"),
+  multiple: z.boolean(),
+  closesAt: z.number().int().positive().safe(),
+}).strict();
+const postFields = z
   .object({
     text: text(4000),
     mediaIds: z.array(id).max(4).default([]),
     clientId: id.optional(),
+    spoilerMediaIds: z.array(id).max(4).optional(),
   })
-  .strict()
+  .strict();
+const validMedia = v => new Set(v.mediaIds).size === v.mediaIds.length && (!v.spoilerMediaIds || new Set(v.spoilerMediaIds).size === v.spoilerMediaIds.length && v.spoilerMediaIds.every(id => v.mediaIds.includes(id)));
+export const post = postFields.extend({ poll: poll.optional() })
   .refine(
-    (v) => v.text.trim().length > 0 || v.mediaIds.length > 0,
+    (v) => v.text.trim().length > 0 || v.mediaIds.length > 0 || !!v.poll,
     "Post cannot be empty",
   )
-  .refine(
-    (v) => new Set(v.mediaIds).size === v.mediaIds.length,
-    "Duplicate media",
-  );
+  .refine(validMedia, "Invalid or duplicate media");
+export const postEdit = postFields.extend({ revision: z.number().int().positive() }).refine(validMedia, "Invalid or duplicate media");
 export const message = z
   .object({
     clientId: id,

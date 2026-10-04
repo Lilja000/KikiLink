@@ -54,11 +54,14 @@ describe("stable Cloud profile rendering", () => {
     const shield = admin.querySelector<HTMLElement>(".kl-feed-administrator")!;
     const avatar = admin.querySelector(".kl-social-avatar")!.firstElementChild;
     expect(shield.title).toBe("Administrator");
+    expect(admin.querySelector<HTMLElement>(".kl-social-name")!.dataset.creator).toBe("true");
     expect(shield.previousElementSibling?.classList.contains("kl-social-name")).toBe(true);
     expect(ui.author({ ...profile(202), displayName: "Administrator Kiki" }, undefined, undefined, true).querySelector(".kl-feed-administrator")).toBeNull();
+    expect(ui.author({ ...profile(202), displayName: "Snowy 72385" }, undefined, undefined, true).querySelector<HTMLElement>(".kl-social-name")!.dataset.creator).toBe("false");
     expect(ui.author(profile(72385)).querySelector(".kl-feed-administrator")).toBeNull();
     const imageCalls = image.mock.calls.length;
     ui.updateAuthor(admin, { ...profile(72385), displayName: "A much longer new nickname" });
+    expect(admin.querySelector<HTMLElement>(".kl-social-name")!.dataset.creator).toBe("true");
     expect(shield.previousElementSibling?.textContent).toBe("A much longer new nickname");
     expect(admin.querySelector(".kl-feed-administrator")).toBe(shield);
     expect(admin.querySelector(".kl-social-avatar")!.firstElementChild).toBe(avatar);
