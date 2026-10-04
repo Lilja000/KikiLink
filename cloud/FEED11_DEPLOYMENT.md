@@ -13,27 +13,49 @@ From a clean, committed checkout with the unchanged Cloud dependency lock:
 ```sh
 python3 scripts/build-cloud-feed11-release.py \
   --feed9-handoff /path/to/KikiLink-Cloud-Feed9-Update.txt \
+  --preferences-handoff /path/to/KikiLink-Cloud-Preferences-1.0.4.txt \
+  --feed11-handoff /path/to/original-KikiLink-Cloud-Feed11-Update.txt \
   --output .local-dev/feed11-release
 ```
 
-The input handoff, both predecessor packages and their manifests are hash-pinned.
+The three input handoffs, predecessor packages and their manifests are hash-pinned.
 They are decoded as data, never executed during the build. The output includes
 readable package trees, readable installers, a provenance report and
 `KikiLink-Cloud-Feed11-Update.txt`. No host is contacted and no deployment is run.
 The report records source revision, dirty state and artifact SHA-256. Build from
-the final clean release commit to produce the owner handoff.
+the final clean release commit to produce new lineages. The two original Feed11
+packages retain their original provenance and exact installer/payload/manifest
+bytes, including for already-installed reruns. The required original handoff has
+SHA-256 `ec10c70b731e378c1cac66c62db5a796f530f1134eecf25fadb874cd82a136a1`;
+keep that historical input separate from the corrected output.
 
-This is a direct schema 9 → 11 update for the two reviewed Feed9 runtime lineages.
+This is a direct schema 9 → 11 update for the two reviewed Feed9 runtime lineages
+and their Preferences 1.0.4 successors, `a09502488f4d` and `7fbcf099dc7e`.
+The first handoff omitted the Preferences successors and refused those runtimes
+with `UNRECOGNIZED_CURRENT_RELEASE` before extracting packages or changing services
+or data. The corrected handoff authenticates the recovered successor packages;
+it does not bypass the exact-release or source-hash guards.
 It includes migrations 010 and 011, the current shared reaction catalog and News.
 The earlier Feed10 artifact remains historical and must not be run first.
 Unknown installations, changed package files, changed migration checksums or a
 changed dependency lock are refused rather than guessed around.
+
+Preferences 1.0.4 used a same-schema 9 → 9 operator. The new branches inherit its
+runtime and dependency identity but use the reviewed Feed9-derived 9 → 11 migration
+operator. The upgrade controller pins the actual Preferences predecessor manifest
+and source. Its checkpoint and journal use the Feed11 namespace. Every API source
+file remains identical to the original Feed11 package, preserving the published
+Preferences fixes and release behavior.
 
 The generated package includes `feed11-deployment.test.mjs`: it tests a disposable
 schema-9 database, direct migration and repeatability, unchanged existing records,
 both reaction targets, all 20 reaction identifiers, the Featured index, checkpoint
 hash rejection, changed-data rejection and offline restoration. The rest of the
 included API tests run with it inside the isolated pre-switch candidate container.
+`scripts/cloud-feed11-package.test.py`, run with the same three handoff arguments,
+also verifies all eight routes without executing their installers, preserved old
+package identity, actual Preferences predecessor pins and rejection of modified
+handoffs/manifests/sources before payload extraction.
 
 ## Owner-operated installation
 
