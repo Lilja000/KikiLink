@@ -138,9 +138,9 @@ export class CloudFeedView {
     const update = () => {
       frame = 0;
       if (!this.element.isConnected || !viewport.clientHeight) return;
-      // Reclaim the headings' space as they scroll away and the sidebar sticks.
-      // The Feed remains the scroll owner; the sidebar has its own scroll range.
-      const offset = this.element.getBoundingClientRect().top - viewport.getBoundingClientRect().top - viewport.clientTop;
+      // Use the sidebar's actual sticky position, not the scrolled-away Feed
+      // origin, so the viewport's bottom padding always stays below its cards.
+      const offset = sidebar.getBoundingClientRect().top - viewport.getBoundingClientRect().top - viewport.clientTop;
       const bottom = parseFloat(getComputedStyle(viewport).paddingBottom) || 0;
       const height = Math.max(0, Math.floor(viewport.clientHeight - Math.max(0, offset) - bottom));
       const visibleHeight = Math.min(height, sidebar.scrollHeight);
