@@ -21,6 +21,11 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.1.1 - 2026-10-04
+
+- Let the Feed sidebar fill the available height as the Feed header scrolls away, keeping
+  independent scrolling and adding subtle edge fades only where more sidebar content is hidden.
+
 ## 1.1.0 - 2026-10-04
 
 - Expand Feed with private Saved posts, Friends/My posts filters, recoverable hidden posts,
