@@ -7,7 +7,7 @@ import {
   type KeyValueStorageReadResult,
 } from "../core/settings";
 import type { ConversationMeta, LinkMessage } from "../core/types";
-import type { ChatRepository } from "./chat-repository";
+import type { ChatCaptureResult, ChatRepository } from "./chat-repository";
 import { PEOPLE_KEY } from "./people-repository";
 
 const CLOUD_EXTENSION_KEY = "KikiLink";
@@ -597,6 +597,19 @@ export class AccountSyncedChatRepository implements ChatRepository {
     private readonly repository: ChatRepository,
     private readonly account: AccountDataStorage,
   ) {}
+
+  async captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult> {
+    const result = await this.repository.captureMessage(message, conversation, keepNewest);
+    this.account.markChatChanged();
+    if (result.removed > 0) {
+      if (result.oldestRetainedAt !== undefined) {
+        this.account.commitConversationPrune(message.peerNumber, result.oldestRetainedAt);
+      } else {
+        this.account.commitConversationDelete(message.peerNumber);
+      }
+    }
+    return result;
+  }
 
   async addMessage(message: LinkMessage): Promise<void> {
     await this.repository.addMessage(message);

@@ -20,6 +20,7 @@ export class CloudDirect {
   #task: Promise<void> | undefined;
   #unsubscribers: Array<() => void> = [];
   #sending = new Map<string, Promise<void>>();
+  #preparing = new Set<string>();
   #wasEnabled = false;
   #readTimer: ReturnType<typeof setTimeout> | undefined;
   #readTask: Promise<void> | undefined;
@@ -85,10 +86,16 @@ export class CloudDirect {
     const queued = this.#state.outgoing.find(m => m.localId === localId && !m.serverId); if (!queued) return;
     this.#state.outgoing = this.#state.outgoing.filter(m => m !== queued); this.#save();
     const updated = await this.chat.updateDelivery(queued.peer, queued.localId, { delivery: "failed", deliveryError: "Local retries stopped. A message already accepted by the server may still arrive." });
-    this.options.changed(queued.peer, updated);
+    this.#changed(queued.peer, updated);
   }
   clearPending(peer?: number): void { this.#state.outgoing = peer === undefined ? [] : this.#state.outgoing.filter(m => m.peer !== peer); this.#save(); }
   #save(): void { this.storage.setItem(this.#key, JSON.stringify(this.#state)); }
+  #changed(peer?: number, message?: LinkMessage): void {
+    try { this.options.changed(peer, message); } catch { /* View failures cannot change delivery acceptance. */ }
+  }
+  #incoming(message: LinkMessage): void {
+    try { this.options.incoming(message); } catch { /* Notifications are independent of durable inbox delivery. */ }
+  }
   // Recovery runs only after unfinished work fails. Successful catch-up stops it;
   // there is no idle poll and ambiguous sends always retain their original ID.
   #scheduleRetry(error?: unknown): void {
@@ -122,10 +129,24 @@ export class CloudDirect {
     this.#state.outgoing.push(queued);
     this.#state.cloudPeers = [...new Set([...this.#state.cloudPeers, peer])].slice(-2000);
     try { this.#save(); } catch { this.#state.outgoing.pop(); throw new Error("Cannot save the local delivery queue. Message has not been sent."); }
+    // Catch-up can run while capture awaits storage. It must not transmit an
+    // entry whose initial capture can still fail and be rolled back as unsent.
+    this.#preparing.add(localId);
     let message: LinkMessage;
     try { ({ message } = await this.#captureOutgoing(queued)); }
-    catch { this.#state.outgoing = this.#state.outgoing.filter(m => m !== queued); this.#save(); throw new Error("Could not save your outgoing message. It has not been sent."); }
-    this.options.changed(peer, message);
+    catch {
+      const outgoing = this.#state.outgoing;
+      this.#state.outgoing = outgoing.filter(m => m !== queued);
+      let rolledBack = false;
+      try { this.#save(); rolledBack = true; } catch { this.#state.outgoing = outgoing; }
+      if (rolledBack) throw new Error("Could not save your outgoing message. It has not been sent.");
+      // The durable queue still owns this ID. Reporting an unsent draft here
+      // would let the composer create a second send while this one can recover.
+      message = { id: localId, clientMessageId, direction: "outgoing", peerNumber: peer, peerName: name,
+        content: text, sentAt: createdAt, includeRoom: !!roomName, ...(roomName ? { roomName } : {}),
+        read: true, delivery: "waiting", deliveryError: "Saved in the local delivery queue. Waiting for chat storage." };
+    } finally { this.#preparing.delete(localId); }
+    this.#changed(peer, message);
     void this.#transmit(queued).catch(() => {});
     return message;
   }
@@ -138,10 +159,11 @@ export class CloudDirect {
     const queued = this.#state.outgoing.find(m => m.localId === localId); if (!queued) return;
     queued.failed = false; this.#save();
     const updated = await this.chat.updateDelivery(queued.peer, queued.localId, { delivery: "waiting", deliveryError: "" });
-    this.options.changed(queued.peer, updated);
+    this.#changed(queued.peer, updated);
     await this.#transmit(queued);
   }
   #transmit(queued: Outgoing): Promise<void> {
+    if (this.#preparing.has(queued.localId) || !this.#state.outgoing.includes(queued)) return Promise.resolve();
     if (this.#sending.has(queued.localId)) return this.#sending.get(queued.localId)!;
     const task = (async () => {
       if (this.#closed || !this.community.client.connected || !this.community.directEnabled || queued.serverId || queued.failed) return;
@@ -149,7 +171,7 @@ export class CloudDirect {
       if (Date.now() - queued.createdAt > 30 * 86400000) {
         this.#state.outgoing = this.#state.outgoing.filter(m => m !== queued); this.#save();
         const updated = await this.chat.updateDelivery(queued.peer, queued.localId, { delivery: "failed", deliveryError: "Delivery window expired" });
-        this.options.changed(queued.peer, updated); return;
+        this.#changed(queued.peer, updated); return;
       }
       let updated: LinkMessage | undefined;
       try {
@@ -172,10 +194,10 @@ export class CloudDirect {
         queued.failed = definiteFailure; this.#save();
         updated = await this.chat.updateDelivery(queued.peer, queued.localId, { delivery: definiteFailure ? "failed" : "waiting",
           deliveryError: definiteFailure ? "Delivery is not permitted. Check friendship and retry." : "Not confirmed. Retry with the same message ID when connected." });
-        if (updated) this.options.changed(queued.peer, updated);
+        if (updated) this.#changed(queued.peer, updated);
         return;
       }
-      if (updated) this.options.changed(queued.peer, updated);
+      if (updated) this.#changed(queued.peer, updated);
     })().finally(() => { this.#sending.delete(queued.localId); });
     this.#sending.set(queued.localId, task); return task;
   }
@@ -216,7 +238,7 @@ export class CloudDirect {
         if (this.#closed) return;
         // Show each captured message immediately. An acknowledgement failure or a
         // later storage error in this page must not hide messages already received.
-        if (fresh) { this.options.changed(message.peerNumber, message); this.options.incoming(message); }
+        if (fresh) { this.#changed(message.peerNumber, message); this.#incoming(message); }
       }
       // Acknowledge only after local capture, never when the server merely saved it.
       if (page.items.length) await client.request("POST", "/v1/direct/acknowledge", { ids: page.items.map(item => item.id) });
@@ -244,7 +266,7 @@ export class CloudDirect {
         }
         if (receipt.state === "read") {
           const updated = await this.chat.reconcileCloudReceipt(peer, receipt.messageId, "read");
-          if (updated) this.options.changed(peer, updated);
+          if (updated) this.#changed(peer, updated);
           else unresolved ||= this.#state.outgoing.some(m => m.peer === peer && !m.serverId);
           continue;
         }
@@ -257,7 +279,7 @@ export class CloudDirect {
             ? await this.chat.reconcileCloudReceipt(peer, receipt.messageId, "delivered")
             : undefined;
         if (queued) this.#state.outgoing = this.#state.outgoing.filter(m => m !== queued);
-        if (updated) this.options.changed(peer, updated);
+        if (updated) this.#changed(peer, updated);
         else unresolved ||= this.#state.outgoing.some(m => m.peer === peer && !m.serverId);
       }
       // Never advance past a receipt while its send is still ambiguous. It can be
@@ -269,7 +291,7 @@ export class CloudDirect {
     const reads = await client.request<{ items: Array<{ scope: string; cursor: number }> }>("GET", "/v1/read-cursors");
     if (this.#closed) return;
     for (const read of reads.items) if (read.scope.startsWith("direct:")) await this.chat.reconcileCloudRead(Number(read.scope.slice(7)), read.cursor);
-    this.options.changed();
+    this.#changed();
   }
   destroy(): void { this.#closed = true; clearTimeout(this.#readTimer); clearTimeout(this.#syncTimer); clearTimeout(this.#retryTimer); this.chat.onCloudRead = undefined; for (const fn of this.#unsubscribers.splice(0)) fn(); }
 }

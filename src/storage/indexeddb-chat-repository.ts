@@ -1,5 +1,5 @@
 import type { ConversationMeta, LinkMessage } from "../core/types";
-import type { ChatRepository } from "./chat-repository";
+import type { ChatCaptureResult, ChatRepository } from "./chat-repository";
 import { sortConversations } from "./memory-chat-repository";
 
 const DATABASE_NAME = "kikilink";
@@ -13,6 +13,38 @@ export class IndexedDbChatRepository implements ChatRepository {
   #databasePromise: Promise<IDBDatabase> | undefined;
 
   constructor(private readonly databaseName = DATABASE_NAME) {}
+
+  async captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult> {
+    const database = await this.#database();
+    const transaction = database.transaction([MESSAGE_STORE, CONVERSATION_STORE], "readwrite");
+    const done = transactionDone(transaction);
+    try {
+      const messages = transaction.objectStore(MESSAGE_STORE);
+      messages.put(message);
+      transaction.objectStore(CONVERSATION_STORE).put(conversation);
+      const range = IDBKeyRange.bound([message.peerNumber, 0], [message.peerNumber, Number.MAX_SAFE_INTEGER]);
+      let visited = 0;
+      let removed = 0;
+      let oldestRetainedAt: number | undefined;
+      const cursor = iterateCursor(messages.index(PEER_TIME_INDEX).openCursor(range, "prev"), cursor => {
+        visited += 1;
+        if (visited > keepNewest) {
+          cursor.delete();
+          removed += 1;
+        } else {
+          oldestRetainedAt = (cursor.value as LinkMessage).sentAt;
+        }
+        return true;
+      });
+      await Promise.all([cursor, done]);
+      return { removed, oldestRetainedAt };
+    } catch (error) {
+      // A synchronous put/cursor failure must also roll back already queued writes.
+      try { transaction.abort(); } catch { /* The transaction has already finished/aborted. */ }
+      await done.catch(() => undefined);
+      throw error;
+    }
+  }
 
   async addMessage(message: LinkMessage): Promise<void> {
     const database = await this.#database();
@@ -221,12 +253,16 @@ function iterateCursor(
   return new Promise((resolve, reject) => {
     request.onerror = () => reject(request.error ?? new Error("KikiLink cursor failed"));
     request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor || !visitor(cursor)) {
-        resolve();
-        return;
+      try {
+        const cursor = request.result;
+        if (!cursor || !visitor(cursor)) {
+          resolve();
+          return;
+        }
+        cursor.continue();
+      } catch (error) {
+        reject(error);
       }
-      cursor.continue();
     };
   });
 }

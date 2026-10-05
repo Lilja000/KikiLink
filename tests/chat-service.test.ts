@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
-import type { ConversationMeta } from "../src/core/types";
+import type { ConversationMeta, LinkMessage } from "../src/core/types";
+import type { ChatCaptureResult } from "../src/storage/chat-repository";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 
@@ -53,6 +54,16 @@ class DeferredConversationRepository extends MemoryChatRepository {
   }
 
   override async putConversation(conversation: ConversationMeta): Promise<void> {
+    await this.#beforeConversationWrite();
+    await super.putConversation(conversation);
+  }
+
+  override async captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult> {
+    await this.#beforeConversationWrite();
+    return super.captureMessage(message, conversation, keepNewest);
+  }
+
+  async #beforeConversationWrite(): Promise<void> {
     if (this.#rejectNextPut) {
       this.#rejectNextPut = false;
       throw new Error("Synthetic conversation write failure");
@@ -63,7 +74,6 @@ class DeferredConversationRepository extends MemoryChatRepository {
       pending.entered.resolve();
       await pending.release.promise;
     }
-    await super.putConversation(conversation);
   }
 
   override async deleteMessagesOlderThan(timestamp: number): Promise<number> {

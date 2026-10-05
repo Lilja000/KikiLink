@@ -52,7 +52,7 @@ describe("LinkChatView", () => {
     ["comfortable", 1024], ["comfortable", 390],
     ["compact", 1024], ["compact", 390],
     ["super-compact", 1024], ["super-compact", 390],
-  ] as const)("patches confirmed Cloud send/read checks and time format without rebuilding in %s density at %ipx", async (density, viewport) => {
+  ] as const)("patches recipient delivery/read checks and time format without rebuilding in %s density at %ipx", async (density, viewport) => {
     vi.stubGlobal("innerWidth", viewport);
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
@@ -86,13 +86,14 @@ describe("LinkChatView", () => {
     expect(indicator.getAttribute("aria-hidden")).toBe("true");
     const sent = await service.updateDelivery(123, "cloud-out:test", { delivery: "sent" });
     await view.onMessage(123, false, sent);
-    expect(indicator.dataset.state).toBe("sent");
-    expect(indicator.title).toBe("Sent to Cloud");
-    expect(indicator.hasAttribute("aria-hidden")).toBe(false);
+    expect(indicator.dataset.state).toBe("pending");
+    expect(indicator.hasAttribute("title")).toBe(false);
+    expect(indicator.getAttribute("aria-hidden")).toBe("true");
     const delivered = await service.updateDelivery(123, "cloud-out:test", { delivery: "delivered" });
     await view.onMessage(123, false, delivered);
     expect(indicator.dataset.state).toBe("sent");
-    expect(indicator.title).toBe("Sent to Cloud");
+    expect(indicator.title).toBe("Delivered to recipient");
+    expect(indicator.hasAttribute("aria-hidden")).toBe(false);
     const read = await service.updateDelivery(123, "cloud-out:test", { delivery: "read" });
     await view.onMessage(123, false, read);
     expect(indicator.dataset.state).toBe("read");

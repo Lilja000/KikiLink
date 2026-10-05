@@ -1125,6 +1125,8 @@ describe("GroupChatPanel conversation pane", () => {
     { name: "Enter, unchanged draft", next: "", moveFocus: false, failed: false, clickSend: false },
     { name: "Send button, unchanged draft", next: "", moveFocus: false, failed: false, clickSend: true },
     { name: "typing the next message", next: "Next message", moveFocus: false, failed: false, clickSend: false },
+    { name: "typing an identical next message", next: "First message", moveFocus: false, failed: false, clickSend: false },
+    { name: "failed unchanged draft", next: "", moveFocus: false, failed: true, clickSend: false },
     { name: "moving to another field", next: "Next message", moveFocus: true, failed: false, clickSend: false },
     { name: "failed send after moving focus", next: "Next message", moveFocus: true, failed: true, clickSend: false },
   ])("keeps native group focus and drafts safe: $name", async ({ next, moveFocus, failed, clickSend }) => {
@@ -1152,6 +1154,7 @@ describe("GroupChatPanel conversation pane", () => {
     }));
     if (clickSend) { sendButton.focus(); sendButton.click(); } else enter();
     expect(composer.disabled).toBe(false);
+    expect(composer.value).toBe("");
     expect(shadow.activeElement).toBe(composer);
     enter();
     expect(send).toHaveBeenCalledOnce();
@@ -1173,6 +1176,57 @@ describe("GroupChatPanel conversation pane", () => {
         .toEqual(["First message", "Second message"]);
       expect(shadow.activeElement).toBe(composer);
     }
+    harness.panel.destroy();
+  });
+
+  it("retains an original failed group send separately and retries without changing the next draft", async () => {
+    const harness = setup();
+    const { group } = await harness.service.createGroup([20, 30], "Failed Crew");
+    await harness.panel.activate(group.groupId);
+    const gate = deferred<void>();
+    const send = vi.spyOn(harness.service, "sendMessage").mockImplementationOnce(async () => {
+      await gate.promise; throw new Error("Transport unavailable");
+    });
+    const composer = required<HTMLTextAreaElement>(harness.panel.chatPane, ".kl-group-composer");
+    composer.value = "Original message";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    click(harness.panel.chatPane, ".kl-group-send");
+    expect(composer.value).toBe("");
+    composer.value = "Original message";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    gate.resolve();
+    await vi.waitFor(() => expect(harness.feedback.at(-1)?.tone).toBe("error"));
+    expect(composer.value).toBe("Original message");
+    click(harness.panel.chatPane, ".kl-failed-send-actions button");
+    await vi.waitFor(() => expect(harness.service.getMessages(group.groupId)).toHaveLength(1));
+    await vi.waitFor(() => expect(required<HTMLElement>(harness.panel.chatPane, ".kl-failed-send-actions").hidden).toBe(true));
+    expect(send.mock.calls.map(call => call[1])).toEqual(["Original message", "Original message"]);
+    expect(composer.value).toBe("Original message");
+    expect(harness.service.getGroup(group.groupId)?.draft).toBe("Original message");
+    harness.panel.destroy();
+  });
+
+  it("restores an untouched failed group's draft while preserving pending typing in another group", async () => {
+    const harness = setup();
+    const first = await harness.service.createGroup([20, 30], "First Crew");
+    const second = await harness.service.createGroup([40, 50], "Second Crew");
+    await harness.panel.activate(first.group.groupId);
+    const gate = deferred<void>();
+    vi.spyOn(harness.service, "sendMessage").mockImplementationOnce(async () => {
+      await gate.promise; throw new Error("Transport unavailable");
+    });
+    const composer = required<HTMLTextAreaElement>(harness.panel.chatPane, ".kl-group-composer");
+    composer.value = "Restore original";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    click(harness.panel.chatPane, ".kl-group-send");
+    await harness.panel.activate(second.group.groupId);
+    composer.value = "Other group's new draft";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    gate.resolve();
+    await vi.waitFor(() => expect(harness.service.getGroup(first.group.groupId)?.draft).toBe("Restore original"));
+    expect(composer.value).toBe("Other group's new draft");
+    expect(harness.service.getGroup(second.group.groupId)?.draft).toBe("Other group's new draft");
+    expect(harness.feedback).toHaveLength(0);
     harness.panel.destroy();
   });
 

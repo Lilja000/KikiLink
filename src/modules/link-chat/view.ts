@@ -100,7 +100,6 @@ import { LINK_CHAT_STYLES } from "./styles";
 import { normalizeImageUrl, parseMessageLinks } from "./media";
 import { parseInlineReplyContext } from "./message-reply";
 import { messageActions, copyMessageText as copyText, shouldSendMessage } from "./message-controls";
-import { remainingDraftAfterSend } from "../../utils/sent-draft";
 import { ReplyComposer, replyPreview } from "./reply-composer";
 import { MessageInteraction } from "./message-interaction";
 import { appendFormattedText, TEXT_FORMAT_HINT } from "./text-format";
@@ -280,6 +279,14 @@ type ImageDestinationSnapshot =
       peerName: string;
       includeRoom: boolean;
     };
+
+interface DirectComposerSubmission {
+  peerNumber: number;
+  value: string;
+  next: string;
+  edited: boolean;
+  cancelled?: boolean;
+}
 
 type RemoteImageLoaderLike = Pick<RemoteImageLoader, "load" | "destroy"> &
   Partial<Pick<RemoteImageLoader, "loadLease">>;
@@ -1128,6 +1135,9 @@ export class LinkChatView {
   >();
   #directSelectionIntent = 0;
   #directSendBusy = false;
+  #directSubmission: DirectComposerSubmission | undefined;
+  readonly #failedDirectSends = new Map<number, Array<{ message: string; target: Extract<ImageDestinationSnapshot, { kind: "chat" }> }>>();
+  readonly #failedDirectSendActions = element("div", { className: "kl-failed-send-actions" });
   #directDraftTimer: ReturnType<typeof setTimeout> | undefined;
   #pendingDirectDraft:
     | { peerNumber: number; peerName: string; value: string }
@@ -1560,6 +1570,8 @@ export class LinkChatView {
   }
 
   destroy(): void {
+    if (this.#directSubmission) this.#directSubmission.cancelled = true;
+    this.#failedDirectSends.clear();
     this.#cloudAvatarObserver?.disconnect(); this.#cloudAvatarObserver = undefined;
     this.#cloudAvatarTargets.clear(); this.#cloudAvatarFetchAfter.clear(); this.#cloudAvatarDenied.clear();
     this.#releaseKeyboardBoundary?.();
@@ -2817,6 +2829,10 @@ export class LinkChatView {
       this.#resizeComposer();
       this.#updateCounter();
       if (this.#activePeer !== undefined) {
+        if (this.#directSubmission?.peerNumber === this.#activePeer) {
+          this.#directSubmission.next = this.#reply.value;
+          this.#directSubmission.edited = true;
+        }
         this.#scheduleDirectDraft(
           this.#activePeer,
           this.#activeNativeName,
@@ -2847,6 +2863,7 @@ export class LinkChatView {
       element("label", { className: "kl-check" }, this.#includeRoom, "Share current room"),
       this.#counter,
     );
+    this.#failedDirectSendActions.hidden = true;
     const composer = element(
       "footer",
       { className: "kl-composer" },
@@ -2861,6 +2878,7 @@ export class LinkChatView {
         this.#sendButton,
       ),
       options,
+      this.#failedDirectSendActions,
     );
     this.#typingIndicator.hidden = true;
     this.#typingIndicator.setAttribute("role", "status");
@@ -5818,6 +5836,8 @@ export class LinkChatView {
     if (target.memberNumber === this.#activePeer) this.#cancelDirectDraft(target.memberNumber);
     try { this.#cloudDirect?.clearPending(target.memberNumber); }
     catch { this.#toast("Could not clear local retries. Please try again.", "error"); return; }
+    if (this.#directSubmission?.peerNumber === target.memberNumber) this.#directSubmission.cancelled = true;
+    this.#failedDirectSends.delete(target.memberNumber);
     await this.service.removeConversation(target.memberNumber);
     if (target.memberNumber === this.#activePeer) this.#resetActiveConversation();
     this.#removeChatDialog.close();
@@ -11511,7 +11531,8 @@ export class LinkChatView {
     this.#renderActivePresence();
     this.presence.request(peerNumber);
     this.#renderPinButton(conversation.pinned);
-    this.#reply.load(conversation.draft);
+    this.#reply.load(this.#directSubmission?.peerNumber === peerNumber ? this.#directSubmission.next : conversation.draft);
+    this.#renderFailedDirectSends();
     this.#messageInteraction?.close();
     this.#includeRoom.checked = this.settings.getSection("linkChat").includeRoomByDefault;
     this.#sendButton.disabled = !this.adapter.canSendBeep() || this.#directSendBusy;
@@ -11631,6 +11652,7 @@ export class LinkChatView {
     // while a confirmed server acceptance/delivery/read state is authoritative.
     const cloudOutgoing = message.direction === "outgoing" && Boolean(
       message.clientMessageId || message.cloudId ||
+      message.delivery === "sent" ||
       directReceiptState(message.delivery),
     );
     const stamp = cloudOutgoing
@@ -11639,6 +11661,7 @@ export class LinkChatView {
           messageReceiptIndicator(
             directReceiptState(message.delivery),
             "Read by recipient",
+            "Delivered to recipient",
           ))
       : time;
     const meta = element(
@@ -11676,6 +11699,7 @@ export class LinkChatView {
       indicator,
       directReceiptState(message.delivery),
       "Read by recipient",
+      "Delivered to recipient",
     );
     const existingRetry = row.querySelector(".kl-message-retry-actions");
     const retryActions = this.#messageRetryActions(message);
@@ -11771,18 +11795,53 @@ export class LinkChatView {
     await this.#sendContent(message, true);
   }
 
-  async #consumeDirectDraft(peerNumber: number, peerName: string, submitted: string): Promise<void> {
-    if (this.#activePeer === peerNumber) {
-      const current = this.#reply.value, remaining = remainingDraftAfterSend(current, submitted);
-      // Update the input before persistence yields. Later keystrokes own a new draft.
-      if (remaining !== current) this.#reply.load(remaining);
-      this.#resizeComposer(); this.#updateCounter(); this.#updateLocalTyping();
-      this.#scheduleDirectDraft(peerNumber, peerName, remaining);
-      await this.#flushDirectDraft(peerNumber);
-    } else {
-      void this.#flushDirectDraft(peerNumber);
-      await this.service.consumeSentDraft(peerNumber, submitted).catch(() => {});
+  #renderFailedDirectSends(): void {
+    const failed = this.#activePeer === undefined ? [] : this.#failedDirectSends.get(this.#activePeer) ?? [];
+    const submission = failed[0];
+    this.#failedDirectSendActions.hidden = !submission;
+    this.#failedDirectSendActions.replaceChildren();
+    if (!submission) return;
+    const discard = () => {
+      const pending = this.#failedDirectSends.get(submission.target.peerNumber) ?? [];
+      this.#failedDirectSends.set(submission.target.peerNumber, pending.filter(item => item !== submission));
+      this.#renderFailedDirectSends();
+    };
+    const retry = element("button", { type: "button", className: "kl-text-button", text: "Retry",
+      title: submission.message, ariaLabel: `Retry unsent message: ${submission.message}`, onClick: () => {
+        if (this.#directSendBusy) return;
+        void this.#sendContent(submission.message, false, submission.target).then(sent => { if (sent) discard(); });
+      } });
+    retry.disabled = this.#directSendBusy;
+    const remove = element("button", { type: "button", className: "kl-icon-button", title: "Discard unsent message",
+      ariaLabel: "Discard unsent message", onClick: discard }, kikiIcon("close"));
+    remove.disabled = this.#directSendBusy;
+    this.#failedDirectSendActions.append(element("div", { className: "kl-composer-options" },
+      element("span", { className: "kl-conversation-preview", title: submission.message,
+        text: `Not sent${failed.length > 1 ? ` (${failed.length})` : ""}: ${messagePreview(submission.message)}` }), retry, remove));
+  }
+
+  async #restoreDirectSubmission(
+    submission: DirectComposerSubmission,
+    message: string,
+    target: Extract<ImageDestinationSnapshot, { kind: "chat" }>,
+  ): Promise<void> {
+    if (submission.cancelled || !this.#mounted) return;
+    if (submission.edited) {
+      const failed = this.#failedDirectSends.get(target.peerNumber) ?? [];
+      failed.push({ message, target });
+      this.#failedDirectSends.set(target.peerNumber, failed);
+      this.#renderFailedDirectSends();
+      await this.#flushDirectDraft(target.peerNumber);
+      return;
     }
+    submission.next = submission.value;
+    if (this.#activePeer === target.peerNumber) {
+      this.#reply.load(submission.value);
+      this.#resizeComposer(); this.#updateCounter();
+    }
+    // Queue the restoration before yielding; a later keystroke always owns the next write.
+    this.#scheduleDirectDraft(target.peerNumber, target.peerName, submission.value);
+    await this.#flushDirectDraft(target.peerNumber);
   }
 
   async #sendContent(
@@ -11794,9 +11853,20 @@ export class LinkChatView {
     const peerNumber = target?.peerNumber ?? this.#activePeer!;
     const peerName = target?.peerName ?? this.#activeNativeName;
     const includeRoom = target?.includeRoom ?? this.#includeRoom.checked;
-    const composerValueAtSend = this.#reply.value;
-    if (clearComposer) this.#cancelDirectDraft(peerNumber);
+    const submission: DirectComposerSubmission | undefined = clearComposer
+      ? { peerNumber, value: this.#reply.value, next: "", edited: false }
+      : undefined;
     this.#directSendBusy = true;
+    if (submission) {
+      this.#directSubmission = submission;
+      // The accepted text belongs to this send from now on. Detach it before any
+      // route lookup, outbox write or transport await so all typing is a new draft.
+      this.#reply.load("");
+      this.#resizeComposer(); this.#updateCounter(); this.#stopLocalTyping();
+      this.#scheduleDirectDraft(peerNumber, peerName, "");
+      void this.#flushDirectDraft(peerNumber);
+    }
+    this.#renderFailedDirectSends();
     this.#sendButton.disabled = true;
     this.#attachImageButton.disabled = true;
     let sent = false;
@@ -11806,32 +11876,24 @@ export class LinkChatView {
           if (!(error instanceof CloudError && error.status === 404)) throw new Error("Cannot confirm the delivery route. Your draft is kept; retry when connected.");
         }
       }
+      if (submission?.cancelled) return false;
       const cloud = this.#cloudDirect?.shouldUse(peerNumber);
       let storedMessage: LinkMessage;
       if (cloud) {
         storedMessage = await this.#cloudDirect!.send(peerNumber, peerName, message, includeRoom ? this.adapter.getCurrentRoomName() : undefined);
         sent = true;
-        if (clearComposer) await this.#consumeDirectDraft(peerNumber, peerName, composerValueAtSend);
       } else {
         const event = this.adapter.sendBeep(peerNumber, message, includeRoom);
         sent = true;
-        // Native delivery has already handed off: do not leave sent text in the
-        // composer while IndexedDB catches up, even if history storage fails.
-        const draftWrite = clearComposer ? this.#consumeDirectDraft(peerNumber, peerName, composerValueAtSend) : Promise.resolve();
         storedMessage = await this.service.capture(event, true);
-        await draftWrite;
       }
       if (clearComposer) await this.#flushDirectDraft(peerNumber);
       if (this.#activePeer !== peerNumber) this.presence.setTyping(peerNumber, false, true);
       await this.onMessage(peerNumber, false, storedMessage);
       return true;
     } catch (error) {
-      if (
-        !sent && clearComposer &&
-        this.#activePeer === peerNumber &&
-        this.#reply.value === composerValueAtSend
-      ) {
-        this.#scheduleDirectDraft(peerNumber, peerName, composerValueAtSend);
+      if (!sent && submission) {
+        await this.#restoreDirectSubmission(submission, message, { kind: "chat", peerNumber, peerName, includeRoom });
       }
       this.#toast(
         sent
@@ -11841,9 +11903,11 @@ export class LinkChatView {
             : "Unable to send Beep",
         "error",
       );
-      return false;
+      return sent;
     } finally {
+      if (this.#directSubmission === submission) this.#directSubmission = undefined;
       this.#directSendBusy = false;
+      this.#renderFailedDirectSends();
       const canSend = this.adapter.canSendBeep();
       this.#sendButton.disabled = !canSend;
       this.#attachImageButton.disabled = !canSend || this.#activePeer === undefined;
@@ -13895,6 +13959,8 @@ export class LinkChatView {
     if (!window.confirm("Clear all KikiLink direct and group chats, messages, drafts, and local delivery retries? Messages already accepted by Cloud may still arrive.")) return;
     try { this.#cloudDirect?.clearPending(); }
     catch { this.#toast("Could not clear the local delivery queue. History has not been cleared; please retry.", "error"); return; }
+    if (this.#directSubmission) this.#directSubmission.cancelled = true;
+    this.#failedDirectSends.clear();
     const [directResult, groupResult] = await Promise.allSettled([
       this.service.clearHistory(),
       this.#groupChatService?.clear() ?? Promise.resolve(true),

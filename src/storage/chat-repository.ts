@@ -1,6 +1,13 @@
 import type { ConversationMeta, LinkMessage } from "../core/types";
 
+export interface ChatCaptureResult {
+  removed: number;
+  oldestRetainedAt: number | undefined;
+}
+
 export interface ChatRepository {
+  /** Commits a captured message, its conversation, and retention as one storage operation. */
+  captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult>;
   addMessage(message: LinkMessage): Promise<void>;
   getMessages(peerNumber: number, limit?: number): Promise<LinkMessage[]>;
   getConversation(peerNumber: number): Promise<ConversationMeta | undefined>;

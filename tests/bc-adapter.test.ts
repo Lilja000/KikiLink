@@ -6,6 +6,12 @@ import { BCAdapter, type BCCustomActivityIntegration } from "../src/bc/adapter";
 import { EventBus } from "../src/core/event-bus";
 import type { KikiLinkEvents } from "../src/core/types";
 
+function connectNativeTransport(): void {
+  globalThis.ServerIsLoggedIn = () => true;
+  globalThis.ServerSocket = { connected: true, on: vi.fn(), off: vi.fn() } as BCServerSocket;
+  globalThis.ServerSend = vi.fn();
+}
+
 afterEach(() => {
   vi.useRealTimers();
   for (const key of [
@@ -58,6 +64,25 @@ afterEach(() => {
 });
 
 describe("BCAdapter", () => {
+  it.each(["missing-socket", "null-socket", "unknown-socket-state", "missing-login", "missing-transport", "empty-character"])(
+    "does not hand off messages when the native session has %s", state => {
+      globalThis.Player = { MemberNumber: 999, CharacterID: state === "empty-character" ? "" : "test-character", Name: "Kiki", FriendNames: new Map() };
+      globalThis.ServerIsLoggedIn = () => true;
+      globalThis.ServerSocket = { connected: true } as BCServerSocket;
+      globalThis.ServerSend = vi.fn();
+      const nativeSend = globalThis.ServerSendBeepMessage = vi.fn();
+      if (state === "missing-socket") Reflect.deleteProperty(globalThis, "ServerSocket");
+      if (state === "null-socket") globalThis.ServerSocket = null;
+      if (state === "unknown-socket-state") globalThis.ServerSocket = {} as BCServerSocket;
+      if (state === "missing-login") Reflect.deleteProperty(globalThis, "ServerIsLoggedIn");
+      if (state === "missing-transport") Reflect.deleteProperty(globalThis, "ServerSend");
+      const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "1.1.3");
+      expect(adapter.canSendBeep()).toBe(false);
+      expect(() => adapter.sendBeep(123, "Keep this message", false)).toThrow("has not been sent");
+      expect(nativeSend).not.toHaveBeenCalled();
+    },
+  );
+
   it("fails closed instead of throwing when Firefox revokes the local player proxy", () => {
     const guardedPlayer = Proxy.revocable<BCPlayer>({
       MemberNumber: 999,
@@ -77,6 +102,8 @@ describe("BCAdapter", () => {
   });
 
   it.each(["disconnected", "logged-out", "revoked"])("rejects a native send during %s instead of recording it as sent", state => {
+    globalThis.Player = { MemberNumber: 999, Name: "Kiki", FriendNames: new Map() };
+    globalThis.ServerSend = vi.fn();
     const nativeSend = vi.fn();
     globalThis.ServerSendBeepMessage = nativeSend;
     globalThis.ServerIsLoggedIn = () => state !== "logged-out";
@@ -94,6 +121,7 @@ describe("BCAdapter", () => {
   });
 
   it("sends through the native Beep function even before hook registration completes", () => {
+    connectNativeTransport();
     const nativeSend = vi.fn();
     globalThis.ServerSendBeepMessage = nativeSend;
     globalThis.Player = {
@@ -120,6 +148,7 @@ describe("BCAdapter", () => {
   });
 
   it("captures direct AccountBeep sends from other messenger addons exactly once", async () => {
+    connectNativeTransport();
     const nativeServerSend = vi.fn();
     globalThis.Player = {
       MemberNumber: 999,
@@ -1168,6 +1197,7 @@ describe("BCAdapter", () => {
   });
 
   it("uses hidden room packets for KikiLink peers and private typed Beeps elsewhere", () => {
+    connectNativeTransport();
     const serverSend = vi.fn();
     globalThis.ServerSend = serverSend;
     globalThis.Player = {
@@ -1202,6 +1232,7 @@ describe("BCAdapter", () => {
   });
 
   it("sends Cloud proofs over the same silent route in the lobby and a shared room", () => {
+    connectNativeTransport();
     const send = vi.fn();
     globalThis.ServerSend = send;
     globalThis.Player = {MemberNumber:101,Name:"Tester",FriendList:[],FriendNames:new Map()};

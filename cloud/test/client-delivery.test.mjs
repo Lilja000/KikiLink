@@ -126,7 +126,7 @@ test("Two real clients recover Direct delivery/read and offline Feed counts afte
   await alice.direct.send(202, "Fixture 202", "Saved while recipient is offline");
   await until(async () => (await alice.chat.getMessages(202))[0]?.delivery === "sent", "Server did not confirm Sent");
   assert.equal(f.db.get("SELECT state FROM direct_messages").state, "sent");
-  assert.equal(directReceiptState((await alice.chat.getMessages(202))[0].delivery), "sent", "One check needs only confirmed Cloud storage while recipient is offline");
+  assert.equal(directReceiptState((await alice.chat.getMessages(202))[0].delivery), undefined, "Cloud storage without recipient acknowledgement must stay unchecked");
   alice.close(); await f.app.close(); f.db.close();
   const reopened = new Database(f.path);
   api = createApp({ db: reopened, keys: f.keys, storage: f.storage, config: f.config });

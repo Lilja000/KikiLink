@@ -33,6 +33,111 @@ const response = (data: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 describe("Cloud client account and migration boundaries", () => {
+  it.each(["recover", "destroy", "logout", "account-switch"])("backs off persistent event authentication rejection despite successful renewal and other endpoints: %s", async action => {
+    vi.useFakeTimers();
+    const key = await createDeviceKey();
+    key.device = { id: crypto.randomUUID(), expiresAt: Date.now() + 86400000 };
+    let exchanges = 0, allowEvents = false, member = 101;
+    const attempts: number[] = [];
+    const sendProof = vi.fn();
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/auth/device-challenges") return response({ challengeId: crypto.randomUUID(), nonce: "n".repeat(43), expiresAt: Date.now() + 60000 });
+      if (path === "/v1/auth/device-exchange") { exchanges++; return response({ memberNumber: 101, token: "a".repeat(43), expiresAt: Date.now() + 3600000, device: key.device }); }
+      if (path === "/v1/events") {
+        attempts.push(Date.now());
+        if (attempts.length >= 20) client.destroy(); // Bound a broken implementation's test traffic.
+        if (!allowEvents) return response({ error: "session_expired" }, 401);
+        return new Response(new ReadableStream({ start(controller) {
+          init!.signal!.addEventListener("abort", () => controller.error(init!.signal!.reason), { once: true });
+          controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
+        } }));
+      }
+      return response({});
+    });
+    const client = new CloudClient({ origin, memberNumber: 101, getMemberNumber: () => member, isBlocked: () => false, sendProof, fetchImpl,
+      pageOrigin: "https://bc.example.test", deviceStore: { load: async () => key, save: async () => {}, pause: async () => {} } });
+    // Real consumers bootstrap other authenticated resources after each session.
+    client.subscribe(kind => { if (kind === "session" && client.connected) void client.request("GET", "/v1/me").catch(() => {}); });
+    try {
+      await client.connect(); client.retainEvents();
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => expect(attempts.length).toBeGreaterThanOrEqual(2));
+      expect(exchanges).toBe(2);
+      expect(attempts).toHaveLength(2);
+      const before = fetchImpl.mock.calls.length;
+      await expect(client.request("GET", "/v1/me")).rejects.toMatchObject({ status: 503 });
+      expect(fetchImpl).toHaveBeenCalledTimes(before);
+      if (action !== "recover") {
+        if (action === "destroy") client.destroy();
+        if (action === "logout") await client.logout();
+        if (action === "account-switch") member = 202;
+        const stopped = fetchImpl.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(120000);
+        expect(fetchImpl).toHaveBeenCalledTimes(stopped);
+        expect(client.connected).toBe(false);
+        expect(sendProof).not.toHaveBeenCalled();
+        return;
+      }
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(attempts.length).toBeLessThanOrEqual(7);
+      for (let i = 2; i < attempts.length; i++) expect(attempts[i]! - attempts[i - 1]!).toBeGreaterThanOrEqual(Math.min(60000, 5000 * 2 ** (i - 2)));
+      allowEvents = true;
+      await vi.advanceTimersByTimeAsync(60000);
+      await vi.waitFor(() => expect(client.connected).toBe(true));
+      expect(sendProof).not.toHaveBeenCalled();
+      // An actual ready event resets rejection backoff for a later independent outage.
+      const recovered = attempts.length;
+      allowEvents = false; client.stopEvents(true); client.startEvents();
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => expect(attempts).toHaveLength(recovered + 2));
+      client.destroy();
+      const stopped = fetchImpl.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(fetchImpl).toHaveBeenCalledTimes(stopped);
+    } finally { client.destroy(); }
+  });
+
+  it.each(["request", "events"])("renews a rejected access token from its device grant after %s returns 401", async source => {
+    vi.useFakeTimers();
+    const key = await createDeviceKey();
+    key.device = { id: crypto.randomUUID(), expiresAt: Date.now() + 86400000 };
+    let exchanges = 0, streams = 0, posts = 0;
+    const sendProof = vi.fn();
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/auth/device-challenges") return response({ challengeId: crypto.randomUUID(), nonce: "n".repeat(43), expiresAt: Date.now() + 60000 });
+      if (path === "/v1/auth/device-exchange") return response({ memberNumber: 101, token: (++exchanges === 1 ? "a" : "b").repeat(43), expiresAt: Date.now() + 3600000, device: key.device });
+      if (path === "/v1/direct/202/messages") { posts++; return response({ error: "session_expired" }, 401); }
+      if (path === "/v1/events") {
+        streams++;
+        if (source === "events" && exchanges === 1) return response({ error: "session_expired" }, 401);
+        return new Response(new ReadableStream({ start(controller) {
+          init!.signal!.addEventListener("abort", () => controller.error(init!.signal!.reason), { once: true });
+          controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
+        } }));
+      }
+      throw new Error("Unexpected authentication request");
+    });
+    const client = new CloudClient({ origin, memberNumber: 101, getMemberNumber: () => 101, isBlocked: () => false, sendProof, fetchImpl,
+      pageOrigin: "https://bc.example.test", deviceStore: { load: async () => key, save: async () => {}, pause: async () => {} } });
+    const hints = vi.fn(); client.subscribe(hints);
+    try {
+      await client.connect();
+      const release = client.retainEvents();
+      if (source === "request") await expect(client.request("POST", "/v1/direct/202/messages", { text: "Keep stable ID" })).rejects.toMatchObject({ status: 401 });
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => expect(exchanges).toBe(2));
+      expect(client.connected).toBe(true);
+      expect(client.connectionState).toBe("connected");
+      expect(streams).toBe(2);
+      expect(posts).toBe(source === "request" ? 1 : 0); // The owner decides whether a failed mutation can be replayed.
+      expect(sendProof).not.toHaveBeenCalled();
+      expect(hints.mock.calls.filter(([kind]) => kind === "ready")).toHaveLength(source === "request" ? 2 : 1);
+      release();
+    } finally { client.destroy(); }
+  });
+
   it.each(["recover", "logout", "account-switch"])("handles a temporary device-session renewal failure: %s", async action => {
     vi.useFakeTimers();
     const key = await createDeviceKey();
@@ -60,6 +165,46 @@ describe("Cloud client account and migration boundaries", () => {
       await vi.advanceTimersByTimeAsync(5000);
       expect(challenges).toBe(action === "recover" ? 3 : 2);
       if (action === "recover") await vi.waitFor(() => expect(client.connectionState).toBe("connected"));
+      expect(sendProof).not.toHaveBeenCalled();
+    } finally { client.destroy(); }
+  });
+
+  it.each(["recover", "destroy", "logout", "account-switch"])("handles a 401 while an older proactive renewal is still pending: %s", async action => {
+    vi.useFakeTimers();
+    const key = await createDeviceKey();
+    key.device = { id: crypto.randomUUID(), expiresAt: Date.now() + 86400000 };
+    let challenges = 0, exchanges = 0, member = 101;
+    let finishChallenge!: () => void;
+    const challenge = () => response({ challengeId: crypto.randomUUID(), nonce: "n".repeat(43), expiresAt: Date.now() + 60000 });
+    const sendProof = vi.fn();
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/auth/device-challenges") {
+        if (++challenges === 2) return new Promise<Response>(resolve => { finishChallenge = () => resolve(challenge()); });
+        return challenge();
+      }
+      if (path === "/v1/auth/device-exchange") return response({ memberNumber: 101, token: (++exchanges === 1 ? "a" : "b").repeat(43), expiresAt: Date.now() + 3600000, device: key.device });
+      if (path === "/v1/auth/logout") return response({});
+      return response({ error: "session_expired" }, 401);
+    });
+    const client = new CloudClient({ origin, memberNumber: 101, getMemberNumber: () => member, isBlocked: () => false, sendProof, fetchImpl,
+      pageOrigin: "https://bc.example.test", deviceStore: { load: async () => key, save: async () => {}, pause: async () => {} } });
+    try {
+      await client.connect();
+      const renewal = client.connect(true, true).catch(() => {});
+      await vi.waitFor(() => expect(finishChallenge).toBeTypeOf("function"));
+      await expect(client.request("GET", "/v1/direct/inbox")).rejects.toMatchObject({ status: 401 });
+      await vi.advanceTimersByTimeAsync(1);
+      if (action === "destroy") client.destroy();
+      if (action === "account-switch") member = 202;
+      if (action === "logout") await client.logout();
+      const before = fetchImpl.mock.calls.length;
+      finishChallenge(); await renewal;
+      await vi.advanceTimersByTimeAsync(1000);
+      if (action === "recover") {
+        await vi.waitFor(() => expect(client.connected).toBe(true));
+        expect(exchanges).toBe(2);
+      } else expect(fetchImpl).toHaveBeenCalledTimes(before);
       expect(sendProof).not.toHaveBeenCalled();
     } finally { client.destroy(); }
   });
