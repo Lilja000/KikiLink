@@ -75,10 +75,9 @@ export class ChatService {
 
     const config = this.settings.getSection("linkChat");
     if (config.saveHistory) {
-      await this.repository.addMessage(message);
-      await this.repository.putConversation(conversation);
-      await this.repository.trimConversation(
-        canonicalEvent.peerNumber,
+      await this.repository.captureMessage(
+        message,
+        conversation,
         config.maxMessagesPerConversation,
       );
     } else {

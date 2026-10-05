@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it, vi } from "vitest";
 import { CloudDirect } from "../src/cloud/direct";
-import { CloudError } from "../src/cloud/client";
+import { CloudClient, CloudError } from "../src/cloud/client";
+import { createDeviceKey } from "../src/cloud/device-key";
 import { directReceiptState, messageReceiptIndicator, updateMessageReceipt } from "../src/modules/link-chat/message-receipt";
 import type { CommunityService } from "../src/cloud/community";
 import { ChatService } from "../src/modules/link-chat/chat-service";
@@ -26,7 +27,7 @@ function setup(storage = new MemoryKeyValueStorage(), memberNumber = 101) {
   cleanup.push(() => direct.destroy());
   return { repository, settings, chat, request, community, options, direct, storage, hint: (kind: string) => eventListener(kind) };
 }
-it("keeps an ambiguous send unchecked, shows one check on confirmed retry after restart and waits for Read", async () => {
+it("keeps Cloud acceptance unchecked and shows checks only for recipient delivery and Read", async () => {
   const h = setup(); let input: { clientMessageId: string } | undefined;
   h.request.mockImplementation(async (method, path, body) => {
     if (method === "POST" && path.endsWith("/messages")) { input = body as typeof input; throw new CloudError("network_unavailable"); }
@@ -54,8 +55,8 @@ it("keeps an ambiguous send unchecked, shows one check on confirmed retry after 
   await reopened.sync(); expect(await h.chat.getMessages(202)).toHaveLength(1);
   expect((await h.chat.getMessages(202))[0]?.delivery).toBe("sent");
   updateMessageReceipt(indicator, directReceiptState((await h.chat.getMessages(202))[0]?.delivery));
-  expect(indicator.dataset.state).toBe("sent");
-  expect(indicator.title).toBe("Sent to Cloud");
+  expect(indicator.dataset.state).toBe("pending");
+  expect(indicator.hasAttribute("title")).toBe(false);
   receipt = "delivered"; await reopened.sync(); expect((await h.chat.getMessages(202))[0]?.delivery).toBe("delivered");
   updateMessageReceipt(indicator, directReceiptState((await h.chat.getMessages(202))[0]?.delivery));
   expect(indicator.dataset.state).toBe("sent");
@@ -130,6 +131,44 @@ it("recovers a failed inbox read without waiting for another message or tab swit
   expect(h.options.incoming).toHaveBeenCalledOnce();
 });
 
+it("resumes a pending Direct send after its access token is rejected without changing its ID", async () => {
+  vi.useFakeTimers();
+  const h = setup(); h.direct.destroy();
+  const key = await createDeviceKey();
+  key.device = { id: crypto.randomUUID(), expiresAt: Date.now() + 86400000 };
+  const posts: unknown[] = [];
+  let exchanges = 0;
+  const sendProof = vi.fn();
+  const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(url)).pathname;
+    let body: unknown;
+    if (path === "/v1/auth/device-challenges") body = { challengeId: crypto.randomUUID(), nonce: "n".repeat(43), expiresAt: Date.now() + 60000 };
+    else if (path === "/v1/auth/device-exchange") body = { memberNumber: 101, token: (++exchanges === 1 ? "a" : "b").repeat(43), expiresAt: Date.now() + 3600000, device: key.device };
+    else if (path === "/v1/direct/202/messages") {
+      posts.push(JSON.parse(String(init!.body)));
+      if (posts.length === 1) return new Response(JSON.stringify({ error: "session_expired" }), { status: 401 });
+      body = { id: "after-renewal", sequence: 1, state: "sent" };
+    } else body = path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null };
+    return new Response(JSON.stringify(body));
+  });
+  const client = new CloudClient({ origin: "https://cloud.example.test", memberNumber: 101, getMemberNumber: () => 101, isBlocked: () => false,
+    sendProof, fetchImpl, pageOrigin: "https://bc.example.test", deviceStore: { load: async () => key, save: async () => {}, pause: async () => {} } });
+  cleanup.push(() => client.destroy());
+  await client.connect();
+  const direct = new CloudDirect({ ...h.community, client } as CommunityService, h.chat, h.storage, h.options);
+  cleanup.push(() => direct.destroy());
+  await direct.send(202, "Friend", "Retry after authentication renewal");
+  await vi.advanceTimersByTimeAsync(1000);
+  await vi.waitFor(() => expect(posts).toHaveLength(2));
+  expect(posts[1]).toEqual(posts[0]);
+  expect(await h.chat.getMessages(202)).toHaveLength(1);
+  expect((await h.chat.getMessages(202))[0]?.delivery).toBe("sent");
+  expect(sendProof).not.toHaveBeenCalled();
+  const calls = fetchImpl.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(120000);
+  expect(fetchImpl).toHaveBeenCalledTimes(calls);
+});
+
 it.each(["denied", "destroyed", "stopped"])("does not retry a %s send", async mode => {
   vi.useFakeTimers();
   const h = setup();
@@ -148,6 +187,94 @@ it("removes a queue entry if local capture fails before network transmission", a
   const h = setup(); vi.spyOn(h.chat, "captureCloud").mockRejectedValue(new Error("disk full"));
   await expect(h.direct.send(202, "Friend", "Cannot save")).rejects.toThrow("has not been sent");
   await h.direct.sync(); expect(h.request.mock.calls.some(([method, path]) => method === "POST" && path.endsWith("messages"))).toBe(false); h.direct.destroy();
+});
+it("does not reject an accepted Direct send when its view observer throws", async () => {
+  const h = setup();
+  h.options.changed.mockImplementation(() => { throw new Error("view unavailable"); });
+  h.request.mockImplementation(async (method, path) => method === "POST" && path.endsWith("/messages")
+    ? { id: "accepted-despite-view", sequence: 1, state: "sent" }
+    : path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null });
+  const message = await h.direct.send(202, "Friend", "Accept exactly once");
+  await h.direct.sync();
+  expect((await h.chat.getMessages(202)).map(m => m.id)).toEqual([message.id]);
+  expect((await h.chat.getMessages(202))[0]?.delivery).toBe("sent");
+  const posts = h.request.mock.calls.filter(([method, path]) => method === "POST" && path.endsWith("/messages"));
+  expect(posts).toHaveLength(1);
+  expect(posts[0]![2]).toMatchObject({ clientMessageId: message.clientMessageId });
+});
+it("retains the accepted ID when both local capture and durable queue rollback fail", async () => {
+  const h = setup();
+  const setItem = h.storage.setItem.bind(h.storage);
+  let queueWrites = 0;
+  vi.spyOn(h.storage, "setItem").mockImplementation((key, value) => {
+    if (key.includes("direct-queue") && ++queueWrites === 2) throw new Error("cannot remove queued message");
+    setItem(key, value);
+  });
+  const capture = vi.spyOn(h.chat, "captureCloud").mockRejectedValue(new Error("chat storage unavailable"));
+  const message = await h.direct.send(202, "Friend", "Already in the durable queue");
+  expect(message.delivery).toBe("waiting");
+  expect(h.direct.retryable(message.id)).toBe(true);
+  expect(h.request.mock.calls.some(([method, path]) => method === "POST" && path.endsWith("/messages"))).toBe(false);
+  h.direct.destroy(); capture.mockRestore();
+  h.request.mockImplementation(async (method, path) => method === "POST" && path.endsWith("/messages")
+    ? { id: "same-accepted-id", sequence: 1, state: "sent" }
+    : path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null });
+  const reopened = new CloudDirect(h.community, h.chat, h.storage, h.options);
+  cleanup.push(() => reopened.destroy());
+  await reopened.sync();
+  expect((await h.chat.getMessages(202)).map(m => m.id)).toEqual([message.id]);
+  const posts = h.request.mock.calls.filter(([method, path]) => method === "POST" && path.endsWith("/messages"));
+  expect(posts).toHaveLength(1);
+  expect(posts[0]![2]).toMatchObject({ clientMessageId: message.clientMessageId });
+});
+it("does not let concurrent sync transmit a send while initial capture can still roll back", async () => {
+  const h = setup();
+  let failCapture!: (error: Error) => void;
+  vi.spyOn(h.chat, "captureCloud").mockImplementationOnce(() => new Promise((_resolve, reject) => { failCapture = reject; }));
+  h.request.mockImplementation(async (method, path) => method === "POST" && path.endsWith("/messages")
+    ? { id: "must-not-send", sequence: 1, state: "sent" }
+    : path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null });
+  const pending = h.direct.send(202, "Friend", "Capture has not committed");
+  const rejected = expect(pending).rejects.toThrow("has not been sent");
+  await h.direct.sync();
+  expect(h.request.mock.calls.some(([method, path]) => method === "POST" && path.endsWith("/messages"))).toBe(false);
+  failCapture(new Error("capture aborted")); await rejected;
+  await h.direct.sync();
+  expect(h.request.mock.calls.some(([method, path]) => method === "POST" && path.endsWith("/messages"))).toBe(false);
+});
+it("transmits once after a slow initial capture succeeds despite a concurrent sync", async () => {
+  const h = setup();
+  const capture = h.chat.captureCloud.bind(h.chat);
+  let finishCapture!: () => void;
+  vi.spyOn(h.chat, "captureCloud").mockImplementationOnce(async (...args) => {
+    await new Promise<void>(resolve => { finishCapture = resolve; });
+    return capture(...args);
+  });
+  h.request.mockImplementation(async (method, path) => method === "POST" && path.endsWith("/messages")
+    ? { id: "captured-before-send", sequence: 1, state: "sent" }
+    : path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null });
+  const pending = h.direct.send(202, "Friend", "Wait for capture");
+  await h.direct.sync();
+  expect(h.request.mock.calls.some(([method, path]) => method === "POST" && path.endsWith("/messages"))).toBe(false);
+  finishCapture(); const message = await pending;
+  await h.direct.sync();
+  expect((await h.chat.getMessages(202)).map(m => m.id)).toEqual([message.id]);
+  expect(h.request.mock.calls.filter(([method, path]) => method === "POST" && path.endsWith("/messages"))).toHaveLength(1);
+});
+it("acknowledges captured inbox messages even when view and notification observers throw", async () => {
+  const h = setup();
+  h.options.changed.mockImplementation(() => { throw new Error("view unavailable"); });
+  h.options.incoming.mockImplementation(() => { throw new Error("notifications unavailable"); });
+  h.request.mockImplementation(async (_method, path) => {
+    if (path.includes("/inbox")) return { items: path.endsWith("cursor=0")
+      ? [{ id: "received-despite-view", clientMessageId: crypto.randomUUID(), sequence: 1, sender: 202, recipient: 101, text: "Durably received", createdAt: Date.now() }]
+      : [], cursor: 1, nextCursor: null };
+    return path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null };
+  });
+  await h.direct.sync(); await h.direct.sync();
+  expect(await h.chat.getMessages(202)).toHaveLength(1);
+  expect(h.options.incoming).toHaveBeenCalledOnce();
+  expect(h.request.mock.calls.filter(([method, path]) => method === "POST" && path.endsWith("/acknowledge"))).toHaveLength(1);
 });
 it("reconciles read markers without writing ephemeral message bodies to history", async () => {
   const h = setup(); h.settings.update(draft => { draft.linkChat.saveHistory = false; });

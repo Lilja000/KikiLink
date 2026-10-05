@@ -21,6 +21,22 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.1.3 - 2026-10-05
+
+- Clear Direct and group composers immediately when Send/Enter captures a message. Keep subsequent
+  typing separate, including identical text, inline replies, and drafts edited while switching chats.
+- Restore unsent text only when its replacement draft is untouched; otherwise offer a separate
+  Retry/Discard action. Keep Cloud group retries tied to their original message IDs.
+- Recover rejected Cloud sessions with the saved device grant and bounded backoff, then resume
+  event streams and queued Direct delivery without replaying arbitrary requests.
+- Store received messages, conversation metadata, and retention changes atomically, including
+  fallback recovery, before acknowledging Cloud delivery.
+- Require a connected BC session for native sends. Keep a successful local transport handoff
+  separate from later history, UI, or native-helper errors so they cannot restore an already-submitted
+  message for a duplicate send. Preserve compatibility with addons that transform outgoing text.
+- Show one Direct check only after the recipient acknowledges delivery, and two after Read.
+  Cloud acceptance alone stays unchecked. Receipt updates keep timestamps, layout, scroll and focus stable.
+
 ## 1.1.2 - 2026-10-04
 
 - Measure the Feed sidebar from its actual sticky position so cards keep the

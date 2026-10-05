@@ -633,7 +633,7 @@ describe("BC account-scoped KikiLink storage", () => {
     await first.destroy();
   });
 
-  it("keeps a per-conversation trim from being undone by stale device rows", async () => {
+  it.each(["trim", "capture"] as const)("keeps per-conversation %s retention from being undone by stale device rows", async operation => {
     globalThis.Player = {
       MemberNumber: 101,
       Name: "TrimmingKiki",
@@ -658,7 +658,12 @@ describe("BC account-scoped KikiLink storage", () => {
       lastMessageAt: 60,
     });
     await first.flush();
-    expect(await firstChats.trimConversation(303, 50)).toBe(10);
+    const removed = operation === "trim"
+      ? await firstChats.trimConversation(303, 50)
+      : (await firstChats.captureMessage(allMessages.at(-1)!, {
+          ...conversation(), lastMessage: "Message 60", lastMessageAt: 60,
+        }, 50)).removed;
+    expect(removed).toBe(10);
     await first.flush();
 
     const staleSecondLocal = new MemoryChatRepository();

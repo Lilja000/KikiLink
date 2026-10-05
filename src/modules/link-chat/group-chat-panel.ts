@@ -2,7 +2,6 @@ import type { PeoplePickerRequest } from "./people-picker";
 import type { BCAdapter } from "../../bc/adapter";
 import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
 import { focusedElement as getFocusedElement } from "../../utils/dom";
-import { remainingDraftAfterSend } from "../../utils/sent-draft";
 import type { PresenceSnapshot } from "../../core/types";
 import type { LinkPresenceService } from "../link-presence/link-presence-service";
 import { kikiIcon } from "./icons";
@@ -192,6 +191,9 @@ export class GroupChatPanel {
   #groupQuery = "";
   #creating = false;
   #sending = false;
+  #submission: { groupId: string; value: string; next: string; edited: boolean } | undefined;
+  readonly #failedSends = new Map<string, Array<{ value: string }>>();
+  readonly #failedSendActions = node("div", "kl-failed-send-actions");
   #paneActionBusy = false;
   #detailsActionBusy = false;
   #destroyed = false;
@@ -337,7 +339,8 @@ export class GroupChatPanel {
     const composerFooter = node("div", "kl-composer-options kl-group-composer-footer");
     composerFooter.append(this.#counter);
     const composerArea = node("footer", "kl-composer kl-group-composer-area");
-    composerArea.append(composerLabel, composerRow, composerFooter);
+    this.#failedSendActions.hidden = true;
+    composerArea.append(composerLabel, composerRow, composerFooter, this.#failedSendActions);
 
     this.#paneFeedback = node("p", "kl-group-feedback");
     this.#paneFeedback.setAttribute("role", "status");
@@ -1663,7 +1666,7 @@ export class GroupChatPanel {
     if (syncMessages) this.#renderMessages(group);
     const maxContent = this.#messageMaxContent(group.groupId);
     this.#composer.maxLength = maxContent;
-    if (syncDraft) this.#composer.value = group.draft.slice(0, maxContent);
+    if (syncDraft) this.#composer.value = (this.#submission?.groupId === groupId ? this.#submission.next : group.draft).slice(0, maxContent);
     this.#updateComposerControls();
   }
 
@@ -1834,6 +1837,10 @@ export class GroupChatPanel {
     if (this.#composer.value.length > maxContent) {
       this.#composer.value = this.#composer.value.slice(0, maxContent);
     }
+    if (this.#submission?.groupId === this.#currentGroupId) {
+      this.#submission.next = this.#composer.value;
+      this.#submission.edited = true;
+    }
     this.#updateComposerControls();
     this.#scheduleDraft(this.#currentGroupId, this.#composer.value);
   }
@@ -1853,6 +1860,37 @@ export class GroupChatPanel {
     this.#composer.disabled = !this.#currentGroupId;
     this.#attachImageButton.disabled =
       this.#sending || !this.#currentGroupId || !this.options.onAttachImage;
+    this.#renderFailedSends();
+  }
+
+  #renderFailedSends(): void {
+    const groupId = this.#currentGroupId;
+    const failed = groupId ? this.#failedSends.get(groupId) ?? [] : [];
+    const submission = failed[0];
+    this.#failedSendActions.hidden = !submission;
+    this.#failedSendActions.replaceChildren();
+    if (!submission || !groupId) return;
+    const discard = () => {
+      const pending = this.#failedSends.get(groupId) ?? [];
+      this.#failedSends.set(groupId, pending.filter(item => item !== submission));
+      this.#renderFailedSends();
+    };
+    const retry = button("kl-text-button", "Retry", `Retry unsent message: ${submission.value}`);
+    retry.title = submission.value;
+    retry.disabled = this.#sending;
+    retry.addEventListener("click", () => {
+      if (this.#sending) return;
+      void this.#sendGroupMessage(groupId, submission.value).then(sent => { if (sent) discard(); });
+    });
+    const remove = button("kl-icon-button", "", "Discard unsent message");
+    remove.title = "Discard unsent message"; remove.append(kikiIcon("close"));
+    remove.disabled = this.#sending; remove.addEventListener("click", discard);
+    const preview = node("span", "kl-conversation-preview",
+      `Not sent${failed.length > 1 ? ` (${failed.length})` : ""}: ${submission.value.replace(/\s+/gu, " ").slice(0, 72)}`);
+    preview.title = submission.value;
+    const row = node("div", "kl-composer-options");
+    row.append(preview, retry, remove);
+    this.#failedSendActions.append(row);
   }
 
   #resizeComposer(): void {
@@ -1894,6 +1932,7 @@ export class GroupChatPanel {
   }
 
   #scheduleDraft(groupId: string, value: string): void {
+    if (this.#pendingDraft && this.#pendingDraft.groupId !== groupId) void this.#flushDraft();
     this.#pendingDraft = { groupId, value };
     if (this.#draftTimer !== undefined) clearTimeout(this.#draftTimer);
     this.#draftTimer = setTimeout(() => {
@@ -1919,24 +1958,55 @@ export class GroupChatPanel {
     if (!groupId || this.#sending || !value.trim()) return;
     // Only the explicit Send/Enter action owns focus, never its late completion.
     this.#composer.focus({ preventScroll: true });
-    this.#flushDraft();
+    const submission = { groupId, value, next: "", edited: false };
+    this.#submission = submission;
+    this.#composer.value = "";
+    this.#scheduleDraft(groupId, "");
+    void this.#flushDraft();
+    await this.#sendGroupMessage(groupId, value, submission);
+  }
+
+  async #restoreSubmission(submission: { groupId: string; value: string; next: string; edited: boolean }): Promise<void> {
+    if (!this.service.getGroup(submission.groupId)) return;
+    if (submission.edited) {
+      const failed = this.#failedSends.get(submission.groupId) ?? [];
+      failed.push({ value: submission.value });
+      this.#failedSends.set(submission.groupId, failed);
+      this.#renderFailedSends();
+      if (this.#pendingDraft?.groupId === submission.groupId) await this.#flushDraft();
+      return;
+    }
+    submission.next = submission.value;
+    if (this.#currentGroupId === submission.groupId) this.#composer.value = submission.value;
+    this.#scheduleDraft(submission.groupId, submission.value);
+    await this.#flushDraft();
+  }
+
+  async #sendGroupMessage(
+    groupId: string,
+    value: string,
+    submission?: { groupId: string; value: string; next: string; edited: boolean },
+  ): Promise<boolean> {
     this.#sending = true;
     this.#updateComposerControls();
     this.#clearPaneFeedback();
+    let sent = false;
+    let restored = false;
     try {
       const result = await this.service.sendMessage(groupId, value);
-      if (result.persisted) {
-        if (this.#pendingDraft?.groupId === groupId) void this.#flushDraft();
-        if (this.#currentGroupId === groupId) {
-          const current = this.#composer.value, remaining = remainingDraftAfterSend(current, value);
-          if (remaining !== current) this.#composer.value = remaining;
-          this.#scheduleDraft(groupId, this.#composer.value);
-          this.#renderActiveGroup(false, false);
-          await this.#flushDraft();
-        } else await this.service.consumeSentDraft(groupId, value);
+      sent = result.persisted;
+      if (!sent && submission && !restored) {
+        restored = true;
+        await this.#restoreSubmission(submission);
       }
+      if (this.#pendingDraft?.groupId === groupId) await this.#flushDraft();
       if (this.#currentGroupId === groupId) this.#reportSendResult(groupId, result);
+      return sent;
     } catch (error) {
+      if (!sent && submission && !restored) {
+        restored = true;
+        await this.#restoreSubmission(submission);
+      }
       if (this.#currentGroupId === groupId) {
         this.#report({
           tone: "error",
@@ -1944,7 +2014,9 @@ export class GroupChatPanel {
           groupId,
         });
       }
+      return sent;
     } finally {
+      if (this.#submission === submission) this.#submission = undefined;
       this.#sending = false;
       this.#updateComposerControls();
     }
@@ -2082,10 +2154,12 @@ export class GroupChatPanel {
     }
     this.#renderSidebar();
     if (update.kind === "group-removed") {
+      this.#failedSends.delete(update.groupId);
       if (this.#menuGroupId === update.groupId) this.#closeGroupActionMenu(true);
       if (this.#detailsGroupId === update.groupId) this.#closeGroupDetails(true);
     }
     if (update.kind === "cleared") {
+      this.#failedSends.clear();
       this.#closeGroupActionMenu(true);
       this.#closeGroupDetails(true);
       this.#closeActive(true);

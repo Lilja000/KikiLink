@@ -156,7 +156,7 @@ export class BCAdapter {
   #seenRoomProtocolPayloads = new WeakSet<object>();
   #stopped = false;
   #ready = false;
-  #sendingViaKikiLink = false;
+  #nativeBeepSubmission: { event: BeepEvent; handedOff: boolean } | undefined;
   #hasOnlineFriendSnapshot = false;
   #onlineFriendsUpdatedAt = 0;
   #onlineFriendSignature: string | undefined;
@@ -298,11 +298,7 @@ export class BCAdapter {
   }
 
   canSendBeep(): boolean {
-    try {
-      return typeof ServerSendBeepMessage === "function" &&
-        (typeof ServerIsLoggedIn !== "function" || ServerIsLoggedIn()) &&
-        (typeof ServerSocket !== "object" || ServerSocket === null || ServerSocket.connected !== false);
-    } catch { return false; }
+    return typeof ServerSendBeepMessage === "function" && nativeSessionCanSend();
   }
 
   canUseKikiLinkProtocol(): boolean {
@@ -423,11 +419,11 @@ export class BCAdapter {
     if (!Number.isSafeInteger(target) || target < 0) {
       throw new Error("A valid non-negative member number is required");
     }
-    if (this.#socket?.connected === false) throw new Error("Bondage Club is reconnecting");
     const wire = protocolWire(payload);
     if (typeof ServerSend !== "function") {
       throw new Error("The KikiLink compatibility channel is still loading");
     }
+    if (!nativeSessionCanSend()) throw new Error("Bondage Club is reconnecting. Your message has not been sent.");
 
     if (route !== "beep" && this.isInChatRoom() && this.#findRoomCharacter(target)) {
       sendBCPacket("protocol", "ChatRoomChat", {
@@ -448,7 +444,7 @@ export class BCAdapter {
   }
 
   broadcastKikiLinkProtocol(payload: string): boolean {
-    if (!this.isInChatRoom() || typeof ServerSend !== "function" || this.#socket?.connected === false) return false;
+    if (!this.isInChatRoom() || !nativeSessionCanSend()) return false;
     sendBCPacket("protocol", "ChatRoomChat", {
       Type: "Hidden",
       Content: protocolWire(payload),
@@ -474,12 +470,18 @@ export class BCAdapter {
     const event = this.#normalizeOutgoing(target, message, { includeRoom });
     if (!event) throw new Error("Unable to prepare this Beep");
 
-    // LinkChat saves the returned event itself, so suppress the synchronous transport hook.
-    this.#sendingViaKikiLink = true;
+    // The existing transport hook identifies this handoff. A later native log
+    // error must not turn an already submitted message into a retryable draft.
+    const previous = this.#nativeBeepSubmission;
+    const submission = { event, handedOff: false };
+    this.#nativeBeepSubmission = submission;
     try {
       withBCNetworkReason("direct-message", () => ServerSendBeepMessage(target, message, { includeRoom }));
+    } catch (error) {
+      if (!submission.handedOff) throw error;
+      this.#logger.warn("Beep submitted, but the native helper could not finish its local bookkeeping", error);
     } finally {
-      this.#sendingViaKikiLink = false;
+      this.#nativeBeepSubmission = previous;
     }
     // Remember only successful sends for the later native-log recovery pass.
     this.#rememberOutgoing(event);
@@ -1286,7 +1288,7 @@ export class BCAdapter {
 
     const hook: ResilientHook = (args, next) => {
       const result = observeBCSend(args[0], args[1], () => next(args));
-      if (!this.#sendingViaKikiLink) this.#captureOutgoingServerPacket(args[0], args[1]);
+      this.#captureOutgoingServerPacket(args[0], args[1]);
       return result;
     };
     if (this.#installIntegrationHook(name, 0, hook)) {
@@ -1664,7 +1666,16 @@ export class BCAdapter {
         typeof data.Message === "string" ? data.Message : undefined,
         { includeRoom: data.IsSecret === false },
       );
-      if (event) this.#captureOutgoing(event, "transport");
+      if (event) {
+        const submission = this.#nativeBeepSubmission;
+        if (submission && !submission.handedOff && event.peerNumber === submission.event.peerNumber) {
+          // LinkChat saves its own returned event. This proves only local
+          // transport handoff, never receipt by the other player. Another addon
+          // may translate or format the text before this boundary, so correlate
+          // the first ordinary packet by this synchronous helper call and peer.
+          submission.handedOff = true;
+        } else this.#captureOutgoing(event, "transport");
+      }
     } catch (error) {
       // Firefox can expose objects owned by another addon through a guarded compartment. A single
       // inaccessible packet must not interrupt ServerSend or any other messenger's hook chain.
@@ -2274,6 +2285,17 @@ function outgoingFingerprint(event: BeepEvent): string {
   // The native log records the actual room, not the requested includeRoom flag.
   // Room sharing in the lobby has no room name in either observation.
   return JSON.stringify([event.peerNumber, event.content, cleanName(event.roomName) ?? ""]);
+}
+
+/** Missing connection state cannot confirm a native send; BC otherwise silently drops it. */
+function nativeSessionCanSend(): boolean {
+  try {
+    return typeof ServerSend === "function" &&
+      typeof ServerIsLoggedIn === "function" && ServerIsLoggedIn() &&
+      typeof ServerSocket === "object" && ServerSocket !== null && ServerSocket.connected === true &&
+      typeof Player === "object" && Player !== null && Player.CharacterID !== "" &&
+      Number.isSafeInteger(Player.MemberNumber) && Player.MemberNumber > 0;
+  } catch { return false; }
 }
 
 function isBondageClubReady(): boolean {

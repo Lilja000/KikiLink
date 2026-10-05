@@ -1,5 +1,4 @@
 import { element } from "./dom";
-import { remainingDraftAfterSend } from "../utils/sent-draft";
 import { syncDateSeparators } from "../modules/link-chat/date-separators";
 import { SocialUI } from "./social-ui";
 import { GroupLiveView } from "./group-live";
@@ -15,6 +14,19 @@ import { appendFormattedText, TEXT_FORMAT_HINT } from "../modules/link-chat/text
 import { parseMessageLinks } from "../modules/link-chat/media";
 import type { CloudGroup, CloudMessage, CloudPage, CloudGroupLive } from "./types";
 
+interface GroupDraft { text: string; clientId: string }
+interface GroupSubmission { text: string; clientId: string }
+interface GroupSendState {
+  pending: GroupSubmission | undefined;
+  restored: GroupSubmission | undefined;
+  failed: Set<GroupSubmission>;
+  revision: number;
+  listeners: Set<() => void>;
+}
+// A group's draft outlives its view. Keep request ownership and retry identities
+// with that draft so replacing a thread cannot start a second copy of a send.
+const groupSends = new WeakMap<GroupDraft, GroupSendState>();
+
 export class CloudGroupThread {
   readonly element = element("section", { className: "kl-group-thread", ariaLabel: "Group conversation" });
   readonly #list = element("div", { className: "kl-group-history", role: "log", ariaLabel: "Group messages" });
@@ -28,7 +40,7 @@ export class CloudGroupThread {
   #loadedMessages = new Map<string, CloudMessage>();
   #loading = false;
   #updating = false;
-  #sending = false;
+  readonly #sendState: GroupSendState;
   #updateAgain = false;
   #scroll: HTMLElement | null = null;
   readonly #onScroll = () => {
@@ -41,6 +53,25 @@ export class CloudGroupThread {
   readonly #more: HTMLButtonElement;
   readonly #draft: HTMLTextAreaElement;
   readonly #send: HTMLButtonElement;
+  readonly #draftCount: HTMLElement;
+  readonly #failed = element("div", { className: "kl-group-pin-status", role: "status", hidden: true });
+  readonly #failedPreview = element("span", { className: "kl-conversation-preview" });
+  readonly #retryButton: HTMLButtonElement;
+  readonly #discardButton: HTMLButtonElement;
+  readonly #syncDraft = () => {
+    if (this.#reply.value !== this.draft.text) this.#reply.load(this.draft.text);
+    this.#draftCount.textContent = `${this.draft.text.length} / 4000`;
+    this.#send.disabled = !this.#reply.hasContent || Boolean(this.#sendState.pending);
+    const first = this.#sendState.failed.values().next().value;
+    if (first) {
+      if (!this.#failed.firstChild) this.#failed.append(element("div", { className: "kl-composer-options" }, this.#failedPreview, this.#retryButton, this.#discardButton));
+      const count = this.#sendState.failed.size;
+      this.#failedPreview.textContent = `${count > 1 ? `${count} messages` : "Message"} not confirmed: ${first.text.replace(/\s+/gu, " ").slice(0, 120)}`;
+      this.#failedPreview.title = first.text;
+    } else this.#failed.replaceChildren();
+    this.#retryButton.disabled = this.#discardButton.disabled = Boolean(this.#sendState.pending);
+    this.#failed.hidden = !first;
+  };
   readonly #new: HTMLButtonElement;
   readonly #controls: MessageInteraction;
   readonly #reply: ReplyComposer;
@@ -55,24 +86,37 @@ export class CloudGroupThread {
   #highlight: ReturnType<typeof setTimeout> | undefined;
 
   constructor(readonly ui: SocialUI, readonly group: CloudGroup,
-    readonly draft: { text: string; clientId: string },
+    readonly draft: GroupDraft,
     readonly options: { enterToSend(): boolean; messageChanges?: boolean; groupLive?: boolean; groupPins?: boolean; messageReceipts?: boolean; liveChanged?(live: CloudGroupLive): void; membershipChanged(): Promise<void>; report(row: HTMLElement, id: string): void;
       observed?(messages: CloudMessage[], read: boolean): void; acknowledgeReceipts?(deliveredIds: string[], readIds: string[]): void; draftChanged?(text: string): void; canRead?(): boolean; readUntil?(sequence: number): void }) {
+    let sendState = groupSends.get(draft);
+    if (!sendState) { sendState = { pending: undefined, restored: undefined, failed: new Set(), revision: 0, listeners: new Set() }; groupSends.set(draft, sendState); }
+    this.#sendState = sendState;
     if (options.groupLive) this.#live = new GroupLiveView(ui, group, live => options.liveChanged?.(live));
     this.#list.setAttribute("aria-live", "polite");
     this.#more = ui.button("Load earlier messages", () => this.loadOlder(), "previous", "kl-social-button kl-group-load");
     this.#draft = element("textarea", { className: "kl-group-input", value: draft.text, maxLength: 4000, ariaLabel: "Message this Cloud group", placeholder: `Message ${group.title}…` });
     this.#draft.title = TEXT_FORMAT_HINT;
     this.#reply = new ReplyComposer(this.#draft, 4000);
-    const count = element("span", { className: "kl-composer-count", text: `${draft.text.length} / 4000` });
+    this.#draftCount = element("span", { className: "kl-composer-count", text: `${draft.text.length} / 4000` });
     this.#draft.addEventListener("input", () => {
-      draft.text = this.#reply.value; count.textContent = `${draft.text.length} / 4000`;
-      options.draftChanged?.(draft.text); this.#live?.signal(this.#reply.hasContent);
-      this.#send.disabled = !this.#reply.hasContent || this.#sending;
+      if (draft.text !== this.#reply.value) {
+        // Editing a restored, unconfirmed message makes a new draft. Its original
+        // text and id remain available for an explicit, idempotent retry.
+        if (this.#sendState.restored) { this.#sendState.restored = undefined; draft.clientId = crypto.randomUUID(); }
+        draft.text = this.#reply.value; this.#sendState.revision++;
+      }
+      this.#live?.signal(this.#reply.hasContent); this.#notifyDraft(true);
     });
     this.#draft.addEventListener("blur", () => this.#live?.signal(false));
     this.#send = ui.button("Send", () => this.send(), "send", "kl-social-button kl-social-primary", false);
     this.#send.disabled = !this.#reply.hasContent;
+    this.#retryButton = ui.button("Retry", () => {
+      const first = this.#sendState.failed.values().next().value;
+      if (first) return this.#retry(first);
+    }, "refresh", "kl-social-button", false);
+    this.#discardButton = ui.button("Stop retrying", () => this.#discardFailed(), "close", "kl-social-icon-button", false);
+    this.#discardButton.title = "Stops local retries. A message already accepted by the server may still arrive.";
     this.#draft.addEventListener("keydown", event => {
       if (shouldSendMessage(event, options.enterToSend())) {
         event.preventDefault(); if (!this.#send.disabled) this.#send.click();
@@ -84,15 +128,28 @@ export class CloudGroupThread {
     this.#pin.addEventListener("click", () => { void this.ui.options.run(() => this.#jumpToPin()); });
     this.#pinRemove.addEventListener("click", () => { void this.ui.options.run(() => this.#setPin(null)); });
     this.#renderPin();
-    this.element.append(this.#pinRow, this.#pinStatus, this.#list, this.#new, ...(this.#live ? [this.#live.element] : []),
+    this.element.append(this.#pinRow, this.#pinStatus, this.#list, this.#new, this.#failed, ...(this.#live ? [this.#live.element] : []),
       element("div", { className: "kl-group-composer" }, this.#reply.element, this.#draft,
         element("div", { className: "kl-group-compose-actions" },
-          element("small", { text: "Shift + Enter for a new line" }), count, this.#send)));
+          element("small", { text: "Shift + Enter for a new line" }), this.#draftCount, this.#send)));
     this.#controls = new MessageInteraction(this.element, this.#list, row => this.#contextActions(row));
+    this.#sendState.listeners.add(this.#syncDraft); this.#syncDraft();
   }
   pause(): void { this.#version++; this.#active = false; this.#live?.pause(); this.#controls.close(); clearTimeout(this.#highlight); }
-  resume(): void { this.#reply.load(this.draft.text); this.#draft.dispatchEvent(new Event("input")); this.#active = true; this.#live?.resume(); this.#onScroll(); }
-  stop(): void { this.pause(); this.#controls.destroy(); this.#reply.destroy(); this.#live?.destroy(); this.#scroll?.removeEventListener("scroll", this.#onScroll); this.#scroll = null; }
+  resume(): void { this.#syncDraft(); this.#active = true; this.#live?.resume(); this.#onScroll(); }
+  stop(): void { this.pause(); this.#sendState.listeners.delete(this.#syncDraft); this.#controls.destroy(); this.#reply.destroy(); this.#live?.destroy(); this.#scroll?.removeEventListener("scroll", this.#onScroll); this.#scroll = null; }
+  #notifyDraft(changed = false): void {
+    // Rendering is an observer of committed draft state. A broken view/preview
+    // must not cancel a submission, strand its pending flag or hide its outcome.
+    for (const listener of this.#sendState.listeners) {
+      try { listener(); }
+      catch (error) { console.error("[KikiLink:cloud-group] Draft view failed", error); }
+    }
+    if (changed) {
+      try { this.options.draftChanged?.(this.draft.text); }
+      catch (error) { console.error("[KikiLink:cloud-group] Draft observer failed", error); }
+    }
+  }
   #canRead(): boolean { return this.#active && document.visibilityState !== "hidden" && (this.options.canRead?.() ?? true); }
   #atBottom(): boolean { return !this.#scroll || this.#scroll.scrollHeight - this.#scroll.scrollTop - this.#scroll.clientHeight < 180; }
   async loadOlder(): Promise<void> {
@@ -173,33 +230,64 @@ export class CloudGroupThread {
     }
   }
   async send(): Promise<void> {
-    if (this.#sending || !this.#active || !this.#reply.hasContent) return;
-    const version = this.#version, text = this.draft.text, clientId = this.draft.clientId;
+    if (this.#sendState.pending || !this.#active || !this.#reply.hasContent) return;
+    const submission = this.#sendState.restored ?? { text: this.draft.text, clientId: this.draft.clientId };
     this.#live?.signal(false);
     this.#draft.focus({ preventScroll: true });
-    this.#sending = true; this.#send.disabled = true;
+    await this.#submit(submission, true);
+  }
+  async #retry(submission: GroupSubmission): Promise<void> {
+    if (this.#sendState.pending || !this.#active || !this.#sendState.failed.has(submission)) return;
+    const detach = this.#sendState.restored === submission;
+    if (detach) this.#live?.signal(false);
+    await this.#submit(submission, detach);
+  }
+  #discardFailed(): void {
+    const first = this.#sendState.failed.values().next().value;
+    if (!first || this.#sendState.pending || !this.#active) return;
+    this.#sendState.failed.delete(first);
+    // The visible draft remains editable. An unchanged restored message keeps
+    // its original id in case it was accepted before its response was lost.
+    this.#notifyDraft();
+  }
+  async #submit(submission: GroupSubmission, detach: boolean): Promise<void> {
+    const version = this.#version, { text, clientId } = submission;
+    const state = this.#sendState;
+    const nextClientId = detach ? crypto.randomUUID() : this.draft.clientId;
+    state.pending = submission;
+    if (detach) {
+      // Commit the complete submission before awaiting the network. Later typing
+      // belongs solely to the next draft, even when its text matches this one.
+      this.draft.text = ""; this.draft.clientId = nextClientId;
+      state.restored = undefined; state.revision++;
+    }
+    const revision = state.revision;
+    this.#notifyDraft(detach);
+    let message: CloudMessage;
+    let restored = false;
     try {
-      const message = await this.ui.options.client.request<CloudMessage>("POST", `/v1/conversations/${this.group.conversationId}/messages`, {
+      message = await this.ui.options.client.request<CloudMessage>("POST", `/v1/conversations/${this.group.conversationId}/messages`, {
         text, clientId, membershipVersion: this.group.membershipVersion, keyVersion: this.group.keyVersion,
         schemaVersion: 1, encryption: "server-aes-256-gcm",
       });
-      if (this.draft.clientId === clientId) {
-        const current = this.draft.text;
-        this.draft.clientId = crypto.randomUUID();
-        this.draft.text = remainingDraftAfterSend(current, text);
-        this.options.draftChanged?.(this.draft.text);
-        if (this.draft.text !== current && this.#reply.value === current) { this.#reply.load(this.draft.text); this.#draft.dispatchEvent(new Event("input")); }
+      state.failed.delete(submission);
+    } catch (error) {
+      state.failed.add(submission);
+      if (detach && this.draft.clientId === nextClientId && state.revision === revision && !this.draft.text) {
+        this.draft.text = text; this.draft.clientId = clientId; state.restored = submission;
+        restored = true;
       }
-      if (version !== this.#version) return;
-      if (!this.#seen.has(message.id)) {
-        this.#list.querySelector(".kl-group-empty")?.remove();
-        this.#seen.add(message.id); this.#loadedMessages.set(message.id, message); this.#insert(message); this.#count++;
-      }
-      // Keep the receive cursor before this send: another user's intervening
-      // messages must still be fetched even if the send response arrived first.
-      await this.updates();
-      this.#list.lastElementChild?.scrollIntoView?.({ block: "nearest" });
-    } finally { this.#sending = false; this.#send.disabled = !this.#reply.hasContent; }
+      throw error;
+    } finally { state.pending = undefined; this.#notifyDraft(restored); }
+    if (version !== this.#version) return;
+    if (!this.#seen.has(message.id)) {
+      this.#list.querySelector(".kl-group-empty")?.remove();
+      this.#seen.add(message.id); this.#loadedMessages.set(message.id, message); this.#insert(message); this.#count++;
+    }
+    // A refresh failure cannot turn an accepted send into a retry. Keep the
+    // receive cursor before this send so intervening messages are still fetched.
+    await this.updates();
+    this.#list.lastElementChild?.scrollIntoView?.({ block: "nearest" });
   }
   #insert(message: CloudMessage): void {
     const next = [...this.#list.children].find(node => node instanceof HTMLElement && Number(node.dataset.sequence) > message.sequence);

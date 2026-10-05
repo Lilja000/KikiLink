@@ -77,7 +77,7 @@ it.each([
   { quoted: true, switchChat: false, failed: false },
   { quoted: false, switchChat: true, failed: false },
   { quoted: false, switchChat: false, failed: true },
-])("consumes only the accepted Cloud Direct draft: %j", async ({ quoted, switchChat, failed }) => {
+])("separates a submitted Cloud Direct message from the next draft: %j", async ({ quoted, switchChat, failed }) => {
   const h = await setup(), gate = deferred<void>();
   const submitted = (quoted ? "> Reply to Kiki: Earlier message\n" : "") + "First message";
   await h.service.setDraft(202, "Person 202", submitted);
@@ -93,6 +93,7 @@ it.each([
   const enter = () => composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true, cancelable: true }));
   enter(); enter();
   expect(send).toHaveBeenCalledOnce();
+  expect(composer.value).toBe("");
   composer.value += "Next message"; composer.dispatchEvent(new Event("input", { bubbles: true }));
   if (switchChat) {
     await h.service.setDraft(303, "Person 303", "Other person's draft");
@@ -101,7 +102,9 @@ it.each([
   gate.resolve();
   await vi.waitFor(() => expect(button.disabled).toBe(false));
   if (failed) {
-    expect(composer.value).toBe("First messageNext message");
+    expect(composer.value).toBe("Next message");
+    expect((await h.service.getConversation(202))?.draft).toBe("Next message");
+    expect(h.root.querySelector<HTMLButtonElement>(".kl-failed-send-actions button")?.title).toBe(submitted);
     expect(await h.service.getMessages(202)).toHaveLength(0);
   } else {
     expect((await h.service.getConversation(202))?.draft).toBe("Next message");

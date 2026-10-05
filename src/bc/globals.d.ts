@@ -1,6 +1,7 @@
 declare global {
   interface BCPlayer extends BCCharacter {
     ID?: number;
+    CharacterID?: string;
     MemberNumber: number;
     Name: string;
     Nickname?: string;

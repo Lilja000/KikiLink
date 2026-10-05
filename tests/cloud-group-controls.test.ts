@@ -20,7 +20,7 @@ async function setup(pins = false) {
   disposers.push(() => { thread.stop(); ui.destroy(); });
   const bubbles = [...thread.element.querySelectorAll<HTMLElement>(".kl-group-message-bubble")];
   const menu = thread.element.querySelector<HTMLElement>(".kl-group-message-menu")!;
-  return { thread, bubbles, menu, draft, request, report, errors, group, messages };
+  return { thread, bubbles, menu, draft, request, report, errors, group, messages, ui };
 }
 const button = (root: ParentNode, label: string) => root.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
 
@@ -140,4 +140,212 @@ it("retains a reply after a failed send and clears the same paused/resumed draft
   resolve({ ...messages[1]!, id: "sent", sequence: 3, text: saved }); await pending;
   expect(draft.text).toBe(""); expect(thread.element.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
   expect(thread.element.querySelector<HTMLElement>(".kl-composer-reply")!.hidden).toBe(true);
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void, reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+function typeDraft(thread: CloudGroupThread, text: string): HTMLTextAreaElement {
+  const input = thread.element.querySelector<HTMLTextAreaElement>("textarea")!;
+  input.value = text; input.dispatchEvent(new Event("input")); return input;
+}
+
+it.each(["Draft", "Draft with more text", "An edited beginning"])("detaches a slow submission immediately and preserves the next draft: %s", async next => {
+  const { thread, draft, request, group, messages } = await setup();
+  const post = deferred<CloudMessage>();
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? post.promise : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  const pending = thread.send();
+  const input = thread.element.querySelector<HTMLTextAreaElement>("textarea")!;
+  expect(input.value).toBe(""); expect(draft.text).toBe("");
+  expect(thread.element.querySelector(".kl-composer-count")!.textContent).toBe("0 / 4000");
+  expect(document.activeElement).toBe(input);
+  expect(draft.clientId).not.toBe("draft-id");
+  const nextClientId = draft.clientId;
+  typeDraft(thread, next); input.setSelectionRange(1, 3);
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  await thread.send();
+  expect(request.mock.calls.filter(([method]) => method === "POST")).toHaveLength(1);
+  const elsewhere = document.createElement("button"); document.body.append(elsewhere); elsewhere.focus();
+  post.resolve({ ...messages[1]!, id: "sent", sequence: 3, text: "Draft" }); await pending;
+  expect(input.value).toBe(next); expect(draft.text).toBe(next);
+  expect(input.selectionStart).toBe(1); expect(input.selectionEnd).toBe(3);
+  expect(document.activeElement).toBe(elsewhere);
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? { ...messages[1]!, id: "next", sequence: 4, text: next } : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  await thread.send();
+  expect(request).toHaveBeenCalledWith("POST", "/v1/conversations/c/messages", expect.objectContaining({ text: next, clientId: nextClientId }));
+});
+
+it("restores an untouched failed submission and retries with its original id", async () => {
+  const { thread, draft, request, group, messages } = await setup();
+  request.mockRejectedValueOnce(new Error("Response lost"));
+  await expect(thread.send()).rejects.toThrow("Response lost");
+  expect(draft).toEqual({ text: "Draft", clientId: "draft-id" });
+  expect(button(thread.element, "Retry")).not.toBeNull();
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? { ...messages[1]!, id: "sent", sequence: 3, text: "Draft" } : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  button(thread.element, "Retry").click();
+  await vi.waitFor(() => expect(thread.element.querySelector('[data-message-id="sent"]')).not.toBeNull());
+  const posts = request.mock.calls.filter(([method]) => method === "POST");
+  expect(posts).toHaveLength(2);
+  for (const call of posts) expect(call).toEqual(["POST", "/v1/conversations/c/messages", expect.objectContaining({ text: "Draft", clientId: "draft-id" })]);
+  expect(draft.text).toBe(""); expect(button(thread.element, "Retry")).toBeNull();
+});
+
+it("keeps a failed message separate from a newer draft and retries it without consuming that draft", async () => {
+  const { thread, draft, request, group, messages } = await setup();
+  const post = deferred<CloudMessage>();
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? post.promise : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  const pending = thread.send(); const failed = expect(pending).rejects.toThrow("Offline");
+  const nextId = draft.clientId, input = typeDraft(thread, "Next message");
+  post.reject(new Error("Offline")); await failed;
+  expect(input.value).toBe("Next message"); expect(draft).toEqual({ text: "Next message", clientId: nextId });
+  expect(thread.element.textContent).toContain("Message not confirmed: Draft");
+  const retry = deferred<CloudMessage>();
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? retry.promise : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  button(thread.element, "Retry").click();
+  expect(input.value).toBe("Next message");
+  expect(request).toHaveBeenLastCalledWith("POST", "/v1/conversations/c/messages", expect.objectContaining({ text: "Draft", clientId: "draft-id" }));
+  typeDraft(thread, "Next message updated");
+  retry.resolve({ ...messages[1]!, id: "sent", sequence: 3, text: "Draft" });
+  await vi.waitFor(() => expect(button(thread.element, "Retry")).toBeNull());
+  expect(draft.text).toBe("Next message updated"); expect(draft.clientId).toBe(nextId);
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? { ...messages[1]!, id: "next", sequence: 4, text: draft.text } : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  await thread.send();
+  expect(request).toHaveBeenCalledWith("POST", "/v1/conversations/c/messages", expect.objectContaining({ text: "Next message updated", clientId: nextId }));
+  expect(nextId).not.toBe("draft-id");
+});
+
+it("does not restore a failed submission over a draft that was typed and deliberately cleared", async () => {
+  const { thread, draft, request } = await setup();
+  const post = deferred<CloudMessage>(); request.mockImplementation(async () => post.promise);
+  const pending = thread.send(), failed = expect(pending).rejects.toThrow("Offline");
+  typeDraft(thread, "Changed my mind"); typeDraft(thread, "");
+  post.reject(new Error("Offline")); await failed;
+  expect(draft.text).toBe(""); expect(draft.clientId).not.toBe("draft-id");
+  expect(button(thread.element, "Retry")).not.toBeNull();
+});
+
+it("allocates a distinct id when an unconfirmed restored message is edited", async () => {
+  const { thread, draft, request, group, messages } = await setup();
+  request.mockRejectedValueOnce(new Error("Response lost")); await expect(thread.send()).rejects.toThrow("Response lost");
+  typeDraft(thread, "Draft edited"); const editedId = draft.clientId;
+  expect(editedId).not.toBe("draft-id");
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? { ...messages[1]!, id: "edited", sequence: 3, text: "Draft edited" } : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  await thread.send();
+  expect(request).toHaveBeenCalledWith("POST", "/v1/conversations/c/messages", expect.objectContaining({ text: "Draft edited", clientId: editedId }));
+  expect(button(thread.element, "Retry")).not.toBeNull();
+  button(thread.element, "Retry").click();
+  await vi.waitFor(() => expect(button(thread.element, "Retry")).toBeNull());
+  expect(request).toHaveBeenCalledWith("POST", "/v1/conversations/c/messages", expect.objectContaining({ text: "Draft", clientId: "draft-id" }));
+});
+
+it("retains pending ownership and an original retry through thread recreation", async () => {
+  const { thread, draft, request, group, messages, ui } = await setup();
+  const post = deferred<CloudMessage>();
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? post.promise : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  const pending = thread.send(), failed = expect(pending).rejects.toThrow("Offline");
+  thread.stop(); thread.element.remove();
+  const replacement = new CloudGroupThread(ui, group, draft, thread.options);
+  document.body.append(replacement.element); disposers.push(() => replacement.stop());
+  expect(replacement.element.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
+  typeDraft(replacement, "New message"); await replacement.send();
+  expect(request.mock.calls.filter(([method]) => method === "POST")).toHaveLength(1);
+  post.reject(new Error("Offline")); await failed;
+  expect(draft.text).toBe("New message"); expect(button(replacement.element, "Retry")).not.toBeNull();
+  replacement.pause(); replacement.resume();
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? { ...messages[1]!, id: "sent", sequence: 3, text: "Draft" } : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  button(replacement.element, "Retry").click();
+  await vi.waitFor(() => expect(button(replacement.element, "Retry")).toBeNull());
+  expect(draft.text).toBe("New message");
+  expect(request).toHaveBeenCalledWith("POST", "/v1/conversations/c/messages", expect.objectContaining({ text: "Draft", clientId: "draft-id" }));
+});
+
+it("restores an untouched failed submission in a replacement thread", async () => {
+  const { thread, draft, request, group, ui } = await setup();
+  const post = deferred<CloudMessage>(); request.mockImplementation(async () => post.promise);
+  const pending = thread.send(), failed = expect(pending).rejects.toThrow("Offline");
+  thread.stop(); thread.element.remove();
+  const replacement = new CloudGroupThread(ui, group, draft, thread.options);
+  document.body.append(replacement.element); disposers.push(() => replacement.stop());
+  post.reject(new Error("Offline")); await failed;
+  expect(draft).toEqual({ text: "Draft", clientId: "draft-id" });
+  expect(replacement.element.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("Draft");
+  expect(button(replacement.element, "Send").disabled).toBe(false);
+});
+
+it("does not restore or offer a retry after an accepted message's history refresh fails", async () => {
+  const { thread, draft, request, messages } = await setup();
+  request.mockImplementation(async (method: string) => {
+    if (method === "POST") return { ...messages[1]!, id: "sent", sequence: 3, text: "Draft" };
+    throw new Error("History unavailable");
+  });
+  await expect(thread.send()).rejects.toThrow("History unavailable");
+  expect(draft.text).toBe(""); expect(button(thread.element, "Retry")).toBeNull();
+  expect(thread.element.querySelector('[data-message-id="sent"]')).not.toBeNull();
+  await thread.send(); expect(request.mock.calls.filter(([method]) => method === "POST")).toHaveLength(1);
+});
+
+it("stops offering retries without changing an untouched restored draft's id", async () => {
+  const { thread, draft, request, group, messages } = await setup();
+  request.mockRejectedValueOnce(new Error("Response lost")); await expect(thread.send()).rejects.toThrow("Response lost");
+  button(thread.element, "Stop retrying").click();
+  expect(button(thread.element, "Retry")).toBeNull(); expect(draft).toEqual({ text: "Draft", clientId: "draft-id" });
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? { ...messages[1]!, id: "sent", sequence: 3, text: "Draft" } : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  await thread.send();
+  expect(request).toHaveBeenCalledWith("POST", "/v1/conversations/c/messages", expect.objectContaining({ text: "Draft", clientId: "draft-id" }));
+});
+
+it("uses a new id after editing a restored draft whose retry was dismissed", async () => {
+  const { thread, draft, request } = await setup();
+  request.mockRejectedValueOnce(new Error("Response lost")); await expect(thread.send()).rejects.toThrow("Response lost");
+  button(thread.element, "Stop retrying").click(); typeDraft(thread, "Edited after dismissal");
+  expect(draft.clientId).not.toBe("draft-id"); expect(button(thread.element, "Retry")).toBeNull();
+});
+
+it("keeps multiple unconfirmed messages behind one bounded recovery row and preserves the active draft", async () => {
+  const { thread, draft, request } = await setup();
+  request.mockRejectedValue(new Error("Offline"));
+  await expect(thread.send()).rejects.toThrow("Offline");
+  typeDraft(thread, "Second message"); await expect(thread.send()).rejects.toThrow("Offline");
+  typeDraft(thread, "Newest draft"); const nextId = draft.clientId;
+  expect(thread.element.querySelectorAll('button[aria-label="Retry"]')).toHaveLength(1);
+  expect(thread.element.textContent).toContain("2 messages not confirmed: Draft");
+  button(thread.element, "Stop retrying").click();
+  expect(thread.element.textContent).toContain("Message not confirmed: Second message");
+  expect(draft).toEqual({ text: "Newest draft", clientId: nextId });
+  button(thread.element, "Stop retrying").click();
+  expect(button(thread.element, "Retry")).toBeNull(); expect(draft).toEqual({ text: "Newest draft", clientId: nextId });
+});
+
+it("does not strand or restore accepted sends when the draft preview observer throws", async () => {
+  const { thread, draft, request, group, messages } = await setup();
+  const observerError = new Error("Inbox rendering failed");
+  thread.options.draftChanged = () => { throw observerError; };
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? { ...messages[1]!, id: "sent", sequence: 3, text: "Draft" } : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  const pending = thread.send();
+  expect(draft.text).toBe(""); expect(thread.element.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
+  await pending;
+  expect(thread.element.querySelector('[data-message-id="sent"]')).not.toBeNull();
+  expect(button(thread.element, "Retry")).toBeNull();
+  typeDraft(thread, "Next message"); expect(button(thread.element, "Send").disabled).toBe(false);
+  await thread.send(); expect(request.mock.calls.filter(([method]) => method === "POST")).toHaveLength(2);
+  expect(logged).toHaveBeenCalledWith("[KikiLink:cloud-group] Draft observer failed", observerError);
+});
+
+it("retains a failed submission and releases pending ownership when its draft observer throws", async () => {
+  const { thread, draft, request, group, messages } = await setup();
+  thread.options.draftChanged = () => { throw new Error("Inbox rendering failed"); };
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  request.mockRejectedValueOnce(new Error("Network unavailable"));
+  await expect(thread.send()).rejects.toThrow("Network unavailable");
+  expect(draft).toEqual({ text: "Draft", clientId: "draft-id" });
+  expect(button(thread.element, "Send").disabled).toBe(false);
+  expect(button(thread.element, "Retry").disabled).toBe(false);
+  request.mockImplementation(async (method: string, path?: string) => method === "POST" ? { ...messages[1]!, id: "sent", sequence: 3, text: "Draft" } : path === "/v1/groups/g" ? group : { items: [], nextCursor: null });
+  await thread.send(); expect(draft.text).toBe(""); expect(button(thread.element, "Retry")).toBeNull();
+  const posts = request.mock.calls.filter(([method]) => method === "POST");
+  expect(posts).toHaveLength(2);
+  for (const call of posts) expect(call).toEqual(["POST", "/v1/conversations/c/messages", expect.objectContaining({ text: "Draft", clientId: "draft-id" })]);
 });

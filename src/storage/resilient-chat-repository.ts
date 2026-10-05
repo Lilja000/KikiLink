@@ -1,5 +1,5 @@
 import type { ConversationMeta, LinkMessage } from "../core/types";
-import type { ChatRepository } from "./chat-repository";
+import type { ChatCaptureResult, ChatRepository } from "./chat-repository";
 
 export class ResilientChatRepository implements ChatRepository {
   #usingFallback = false;
@@ -8,6 +8,11 @@ export class ResilientChatRepository implements ChatRepository {
     private readonly primary: ChatRepository,
     private readonly fallback: ChatRepository,
   ) {}
+
+  captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult> {
+    // Retry the whole capture in the active store, never just its failed conversation/trim step.
+    return this.#run(repository => repository.captureMessage(message, conversation, keepNewest));
+  }
 
   addMessage(message: LinkMessage): Promise<void> {
     return this.#run((repository) => repository.addMessage(message));
@@ -86,11 +91,14 @@ export class ResilientChatRepository implements ChatRepository {
     if (this.#usingFallback) return operation(this.fallback);
 
     try {
-      return await operation(this.primary);
+      const result = await operation(this.primary);
+      // Another in-flight operation may have switched stores while this one was awaiting
+      // IndexedDB. A successful write must still become visible in the now-active store.
+      if (!this.#usingFallback) return result;
     } catch (error) {
       this.#useFallback(error);
-      return operation(this.fallback);
     }
+    return operation(this.fallback);
   }
 
   #useFallback(error: unknown): void {

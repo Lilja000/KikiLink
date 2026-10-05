@@ -1,9 +1,27 @@
 import type { ConversationMeta, LinkMessage } from "../core/types";
-import type { ChatRepository } from "./chat-repository";
+import type { ChatCaptureResult, ChatRepository } from "./chat-repository";
 
 export class MemoryChatRepository implements ChatRepository {
   readonly #messages = new Map<string, LinkMessage>();
   readonly #conversations = new Map<number, ConversationMeta>();
+
+  async captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult> {
+    // Prepare both clones before touching either map so a clone failure cannot split the pair.
+    const storedMessage = structuredClone(message);
+    const storedConversation = structuredClone(conversation);
+    const messages = [...this.#messages.values()]
+      .filter(row => row.peerNumber === message.peerNumber && row.id !== message.id)
+      .concat(storedMessage)
+      .sort((left, right) => right.sentAt - left.sentAt);
+    const removed = messages.slice(keepNewest);
+    this.#messages.set(message.id, storedMessage);
+    this.#conversations.set(conversation.peerNumber, storedConversation);
+    for (const row of removed) this.#messages.delete(row.id);
+    return {
+      removed: removed.length,
+      oldestRetainedAt: messages.slice(0, keepNewest).at(-1)?.sentAt,
+    };
+  }
 
   async addMessage(message: LinkMessage): Promise<void> {
     this.#messages.set(message.id, structuredClone(message));

@@ -3,10 +3,10 @@ import type { LinkMessage } from "../../core/types";
 export type MessageReceiptState = "sent" | "read";
 
 // The transport keeps recipient delivery separate from server acceptance.
-// Both confirmed states show one check; only a read receipt shows two.
+// Only recipient delivery shows one check; a read receipt shows two.
 export function directReceiptState(delivery: LinkMessage["delivery"]): MessageReceiptState | undefined {
   if (delivery === "read") return "read";
-  if (delivery === "sent" || delivery === "delivered") return "sent";
+  if (delivery === "delivered") return "sent";
   return undefined;
 }
 
@@ -22,6 +22,7 @@ function checkPath(path: string, className: string): SVGPathElement {
 export function messageReceiptIndicator(
   state?: MessageReceiptState,
   readLabel = "Read",
+  sentLabel = "Sent to Cloud",
 ): HTMLSpanElement {
   const indicator = document.createElement("span");
   indicator.className = "kl-message-receipt";
@@ -38,7 +39,7 @@ export function messageReceiptIndicator(
     checkPath("M11.6 8.7 12.77 10 18.8 1.6", "kl-message-receipt-read-right"),
   );
   indicator.append(svg);
-  updateMessageReceipt(indicator, state, readLabel);
+  updateMessageReceipt(indicator, state, readLabel, sentLabel);
   return indicator;
 }
 
@@ -46,6 +47,7 @@ export function updateMessageReceipt(
   indicator: HTMLElement,
   state?: MessageReceiptState,
   readLabel = "Read",
+  sentLabel = "Sent to Cloud",
 ): void {
   indicator.dataset.state = state ?? "pending";
   if (!state) {
@@ -55,7 +57,7 @@ export function updateMessageReceipt(
     indicator.removeAttribute("title");
     return;
   }
-  const label = state === "read" ? readLabel : "Sent to Cloud";
+  const label = state === "read" ? readLabel : sentLabel;
   indicator.removeAttribute("aria-hidden");
   indicator.setAttribute("role", "img");
   indicator.setAttribute("aria-label", label);

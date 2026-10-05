@@ -92,6 +92,9 @@ export class CloudClient {
   #connectTask: Promise<void> | undefined;
   #refreshTimer: ReturnType<typeof setTimeout> | undefined;
   #refreshFailures = 0;
+  #sessionRejections = 0;
+  #sessionRetryAt = 0;
+  #rejectedSessionPath: string | undefined;
   #autoStopped = false;
   #connectionState: CloudConnectionState = "idle";
   #connectionError = "";
@@ -150,7 +153,7 @@ export class CloudClient {
     return this.#connectionError;
   }
   /** Remaining circuit-breaker delay; UI retries must not exhaust themselves during it. */
-  get retryDelay(): number { return Math.max(0, this.#retryAt - this.#now()); }
+  get retryDelay(): number { return Math.max(0, this.#retryAt - this.#now(), this.#sessionRetryAt - this.#now()); }
   #setConnection(state: CloudConnectionState, error = ""): void {
     this.#connectionState = state;
     this.#connectionError = error;
@@ -172,6 +175,8 @@ export class CloudClient {
     if (automatic && this.#autoStopped) return Promise.resolve();
     if (this.connected && !refresh) return Promise.resolve();
     if (this.#connectTask) return this.#connectTask;
+    if (automatic && this.#now() < this.#sessionRetryAt)
+      return Promise.reject(new CloudError("cloud_temporarily_unavailable", 503, this.#sessionRetryAt - this.#now()));
     if (!automatic) this.#autoStopped = false;
     const epoch = this.#epoch;
     const task = this.#connect(epoch, automatic)
@@ -368,6 +373,7 @@ export class CloudClient {
     }
     this.#setConnection("connected");
     this.#notify("session");
+    if (this.#eventLeases > 0) this.startEvents();
     clearTimeout(this.#refreshTimer);
     const remaining = session.expiresAt - this.#now();
     if (session.device)
@@ -377,6 +383,43 @@ export class CloudClient {
         },
         Math.max(1000, remaining > 60000 ? remaining - 30000 : remaining + 100),
       );
+  }
+  #authenticated(path: string): void {
+    if (this.#rejectedSessionPath !== path.split("?")[0]) return;
+    this.#sessionRejections = 0;
+    this.#sessionRetryAt = 0;
+    this.#rejectedSessionPath = undefined;
+  }
+  #rejectSession(session: CloudSession | undefined, path: string): void {
+    if (this.#session !== session) return;
+    const attempt = this.#sessionRejections++;
+    const delay = attempt === 0 ? 0 : Math.min(60000, 5000 * 2 ** Math.min(attempt - 1, 4));
+    this.#sessionRetryAt = this.#now() + delay;
+    this.#rejectedSessionPath = path.split("?")[0];
+    const epoch = ++this.#epoch;
+    this.#session = undefined;
+    this.#profileVersion++;
+    this.#inflight.clear();
+    this.#cache.clear();
+    this.#clearMedia();
+    this.stopEvents(true);
+    clearTimeout(this.#refreshTimer);
+    this.#notify("session");
+    this.#setConnection("unavailable", "authentication_required");
+    // A rejected access token may precede its local expiry (server restart or
+    // another device renewal). Recover once immediately, then back off if fresh
+    // tokens are also rejected. Device exchange alone does not prove recovery;
+    // the rejecting endpoint must succeed before its backoff is reset.
+    if (!this.#autoStopped && this.#deviceKey?.device && this.#deviceKey.device.expiresAt > this.#now())
+      this.#refreshTimer = setTimeout(() => {
+        this.#refreshTimer = undefined;
+        // An older proactive renewal may still be unwinding after the epoch
+        // change. Do not reuse that invalidated task as the recovery attempt.
+        void (this.#connectTask ?? Promise.resolve()).catch(() => {}).then(() => {
+          if (this.#closed || this.#autoStopped || epoch !== this.#epoch || this.connected) return;
+          return this.connect(true, true);
+        }).catch(() => {});
+      }, delay);
   }
   subscribe(listener: (kind: string) => void): () => void {
     this.#listeners.add(listener);
@@ -568,14 +611,7 @@ export class CloudClient {
         this.#checkEpoch(requestEpoch);
         if (response.status === 401 && authenticated) {
           if (this.#session !== requestSession) throw new CloudError("session_changed");
-          this.#epoch++;
-          this.#session = undefined;
-          this.#profileVersion++;
-          this.#inflight.clear();
-          this.#cache.clear();
-          this.#clearMedia();
-          this.stopEvents(true);
-          this.#notify("session");
+          this.#rejectSession(requestSession, path);
         }
         if (response.status >= 500) this.#failure();
         const retryAfter = response.headers.get("Retry-After");
@@ -585,6 +621,7 @@ export class CloudClient {
           Number.isFinite(retryDelay) ? Math.max(0, Math.min(retryDelay, 86_400_000)) : 0);
       }
       this.#failures = 0;
+      if (authenticated) this.#authenticated(path);
       return response;
     } catch (error) {
       if (error instanceof CloudError) throw error;
@@ -772,14 +809,18 @@ export class CloudClient {
       };
       armWatchdog();
       try {
+        const session = this.#session!;
         const response = await this.#fetch(this.#origin + "/v1/events", {
-          headers: { Authorization: `Bearer ${this.#session!.token}` },
+          headers: { Authorization: `Bearer ${session.token}` },
           credentials: "omit",
           redirect: "error",
           cache: "no-store",
           referrerPolicy: "no-referrer",
           signal,
         });
+        this.#check();
+        if (signal.aborted) break;
+        if (response.status === 401) this.#rejectSession(session, "/v1/events");
         if (!response.ok || !response.body)
           throw new Error("stream_unavailable");
         const reader = response.body.getReader(),
@@ -798,7 +839,7 @@ export class CloudClient {
               const entry = buffer.slice(0, end);
               buffer = buffer.slice(end + 2);
               const kind = /^event: (feed|groups|typing|reports|ready|relationships|mailbox|direct|read|receipts|feed-read|preferences)\n/mu.exec(entry)?.[1];
-              if (kind) this.#notify(kind);
+              if (kind) { this.#authenticated("/v1/events"); this.#notify(kind); }
             }
           }
         } finally {
