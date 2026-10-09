@@ -105,6 +105,18 @@ existence, or previously saved avatar changed while the upload was running.
 
 ## FUSAM transport
 
+When both the standalone userscript and FUSAM load KikiLink, an active standalone runtime of the
+same or a newer version is retained. Previously, a later FUSAM load destroyed it and replaced its
+privileged upload path with FUSAM's ordinary page requests. The loader uses runtime distribution,
+version, and lifecycle metadata only to choose the runtime; it never transfers the userscript's
+capability to FUSAM. Newer releases can still replace older ones, stopped/legacy runtimes remain
+replaceable, and explicit same-channel and DevTest reloads still work.
+
+An ordinary `fetch` network failure does not identify a browser-policy cause: CORS/CSP, connectivity,
+redirect rejection, and a lost provider response can surface the same `TypeError`. Such failures now
+identify the provider and describe the upload as unconfirmed instead of asserting a policy block.
+There is still no automatic retry, provider switch, or attempt to disable browser protections.
+
 FUSAM loads KikiLink directly in the Bondage Club page realm and provides no userscript-manager XHR
 privilege. Credential-omitting Litterbox requests are supported where its CORS policy permits them.
 Catbox's upload endpoint does not permit the corresponding browser request, so KikiLink disables all

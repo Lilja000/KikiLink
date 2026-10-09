@@ -12,6 +12,7 @@ import { MemoryChatRepository } from "../storage/memory-chat-repository";
 import { ResilientChatRepository } from "../storage/resilient-chat-repository";
 import type { ChatRepository } from "../storage/chat-repository";
 import { EventBus } from "./event-bus";
+import { KIKILINK_DEV_TEST, KIKILINK_DISTRIBUTION } from "./distribution";
 import { Logger } from "./logger";
 import { ModuleRegistry } from "./module-registry";
 import { SettingsStore } from "./settings";
@@ -62,6 +63,11 @@ export class KikiLinkApp {
   publicApi(): KikiLinkPublicApi {
     return {
       name: "KikiLink",
+      getRuntimeInfo: () => ({
+        distribution: KIKILINK_DISTRIBUTION,
+        devTest: KIKILINK_DEV_TEST,
+        active: this.#started,
+      }),
       ...(typeof __KIKILINK_TRAFFIC_AUDIT__ !== "undefined" && __KIKILINK_TRAFFIC_AUDIT__ ? { networkAudit: bcTrafficAudit } : {}),
       open: () => this.#linkChat.open(),
       openChat: (memberNumber, memberName) => this.#linkChat.openChat(memberNumber, memberName),

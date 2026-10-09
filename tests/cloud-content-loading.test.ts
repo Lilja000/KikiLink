@@ -30,6 +30,42 @@ function uiFor(client: CloudClient) {
 }
 
 describe("stable Cloud profile rendering", () => {
+  it("reads cached addon identity for room frames without cloning profiles or starting requests", async () => {
+    const { client, fetchImpl, advance } = await setup(async () => Response.json(profile()));
+    client.rememberProfile(profile());
+    client.rememberProfile({ ...profile(303), isDefault: true });
+    const clone = vi.spyOn(globalThis, "structuredClone");
+    const requests = fetchImpl.mock.calls.length;
+    for (let frame = 0; frame < 120; frame++) {
+      expect(client.hasCachedAddonProfile(202)).toBe(true);
+      expect(client.hasCachedAddonProfile(303)).toBe(false);
+      expect(client.hasCachedAddonProfile(404)).toBe(false);
+    }
+    expect(clone).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(requests);
+    advance(300000);
+    expect(client.peekProfile(202)).toBeUndefined();
+    expect(client.hasCachedAddonProfile(202)).toBe(true);
+    expect(clone).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(requests);
+  });
+
+  it.each(["default", "evicted", "blocked", "denied", "logout", "account-switch"] as const)(
+    "drops cached addon identity after its proof becomes %s", async reason => {
+      const { client, switchAccount } = await setup(async path =>
+        path.startsWith("/v1/profiles/")
+          ? Response.json({ error: "not_found" }, { status: 404 }) : Response.json({}));
+      client.rememberProfile(profile());
+      expect(client.hasCachedAddonProfile(202)).toBe(true);
+      if (reason === "default") client.rememberProfile({ ...profile(), isDefault: true });
+      if (reason === "evicted") for (let member = 500; member < 600; member++) client.rememberProfile(profile(member));
+      if (reason === "blocked") await client.request("PUT", "/v1/blocks/202", {});
+      if (reason === "denied") await expect(client.profile(202, true)).rejects.toMatchObject({ status: 404 });
+      if (reason === "logout") await client.logout();
+      if (reason === "account-switch") switchAccount();
+      expect(client.hasCachedAddonProfile(202)).toBe(false);
+    });
+
   it("keeps a visible avatar during a failed replacement and lets that same wrapper recover", async () => {
     const { client } = await setup(async () => Response.json(profile()));
     const { ui, image } = uiFor(client);

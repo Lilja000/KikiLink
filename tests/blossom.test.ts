@@ -30,7 +30,7 @@ const blossomSvg = readFileSync(
   "utf8",
 );
 
-function fixture(options: { inRoom?: boolean } = {}): BadgeFixture {
+function fixture(options: { inRoom?: boolean; hasCloudAddonProfile?: (member: number) => boolean } = {}): BadgeFixture {
   const canvas = document.createElement("canvas");
   canvas.id = "MainCanvas";
   canvas.width = 2_000;
@@ -82,7 +82,7 @@ function fixture(options: { inRoom?: boolean } = {}): BadgeFixture {
     hasCompatiblePeer: (memberNumber: number) => compatible.has(memberNumber),
   } as unknown as LinkPresenceService;
   const settings = new SettingsStore(new MemoryKeyValueStorage());
-  const badge = new RoomBlossomBadge(adapter, settings, presence);
+  const badge = new RoomBlossomBadge(adapter, settings, presence, options.hasCloudAddonProfile);
   badge.mount();
   activeBadges.add(badge);
   if (!render) throw new Error("Blossom did not register its character overlay");
@@ -175,6 +175,39 @@ describe("room Blossom character positioning", () => {
     badge.destroy();
     expect(own?.isConnected).toBe(false);
     expect(unregister).toHaveBeenCalledOnce();
+  });
+
+  it("accepts cached Cloud addon proof without changing native capabilities or hidden-icon settings", () => {
+    const known = new Set<number>();
+    const hasCloudAddonProfile = vi.fn((member: number) => known.has(member));
+    const { render, settings, compatible } = fixture({ hasCloudAddonProfile });
+    const draw = vi.mocked(globalThis.DrawImageResize);
+    const peer = { MemberNumber: 123, Name: "Cloud peer" };
+    render(peer, 600, 20, 0.5);
+    expect(draw).not.toHaveBeenCalled();
+    known.add(123);
+    render(peer, 600, 20, 0.5);
+    expect(draw).toHaveBeenCalledOnce();
+    expect(compatible.has(123)).toBe(false);
+
+    known.delete(123); // Blocked, evicted or disconnected proof must disappear on the next frame.
+    render(peer, 600, 20, 0.5);
+    expect(draw).toHaveBeenCalledOnce();
+    known.add(123);
+    hasCloudAddonProfile.mockClear();
+    globalThis.ChatRoomHideIconState = 1;
+    render(peer, 600, 20, 0.5);
+    globalThis.ChatRoomHideIconState = 0;
+    settings.update(draft => { draft.ui.roomBadge.enabled = false; });
+    render(peer, 600, 20, 0.5);
+    expect(draw).toHaveBeenCalledOnce();
+    expect(hasCloudAddonProfile).not.toHaveBeenCalled();
+
+    settings.update(draft => { draft.ui.roomBadge.enabled = true; });
+    compatible.add(123);
+    render(peer, 600, 20, 0.5);
+    expect(draw).toHaveBeenCalledTimes(2);
+    expect(hasCloudAddonProfile).not.toHaveBeenCalled();
   });
 
   it("retains a cached vector fallback when BC's page-owned image helpers are unavailable", () => {

@@ -21,6 +21,20 @@
   [April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
   restricts anonymous uploads from datacenter/proxy networks.
 
+## 1.1.4 - 2026-10-09
+
+- Process recipient delivery/read receipts independently of slow Direct inbox and outgoing sends,
+  preserve hints arriving during receipt fetches, and bound read-cursor batching to 200 ms.
+- Recheck visible Direct messages when returning to Chat, adding a message, or editing the composer.
+  Hidden chats and messages outside the visible reading range are not marked read by typing alone.
+- Let character flowers use the same known Cloud addon identity as profile avatars when native
+  discovery is missing or expires. Keep live native capabilities separate and add no network polling.
+- Preserve an equal/newer standalone runtime when a duplicate FUSAM loader arrives, retaining its
+  userscript upload transport. A newer build can still replace an older runtime.
+- Replace the misleading blanket browser-policy upload error with an accurate unconfirmed-upload
+  explanation. An Opera-specific failure is not established without its error screenshot.
+- Refresh vulnerable build dependencies and the pinned Cloud image dependency to pass release audits.
+
 ## 1.1.3 - 2026-10-05
 
 - Clear Direct and group composers immediately when Send/Enter captures a message. Keep subsequent

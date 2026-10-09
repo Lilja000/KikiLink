@@ -13,6 +13,7 @@ import {
   LitterboxImageUploader,
   MAX_UPLOAD_RESPONSE_BYTES,
   supportsLongLivedCatboxUploads,
+  uploadLocalRoomAudio,
   uploadMusicToCatbox,
   uploadPreparedImageToCatbox,
   type PreparedLocalImage,
@@ -70,6 +71,24 @@ describe("FUSAM page-realm runtime", () => {
       retention: "12h",
     })).rejects.toThrow("unexpected link");
     expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("reports unconfirmed image and music network failures without claiming a policy diagnosis or retrying", async () => {
+    const failure = new TypeError("Failed to fetch");
+    const request = vi.fn<typeof fetch>(async () => { throw failure; });
+    vi.stubGlobal("fetch", request);
+    const uploads = [
+      () => new LitterboxImageUploader().upload(preparedImage(), { retention: "24h" }),
+      () => uploadLocalRoomAudio(new File(["audio"], "track.mp3", { type: "audio/mpeg" }), { retention: "24h" }),
+    ];
+    for (const upload of uploads) {
+      const error = await upload().catch((reason: unknown) => reason) as Error;
+      expect(error.message).toContain("Litterbox upload could not be confirmed");
+      expect(error.message).toContain("retrying can create a duplicate");
+      expect(error.message).not.toContain("was blocked");
+      expect(error.cause).toBe(failure);
+    }
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("routes every long-lived Catbox upload only through the fixed relay", async () => {

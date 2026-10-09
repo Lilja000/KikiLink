@@ -80,7 +80,10 @@ describe("KikiLink startup", () => {
     globalThis.ServerIsLoggedIn = () => loggedIn;
     globalThis.ServerSendBeepMessage = vi.fn();
     const app = new KikiLinkApp("0.3.1");
+    const api = app.publicApi();
+    expect(api.getRuntimeInfo?.()).toEqual({ distribution: "userscript", devTest: false, active: false });
     const started = app.start();
+    expect(api.getRuntimeInfo?.().active).toBe(true);
 
     await vi.advanceTimersByTimeAsync(99);
     expect(document.querySelector("#kikilink-root")).toBeNull();
@@ -118,6 +121,7 @@ describe("KikiLink startup", () => {
     expect(restoredHost?.hidden).toBe(false);
 
     await app.destroy();
+    expect(api.getRuntimeInfo?.().active).toBe(false);
     expect(document.querySelector("#kikilink-root")).toBeNull();
     expect(document.querySelector("#kikilink-version")).toBeNull();
   });

@@ -147,7 +147,11 @@ export class RoomBlossomBadge {
       return;
     }
     if (!this.#config.enabled || !this.#iconsAreVisible()) return;
-    if (!this.#presence.hasCompatiblePeer(character.MemberNumber)) return;
+    // The flower means a known KikiLink user, as it does on addon avatars. Cloud profile proof
+    // remains valid when native discovery has not arrived or its short live-presence TTL expired.
+    // It does not grant native chat/group capabilities and must never fetch from the draw loop.
+    if (!this.#presence.hasCompatiblePeer(character.MemberNumber) &&
+      !this.hasCloudAddonProfile(character.MemberNumber)) return;
 
     const position = resolveRoomBadgePosition(this.#config.position, { x, y, zoom });
     this.#draw(position);
@@ -242,7 +246,12 @@ export class RoomBlossomBadge {
     this.cancelPlacement();
   };
 
-  constructor(adapter: BCAdapter, settings: SettingsStore, presence: LinkPresenceService) {
+  constructor(
+    adapter: BCAdapter,
+    settings: SettingsStore,
+    presence: LinkPresenceService,
+    private readonly hasCloudAddonProfile: (memberNumber: number) => boolean = () => false,
+  ) {
     this.#adapter = adapter;
     this.#settings = settings;
     this.#presence = presence;
