@@ -1296,7 +1296,9 @@ export class LinkChatView {
     this.presence =
       presence ??
       new LinkPresenceService(adapter, settings, new EventBus(), version);
-    this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence);
+    this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence, memberNumber =>
+      !this.#cloudAvatarDenied.has(memberNumber) &&
+      (this.#cloud?.client.hasCachedAddonProfile(memberNumber) ?? false));
     this.#launcherMenu = new LauncherMenu(settings, async () => {
       await Promise.all([this.service.markAllRead(), this.#groupChatService?.markAllRead(), this.#cloud?.inbox.markAllRead()]);
       if (!this.#mounted) return;
@@ -2735,6 +2737,7 @@ export class LinkChatView {
     this.#contextTitle.textContent = WORKSPACE_TITLES[view];
     this.#updateSocialBack();
     this.#updateNavigation();
+    if (view === "chat") this.#observeDirectRead();
   }
 
   #updateNavigation(): void {
@@ -10816,6 +10819,8 @@ export class LinkChatView {
   }
 
   #updateLocalTyping(): void {
+    // Recheck actual visible messages; typing by itself is not a read receipt.
+    this.#observeDirectRead();
     if (this.#typingStopTimer !== undefined) clearTimeout(this.#typingStopTimer);
     this.#typingStopTimer = undefined;
     if (this.#activePeer === undefined || !this.#composer.value.trim()) {
@@ -11762,6 +11767,7 @@ export class LinkChatView {
     syncDateSeparators(this.#messages);
     this.#syncMessageGrouping();
     if (shouldFollowMessage) this.#messages.scrollTop = this.#messages.scrollHeight;
+    this.#observeDirectRead();
   }
 
   #syncMessageGrouping(): void {

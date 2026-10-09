@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BCAdapter } from "../src/bc/adapter";
+import type { BCAdapter, BCCharacterOverlayRenderer } from "../src/bc/adapter";
 import { CloudClient } from "../src/cloud/client";
 import { CloudDirect } from "../src/cloud/direct";
 import type { CloudProfile } from "../src/cloud/types";
@@ -54,11 +54,16 @@ async function setup(options: {
   const client = new CloudClient({ origin: "https://cloud.example.test", memberNumber: 101, getMemberNumber: () => 101, isBlocked: () => false, sendProof: vi.fn(), fetchImpl });
   vi.spyOn(client, "startEvents").mockImplementation(() => {});
   await client.connect();
+  let renderOverlay: BCCharacterOverlayRenderer | undefined;
   const adapter = {
     getOwnMemberNumber: () => 101, getOwnName: () => "Kiki", getMemberName: (member: number) => `Person ${member}`,
     getMemberNickname: () => undefined, getKnownContacts: () => [], getOnlineFriends: () => [], getRoomCharacters: () => [],
     getCurrentRoomName: () => undefined, getPlayerRelationships: () => [], isInChatRoom: () => false, canSendBeep: () => true,
     isReady: () => true, sendBeep: vi.fn(), getNativeFriendNumbers: () => [],
+    registerCharacterOverlay: (render: BCCharacterOverlayRenderer) => {
+      renderOverlay = render;
+      return () => { renderOverlay = undefined; };
+    },
   } as unknown as BCAdapter;
   const storage = new MemoryKeyValueStorage(), settings = new SettingsStore(storage);
   settings.update(s => { s.linkPresence.profileImagePreviews = options.policy ?? "always"; s.ui.density = options.density ?? "comfortable"; });
@@ -69,8 +74,27 @@ async function setup(options: {
   const root = document.querySelector("#kikilink-root")!.shadowRoot!;
   const avatar = () => root.querySelector<HTMLElement>(".kl-chat-header > .kl-avatar")!;
   const reads = (path: string) => fetchImpl.mock.calls.filter(([url]) => new URL(String(url)).pathname === path).length;
-  return { view, root, avatar, client, profiles, settings, decode, reads, fetchImpl, service };
+  return { view, root, avatar, client, profiles, settings, decode, reads, fetchImpl, service,
+    renderOverlay: (member: number) => renderOverlay?.({ MemberNumber: member, Name: `Person ${member}` }, 600, 20, 0.5) };
 }
+
+it("shows the same Cloud-confirmed flower on the avatar and room character without native presence", async () => {
+  const h = await setup({ policy: "ask" });
+  await vi.waitFor(() => expect(h.avatar().querySelector(".kl-addon-badge")).not.toBeNull());
+  vi.stubGlobal("ChatRoomHideIconState", 0);
+  const draw = vi.fn(() => true);
+  vi.stubGlobal("DrawImageResize", draw);
+  const requests = h.fetchImpl.mock.calls.length;
+  h.renderOverlay(202);
+  expect(draw).toHaveBeenCalledOnce();
+  expect(h.fetchImpl).toHaveBeenCalledTimes(requests);
+  h.client.rememberProfile({ ...profile(303), isDefault: true });
+  h.renderOverlay(303);
+  expect(draw).toHaveBeenCalledOnce();
+  await h.client.request("PUT", "/v1/blocks/202", {});
+  h.renderOverlay(202);
+  expect(draw).toHaveBeenCalledOnce();
+});
 
 it.each([
   { quoted: false, switchChat: false, failed: false },

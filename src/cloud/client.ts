@@ -676,6 +676,22 @@ export class CloudClient {
     return bytes;
   }
   isProfileBlocked(member: number): boolean { return this.#blocked.has(member) || this.options.isBlocked(member); }
+  /**
+   * Known addon identity for the room canvas, not live presence or fresh profile metadata.
+   * Like a painted avatar's flower, this survives metadata expiry within the bounded account
+   * cache. Block, denial, replacement/default, eviction and disconnect still remove the proof.
+   * No profile cloning, storage, or network work runs per frame.
+   */
+  hasCachedAddonProfile(member: number): boolean {
+    try {
+      if (!this.connected || this.isProfileBlocked(member)) return false;
+      const cached = this.#cache.get(member);
+      return Boolean(cached && !cached.value.isDefault);
+    } catch {
+      // A guarded native relationship wrapper must hide the marker until it is readable again.
+      return false;
+    }
+  }
   /** Synchronous, account-scoped snapshot; never opens storage or starts network work. */
   peekProfile(member: number): CloudProfile | undefined {
     if (!this.connected || this.isProfileBlocked(member)) return;

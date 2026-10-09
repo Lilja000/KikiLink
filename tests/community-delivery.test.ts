@@ -347,3 +347,84 @@ it("replays an ambiguous send before consuming its offline receipts", async () =
   expect((await h.chat.getMessages(202))[0]?.delivery).toBe("read");
   h.direct.destroy();
 });
+
+it("patches an identified read receipt while an unrelated outgoing POST is still pending", async () => {
+  const h = setup();
+  h.community.relationships.set(303, { ...h.community.relationships.get(202)! });
+  await h.chat.captureCloud({ direction: "outgoing", peerNumber: 202, peerName: "Friend", content: "Already delivered",
+    sentAt: Date.now(), includeRoom: false }, { id: "known-local", cloudId: "known-server", cloudSequence: 1, delivery: "delivered" }, false);
+  let finish!: (value: unknown) => void;
+  h.request.mockImplementation(async (method, path) => {
+    if (method === "POST" && path.endsWith("/messages")) return new Promise(resolve => { finish = resolve; });
+    if (path.includes("/receipts")) return { items: [{ messageId: "known-server", recipient: 202, state: "read" }], cursor: 1, nextCursor: null };
+    return path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null };
+  });
+  await h.direct.send(303, "Other friend", "Slow send");
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  const sync = h.direct.sync();
+  try {
+    await vi.waitFor(async () => expect((await h.chat.getMessages(202))[0]?.delivery).toBe("read"));
+    expect(h.options.changed).toHaveBeenCalledWith(202, expect.objectContaining({ delivery: "read" }));
+  } finally {
+    finish({ id: "slow-server", sequence: 2, state: "sent" }); await sync;
+  }
+});
+
+it("handles a read hint promptly while an earlier inbox request is still pending", async () => {
+  const h = setup();
+  await h.chat.captureCloud({ direction: "outgoing", peerNumber: 202, peerName: "Friend", content: "Already delivered",
+    sentAt: Date.now(), includeRoom: false }, { id: "known-local", cloudId: "known-server", cloudSequence: 1, delivery: "delivered" }, false);
+  let read = false, finishInbox!: (value: unknown) => void;
+  h.request.mockImplementation(async (_method, path) => {
+    if (path.includes("/inbox") && !finishInbox) return new Promise(resolve => { finishInbox = resolve; });
+    if (path.includes("/receipts")) return { items: read ? [{ messageId: "known-server", recipient: 202, state: "read" }] : [], cursor: read ? 1 : 0, nextCursor: null };
+    return path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null };
+  });
+  const sync = h.direct.sync();
+  await vi.waitFor(() => expect(finishInbox).toBeTypeOf("function"));
+  read = true; h.hint("direct");
+  try {
+    await vi.waitFor(async () => expect((await h.chat.getMessages(202))[0]?.delivery).toBe("read"));
+  } finally {
+    finishInbox({ items: [], cursor: 0, nextCursor: null }); await sync;
+  }
+});
+
+it("bounds read batching latency during a continuous stream of visible messages", async () => {
+  vi.useFakeTimers();
+  const h = setup();
+  const receive = async (sequence: number) => h.chat.captureCloud({ direction: "incoming", peerNumber: 202, peerName: "Friend",
+    content: `Visible ${sequence}`, sentAt: Date.now(), includeRoom: false }, { id: `visible-${sequence}`, cloudSequence: sequence }, true);
+  await receive(1); await vi.advanceTimersByTimeAsync(100);
+  await receive(2); await vi.advanceTimersByTimeAsync(100);
+  expect(h.request).toHaveBeenCalledWith("PUT", "/v1/read-cursors", { items: [{ scope: "direct:202", cursor: 2 }] });
+  await receive(3); await vi.advanceTimersByTimeAsync(200);
+  expect(h.request).toHaveBeenCalledWith("PUT", "/v1/read-cursors", { items: [{ scope: "direct:202", cursor: 3 }] });
+});
+
+it("keeps a racing receipt follow-up behind server backoff and retains retry across inbox completion", async () => {
+  vi.useFakeTimers();
+  const h = setup();
+  let receiptReads = 0, finishInbox!: (value: unknown) => void, failReceipt!: (reason: unknown) => void;
+  h.request.mockImplementation(async (_method, path) => {
+    if (path.includes("/inbox") && !finishInbox) return new Promise(resolve => { finishInbox = resolve; });
+    if (path.includes("/receipts")) {
+      if (++receiptReads === 2) return new Promise((_resolve, reject) => { failReceipt = reject; });
+      return { items: [], cursor: 0, nextCursor: null };
+    }
+    return path === "/v1/read-cursors" ? { items: [] } : { items: [], cursor: 0, nextCursor: null };
+  });
+  const sync = h.direct.sync(); await vi.advanceTimersByTimeAsync(0);
+  h.hint("direct"); await vi.advanceTimersByTimeAsync(0);
+  h.hint("direct"); // This races the pending receipt response and asks for a bounded follow-up.
+  failReceipt(new CloudError("rate_limited", 429, 45000));
+  await vi.advanceTimersByTimeAsync(0);
+  const callsBeforeInboxCompletes = h.request.mock.calls.length;
+  finishInbox({ items: [], cursor: 0, nextCursor: null }); await sync;
+  expect(receiptReads).toBe(2);
+  expect(h.request).toHaveBeenCalledTimes(callsBeforeInboxCompletes);
+  await vi.advanceTimersByTimeAsync(44999);
+  expect(receiptReads).toBe(2);
+  expect(h.request).toHaveBeenCalledTimes(callsBeforeInboxCompletes);
+  await vi.advanceTimersByTimeAsync(1); expect(receiptReads).toBe(3);
+});

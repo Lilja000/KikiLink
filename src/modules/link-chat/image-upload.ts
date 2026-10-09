@@ -1320,7 +1320,13 @@ async function uploadMultipartWithFetch(
       throw new Error("The upload was cancelled");
     }
     if (error instanceof TypeError) {
-      throw new Error("The upload was blocked by the browser network policy");
+      // Fetch deliberately hides the distinction between CORS/CSP, connectivity, and a lost
+      // response. Do not present every network failure as a confirmed browser-policy block.
+      const host = endpoint === LITTERBOX_UPLOAD_ENDPOINT ? "Litterbox" : "Catbox";
+      throw new Error(
+        `${host} upload could not be confirmed. Check your connection and whether your browser blocks this host. The file may already be public; retrying can create a duplicate.`,
+        { cause: error },
+      );
     }
     throw error;
   } finally {

@@ -24,10 +24,14 @@ export class CloudDirect {
   #wasEnabled = false;
   #readTimer: ReturnType<typeof setTimeout> | undefined;
   #readTask: Promise<void> | undefined;
+  #receiptTask: Promise<boolean> | undefined;
+  #receiptAgain = false;
+  #receiptTimer: ReturnType<typeof setTimeout> | undefined;
   #syncAgain = false;
   #syncTimer: ReturnType<typeof setTimeout> | undefined;
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
   #retryAttempt = 0;
+  #retryGeneration = 0;
   #retryNotBefore = 0;
   constructor(readonly community: CommunityService, readonly chat: ChatService, readonly storage: KeyValueStorage,
     readonly options: { active(peer: number): boolean; changed(peer?: number, message?: LinkMessage): void; incoming(message: LinkMessage): void }) {
@@ -61,15 +65,17 @@ export class CloudDirect {
       const scope = `direct:${peer}`;
       this.#state.reads[scope] = Math.max(this.#state.reads[scope] ?? 0, sequence);
       this.#save();
-      clearTimeout(this.#readTimer);
+      // Bound batching latency even while an active chat keeps receiving messages.
+      if (this.#readTimer !== undefined) return;
       this.#readTimer = setTimeout(() => { this.#readTimer = undefined; void this.#flushReads().catch(() => {}); }, 200);
     };
   }
   #flushReads(): Promise<void> {
     if (this.#readTask) return this.#readTask;
     const task = (async () => {
-      if (this.#closed || !this.community.client.connected) return;
+      if (this.#closed || !this.community.client.connected || Date.now() < this.#retryNotBefore) return;
       for (let page = 0; page < 20; page++) {
+        if (Date.now() < this.#retryNotBefore) return;
         const items = Object.entries(this.#state.reads).slice(0, 100).map(([scope, cursor]) => ({ scope, cursor }));
         if (!items.length) return;
         await this.community.client.request("PUT", "/v1/read-cursors", { items });
@@ -101,6 +107,7 @@ export class CloudDirect {
   #scheduleRetry(error?: unknown): void {
     if (this.#closed || !this.community.client.connected || !this.community.supported || !this.community.directEnabled) return;
     if (error instanceof CloudError && error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status)) return;
+    this.#retryGeneration++;
     const serverDelay = error instanceof CloudError ? error.retryAfterMs : 0;
     this.#retryNotBefore = Math.max(this.#retryNotBefore, Date.now() + Math.max(serverDelay, this.community.client.retryDelay ?? 0));
     if (this.#retryTimer !== undefined) return;
@@ -202,16 +209,22 @@ export class CloudDirect {
     this.#sending.set(queued.localId, task); return task;
   }
   sync(): Promise<void> {
-    if (this.#task) return this.#task;
     if (this.#closed || !this.community.supported || !this.community.directEnabled || !this.community.client.connected) return Promise.resolve();
     if (Date.now() < this.#retryNotBefore) return Promise.resolve();
+    if (this.#task) {
+      // Recipient receipts must not wait for an unrelated slow inbox/outbox request.
+      void this.#syncReceipts().catch(error => this.#scheduleRetry(error));
+      return this.#task;
+    }
     clearTimeout(this.#syncTimer);
+    const retryGeneration = this.#retryGeneration;
     const task = (async () => {
       for (let pass = 0; pass < 3; pass++) {
+        if (Date.now() < this.#retryNotBefore) break;
         this.#syncAgain = false; await this.#sync();
         if (!this.#syncAgain || this.#closed || !this.community.client.connected) break;
       }
-      if (!this.#state.outgoing.some(queued => !queued.serverId && !queued.failed)) {
+      if (retryGeneration === this.#retryGeneration && !this.#state.outgoing.some(queued => !queued.serverId && !queued.failed)) {
         clearTimeout(this.#retryTimer); this.#retryTimer = undefined;
         this.#retryAttempt = 0; this.#retryNotBefore = 0;
       }
@@ -226,7 +239,11 @@ export class CloudDirect {
   }
   async #sync(): Promise<void> {
     const client = this.community.client;
+    // Read checks can be patched while inbox catch-up or an outgoing POST is pending.
+    // Capture both outcomes immediately so a slow inbox cannot leave a rejection unhandled.
+    const receipts = this.#syncReceipts().then(unresolved => ({ unresolved }), error => ({ error }));
     for (let n = 0; n < 25 && !this.#closed; n++) {
+      if (Date.now() < this.#retryNotBefore) return;
       const page = await client.request<{ items: Envelope[]; cursor: number; nextCursor: number | null }>("GET", `/v1/direct/inbox?limit=40&cursor=${this.#state.inbox}`);
       if (this.#closed) return;
       for (const envelope of page.items) {
@@ -240,22 +257,54 @@ export class CloudDirect {
         // later storage error in this page must not hide messages already received.
         if (fresh) { this.#changed(message.peerNumber, message); this.#incoming(message); }
       }
+      // A parallel receipt request may have established a server cooldown.
+      if (Date.now() < this.#retryNotBefore) return;
       // Acknowledge only after local capture, never when the server merely saved it.
       if (page.items.length) await client.request("POST", "/v1/direct/acknowledge", { ids: page.items.map(item => item.id) });
       if (this.#closed) return;
       this.#state.inbox = page.cursor; this.#save();
       if (page.nextCursor === null) break;
     }
-    // Reconcile stable server IDs before consuming receipts, including a POST whose
-    // response was lost while the recipient already received/read the message.
+    // A receipt whose stable server ID was not known yet is replayed after its send
+    // is reconciled. Already identified messages never wait for these POST requests.
     for (const queued of [...this.#state.outgoing]) await this.#transmit(queued);
+    const receiptResult = await receipts;
+    if ("error" in receiptResult) throw receiptResult.error;
+    if (Date.now() < this.#retryNotBefore) return;
+    if (receiptResult.unresolved) await this.#syncReceipts();
+    await this.#flushReads();
+    if (Date.now() < this.#retryNotBefore) return;
+    const reads = await client.request<{ items: Array<{ scope: string; cursor: number }> }>("GET", "/v1/read-cursors");
+    if (this.#closed) return;
+    for (const read of reads.items) if (read.scope.startsWith("direct:")) await this.chat.reconcileCloudRead(Number(read.scope.slice(7)), read.cursor);
+    this.#changed();
+  }
+  #syncReceipts(): Promise<boolean> {
+    if (this.#closed || !this.community.supported || !this.community.directEnabled || !this.community.client.connected || Date.now() < this.#retryNotBefore)
+      return Promise.resolve(false);
+    if (this.#receiptTask) { this.#receiptAgain = true; return this.#receiptTask; }
+    clearTimeout(this.#receiptTimer);
+    const task = (async () => {
+      for (let pass = 0; pass < 3; pass++) {
+        this.#receiptAgain = false;
+        if (await this.#readReceipts()) return true;
+        if (!this.#receiptAgain || this.#closed || !this.community.client.connected) break;
+      }
+      return false;
+    })().finally(() => {
+      this.#receiptTask = undefined;
+      // Preserve a hint that raced a receipt response without waiting for inbox catch-up.
+      if (this.#receiptAgain && !this.#closed && this.#retryTimer === undefined)
+        this.#receiptTimer = setTimeout(() => { void this.#syncReceipts().catch(error => this.#scheduleRetry(error)); }, 1000);
+    });
+    this.#receiptTask = task;
+    return task;
+  }
+  async #readReceipts(): Promise<boolean> {
+    const client = this.community.client;
     for (let n = 0; n < 25 && !this.#closed; n++) {
       const page = await client.request<{ items: Array<{ messageId: string; recipient?: number; state: string }>; cursor: number; nextCursor: number | null }>("GET", `/v1/direct/receipts?limit=40&cursor=${this.#state.receipts}`);
-      if (this.#closed) return;
-      // A new send can start while this receipt page is loading. Wait for its local
-      // history metadata as well; an SSE hint may beat the corresponding HTTP response.
-      await Promise.allSettled([...this.#sending.values()]);
-      if (this.#closed) return;
+      if (this.#closed) return false;
       let unresolved = false;
       for (const receipt of page.items) {
         const queued = this.#state.outgoing.find(m => m.serverId === receipt.messageId);
@@ -284,14 +333,10 @@ export class CloudDirect {
       }
       // Never advance past a receipt while its send is still ambiguous. It can be
       // safely replayed on reconnect; reconciliation is idempotent.
-      if (unresolved) break;
+      if (unresolved) return true;
       this.#state.receipts = page.cursor; this.#save(); if (page.nextCursor === null) break;
     }
-    await this.#flushReads();
-    const reads = await client.request<{ items: Array<{ scope: string; cursor: number }> }>("GET", "/v1/read-cursors");
-    if (this.#closed) return;
-    for (const read of reads.items) if (read.scope.startsWith("direct:")) await this.chat.reconcileCloudRead(Number(read.scope.slice(7)), read.cursor);
-    this.#changed();
+    return false;
   }
-  destroy(): void { this.#closed = true; clearTimeout(this.#readTimer); clearTimeout(this.#syncTimer); clearTimeout(this.#retryTimer); this.chat.onCloudRead = undefined; for (const fn of this.#unsubscribers.splice(0)) fn(); }
+  destroy(): void { this.#closed = true; clearTimeout(this.#readTimer); clearTimeout(this.#receiptTimer); clearTimeout(this.#syncTimer); clearTimeout(this.#retryTimer); this.chat.onCloudRead = undefined; for (const fn of this.#unsubscribers.splice(0)) fn(); }
 }

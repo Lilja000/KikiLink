@@ -332,7 +332,7 @@ describe("local image uploads", () => {
     });
 
     await expect(uploadPreparedImageToCatbox(preparedImage(), request)).rejects.toThrow(
-      "blocked by the browser network policy",
+      "Catbox upload could not be confirmed",
     );
     expect(request).toHaveBeenCalledOnce();
   });

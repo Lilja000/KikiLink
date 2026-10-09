@@ -42,6 +42,13 @@ interface ParsedSemVer {
   prerelease: readonly string[];
 }
 
+/** Compares valid release versions; unknown versions must not suppress a loader or update. */
+export function compareKikiLinkVersions(left: string, right: string): number | undefined {
+  const parsedLeft = typeof left === "string" ? parseSemVer(left) : undefined;
+  const parsedRight = typeof right === "string" ? parseSemVer(right) : undefined;
+  return parsedLeft && parsedRight ? compareSemVer(parsedLeft, parsedRight) : undefined;
+}
+
 /**
  * Performs one credentialless release lookup. It never schedules another check and deliberately
  * collapses every unsupported, malformed, or network-failure case to `undefined`.

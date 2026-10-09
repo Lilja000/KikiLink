@@ -461,6 +461,12 @@ export interface KikiLinkModule {
 export interface KikiLinkPublicApi {
   readonly name: "KikiLink";
   readonly networkAudit?: typeof import("../bc/traffic-audit").bcTrafficAudit;
+  /** Optional for compatibility with releases predating distribution-aware duplicate loading. */
+  getRuntimeInfo?(): {
+    distribution: import("./distribution").KikiLinkDistribution;
+    devTest: boolean;
+    active: boolean;
+  };
   open(): void;
   openChat(memberNumber: number, memberName?: string): void;
   openRoster(): void;
