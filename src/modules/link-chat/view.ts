@@ -132,6 +132,7 @@ import {
 } from "./image-upload";
 import { kikiIcon, type KikiLinkIconName } from "./icons";
 import { RoomBlossomBadge } from "./blossom";
+import { blossomImageForMember } from "./blossom-identity";
 import { LauncherMenu, notificationsAreMuted } from "./launcher-menu";
 import { KIKILINK_NEWS } from "./news";
 import {
@@ -14454,16 +14455,21 @@ export class LinkChatView {
     return avatar;
   }
 
-  #renderAddonBadge(target: HTMLElement, installed: boolean): void {
+  #renderAddonBadge(target: HTMLElement, installed: boolean, memberNumber: number): void {
     const existing = target.querySelector(":scope > .kl-addon-badge");
     if (!installed) { existing?.remove(); return; }
-    if (existing) return;
+    const source = blossomImageForMember(memberNumber);
+    if (existing) {
+      const flower = existing.querySelector("img");
+      if (flower && flower.getAttribute("src") !== source) flower.src = source;
+      return;
+    }
     const badge = element("span", { className: "kl-addon-badge", title: "KikiLink detected" });
     badge.setAttribute("role", "img");
     badge.setAttribute("aria-label", "KikiLink detected");
     // This bundled transparent icon stays separate from remote portrait cropping.
     const flower = document.createElement("img");
-    flower.src = KIKILINK_BLOSSOM_DATA_URL;
+    flower.src = source;
     flower.alt = "";
     flower.draggable = false;
     badge.append(flower);
@@ -14547,7 +14553,7 @@ export class LinkChatView {
     target.dataset.avatarFrame = appearance.avatarFrame ?? "none";
     const installed = own || native.addonInstalled === true || Boolean(profile && !profile.isDefault);
     target.dataset.addonInstalled = String(installed);
-    this.#renderAddonBadge(target, installed);
+    this.#renderAddonBadge(target, installed, member);
     if (target.getAttribute("role") === "button") target.setAttribute("aria-label", `Open KikiLink profile for ${name}`);
     const unchanged = sameMember && target.dataset.cloudAvatar === id && target.dataset.cloudAvatarPolicy === policy;
     if (unchanged && !force && (target.dataset.avatarState !== "error" || Date.now() < Number(target.dataset.cloudAvatarRetryAt ?? 0))) {
@@ -14569,7 +14575,7 @@ export class LinkChatView {
     };
     if (!id || policy !== "always") {
       target.replaceChildren(); fallback(); target.dataset.avatarState = "initials";
-      this.#renderAddonBadge(target, installed); return true;
+      this.#renderAddonBadge(target, installed, member); return true;
     }
     const media = cloud.avatarImage(id, own);
     const current = () => target.dataset.avatarMemberNumber === String(member) && target.dataset.cloudAvatar === id &&
@@ -14580,7 +14586,7 @@ export class LinkChatView {
     target.dataset.avatarState = "loading";
     const ready = () => {
       if (!current()) return;
-      media.style.visibility = ""; target.replaceChildren(media); this.#renderAddonBadge(target, installed);
+      media.style.visibility = ""; target.replaceChildren(media); this.#renderAddonBadge(target, installed, member);
       const image = media.querySelector("img"); if (image) image.alt = `${target.dataset.avatarName} profile avatar`;
       target.dataset.avatarState = "image"; delete target.dataset.cloudAvatarRetryAt;
     };
@@ -14593,7 +14599,7 @@ export class LinkChatView {
       target.dataset.avatarState = "error"; target.dataset.cloudAvatarRetryAt = denied ? "Infinity" : String(Date.now() + 30000);
     });
     if (media.dataset.state === "ready") ready();
-    this.#renderAddonBadge(target, installed);
+    this.#renderAddonBadge(target, installed, member);
     return true;
   }
 
@@ -14641,7 +14647,7 @@ export class LinkChatView {
       (snapshot.addonInstalled === undefined && snapshot.source === "kikilink");
     applyAvatarAppearance(target, ownMember && explicitUrl !== undefined ? { avatarDecoration: this.#avatarAppearance.get() } : snapshot);
     target.dataset.addonInstalled = String(installed);
-    this.#renderAddonBadge(target, installed);
+    this.#renderAddonBadge(target, installed, memberNumber);
     if (
       !force &&
       target.dataset.avatarMemberNumber === String(memberNumber) &&
@@ -14673,7 +14679,7 @@ export class LinkChatView {
     }
     const showFallback = (state = "initials"): void => {
       target.replaceChildren(document.createTextNode(avatarText(name)));
-      this.#renderAddonBadge(target, target.dataset.addonInstalled === "true");
+      this.#renderAddonBadge(target, target.dataset.addonInstalled === "true", memberNumber);
       target.dataset.avatarState = state;
     };
     const fallback = (state = "initials"): void => {
@@ -14723,7 +14729,7 @@ export class LinkChatView {
           ) {
             image.style.visibility = ""; image.dataset.ready = "true";
             target.replaceChildren(image);
-            this.#renderAddonBadge(target, target.dataset.addonInstalled === "true");
+            this.#renderAddonBadge(target, target.dataset.addonInstalled === "true", memberNumber);
             target.dataset.avatarState = "image";
             this.#retainRemoteDecoration(target, {
               pinned: this.#isPinnedRemoteDecoration(target),

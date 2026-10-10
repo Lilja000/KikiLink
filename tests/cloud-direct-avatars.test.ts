@@ -6,6 +6,7 @@ import { CloudDirect } from "../src/cloud/direct";
 import type { CloudProfile } from "../src/cloud/types";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import { ChatService } from "../src/modules/link-chat/chat-service";
+import { blossomImageForMember } from "../src/modules/link-chat/blossom-identity";
 import { LinkChatView } from "../src/modules/link-chat/view";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
 
@@ -94,6 +95,31 @@ it("shows the same Cloud-confirmed flower on the avatar and room character witho
   await h.client.request("PUT", "/v1/blocks/202", {});
   h.renderOverlay(202);
   expect(draw).toHaveBeenCalledOnce();
+});
+
+it("selects one gold creator flower and restores pink when the chat avatar is reused", async () => {
+  const h = await setup();
+  const avatar = h.avatar();
+  const flower = () => avatar.querySelector<HTMLImageElement>(":scope > .kl-addon-badge > img")!;
+  await vi.waitFor(() => expect(avatar.dataset.avatarState).toBe("image"));
+  const pink = flower().getAttribute("src");
+  h.profiles.set(72385, profile(72385));
+  h.client.rememberProfile(profile(72385));
+  await h.view.openChat(72385, "Creator");
+  await vi.waitFor(() => expect(avatar.dataset.avatarState).toBe("image"));
+  expect(h.avatar()).toBe(avatar);
+  expect(flower().getAttribute("src")).toBe(blossomImageForMember(72385));
+  expect(flower().getAttribute("src")).not.toBe(pink);
+  const creatorFlower = flower();
+  await h.view.refresh();
+  expect(flower()).toBe(creatorFlower);
+  expect(avatar.querySelectorAll(":scope > .kl-addon-badge")).toHaveLength(1);
+  expect(h.root.querySelector(".kl-directory-flower")?.getAttribute("src")).toBe(pink);
+  await h.view.openChat(202, "Person 202");
+  await vi.waitFor(() => expect(avatar.dataset.avatarState).toBe("image"));
+  expect(h.avatar()).toBe(avatar);
+  expect(flower().getAttribute("src")).toBe(pink);
+  expect(avatar.querySelectorAll(":scope > .kl-addon-badge")).toHaveLength(1);
 });
 
 it.each([

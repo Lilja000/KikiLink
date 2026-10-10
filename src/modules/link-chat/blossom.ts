@@ -3,6 +3,7 @@ import type { SettingsStore } from "../../core/settings";
 import type { KikiLinkSettings } from "../../core/types";
 import type { LinkPresenceService } from "../link-presence/link-presence-service";
 import BLOSSOM_ICON_DATA_URL from "../../../design/branding/kikilink-blossom.svg";
+import { blossomImageForMember, blossomPaletteForMember, isGoldBlossomMember } from "./blossom-identity";
 
 const CHARACTER_WIDTH = 500;
 const CHARACTER_HEIGHT = 1_000;
@@ -114,6 +115,7 @@ export class RoomBlossomBadge {
   readonly #presence: LinkPresenceService;
   readonly #element = document.createElement("img");
   readonly #fallbackImage = typeof Image === "function" ? new Image() : undefined;
+  readonly #goldFallbackImage = typeof Image === "function" ? new Image() : undefined;
   #config: RoomBadgeConfig;
   #ownFrame: CharacterCanvasFrame | undefined;
   #previewPosition: NormalizedRoomBadgePosition | undefined;
@@ -139,7 +141,7 @@ export class RoomBlossomBadge {
         this.#ownFrame = { x, y, zoom };
       }
       if (this.#config.enabled && this.#iconsAreVisible()) {
-        this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame));
+        this.#draw(resolveRoomBadgePosition(this.#config.position, this.#ownFrame), character.MemberNumber);
       }
       // The DOM copy exists only for an explicitly armed placement. Avoid writing hidden/display
       // on every normal room frame when all drawing is already native canvas work.
@@ -154,7 +156,7 @@ export class RoomBlossomBadge {
       !this.hasCloudAddonProfile(character.MemberNumber)) return;
 
     const position = resolveRoomBadgePosition(this.#config.position, { x, y, zoom });
-    this.#draw(position);
+    this.#draw(position, character.MemberNumber);
   };
 
   readonly #handlePointerDown = (event: PointerEvent): void => {
@@ -257,8 +259,9 @@ export class RoomBlossomBadge {
     this.#presence = presence;
     this.#config = settings.getSection("ui").roomBadge;
     if (this.#fallbackImage) this.#fallbackImage.src = BLOSSOM_ICON_DATA_URL;
+    if (this.#goldFallbackImage) this.#goldFallbackImage.src = blossomImageForMember(72385, "room");
     this.#element.className = "kl-room-blossom";
-    this.#element.src = BLOSSOM_ICON_DATA_URL;
+    this.#element.src = blossomImageForMember(this.#adapter.getOwnMemberNumber(), "room");
     this.#element.alt = "";
     this.#element.draggable = false;
     this.#element.hidden = true;
@@ -345,14 +348,15 @@ export class RoomBlossomBadge {
     this.#mounted = false;
   }
 
-  #draw(position: RoomBadgeCanvasPosition): boolean {
+  #draw(position: RoomBadgeCanvasPosition, memberNumber: number): boolean {
+    const sprite = blossomImageForMember(memberNumber, "room");
     // Echo uses this page-owned helper for the same status-icon row. Prefer it over passing a
     // sandbox-owned Path2D or Image object into Firefox's page canvas.
     if (typeof DrawImageResize === "function") {
       try {
         if (
           DrawImageResize(
-            BLOSSOM_ICON_DATA_URL,
+            sprite,
             position.left,
             position.top,
             position.size,
@@ -371,7 +375,7 @@ export class RoomBlossomBadge {
     try {
       if (typeof DrawImageCanvas === "function") {
         if (
-          DrawImageCanvas(BLOSSOM_ICON_DATA_URL, context, position.left, position.top, {
+          DrawImageCanvas(sprite, context, position.left, position.top, {
             Width: position.size,
             Height: position.size,
             Alpha: BADGE_OPACITY,
@@ -380,12 +384,13 @@ export class RoomBlossomBadge {
           return true;
         }
       }
-      if (drawVectorBlossom(context, position)) return true;
-      if (this.#fallbackImage?.complete && this.#fallbackImage.naturalWidth > 0) {
+      if (drawVectorBlossom(context, position, memberNumber)) return true;
+      const fallbackImage = isGoldBlossomMember(memberNumber) ? this.#goldFallbackImage : this.#fallbackImage;
+      if (fallbackImage?.complete && fallbackImage.naturalWidth > 0) {
         context.save();
         context.globalAlpha = BADGE_OPACITY;
         context.drawImage(
-          this.#fallbackImage,
+          fallbackImage,
           position.left,
           position.top,
           position.size,
@@ -413,6 +418,8 @@ export class RoomBlossomBadge {
       this.#element.style.display = "none";
       return;
     }
+    const sprite = blossomImageForMember(this.#adapter.getOwnMemberNumber(), "room");
+    if (this.#element.src !== sprite) this.#element.src = sprite;
     const inRoom = typeof this.#adapter.isInChatRoom === "function" && this.#adapter.isInChatRoom();
     if (!this.#config.enabled || !this.#iconsAreVisible() || !inRoom) {
       this.#element.hidden = true;
@@ -500,9 +507,11 @@ export class RoomBlossomBadge {
 function drawVectorBlossom(
   context: CanvasRenderingContext2D,
   position: RoomBadgeCanvasPosition,
+  memberNumber: number,
 ): boolean {
   const paths = getBlossomVectorPaths();
   if (!paths) return false;
+  const palette = blossomPaletteForMember(memberNumber);
   let saved = false;
   try {
     context.save();
@@ -517,8 +526,8 @@ function drawVectorBlossom(
     context.shadowColor = "rgba(0, 0, 0, .55)";
     context.shadowBlur = 2;
     context.shadowOffsetY = 1;
-    context.fillStyle = "#ef6078";
-    context.strokeStyle = "#5f1b2a";
+    context.fillStyle = palette.petals;
+    context.strokeStyle = palette.outline;
     for (const petal of paths.petals) {
       context.fill(petal);
       context.stroke(petal);
@@ -527,21 +536,21 @@ function drawVectorBlossom(
     context.shadowColor = "transparent";
     context.shadowBlur = 0;
     context.shadowOffsetY = 0;
-    context.strokeStyle = "#ffb2bf";
+    context.strokeStyle = palette.highlights;
     context.lineWidth = 2;
     for (const highlight of paths.highlights) context.stroke(highlight);
 
     context.beginPath();
     context.arc(32, 33, 8, 0, Math.PI * 2);
-    context.fillStyle = "#f3b63f";
+    context.fillStyle = palette.center;
     context.fill();
-    context.strokeStyle = "#5f1b2a";
+    context.strokeStyle = palette.outline;
     context.lineWidth = 3;
     context.stroke();
 
     context.beginPath();
     context.arc(29.5, 30.5, 2, 0, Math.PI * 2);
-    context.fillStyle = "#ffe6a1";
+    context.fillStyle = palette.glint;
     context.fill();
     return true;
   } catch {
