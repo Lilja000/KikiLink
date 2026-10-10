@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KikiLink blossom">
-  <g fill="#d6a24b" stroke="#5f451b" stroke-linejoin="round" stroke-width="3">
+  <g fill="#e4b34e" stroke="#5f451b" stroke-linejoin="round" stroke-width="3">
     <path d="M32 33C24 28 22 18 26 10c2-4 10-4 12 0 4 8 2 18-6 23Z"/>
     <path d="M33 32c2-9 9-16 18-15 6 1 8 8 4 13-5 7-14 8-22 2Z"/>
     <path d="M34 34c9-2 18 2 21 10 2 6-4 11-10 9-8-3-13-10-11-19Z"/>
     <path d="M30 34c-9-2-18 2-21 10-2 6 4 11 10 9 8-3 13-10 11-19Z"/>
     <path d="M31 32c-2-9-9-16-18-15-6 1-8 8-4 13 5 7 14 8 22 2Z"/>
   </g>
-  <g fill="none" stroke="#f1d69f" stroke-linecap="round" stroke-width="2">
+  <g fill="none" stroke="#ffe0a0" stroke-linecap="round" stroke-width="2">
     <path d="M30 12c-2 3-2 7-1 10"/>
     <path d="M48 21c-4 0-7 2-9 5"/>
     <path d="M48 44c-3-2-7-3-10-2"/>
