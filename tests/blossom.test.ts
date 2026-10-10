@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter, BCCharacterOverlayRenderer } from "../src/bc/adapter";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import type { LinkPresenceService } from "../src/modules/link-presence/link-presence-service";
+import { blossomImageForMember } from "../src/modules/link-chat/blossom-identity";
 import {
   BLOSSOM_ICON_DATA_URL,
   DEFAULT_ROOM_BADGE_POSITION,
@@ -19,6 +20,7 @@ interface BadgeFixture {
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
   render: BCCharacterOverlayRenderer;
+  register: ReturnType<typeof vi.fn>;
   unregister: ReturnType<typeof vi.fn>;
   settings: SettingsStore;
   compatible: Set<number>;
@@ -30,7 +32,13 @@ const blossomSvg = readFileSync(
   "utf8",
 );
 
-function fixture(options: { inRoom?: boolean; hasCloudAddonProfile?: (member: number) => boolean } = {}): BadgeFixture {
+function fixture(options: {
+  inRoom?: boolean;
+  ownMemberNumber?: number;
+  mount?: boolean;
+  hasCloudAddonProfile?: (member: number) => boolean;
+  canRender?: () => boolean;
+} = {}): BadgeFixture {
   const canvas = document.createElement("canvas");
   canvas.id = "MainCanvas";
   canvas.width = 2_000;
@@ -70,23 +78,28 @@ function fixture(options: { inRoom?: boolean; hasCloudAddonProfile?: (member: nu
   const compatible = new Set<number>();
   let render: BCCharacterOverlayRenderer | undefined;
   const unregister = vi.fn();
+  const register = vi.fn((next: BCCharacterOverlayRenderer) => {
+    render = next;
+    return unregister;
+  });
   const adapter = {
-    getOwnMemberNumber: () => 999,
+    getOwnMemberNumber: () => options.ownMemberNumber ?? 999,
     isInChatRoom: () => options.inRoom !== false,
-    registerCharacterOverlay: (next: BCCharacterOverlayRenderer) => {
-      render = next;
-      return unregister;
-    },
+    registerCharacterOverlay: register,
   } as unknown as BCAdapter;
   const presence = {
     hasCompatiblePeer: (memberNumber: number) => compatible.has(memberNumber),
   } as unknown as LinkPresenceService;
   const settings = new SettingsStore(new MemoryKeyValueStorage());
-  const badge = new RoomBlossomBadge(adapter, settings, presence, options.hasCloudAddonProfile);
-  badge.mount();
+  const badge = new RoomBlossomBadge(adapter, settings, presence, options.hasCloudAddonProfile, options.canRender);
+  if (options.mount !== false) badge.mount();
   activeBadges.add(badge);
-  if (!render) throw new Error("Blossom did not register its character overlay");
-  return { badge, canvas, context, render, unregister, settings, compatible };
+  return { badge, canvas, context, register, unregister, settings, compatible,
+    get render() {
+      if (!render) throw new Error("Blossom did not register its character overlay");
+      return render;
+    },
+  };
 }
 
 afterEach(() => {
@@ -109,6 +122,84 @@ afterEach(() => {
 });
 
 describe("room Blossom character positioning", () => {
+  it.each([999, 72385])("shares mounted, hidden, detached and destroyed rendering boundaries for member %i", ownMemberNumber => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const h = fixture({ ownMemberNumber, mount: false, canRender: () => host.isConnected && !host.hidden });
+    const character = { MemberNumber: ownMemberNumber, Name: "Kiki" };
+    const draw = vi.mocked(globalThis.DrawImageResize);
+    expect(h.register).not.toHaveBeenCalled();
+    expect(h.badge.beginPlacement()).toBe(false);
+    expect(draw).not.toHaveBeenCalled();
+
+    h.badge.mount();
+    const render = h.render;
+    render(character, 100, 20, 0.5);
+    expect(draw).toHaveBeenCalledExactlyOnceWith(blossomImageForMember(ownMemberNumber, "room"), 310, 42.5, 17.5, 17.5);
+    const placement = document.querySelector<HTMLImageElement>(".kl-room-blossom")!;
+    expect(h.badge.beginPlacement()).toBe(true);
+    expect(placement.hidden).toBe(false);
+
+    host.hidden = true;
+    render(character, 100, 20, 0.5);
+    expect(draw).toHaveBeenCalledOnce();
+    expect(placement.hidden).toBe(true);
+    expect(placement.style.display).toBe("none");
+    expect(h.badge.beginPlacement()).toBe(false);
+    host.hidden = false;
+    render(character, 100, 20, 0.5);
+    expect(draw).toHaveBeenCalledTimes(2);
+
+    host.remove();
+    render(character, 100, 20, 0.5);
+    expect(draw).toHaveBeenCalledTimes(2);
+    expect(placement.hidden).toBe(true);
+    document.body.append(host);
+    render(character, 100, 20, 0.5);
+    expect(draw).toHaveBeenCalledTimes(3);
+    h.badge.destroy();
+    render(character, 100, 20, 0.5); // A queued invocation must not outlive its view.
+    expect(draw).toHaveBeenCalledTimes(3);
+    expect(h.badge.beginPlacement()).toBe(false);
+    expect(h.unregister).toHaveBeenCalledOnce();
+    expect(placement.isConnected).toBe(false);
+  });
+
+  it.each([999, 72385])("loads fallback images only when needed and caches the selected sprite for member %i", ownMemberNumber => {
+    const images: Array<{ src: string }> = [];
+    class FallbackImage {
+      src = "";
+      complete = true;
+      naturalWidth = 64;
+      constructor() { images.push(this); }
+    }
+    vi.stubGlobal("Image", FallbackImage);
+    vi.stubGlobal("DrawImageCanvas", undefined);
+    vi.stubGlobal("Path2D", undefined);
+    const h = fixture({ ownMemberNumber, mount: false });
+    expect(images).toHaveLength(0);
+    h.badge.mount();
+    const character = { MemberNumber: ownMemberNumber, Name: "Kiki" };
+    h.render(character, 100, 20, 0.5);
+    expect(images).toHaveLength(0); // Successful native drawing never loads a spare image.
+
+    vi.mocked(globalThis.DrawImageResize).mockReturnValue(false);
+    h.render(character, 100, 20, 0.5);
+    expect(images).toHaveLength(1);
+    expect(images[0].src).toBe(blossomImageForMember(ownMemberNumber, "room"));
+    expect(h.context.drawImage).toHaveBeenLastCalledWith(images[0], 310, 42.5, 17.5, 17.5);
+    h.render(character, 100, 20, 0.5);
+    expect(images).toHaveLength(1);
+
+    const peerNumber = ownMemberNumber === 72385 ? 999 : 72385;
+    h.compatible.add(peerNumber);
+    h.render({ MemberNumber: peerNumber, Name: "Peer" }, 600, 20, 0.5);
+    expect(images).toHaveLength(2);
+    expect(images[1].src).toBe(blossomImageForMember(peerNumber, "room"));
+    expect(images[1].src).not.toBe(images[0].src);
+    expect(h.context.drawImage).toHaveBeenLastCalledWith(images[1], 810, 42.5, 17.5, 17.5);
+  });
+
   it("uses the upright outlined cartoon artwork at every Blossom integration", () => {
     expect(blossomSvg).not.toContain("rotate(");
     expect(blossomSvg).toContain('stroke="#5f1b2a"');
