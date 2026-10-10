@@ -186,7 +186,7 @@ describe("room Blossom character positioning", () => {
     vi.mocked(globalThis.DrawImageResize).mockReturnValue(false);
     h.render(character, 100, 20, 0.5);
     expect(images).toHaveLength(1);
-    expect(images[0].src).toBe(blossomImageForMember(ownMemberNumber, "room"));
+    expect(images[0]?.src).toBe(blossomImageForMember(ownMemberNumber, "room"));
     expect(h.context.drawImage).toHaveBeenLastCalledWith(images[0], 310, 42.5, 17.5, 17.5);
     h.render(character, 100, 20, 0.5);
     expect(images).toHaveLength(1);
@@ -195,8 +195,8 @@ describe("room Blossom character positioning", () => {
     h.compatible.add(peerNumber);
     h.render({ MemberNumber: peerNumber, Name: "Peer" }, 600, 20, 0.5);
     expect(images).toHaveLength(2);
-    expect(images[1].src).toBe(blossomImageForMember(peerNumber, "room"));
-    expect(images[1].src).not.toBe(images[0].src);
+    expect(images[1]?.src).toBe(blossomImageForMember(peerNumber, "room"));
+    expect(images[1]?.src).not.toBe(images[0]?.src);
     expect(h.context.drawImage).toHaveBeenLastCalledWith(images[1], 810, 42.5, 17.5, 17.5);
   });
 
