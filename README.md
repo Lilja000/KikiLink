@@ -9,8 +9,9 @@ not connected to Velvet District or any previous Kiki project.
 
 Install [FUSAM Loader](https://gitlab.com/Sidiousious/bc-addon-loader), then enable KikiLink from its
 addon list. FUSAM owns update discovery for this distribution.
-Its stable entry follows the official `main/dist/KikiLink.fusam.js` build directly;
-new KikiLink releases do not require a separate FUSAM manifest change.
+Its current stable entry follows the official `main/dist/KikiLink.fusam.js` build through
+jsDelivr. Branch caching can delay updates even after a CDN purge. Migration to the
+versioned release channel below requires a one-time FUSAM manifest update.
 
 FUSAM can use device-local files, direct HTTPS links, and supported temporary Litterbox uploads.
 Long-lived Catbox uploads are unavailable because Catbox does not allow the required cross-origin page
@@ -505,6 +506,24 @@ dist/KikiLink.fusam.js
 Install that file through Tampermonkey or Violentmonkey while developing
 locally. The FUSAM bundle is loaded by FUSAM and should not be installed as a userscript. Public
 installation paths are listed above.
+
+### Stable release distribution
+
+After CI succeeds for a push to `main`, the release workflow publishes the package version
+as an immutable `vX.Y.Z` tag and GitHub release. It skips stale commits and existing tags;
+changes to an already published version require a new package version.
+
+The versioned FUSAM channel is:
+
+```text
+https://cdn.jsdelivr.net/gh/Lilja000/KikiLink@latest/dist/KikiLink.fusam.js
+```
+
+Publish and verify the version tag before switching FUSAM to this channel. For subsequent
+releases, purge the `@latest` file and compare the served bytes with the committed bundle.
+Do not treat a successful purge response as proof of delivery. jsDelivr does not reliably
+support purging branch references such as `@main`; see the
+[maintainer's explanation](https://github.com/jsdelivr/jsdelivr/issues/18491).
 
 ## Public API
 
