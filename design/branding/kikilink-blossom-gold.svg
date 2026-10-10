@@ -11,6 +11,6 @@
     <path d="M48 21c-4 0-7 2-9 5"/>
     <path d="M48 44c-3-2-7-3-10-2"/>
   </g>
-  <circle cx="32" cy="33" r="8" fill="#ad7624" stroke="#5f451b" stroke-width="3"/>
+  <circle cx="32" cy="33" r="8" fill="#d9c6a3" stroke="#5f451b" stroke-width="3"/>
   <circle cx="29.5" cy="30.5" r="2" fill="#ffe6a1"/>
 </svg>

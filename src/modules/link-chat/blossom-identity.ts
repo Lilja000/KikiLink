@@ -17,8 +17,8 @@ export function blossomImageForMember(
 }
 
 const PINK_PALETTE = Object.freeze({ petals: "#ef6078", outline: "#5f1b2a", highlights: "#ffb2bf", center: "#f3b63f", glint: "#ffe6a1" });
-// Match the bundled gold sprite and the addon's existing --kl-gold colors.
-const GOLD_PALETTE = Object.freeze({ petals: "#d6a24b", outline: "#5f451b", highlights: "#f1d69f", center: "#ad7624", glint: "#ffe6a1" });
+// Match the bundled sprite: --kl-gold petals and a warm cream center.
+const GOLD_PALETTE = Object.freeze({ petals: "#d6a24b", outline: "#5f451b", highlights: "#f1d69f", center: "#d9c6a3", glint: "#ffe6a1" });
 
 export function blossomPaletteForMember(memberNumber: number | undefined) {
   return isGoldBlossomMember(memberNumber) ? GOLD_PALETTE : PINK_PALETTE;
