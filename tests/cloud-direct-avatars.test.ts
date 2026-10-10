@@ -122,6 +122,29 @@ it("selects one gold creator flower and restores pink when the chat avatar is re
   expect(avatar.querySelectorAll(":scope > .kl-addon-badge")).toHaveLength(1);
 });
 
+it.each([202, 72385])("only draws member %i's room flower while the addon host is visible", async (member) => {
+  const h = await setup();
+  h.client.rememberProfile(profile(member));
+  vi.stubGlobal("ChatRoomHideIconState", 0);
+  const draw = vi.fn((..._args: unknown[]) => true);
+  vi.stubGlobal("DrawImageResize", draw);
+  const host = h.root.host as HTMLElement;
+  h.renderOverlay(member);
+  expect(draw).toHaveBeenCalledOnce();
+  expect(draw.mock.calls[0]?.[0]).toBe(blossomImageForMember(member, "room"));
+
+  host.hidden = true;
+  h.renderOverlay(member);
+  expect(draw).toHaveBeenCalledOnce();
+  host.hidden = false;
+  h.renderOverlay(member);
+  expect(draw).toHaveBeenCalledTimes(2);
+
+  host.remove();
+  h.renderOverlay(member);
+  expect(draw).toHaveBeenCalledTimes(2);
+});
+
 it.each([
   { quoted: false, switchChat: false, failed: false },
   { quoted: true, switchChat: false, failed: false },

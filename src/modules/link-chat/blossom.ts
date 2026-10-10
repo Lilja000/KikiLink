@@ -3,7 +3,7 @@ import type { SettingsStore } from "../../core/settings";
 import type { KikiLinkSettings } from "../../core/types";
 import type { LinkPresenceService } from "../link-presence/link-presence-service";
 import BLOSSOM_ICON_DATA_URL from "../../../design/branding/kikilink-blossom.svg";
-import { blossomImageForMember, blossomPaletteForMember, isGoldBlossomMember } from "./blossom-identity";
+import { blossomImageForMember, blossomPaletteForMember } from "./blossom-identity";
 
 const CHARACTER_WIDTH = 500;
 const CHARACTER_HEIGHT = 1_000;
@@ -114,8 +114,7 @@ export class RoomBlossomBadge {
   readonly #adapter: BCAdapter;
   readonly #presence: LinkPresenceService;
   readonly #element = document.createElement("img");
-  readonly #fallbackImage = typeof Image === "function" ? new Image() : undefined;
-  readonly #goldFallbackImage = typeof Image === "function" ? new Image() : undefined;
+  readonly #fallbackImages = new Map<string, HTMLImageElement>();
   #config: RoomBadgeConfig;
   #ownFrame: CharacterCanvasFrame | undefined;
   #previewPosition: NormalizedRoomBadgePosition | undefined;
@@ -130,6 +129,10 @@ export class RoomBlossomBadge {
   #destroyed = false;
 
   readonly #renderer: BCCharacterOverlayRenderer = (character, x, y, zoom) => {
+    if (!this.#canRender()) {
+      if (this.#placementActive) this.#syncOwnElement();
+      return;
+    }
     if (!character || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) return;
     const own = character.MemberNumber === this.#adapter.getOwnMemberNumber();
     if (own) {
@@ -253,13 +256,12 @@ export class RoomBlossomBadge {
     settings: SettingsStore,
     presence: LinkPresenceService,
     private readonly hasCloudAddonProfile: (memberNumber: number) => boolean = () => false,
+    private readonly canRender: () => boolean = () => true,
   ) {
     this.#adapter = adapter;
     this.#settings = settings;
     this.#presence = presence;
     this.#config = settings.getSection("ui").roomBadge;
-    if (this.#fallbackImage) this.#fallbackImage.src = BLOSSOM_ICON_DATA_URL;
-    if (this.#goldFallbackImage) this.#goldFallbackImage.src = blossomImageForMember(72385, "room");
     this.#element.className = "kl-room-blossom";
     this.#element.src = blossomImageForMember(this.#adapter.getOwnMemberNumber(), "room");
     this.#element.alt = "";
@@ -296,12 +298,14 @@ export class RoomBlossomBadge {
 
   /** Arms a single drag of the flower above the authenticated player's character. */
   beginPlacement(): boolean {
+    if (!this.#canRender()) {
+      this.#syncOwnElement();
+      return false;
+    }
     const liveFrame = visibleCharacterFrame(this.#adapter.getOwnMemberNumber());
     if (liveFrame) this.#ownFrame = liveFrame;
     this.#syncOwnElement();
     if (
-      this.#destroyed ||
-      !this.#mounted ||
       !this.#config.enabled ||
       typeof this.#adapter.isInChatRoom !== "function" ||
       !this.#adapter.isInChatRoom() ||
@@ -344,6 +348,7 @@ export class RoomBlossomBadge {
     this.#unregisterOverlay?.();
     this.#unregisterOverlay = undefined;
     this.#element.remove();
+    this.#fallbackImages.clear();
     this.#ownFrame = undefined;
     this.#mounted = false;
   }
@@ -385,7 +390,12 @@ export class RoomBlossomBadge {
         }
       }
       if (drawVectorBlossom(context, position, memberNumber)) return true;
-      const fallbackImage = isGoldBlossomMember(memberNumber) ? this.#goldFallbackImage : this.#fallbackImage;
+      let fallbackImage = this.#fallbackImages.get(sprite);
+      if (!fallbackImage && typeof Image === "function") {
+        fallbackImage = new Image();
+        fallbackImage.src = sprite;
+        this.#fallbackImages.set(sprite, fallbackImage);
+      }
       if (fallbackImage?.complete && fallbackImage.naturalWidth > 0) {
         context.save();
         context.globalAlpha = BADGE_OPACITY;
@@ -409,11 +419,14 @@ export class RoomBlossomBadge {
     return typeof ChatRoomHideIconState !== "number" || ChatRoomHideIconState === 0;
   }
 
+  #canRender(): boolean {
+    return this.#mounted && !this.#destroyed && this.canRender();
+  }
+
   #syncOwnElement(): void {
-    if (this.#destroyed || !this.#mounted) return;
     // Normal play is canvas-only. Never poll BC's character loop or leave a fixed DOM object over
     // another screen; the DOM copy exists solely for the explicit settings-armed drag action.
-    if (!this.#placementActive) {
+    if (!this.#canRender() || !this.#placementActive) {
       this.#element.hidden = true;
       this.#element.style.display = "none";
       return;

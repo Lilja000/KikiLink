@@ -1299,7 +1299,8 @@ export class LinkChatView {
       new LinkPresenceService(adapter, settings, new EventBus(), version);
     this.#roomBadge = new RoomBlossomBadge(adapter, settings, this.presence, memberNumber =>
       !this.#cloudAvatarDenied.has(memberNumber) &&
-      (this.#cloud?.client.hasCachedAddonProfile(memberNumber) ?? false));
+      (this.#cloud?.client.hasCachedAddonProfile(memberNumber) ?? false),
+    () => this.#mounted && this.#host.isConnected && !this.#host.hidden);
     this.#launcherMenu = new LauncherMenu(settings, async () => {
       await Promise.all([this.service.markAllRead(), this.#groupChatService?.markAllRead(), this.#cloud?.inbox.markAllRead()]);
       if (!this.#mounted) return;
