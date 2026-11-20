@@ -6,7 +6,7 @@ import type { KeyValueStorage } from "./settings";
 
 export type MessageDirection = "incoming" | "outgoing";
 export type ThemePreference = "dark" | "light" | "system";
-export type LauncherOpenPreference = "home" | "last" | "chat";
+export type LauncherOpenPreference = "home" | "last" | "chat" | "explore";
 export type InterfaceDensity = "comfortable" | "compact" | "super-compact";
 export type TimeFormatPreference = "24-hour" | "12-hour";
 export type TextScalePreference = "normal" | "large" | "extra-large";
@@ -56,7 +56,7 @@ export type ReactionTrigger =
   | "friend-online";
 export type ReactionScope = "anyone" | "friends" | "members";
 export type ReactionAction = "notice" | "room-emote";
-export type NotificationSoundPreset = "chime" | "sparkle" | "pop";
+export type NotificationSoundPreset = "kiki" | "chime" | "sparkle" | "pop";
 export type NotificationSoundChoice = NotificationSoundPreset | `custom:${string}`;
 export type LinkNotificationKind = "chat" | "friend-online" | "room-join";
 export type MusicTrackSource = "url" | "catbox" | "local";
@@ -100,6 +100,8 @@ export interface MusicTrack {
   source: MusicTrackSource;
   /** A direct HTTPS URL for remote tracks, or the locally stored record id. */
   locator: string;
+  /** Known duration of audio previously opened by the player. */
+  durationSeconds?: number;
   addedAt: number;
 }
 
@@ -267,6 +269,8 @@ export interface PersonRecord {
   memberNumber: number;
   displayName: string;
   favorite: boolean;
+  /** Saved from Cloud discovery without a native encounter. */
+  directoryBookmark?: true;
   note: string;
   tags: string[];
   firstSeenAt: number;
@@ -291,14 +295,27 @@ export interface BeepEvent {
   roomName?: string;
 }
 
+export interface MessageMention { start: number; end: number; username: string; memberNumber: number }
+
 export interface LinkMessage extends BeepEvent {
+  /** Personal pin attached to the retained message on this device. */
+  localPin?: boolean;
+  /** Display-only personal override. Never used to send or retry. */
+  localEdited?: boolean;
   id: string;
   read: boolean;
+  archivedAttachments?: import('./chat-attachments').ArchivedChatAttachments;
   clientMessageId?: string;
+  cloudMediaIds?: string[];
+  cloudAudioIds?: string[];
+  cloudMentions?: MessageMention[];
   cloudId?: string;
   cloudSequence?: number;
+  cloudGeneration?: string;
   delivery?: "waiting" | "sent" | "delivered" | "read" | "failed";
   deliveryError?: string;
+  /** Inert tagged source fields retained by explicit device ZIP import. */
+  archivedFields?: string;
 }
 
 export interface ConversationMeta {
@@ -314,6 +331,8 @@ export interface ConversationMeta {
   draft: string;
   /** -1 is indefinite; otherwise an absolute timestamp (0 means unmuted). */
   muteUntil?: number;
+  /** Inert tagged source fields; never live preferences or actions. */
+  archivedFields?: string;
 }
 
 export interface KikiLinkEvents {
@@ -332,15 +351,27 @@ export interface KikiLinkEvents {
 }
 
 export type NavigationTab = "home" | "cloud" | "chat" | "roster" | "room" | "music" | "activities";
+export type OptionalPlatformArea = "chat" | "explore" | "create" | "game" | "you";
+export type NavigationVisibilityKey = NavigationTab | OptionalPlatformArea;
 export interface TabAlerts {
   mode: "all" | "personal" | "off";
   mutedUntil: number;
+}
+
+export interface ChatTabAlerts extends TabAlerts {
+  /** Missing overrides inherit the legacy shared Chat mode, including its mentions-only behavior. */
+  direct?: boolean;
+  groups?: boolean;
+}
+export interface FeedTabAlerts extends Omit<TabAlerts, "mode"> {
+  mode: TabAlerts["mode"] | "mentions";
 }
 
 export interface KikiLinkSettings {
   schemaVersion: 30;
   ui: {
     accent: string;
+    workshopPalette: import("./workshop-destinations").WorkshopPalette | null;
     theme: ThemePreference;
     density: InterfaceDensity;
     timeFormat: TimeFormatPreference;
@@ -351,8 +382,9 @@ export interface KikiLinkSettings {
     launcherSize: number;
     /** Zero enables alerts, -1 mutes until resumed, otherwise a Unix timestamp in ms. */
     notificationsMutedUntil: number;
-    hiddenTabs: NavigationTab[];
-    tabAlerts: { feed: TabAlerts; chat: TabAlerts };
+    unreadBadges: boolean;
+    hiddenTabs: NavigationVisibilityKey[];
+    tabAlerts: { feed: FeedTabAlerts; chat: ChatTabAlerts };
     launcherPosition: { x: number; y: number } | null;
     panelPosition: { x: number; y: number } | null;
     roomBadge: {
@@ -365,6 +397,7 @@ export interface KikiLinkSettings {
   };
   linkChat: {
     enabled: boolean;
+    directEnabled: boolean;
     saveHistory: boolean;
     includeRoomByDefault: boolean;
     retentionDays: number;
@@ -465,6 +498,8 @@ export interface KikiLinkPublicApi {
   getRuntimeInfo?(): {
     distribution: import("./distribution").KikiLinkDistribution;
     devTest: boolean;
+    /** Isolated local 2.0 migration build; absent on pre-platform releases. */
+    platformPreview?: boolean;
     active: boolean;
   };
   open(): void;

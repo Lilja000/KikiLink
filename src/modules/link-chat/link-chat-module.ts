@@ -1,3 +1,4 @@
+import { KIKILINK_PLATFORM_PREVIEW, KIKILINK_PLATFORM_RELEASE } from "../../core/distribution";
 import type { BeepEvent, KikiLinkContext, KikiLinkModule, KikiLinkSettings } from "../../core/types";
 import { Logger } from "../../core/logger";
 import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
@@ -129,6 +130,7 @@ export class LinkChatModule implements KikiLinkModule {
       context.bus.on("bc:status", ({ state, message }) =>
         this.#view?.setConnectionState(state, message),
       ),
+      context.bus.on("bc:room-changed", () => this.#view?.observeRoomVisit()),
       context.bus.on("bc:ready", () => {
         void this.#cloud?.connect(true).catch(() => {});
         this.#activities?.syncFromSettings();
@@ -205,8 +207,10 @@ export class LinkChatModule implements KikiLinkModule {
 
   async #capture(event: BeepEvent): Promise<void> {
     if (!this.#service || !this.#view || !this.#context || !this.#isCurrentAccount()) return;
+    if (this.#context.adapter.locallyRestricted?.(event.peerNumber)) return;
     const automaticReply =
-      event.direction === "incoming" ? this.#afkAutoReply?.handleIncoming(event) : undefined;
+      event.direction === "incoming" && (!(KIKILINK_PLATFORM_PREVIEW || KIKILINK_PLATFORM_RELEASE) || this.#context.settings.getField("linkChat", "directEnabled"))
+        ? this.#afkAutoReply?.handleIncoming(event) : undefined;
     try {
       if (this.#context.settings.getSection("linkRoster").enabled) {
         this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
@@ -222,7 +226,7 @@ export class LinkChatModule implements KikiLinkModule {
   }
 
   async #captureGroupProtocol(event: { senderNumber: number; payload: string }): Promise<void> {
-    if (!this.#groups || !this.#isCurrentAccount()) return;
+    if (!this.#groups || !this.#isCurrentAccount() || this.#context?.adapter.locallyRestricted?.(event.senderNumber)) return;
     try {
       await this.#groups.receiveProtocol(event, this.#view?.getActiveGroupId());
     } catch (error) {
@@ -247,6 +251,7 @@ export class LinkChatModule implements KikiLinkModule {
     if (!this.#service || !this.#view || !this.#context || !this.#isCurrentAccount()) return;
     try {
       for (const event of this.#context.adapter.getRecentBeeps()) {
+        if (this.#context.adapter.locallyRestricted?.(event.peerNumber)) continue;
         if (this.#context.settings.getSection("linkRoster").enabled) {
           this.#roster?.observePerson(event.peerNumber, event.peerName, event.sentAt);
         }

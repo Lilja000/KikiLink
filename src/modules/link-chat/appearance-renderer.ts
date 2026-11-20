@@ -1,3 +1,4 @@
+import { KIKILINK_PLATFORM_PREVIEW, KIKILINK_PLATFORM_RELEASE } from "../../core/distribution";
 import type { AvatarDecoration, AvatarFrame, PresenceSnapshot } from "../../core/types";
 import { effectiveProfileStyle, normalizeAvatarDecoration } from "../../core/profile-appearance";
 
@@ -17,14 +18,19 @@ const motifs: Record<Exclude<AvatarFrame, "none">, [string, string]> = {
 };
 const motifUrls = new Map<string, string>();
 export function applyAvatarAppearance(target: HTMLElement, source: { avatarFrame?: AvatarFrame; avatarDecoration?: AvatarDecoration }): void {
+  const platformUi = KIKILINK_PLATFORM_PREVIEW || KIKILINK_PLATFORM_RELEASE;
   const value = normalizeAvatarDecoration(source.avatarDecoration, source.avatarFrame);
+  if (platformUi) target.dataset.avatarShape = "circle";
+  else delete target.dataset.avatarShape;
   target.dataset.avatarMode = value.mode;
   target.dataset.avatarFrame = value.mode === "preset" ? value.preset : "none";
   target.style.setProperty("--kl-avatar-ring", value.mode === "gradient" ? `linear-gradient(${value.angle}deg,${value.primary},${value.secondary})` : value.primary);
   if (value.mode === "preset") {
     const [tone, shape] = motifs[value.preset === "none" ? "blossom" : value.preset];
-    let url = motifUrls.get(value.preset);
-    if (!url) { url = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><g fill="none" stroke="${tone}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"><rect x="7" y="7" width="86" height="86" rx="27"/>${shape}</g></svg>`)}")`; motifUrls.set(value.preset, url); }
+    const key = `${platformUi ? "circle" : "classic"}:${value.preset}`;
+    const outline = platformUi ? '<circle cx="50" cy="50" r="43"/>' : '<rect x="7" y="7" width="86" height="86" rx="27"/>';
+    let url = motifUrls.get(key);
+    if (!url) { url = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><g fill="none" stroke="${tone}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round">${outline}${shape}</g></svg>`)}")`; motifUrls.set(key, url); }
     target.style.setProperty("--kl-avatar-motif", url);
   } else target.style.removeProperty("--kl-avatar-motif");
 }
@@ -34,6 +40,10 @@ const palettes: Record<string, [string, string, string]> = {
   glacier: ["#112331", "#1a3344", "#a5d0e6"], sage: ["#222a24", "#323e34", "#bdc9a8"],
   "dusty-rose": ["#2d2028", "#40303a", "#e1b1c4"], amber: ["#2d2419", "#403323", "#e2bd7f"],
 };
+export function profileStyleColors(style: string, first: string, last: string): [string, string] {
+  const [primary, secondary] = style === "gradient" ? [first, last] : palettes[style] ?? palettes.classic!;
+  return [primary, secondary];
+}
 export function applyProfileAppearance(target: HTMLElement, source: Pick<PresenceSnapshot, "profileStyle" | "profileGradient" | "profileOutlineColor">): void {
   for (const property of Array.from({ length: target.style.length }, (_, i) => target.style.item(i))) if (property.startsWith("--kl-profile-")) target.style.removeProperty(property);
   target.style.removeProperty("background");
@@ -48,26 +58,22 @@ export function applyProfileAppearance(target: HTMLElement, source: Pick<Presenc
     return;
   }
   target.dataset.customGradient = String(Boolean(gradient));
-  const angle = gradient?.angle ?? 135;
-  if (gradient) { target.style.setProperty("--kl-profile-gradient-primary", gradient.primary); target.style.setProperty("--kl-profile-gradient-secondary", gradient.secondary); target.style.setProperty("--kl-profile-gradient-angle", `${angle}deg`); }
-  // A dark surface mix keeps light text and every control readable even with two white source colors.
-  const bg = gradient ? `linear-gradient(${angle}deg,color-mix(in srgb,${gradient.primary},#0d1017 78%),color-mix(in srgb,${gradient.secondary},#0d1017 78%))` : palette[0];
-  // Nested borders need a real color. A gradient is valid as a background but
-  // invalid as border-color, which made presence dots lose their dark ring.
-  const surface = gradient ? "#171923" : palette[0];
-  target.style.setProperty("--kl-profile-bg", surface);
-  target.style.setProperty("--kl-profile-status-ring", surface);
-  target.style.setProperty("--kl-profile-panel", gradient ? "#20222ccc" : palette[1]);
-  target.style.setProperty("--kl-profile-panel-strong", gradient ? "#303340" : palette[1]);
+  if (gradient) {
+    target.style.setProperty("--kl-profile-gradient-primary", gradient.primary);
+    target.style.setProperty("--kl-profile-gradient-secondary", gradient.secondary);
+    target.style.setProperty("--kl-profile-gradient-angle", `${gradient.angle ?? 135}deg`);
+  } else {
+    target.style.setProperty("--kl-profile-bg", palette[0]);
+    target.style.setProperty("--kl-profile-panel", palette[1]);
+    target.style.setProperty("--kl-profile-panel-strong", palette[1]);
+    target.style.setProperty("--kl-profile-banner", `linear-gradient(125deg,${palette[1]},${palette[0]})`);
+  }
   target.style.setProperty("--kl-profile-text", "#f5f1ef");
   target.style.setProperty("--kl-profile-muted", "#c7c2c8");
   target.style.setProperty("--kl-profile-border", "#bdb2c333");
   target.style.setProperty("--kl-profile-border-strong", "#bdb2c366");
   target.style.setProperty("--kl-profile-highlight", gradient ? `color-mix(in srgb,${gradient.primary},white 65%)` : palette[2]);
-  target.style.setProperty("--kl-profile-banner", gradient ? `linear-gradient(${angle}deg,${gradient.primary},${gradient.secondary})` : `linear-gradient(125deg,${palette[1]},${palette[0]})`);
   target.style.setProperty("--kl-profile-outline", source.profileOutlineColor || "#bdb2c366");
-  // Override the old selector's background shorthand with the same renderer used by the editor.
-  target.style.background = bg;
 }
 
 export const APPEARANCE_STYLES = `
@@ -77,6 +83,8 @@ export const APPEARANCE_STYLES = `
    match the preset's rounded-square silhouette in Feed as well as chat. */
 [data-avatar-mode]:not([data-avatar-mode="none"]){border-color:transparent!important}
 [data-avatar-mode="preset"]{border-radius:31.4%!important}
+[data-avatar-shape="circle"]{border-radius:50%!important}
+[data-avatar-shape="circle"]>img{border-radius:50%!important}
 [data-avatar-mode]::after{content:"";position:absolute!important;inset:-3px!important;width:auto!important;height:auto!important;transform:none!important;border:0!important;border-radius:inherit;pointer-events:none!important;z-index:4;box-shadow:none!important;background:none!important}
 [data-avatar-mode="none"]::after{display:none!important}
 [data-avatar-mode="preset"]::after{inset:-8%!important;background:var(--kl-avatar-motif) center / 100% 100% no-repeat!important;border-radius:0!important}
@@ -91,7 +99,18 @@ export const APPEARANCE_STYLES = `
 .kl-avatar-custom-colors .kl-avatar-angle-field{grid-column:1/-1;grid-template-columns:minmax(0,1fr) 92px}
 .kl-avatar-angle-field .kl-select{width:92px;min-width:0}
 .kl-profile-gradient-field[hidden],.kl-avatar-custom-colors[hidden]{display:none!important}
-.kl-profile-appearance-preview{--kl-profile-bg:var(--kl-surface);--kl-profile-text:var(--kl-text);--kl-profile-muted:var(--kl-muted);background:var(--kl-profile-bg);padding:15px;border:1px solid var(--kl-profile-outline);border-radius:16px;color:var(--kl-profile-text);min-height:85px}
+.kl-profile-appearance-preview{--kl-profile-bg:var(--kl-surface);--kl-profile-text:var(--kl-text);--kl-profile-muted:var(--kl-muted);background:var(--kl-profile-surface,var(--kl-profile-bg));padding:15px;border:1px solid var(--kl-profile-outline);border-radius:16px;color:var(--kl-profile-text);min-height:85px}
+:is(.kl-addon-profile-card,.kl-profile-appearance-preview)[data-custom-gradient="true"] {
+  --kl-profile-gradient-tone: #111113;
+  --kl-profile-gradient-strength: 78%;
+  --kl-profile-gradient-shade: color-mix(in srgb, var(--kl-profile-gradient-tone) var(--kl-profile-gradient-strength), transparent);
+  --kl-profile-banner: linear-gradient(var(--kl-profile-gradient-angle), var(--kl-profile-gradient-primary), var(--kl-profile-gradient-secondary));
+  --kl-profile-surface: linear-gradient(var(--kl-profile-gradient-shade), var(--kl-profile-gradient-shade)), var(--kl-profile-banner);
+  /* Controls and avatar rings need a solid color from the same gradient. */
+  --kl-profile-bg: color-mix(in srgb, color-mix(in srgb, var(--kl-profile-gradient-primary), var(--kl-profile-gradient-secondary)), var(--kl-profile-gradient-tone) var(--kl-profile-gradient-strength));
+  --kl-profile-panel: color-mix(in srgb, var(--kl-profile-bg), white 4%);
+  --kl-profile-panel-strong: color-mix(in srgb, var(--kl-profile-bg), white 10%);
+}
 .kl-profile-appearance-preview small{display:block;color:var(--kl-profile-muted);margin-top:5px}
 @media(forced-colors:active){[data-avatar-mode]::after{display:none!important}}
 `;

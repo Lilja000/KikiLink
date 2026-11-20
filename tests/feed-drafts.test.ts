@@ -45,6 +45,34 @@ function deferred() {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("FeedDraftStore", () => {
+  it("preserves inactive attachment fields when a restored File must be persisted again", async () => {
+    const { store, backing, attachments } = setup();
+    store.save(draft({ files: [{ file: image(), spoiler: true }] })); await store.flush(); store.close();
+    const saved = [...attachments.records.values()][0]!;
+    const archivedFields = JSON.stringify({ format: "kikilink-inert-feed-fields", version: 1, kind: "attachment", fields: [["future", { type: "value", value: "inactive" }]], files: [] });
+    saved.archivedFields = archivedFields;
+    const reopened = new FeedDraftStore(123, backing), loaded = (await reopened.load())!;
+    expect(Object.hasOwn(loaded.files[0]!.file, "archivedFields")).toBe(false);
+    // A different editor tombstones the metadata and prunes the native record.
+    const other = new FeedDraftStore(123, backing); await other.clear(); other.close();
+    expect(attachments.records.size).toBe(0);
+    reopened.save({ ...loaded, text: "Keep this composition" }); await reopened.flush();
+    const restored = [...attachments.records.values()][0]!;
+    expect(restored.id).toBe(saved.id); expect(restored.archivedFields).toBe(archivedFields);
+    expect(await restored.file.text()).toBe("image bytes");
+    reopened.save({ ...loaded, files: [...loaded.files, { file: image("new.png"), spoiler: false }] }); await reopened.flush();
+    expect([...attachments.records.values()].find(r => r.id !== saved.id)).not.toHaveProperty("archivedFields");
+  });
+
+  it("reports malformed saved attachment fields without deleting the original", async () => {
+    const { store, backing, attachments } = setup();
+    store.save(draft({ files: [{ file: image(), spoiler: false }] })); await store.flush(); store.close();
+    const saved = [...attachments.records.values()][0]!; saved.archivedFields = "broken";
+    const reopened = new FeedDraftStore(123, backing), loaded = await reopened.load();
+    expect(reopened.status).toBe("error"); expect(loaded?.files).toEqual([]);
+    expect(attachments.records.get(saved.id)).toBe(saved); expect(saved.archivedFields).toBe("broken");
+  });
+
   it("saves text, an incomplete poll and the idempotency key synchronously for immediate restart", async () => {
     const { store, backing, attachments } = setup();
     const poll = { question: "Which room?", options: ["", ""], multiple: true, closesAt: 1_800_000_000_000 };
@@ -92,7 +120,7 @@ describe("FeedDraftStore", () => {
       store.save(draft({ files: [{ file: image(), spoiler: false }] }));
       await expect(store.flush()).rejects.toThrow("unavailable");
     }
-    expect(open.mock.calls).toEqual([["kikilink-feed-drafts-123", 1], ["kikilink-feed-drafts-456", 1]]);
+    expect(open.mock.calls).toEqual([["kikilink-feed-drafts-123", 2], ["kikilink-feed-drafts-456", 2]]);
   });
 
   it("does not rewrite blobs for text, spoiler or poll edits, including after a restore", async () => {

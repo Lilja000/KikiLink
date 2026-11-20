@@ -1,12 +1,16 @@
+import {readAccountWriteVersion,writeAccountValue} from "./account-write-version";
+import { KIKILINK_PLATFORM_PREVIEW } from "../core/distribution";
+import { scopePersistenceName } from "../core/storage-scope";
 import { withBCNetworkReason } from "../bc/traffic-audit";
 import { cleanBeepMessageContent } from "../bc/message-content";
 import {
-  MemoryKeyValueStorage,
+  UnavailableKeyValueStorage,
   SETTINGS_KEY,
   type KeyValueStorage,
   type KeyValueStorageReadResult,
 } from "../core/settings";
 import type { ConversationMeta, LinkMessage } from "../core/types";
+import {sanitizePortableConversation as sanitizeConversation,sanitizePortableMessage as sanitizeMessage} from './portable-chat-records';
 import type { ChatCaptureResult, ChatRepository } from "./chat-repository";
 import { PEOPLE_KEY } from "./people-repository";
 
@@ -58,11 +62,11 @@ export class AccountKeyValueStorage implements KeyValueStorage {
   readonly #prefix: string;
 
   constructor(
-    memberNumber: number,
+    private readonly memberNumber: number,
     private readonly backing: KeyValueStorage = defaultBackingStorage(),
   ) {
     if (!validMemberNumber(memberNumber)) throw new Error("A valid BC account is required");
-    this.#prefix = `kikilink:account:${memberNumber}:`;
+    this.#prefix = scopePersistenceName(`kikilink:account:${memberNumber}:`);
   }
 
   getItem(key: string): string | null {
@@ -82,11 +86,15 @@ export class AccountKeyValueStorage implements KeyValueStorage {
   }
 
   setItem(key: string, value: string): void {
-    this.backing.setItem(this.#key(key), value);
+    writeAccountValue(this.backing,this.memberNumber,key,value);
   }
 
   removeItem(key: string): void {
-    this.backing.removeItem(this.#key(key));
+    writeAccountValue(this.backing,this.memberNumber,key,null);
+  }
+
+  getMutationVersion(key: string): string | null {
+    return readAccountWriteVersion(this.backing,this.memberNumber,key);
   }
 
   #key(key: string): string {
@@ -190,6 +198,20 @@ export class AccountDataStorage implements KeyValueStorage {
     return this.#local.getItemResult(key);
   }
 
+  getPersistedItemResult(key: string): KeyValueStorageReadResult {
+    return this.#local.getItemResult(key);
+  }
+
+  getMutationVersion(key: string): string | null { return this.#local.getMutationVersion(key); }
+
+  setItemVerified(key: string, value: string): void {
+    this.#local.setItem(key, value);
+    const saved = this.#local.getItemResult(key);
+    if (!saved.ok || saved.value !== value) throw new Error("Saving settings on this device could not be confirmed.");
+    if (key === SETTINGS_KEY) this.#setPortableValue("settings", value);
+    if (key === PEOPLE_KEY) this.#setPortableValue("people", value);
+  }
+
   setItem(key: string, value: string): void {
     try {
       this.#local.setItem(key, value);
@@ -213,22 +235,21 @@ export class AccountDataStorage implements KeyValueStorage {
   /** Applies portable deletions before importing a bounded account snapshot. */
   async attachChatRepository(repository: ChatRepository): Promise<void> {
     this.#repository = repository;
+    const current=()=>!this.#destroyed&&this.#repository===repository;
+    const check=()=>{if(!current())throw new Error('Portable chat restoration cancelled.');};check();
     const policy = this.#state.chatPolicy;
     if (policy) await applyChatPolicyToRepository(repository, policy);
+    check();
     const chats = applyChatPolicyToPortableChats(this.#state.chats, policy);
     if (chats) this.#state.chats = chats;
     else delete this.#state.chats;
-    if (chats) {
-      for (const message of chats.messages) await repository.addMessage(message);
-      for (const remoteConversation of chats.conversations) {
-        const localConversation = await repository.getConversation(remoteConversation.peerNumber);
-        if (!localConversation || remoteConversation.lastMessageAt >= localConversation.lastMessageAt) {
-          await repository.putConversation(remoteConversation);
-        }
-      }
+    if (chats && (chats.messages.length || chats.conversations.length)) {
+      if (!repository.hydratePortableChats) throw new Error('This chat store cannot safely restore portable history. Existing history was kept.');
+      await repository.hydratePortableChats(chats,current);
     }
 
     if (policy) await repairConversationPreviews(repository, policy);
+    check();
 
     if (this.#chatDirty) this.#markDirty();
   }
@@ -243,6 +264,24 @@ export class AccountDataStorage implements KeyValueStorage {
       // The in-memory dirty flag still covers the current page when local storage is unavailable.
     }
     this.#markDirty();
+  }
+
+  /** Fresh known deletion boundaries; an unavailable copy blocks explicit history import. */
+  deviceHistoryImportPolicy(): PortableChatPolicy {
+    const local = this.#local.getItemResult(CLOUD_MIRROR_KEY), marker = this.#local.getItemResult(CHAT_CLEAR_MARKER_KEY);
+    if (!local.ok || !marker.ok) throw new Error('Saved history policy could not be checked. Reload before importing.');
+    const mirror = parsePortableState(local.value,this.memberNumber), remote = this.#readRemoteState();
+    if (local.value !== null && !mirror || marker.value !== null && parseChatClearMarker(marker.value) === undefined ||
+      typeof Player !== 'undefined' && Player.ExtensionSettings?.[CLOUD_EXTENSION_KEY] && !remote)
+      throw new Error('Saved history policy is unsupported. It has not been changed.');
+    const merged = mergeChatPolicies(mergeChatPolicies(this.#state.chatPolicy,mirror?.chatPolicy),remote?.chatPolicy);
+    const clearedAt = Math.max(merged.clearedAt,parseChatClearMarker(marker.value) ?? 0);
+    return {...merged,clearedAt,prunedBefore:Math.max(merged.prunedBefore,clearedAt > 0 ? nextTimestamp(clearedAt) : 0)};
+  }
+
+  prepareDeviceHistoryImport(): void {
+    if (this.#destroyed || !this.#writeVerifiedLocal(CHAT_DIRTY_KEY,'1')) throw new Error('Chat synchronization recovery could not be saved. No history was changed.');
+    this.markChatChanged();
   }
 
   /** Records a per-peer deletion synchronously in the verified local mirror. */
@@ -517,6 +556,11 @@ export class AccountDataStorage implements KeyValueStorage {
       }
     }
 
+    // Local previews never read or publish BC account mirrors, including under a new key.
+    if (KIKILINK_PLATFORM_PREVIEW) {
+      if (generation === this.#generation) this.#generation = 0;
+      return;
+    }
     if (!this.#isCurrentAccount()) return;
     const encoded = encodePortableState(fitPortableState(this.#state));
     if (!encoded || encoded.length > MAX_CLOUD_PAYLOAD_CHARS) {
@@ -570,7 +614,7 @@ export class AccountDataStorage implements KeyValueStorage {
   }
 
   #readRemoteState(): PortableAccountState | undefined {
-    if (!this.#isCurrentAccount() || !Player.ExtensionSettings) return undefined;
+    if (KIKILINK_PLATFORM_PREVIEW || !this.#isCurrentAccount() || !Player.ExtensionSettings) return undefined;
     return parsePortableState(Player.ExtensionSettings[CLOUD_EXTENSION_KEY], this.memberNumber);
   }
 
@@ -597,6 +641,17 @@ export class AccountSyncedChatRepository implements ChatRepository {
     private readonly repository: ChatRepository,
     private readonly account: AccountDataStorage,
   ) {}
+
+  async hydratePortableChats(records:import('./portable-chat-records').PortableChatRecords,current:()=>boolean=()=>true):Promise<void> {
+    if(!this.repository.hydratePortableChats)throw new Error('This chat store cannot safely restore portable history.');
+    await this.repository.hydratePortableChats(records,current);
+    if(!current())throw new Error('Portable chat restoration cancelled.');
+    this.account.markChatChanged();
+  }
+
+  deviceHistoryDatabase(owner: number): string | undefined { return owner === this.account.memberNumber ? this.repository.deviceHistoryDatabase?.(owner) : undefined; }
+  deviceHistoryImportPolicy(): PortableChatPolicy { return this.account.deviceHistoryImportPolicy(); }
+  prepareDeviceHistoryImport(): void { this.account.prepareDeviceHistoryImport(); }
 
   async captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult> {
     const result = await this.repository.captureMessage(message, conversation, keepNewest);
@@ -718,7 +773,7 @@ export class AccountSyncedChatRepository implements ChatRepository {
 
 export function accountChatDatabaseName(memberNumber: number): string {
   if (!validMemberNumber(memberNumber)) throw new Error("A valid BC account is required");
-  return `kikilink-account-${memberNumber}`;
+  return scopePersistenceName(`kikilink-account-${memberNumber}`);
 }
 
 async function capturePortableChats(
@@ -730,20 +785,15 @@ async function capturePortableChats(
   }
   const conversations = (await repository.listConversations())
     .slice(0, MAX_CLOUD_CONVERSATIONS)
-    .map((conversation) => ({
-      ...conversation,
-      lastMessage: cleanBeepMessageContent(conversation.lastMessage),
-    }));
+    .map(sanitizeConversation)
+    .filter((conversation): conversation is ConversationMeta => conversation !== undefined);
   const messages: LinkMessage[] = [];
   for (const conversation of conversations) {
     messages.push(
       ...(await repository.getMessages(
         conversation.peerNumber,
         MAX_CLOUD_MESSAGES_PER_CONVERSATION,
-      )).map((message) => ({
-        ...message,
-        content: cleanBeepMessageContent(message.content),
-      })),
+      )).map(sanitizeMessage).filter((message): message is LinkMessage => message !== undefined),
     );
   }
   messages.sort((left, right) => right.sentAt - left.sentAt);
@@ -1092,56 +1142,6 @@ function previousTimestamp(value: number): number {
   return value <= 0 ? 0 : Math.max(0, Math.ceil(value) - 1);
 }
 
-function sanitizeConversation(value: unknown): ConversationMeta | undefined {
-  if (!isRecord(value) || !validMemberNumber(value.peerNumber)) return undefined;
-  const peerName = cleanText(value.peerName, 80) || `Member ${value.peerNumber}`;
-  const lastDirection = value.lastDirection === "outgoing" ? "outgoing" : "incoming";
-  const localAlias = cleanText(value.localAlias, 80);
-  const hiddenAt = validTime(value.hiddenAt) ? value.hiddenAt : undefined;
-  return {
-    peerNumber: value.peerNumber,
-    peerName,
-    ...(localAlias ? { localAlias } : {}),
-    ...(hiddenAt !== undefined ? { hiddenAt } : {}),
-    lastMessage: cleanText(cleanBeepMessageContent(value.lastMessage), 1000),
-    lastMessageAt: validTime(value.lastMessageAt) ? value.lastMessageAt : 0,
-    lastDirection,
-    unread: integerInRange(value.unread, 0, 100_000, 0),
-    pinned: value.pinned === true,
-    ...(typeof value.muteUntil === "number" && Number.isSafeInteger(value.muteUntil) && value.muteUntil >= -1 ? { muteUntil: value.muteUntil } : {}),
-    draft: cleanText(value.draft, 1000),
-  };
-}
-
-function sanitizeMessage(value: unknown): LinkMessage | undefined {
-  if (
-    !isRecord(value) ||
-    !validMemberNumber(value.peerNumber) ||
-    typeof value.id !== "string" ||
-    !value.id.trim() ||
-    value.id.length > 200 ||
-    !validTime(value.sentAt)
-  ) {
-    return undefined;
-  }
-  const roomName = cleanText(value.roomName, 100);
-  return {
-    id: value.id,
-    direction: value.direction === "outgoing" ? "outgoing" : "incoming",
-    peerNumber: value.peerNumber,
-    peerName: cleanText(value.peerName, 80) || `Member ${value.peerNumber}`,
-    content: cleanText(cleanBeepMessageContent(value.content), 1000),
-    sentAt: value.sentAt,
-    includeRoom: value.includeRoom === true,
-    ...(roomName ? { roomName } : {}),
-    read: value.read === true,
-    ...(typeof value.clientMessageId === "string" && /^[a-f0-9-]{36}$/u.test(value.clientMessageId) ? { clientMessageId: value.clientMessageId } : {}),
-    ...(typeof value.cloudId === "string" && /^[a-f0-9-]{36}$/u.test(value.cloudId) ? { cloudId: value.cloudId } : {}),
-    ...(typeof value.cloudSequence === "number" && Number.isSafeInteger(value.cloudSequence) && value.cloudSequence > 0 ? { cloudSequence: value.cloudSequence } : {}),
-    ...(["waiting", "sent", "delivered", "read", "failed"].includes(String(value.delivery)) ? { delivery: value.delivery as NonNullable<LinkMessage["delivery"]> } : {}),
-    ...(typeof value.deliveryError === "string" ? { deliveryError: cleanText(value.deliveryError, 100) } : {}),
-  };
-}
 
 function fitPortableState(state: PortableAccountState): PortableAccountState {
   const fitted = structuredClone(state);
@@ -1203,12 +1203,12 @@ function encodePortableState(state: PortableAccountState): string | undefined {
 }
 
 function defaultBackingStorage(): KeyValueStorage {
-  if (typeof localStorage === "undefined") return new MemoryKeyValueStorage();
+  if (typeof localStorage === "undefined") return new UnavailableKeyValueStorage();
   try {
-    localStorage.getItem("kikilink:account-storage-probe");
+    localStorage.getItem(scopePersistenceName("kikilink:account-storage-probe"));
     return localStorage;
   } catch {
-    return new MemoryKeyValueStorage();
+    return new UnavailableKeyValueStorage();
   }
 }
 
@@ -1224,12 +1224,6 @@ function parseChatClearMarker(value: string | null): number | undefined {
   if (!value || !/^\d+$/u.test(value)) return undefined;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
-}
-
-function integerInRange(value: unknown, min: number, max: number, fallback: number): number {
-  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
-    ? value
-    : fallback;
 }
 
 function cleanText(value: unknown, limit: number): string {

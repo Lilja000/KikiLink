@@ -1,6 +1,7 @@
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
 export type KikiLinkIconName =
+  | "mail" | "archive" | "flag" | "game" | "history" | "info"
   | "direct-add"
   | "group-add"
   | "read-all"
@@ -8,10 +9,15 @@ export type KikiLinkIconName =
   | "add-reaction"
   | "activities"
   | "appearance"
+  | "arrow-right" | "door" | "filter"
+  | "moon" | "cup" | "brush" | "leaf"
   | "back"
   | "bookmark"
+  | "calendar"
+  | "clock"
   | "chat"
   | "check"
+  | "chevron-down"
   | "close"
   | "copy"
   | "edit"
@@ -23,7 +29,9 @@ export type KikiLinkIconName =
   | "id"
   | "image"
   | "location"
+  | "globe"
   | "lock"
+  | "logout"
   | "more"
   | "music"
   | "navigation"
@@ -31,14 +39,20 @@ export type KikiLinkIconName =
   | "note"
   | "pin"
   | "notifications"
+  | "offline"
   | "muted"
   | "play"
   | "poll"
   | "pause"
   | "previous"
+  | "repeat"
+  | "shuffle"
+  | "volume"
+  | "volume-off"
   | "plus"
   | "profile"
   | "reactions"
+  | "emoji"
   | "refresh"
   | "reply"
   | "requests"
@@ -62,6 +76,19 @@ type Shape = readonly [ShapeName, Readonly<Record<string, string>>, fillable?: b
 // KikiLink's icons deliberately use the same rounded, slightly asymmetrical line language.
 // They are drawn here from simple geometry so the addon owns the set and ships no icon library.
 const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
+  "chevron-down": [["path", { d: "m6 9 6 6 6-6" }]],
+  "arrow-right": [["path", { d: "m13.8 5.2 6.8 6.8-6.8 6.8M4 12h16" }]],
+  door: [["path", { d: "M5 21V3h14v18M3 21h18M10 21V5l7-2v18M13.5 12h.01" }]],
+  filter: [["path", { d: "M4 6h16M7 12h10M10 18h4" }]],
+  info: [["circle", { cx: "12", cy: "12", r: "9" }], ["path", { d: "M12 11v6M12 7h.01" }]],
+  mail: [["rect", { x:"3", y:"5", width:"18", height:"14", rx:"2" }], ["path", { d:"m4 7 8 6 8-6" }]],
+  archive: [["rect", { x: "3", y: "3", width: "18", height: "4", rx: "1" }], ["path", { d: "M5 7v14h14V7M10 11h4" }]],
+  flag: [["path", { d: "M5 21V4c5-3 9 3 14 0v10c-5 3-9-3-14 0" }]],
+  game: [["path", { d: "M6 7h12l3 12-4-3H7l-4 3L6 7ZM7 11h4M9 9v4M16 10h.01M18 12h.01" }]],
+  history: [["path", { d: "M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v5l3 2" }]],
+  globe: [["circle", { cx: "12", cy: "12", r: "9" }], ["path", { d: "M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18" }]],
+  calendar: [["rect", { x: "4", y: "5.5", width: "16", height: "15", rx: "2.5" }], ["path", { d: "M8 3v5M16 3v5M4 10h16M8 14h.1M12 14h.1M16 14h.1M8 17h.1M12 17h.1" }]],
+  clock: [["circle", { cx: "12", cy: "12", r: "8.5" }], ["path", { d: "M12 7v5l3.5 2" }]],
   bookmark: [["path", { d: "M6.5 3.5h11v17L12 17l-5.5 3.5V3.5Z" }]],
   poll: [["path", { d: "M5 19V12M12 19V5M19 19V9" }], ["path", { d: "M3 21h18" }]],
   eye: [["path", { d: "M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12Z" }], ["circle", { cx: "12", cy: "12", r: "2.5" }]],
@@ -71,7 +98,15 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
     ["path", { d: "M12 5.9C10.4 7 8.5 7.5 6.4 7.5C6.2 12.6 7.2 16.3 12 19Z", fill: "currentColor", stroke: "none" }],
   ],
   notifications: [["path", { d: "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" }]],
+  offline: [
+    ["path", { d: "m3 3 18 18M2.8 8a15 15 0 0 1 3.5-2M9.5 5.1A15 15 0 0 1 21.2 8M6 12a10 10 0 0 1 3.5-1.8M13 10a10 10 0 0 1 5 2M9 16a5 5 0 0 1 6 0" }],
+    ["circle", { cx: "12", cy: "20", r: ".75" }, true],
+  ],
   muted: [["path", { d: "M18 12V8a6 6 0 0 0-9-5M6 6v2c0 7-3 7-3 9h14M10 21h4M3 3l18 18" }]],
+  repeat: [["path", { d: "M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3" }]],
+  shuffle: [["path", { d: "M3 6h3c5 0 7 12 12 12h3m-4-4 4 4-4 4M3 18h3c2 0 4-3 6-6s4-6 6-6h3m-4-4 4 4-4 4" }]],
+  volume: [["path", { d: "M3 9h4l5-4v14l-5-4H3V9ZM15 9a4 4 0 0 1 0 6m3-9a8 8 0 0 1 0 12" }]],
+  "volume-off": [["path", { d: "M3 9h4l5-4v14l-5-4H3V9Zm13 0 5 6m0-6-5 6" }]],
   heart: [["path", { d: "M20.3 5.6a5.1 5.1 0 0 0-7.2 0L12 6.7l-1.1-1.1a5.1 5.1 0 0 0-7.2 7.2L12 21l8.3-8.2a5.1 5.1 0 0 0 0-7.2Z" }, true]],
   "direct-add": [
     ["circle", { cx: "9", cy: "7", r: "3.3" }],
@@ -106,6 +141,10 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
     ["circle", { cx: "10.1", cy: "6.9", r: "0.9" }, true],
     ["circle", { cx: "14.2", cy: "6.8", r: "0.9" }, true],
   ],
+  moon: [["path", { d: "M20.2 14.1A8.8 8.8 0 0 1 9.9 3.8 8.8 8.8 0 1 0 20.2 14.1Z" }]],
+  cup: [["path", { d: "M4 7h12v7a6 6 0 0 1-12 0V7ZM16 8h2a3 3 0 0 1 0 6h-2M3 22h15M7 2v2M12 2v2" }]],
+  leaf: [["path", { d: "M20.5 3.5C8 2 1 10 6 16c5 6 14 2 14.5-12.5ZM3.5 20.5 15 9" }]],
+  brush: [["path", { d: "m10 13 9-10 3 3-10 9M12 15c0 5-5 6-9 5 3-1 1-4 3-6 2-2 4-1 6 1Z" }]],
   back: [
     ["path", { d: "m10.2 5.2-6.8 6.8 6.8 6.8" }],
     ["line", { x1: "4", y1: "12", x2: "20.5", y2: "12" }],
@@ -133,6 +172,7 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
     ["line", { x1: "19", y1: "5", x2: "11", y2: "13" }],
     ["path", { d: "M10 6H6.5a2 2 0 0 0-2 2v9.5a2 2 0 0 0 2 2H16a2 2 0 0 0 2-2V14" }],
   ],
+  logout: [["path", { d: "M10 4H5v16h5M10 12h11m-4-4 4 4-4 4" }]],
   home: [
     ["path", { d: "m3.4 10.5 8.6-7 8.6 7" }],
     ["path", { d: "M5.7 9.2v10.3h12.6V9.2" }],
@@ -206,6 +246,12 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
     ["path", { d: "M5.8 16c.55-1.75 1.55-2.6 2.7-2.6s2.15.85 2.7 2.6" }],
     ["line", { x1: "14", y1: "9", x2: "18", y2: "9" }],
     ["line", { x1: "14", y1: "13", x2: "18", y2: "13" }],
+  ],
+  emoji: [
+    ["circle", { cx: "12", cy: "12", r: "8.5" }],
+    ["circle", { cx: "9", cy: "9", r: ".8" }, true],
+    ["circle", { cx: "15", cy: "9", r: ".8" }, true],
+    ["path", { d: "M8 13.5a4.4 4.4 0 0 0 8 0" }],
   ],
   reactions: [
     ["path", { d: "M6.2 16.7h11.6l-1.5-2.2V10a4.3 4.3 0 0 0-8.6 0v4.5l-1.5 2.2Z" }],

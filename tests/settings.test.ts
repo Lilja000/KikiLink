@@ -20,6 +20,28 @@ describe("SettingsStore", () => {
     });
   });
 
+  it("defaults legacy unread badges on and restores an explicit opt-out from a settings backup", () => {
+    const storage = new MemoryKeyValueStorage();
+    const legacy = JSON.stringify({ schemaVersion: 30, ui: { tabAlerts: {
+      chat: { mode: "personal", mutedUntil: -1 }, feed: { mode: "off", mutedUntil: 0 },
+    } } });
+    storage.setItem(SETTINGS_KEY, legacy);
+    const store = new SettingsStore(storage);
+    expect(store.getField("ui", "unreadBadges")).toBe(true);
+    expect(storage.getItem(SETTINGS_KEY)).toBe(legacy);
+    expect(sanitizeSettings({ ui: { unreadBadges: "false" } }).ui.unreadBadges).toBe(true);
+
+    store.update(draft => { draft.ui.unreadBadges = false; }, { requirePersistence: true });
+    const backup = storage.getItem(SETTINGS_KEY)!;
+    const reopened = new SettingsStore(storage);
+    expect(reopened.getField("ui", "unreadBadges")).toBe(false);
+    expect(reopened.getField("ui", "tabAlerts")).toEqual(JSON.parse(legacy).ui.tabAlerts);
+
+    reopened.update(draft => { draft.ui.unreadBadges = true; }, { requirePersistence: true });
+    reopened.restoreImportedSettings(reopened.reviewImportedSettings(backup));
+    expect(new SettingsStore(storage).getField("ui", "unreadBadges")).toBe(false);
+  });
+
   it("persists validated updates", () => {
     const storage = new MemoryKeyValueStorage();
     const first = new SettingsStore(storage);
@@ -77,7 +99,7 @@ describe("SettingsStore", () => {
     });
   });
 
-  it("writes a canonical privacy-safe value after loading valid legacy JSON", () => {
+  it("keeps legacy bytes on load and preserves them before a canonical privacy-safe save", () => {
     const storage = new MemoryKeyValueStorage();
     storage.setItem(SETTINGS_KEY, JSON.stringify({
       schemaVersion: 27,
@@ -93,7 +115,11 @@ describe("SettingsStore", () => {
       linkPresence: { profileImagePreviews: "always" },
     }));
 
-    const settings = new SettingsStore(storage).get();
+    const original = storage.getItem(SETTINGS_KEY);
+    const store = new SettingsStore(storage), settings = store.get();
+    expect(storage.getItem(SETTINGS_KEY)).toBe(original);
+    store.update(draft => { draft.ui.theme = "light"; }, { requirePersistence: true });
+    expect(JSON.parse(store.persistence.recoverySource()!).copies[0].source).toBe(original);
     expect(settings.schemaVersion).toBe(30);
     expect(settings.linkPresence.profileImagePreviews).toBe("always");
 
@@ -540,7 +566,7 @@ describe("SettingsStore", () => {
       sounds: {
         enabled: false,
         volume: 65,
-        chat: "chime",
+        chat: "kiki",
         friendOnline: "sparkle",
         roomJoin: "pop",
       },

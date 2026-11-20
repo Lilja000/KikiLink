@@ -1,9 +1,11 @@
+import { scopePersistenceName } from "../core/storage-scope";
+import { openSoundDatabase } from "./sound-database";
+
 export const MAX_NOTIFICATION_SOUND_DURATION_MS = 5_000;
 export const MAX_NOTIFICATION_SOUND_BYTES = 10 * 1024 * 1024;
 export const MAX_NOTIFICATION_SOUNDS = 24;
 export const MAX_NOTIFICATION_SOUND_TOTAL_BYTES = 40 * 1024 * 1024;
 
-const DATABASE_VERSION = 1;
 const STORE_NAME = "sounds";
 const METADATA_TIMEOUT_MS = 12_000;
 
@@ -14,9 +16,13 @@ export interface DeviceNotificationSound {
   durationMs: number;
   createdAt: number;
   blob: Blob;
+  /** Bounded inactive archive data; never used for playback or assignments. */
+  archivedFields?: string;
 }
 
 export interface NotificationSoundStore {
+  /** Archive imports require this account’s durable native destination. */
+  archiveImportDestination?(owner: number): boolean;
   list(): Promise<DeviceNotificationSound[]>;
   get(id: string): Promise<DeviceNotificationSound | undefined>;
   add(file: File): Promise<DeviceNotificationSound>;
@@ -31,6 +37,10 @@ export class DeviceNotificationSoundStore implements NotificationSoundStore {
   #databaseUnavailable = false;
 
   constructor(private readonly memberNumber: number) {}
+
+  archiveImportDestination(owner: number): boolean {
+    return owner === this.memberNumber && !this.#databaseUnavailable && typeof indexedDB !== "undefined";
+  }
 
   async list(): Promise<DeviceNotificationSound[]> {
     const database = await this.#database().catch(() => undefined);
@@ -82,7 +92,7 @@ export class DeviceNotificationSoundStore implements NotificationSoundStore {
       totalBlobBytes(existing),
       record.blob.size,
     );
-    store.put(record);
+    store.add(record);
     await transactionDone(transaction);
     return record;
   }
@@ -107,7 +117,10 @@ export class DeviceNotificationSoundStore implements NotificationSoundStore {
       this.#databaseUnavailable = true;
       return Promise.reject(new Error("IndexedDB is unavailable"));
     }
-    this.#databasePromise ??= openDatabase(databaseName(this.memberNumber)).catch((error) => {
+    this.#databasePromise ??= openSoundDatabase(deviceSoundDatabaseName(this.memberNumber),indexedDB,true,() => {}).then(database => {
+      database.onversionchange = () => { database.close(); this.#databasePromise = undefined; };
+      return database;
+    }).catch((error) => {
       this.#databaseUnavailable = true;
       this.#databasePromise = undefined;
       throw error;
@@ -141,58 +154,37 @@ export function assertNotificationSoundStorageCapacity(
   }
 }
 
-export function readAudioDurationMs(file: Blob): Promise<number> {
-  if (typeof Audio !== "function" || typeof URL.createObjectURL !== "function") {
-    return Promise.reject(new Error("This browser cannot inspect local audio files"));
-  }
-  return new Promise<number>((resolve, reject) => {
-    const audio = new Audio();
-    const url = URL.createObjectURL(file);
-    const timer = setTimeout(() => finish(undefined, "The audio file took too long to read"), METADATA_TIMEOUT_MS);
+/** Metadata inspection never plays audio; every exit releases the object URL and handlers. */
+export function readAudioDurationMs(file: Blob, signal?: AbortSignal): Promise<number> {
+  if (signal?.aborted) return Promise.reject(new Error("Audio inspection cancelled"));
+  if (typeof Audio !== "function" || typeof URL.createObjectURL !== "function") return Promise.reject(new Error("This browser cannot inspect local audio files"));
+  return new Promise<number>((resolve,reject) => {
+    const audio = new Audio(), url = URL.createObjectURL(file); let settled = false;
     const finish = (duration?: number, error?: string): void => {
-      clearTimeout(timer);
-      audio.removeEventListener("loadedmetadata", loaded);
-      audio.removeEventListener("error", failed);
-      audio.removeAttribute("src");
+      if (settled) return; settled = true; clearTimeout(timer);
+      signal?.removeEventListener("abort",cancelled);
+      audio.removeEventListener("loadedmetadata",loaded); audio.removeEventListener("error",failed);
+      try { audio.removeAttribute("src"); audio.load(); } catch { /* The URL is still released if unloading fails. */ }
       URL.revokeObjectURL(url);
-      if (duration !== undefined) resolve(duration);
-      else reject(new Error(error ?? "The audio file could not be read"));
+      if (duration !== undefined) resolve(duration); else reject(new Error(error ?? "The audio file could not be read"));
     };
     const loaded = (): void => {
-      const milliseconds = Math.round(audio.duration * 1_000);
-      if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
-        finish(undefined, "The audio file has no readable duration");
-        return;
-      }
-      finish(milliseconds);
+      const milliseconds = Math.round(audio.duration*1000);
+      if (!Number.isFinite(milliseconds) || milliseconds <= 0) finish(undefined,"The audio file has no readable duration");
+      else finish(milliseconds);
     };
-    const failed = (): void => finish(undefined, "This audio format is not supported by your browser");
-    audio.addEventListener("loadedmetadata", loaded, { once: true });
-    audio.addEventListener("error", failed, { once: true });
-    audio.preload = "metadata";
-    audio.src = url;
-    audio.load();
+    const failed = () => finish(undefined,"This audio format is not supported by your browser");
+    const cancelled = () => finish(undefined,"Audio inspection cancelled");
+    const timer = setTimeout(() => finish(undefined,"The audio file took too long to read"),METADATA_TIMEOUT_MS);
+    audio.addEventListener("loadedmetadata",loaded,{once:true}); audio.addEventListener("error",failed,{once:true}); signal?.addEventListener("abort",cancelled,{once:true});
+    try { audio.preload = "metadata"; audio.src = url; audio.load(); }
+    catch { failed(); }
   });
 }
 
-function databaseName(memberNumber: number): string {
+export function deviceSoundDatabaseName(memberNumber: number): string {
   const account = Number.isSafeInteger(memberNumber) && memberNumber > 0 ? memberNumber : "guest";
-  return `kikilink-device-sounds-${account}`;
-}
-
-function openDatabase(name: string): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(name, DATABASE_VERSION);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(STORE_NAME)) {
-        database.createObjectStore(STORE_NAME, { keyPath: "id" });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Unable to open local sound storage"));
-    request.onblocked = () => reject(new Error("Local sound storage is blocked by another tab"));
-  });
+  return scopePersistenceName(`kikilink-device-sounds-${account}`);
 }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {

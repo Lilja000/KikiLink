@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KikiLinkApp } from "../src/core/kikilink";
-import { SETTINGS_KEY } from "../src/core/settings";
+import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../src/core/settings";
 import { AccountDataStorage } from "../src/storage/account-data-storage";
 
 afterEach(() => {
@@ -28,8 +28,12 @@ describe("KikiLink startup", () => {
     globalThis.ServerSendBeepMessage = vi.fn();
     const originalClone = structuredClone;
     let failing = true;
-    const clone = vi.spyOn(globalThis, "structuredClone").mockImplementation((value) => {
-      if (failing) throw new Error("Transient initialization failure");
+    let attempts = 0;
+    vi.spyOn(globalThis, "structuredClone").mockImplementation((value) => {
+      if (value === DEFAULT_SETTINGS) {
+        attempts += 1;
+        if (failing) throw new Error("Transient initialization failure");
+      }
       return originalClone(value);
     });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -39,7 +43,8 @@ describe("KikiLink startup", () => {
       expect(document.querySelector("#kikilink-root")).toBeNull();
       await vi.advanceTimersByTimeAsync(7_000);
       expect(errors.mock.calls.length).toBeLessThanOrEqual(4);
-      expect(clone.mock.calls.length).toBeLessThan(12);
+      expect(attempts).toBeGreaterThan(1);
+      expect(attempts).toBeLessThan(12);
       failing = false;
       await vi.advanceTimersByTimeAsync(8_000);
       expect(document.querySelector("#kikilink-root")).not.toBeNull();

@@ -1,3 +1,5 @@
+import { scopePersistenceName } from "../core/storage-scope";
+
 export interface DeviceCredential {
   id: string;
   expiresAt: number;
@@ -72,7 +74,7 @@ export class IndexedDbCloudDeviceStore implements CloudDeviceStore {
   }
   async #open(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open("KikiLink.CloudDevices.v1", 1);
+      const request = indexedDB.open(scopePersistenceName("KikiLink.CloudDevices.v1"), 1);
       let settled = false;
       const fail = () => {
         settled = true;

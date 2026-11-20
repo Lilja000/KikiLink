@@ -105,4 +105,9 @@ export const TEXT_FORMAT_STYLES = `
 .kl-formatted-text u { text-decoration:underline; text-underline-offset:0.12em; }
 .kl-formatted-text s { text-decoration:line-through; }
 .kl-formatted-text .kl-format-heading { font-size:1.5em; font-weight:750; line-height:1.3; }
+.kl-formatted-text .kl-message-mention { display:inline; width:auto; min-width:0; min-height:0; margin:0; padding:1px 3px; border:0; border-radius:4px; font:inherit; line-height:inherit; color:var(--kl-accent); background:color-mix(in srgb,var(--kl-accent),transparent 88%); overflow-wrap:anywhere; text-align:inherit; }
+.kl-formatted-text button.kl-message-mention { cursor:pointer; }
+.kl-formatted-text button.kl-message-mention:focus-visible { outline:2px solid var(--kl-accent); outline-offset:2px; }
+.kl-message-row[data-direction="outgoing"] .kl-message-mention { color:var(--kl-accent-foreground); background:color-mix(in srgb,var(--kl-accent-foreground),transparent 86%); }
+.kl-message-row[data-direction="outgoing"] button.kl-message-mention:focus-visible { outline-color:var(--kl-accent-foreground); }
 `;

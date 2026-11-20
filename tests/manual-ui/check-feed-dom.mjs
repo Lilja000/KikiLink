@@ -10,7 +10,7 @@ const source = await readFile(resolve(import.meta.dirname, 'fixture.js'), 'utf8'
 const split = source.indexOf('const params =');
 const built = await build({ stdin: { contents: source.slice(0, split) + 'window.bootFixture=async()=>{' + source.slice(split) + '};', resolveDir: import.meta.dirname },
   bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2022',
-  loader: { '.webp': 'dataurl', '.png': 'dataurl', '.svg': 'dataurl' },
+  loader: { '.webp': 'dataurl', '.png': 'dataurl', '.svg': 'dataurl', '.mp3': 'dataurl' },
   define: { __KIKILINK_DEV_TEST__: 'true', __KIKILINK_BUILD_ID__: '"feed-dom-review"' }, logLevel: 'silent' });
 const win = new Window({ url: 'http://127.0.0.1:8765/?page=feed&persist=1', settings: {
   enableJavaScriptEvaluation: true, disableJavaScriptFileLoading: true, suppressInsecureJavaScriptEnvironmentWarning: true,

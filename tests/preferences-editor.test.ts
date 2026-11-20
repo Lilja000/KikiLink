@@ -18,7 +18,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function setup() {
+function setup(platform = false) {
   let data: Preferences = {
     mode: "private",
     ratings: {},
@@ -54,11 +54,11 @@ function setup() {
     return structuredClone(data);
   });
   const client = {
-    connected: true,
-    request,
+    memberNumber: 101, origin: 'https://cloud.test', connected: true,
+    request: (method: string, path: string, input?: any) => path === '/v1/me' ? Promise.resolve({memberNumber:101,features:{}}) : request(method,path,input),
     subscribe: (fn: typeof listener) => { listener = fn; return () => {}; },
   } as unknown as CloudClient;
-  const editor = new PreferencesEditor(client);
+  const editor = new PreferencesEditor(client, undefined, platform);
   cleanup.push(() => editor.destroy());
   document.body.append(editor.element);
   const button = (label: string) => [...editor.element.querySelectorAll("button")].find(candidate => candidate.textContent === label)!;
@@ -76,6 +76,96 @@ function setup() {
 function firstRow(editor: PreferencesEditor): HTMLElement {
   return editor.element.querySelector<HTMLElement>(".kl-preference-row")!;
 }
+
+it("keeps inline platform rating controls focused and saves an explicit Hard Limit", async () => {
+  const h = setup(true);
+  h.editor.element.open = true;
+  await h.editor.load();
+  const row = firstRow(h.editor);
+  const like = row.querySelector<HTMLButtonElement>('.kl-preference-inline [data-level="like"]')!;
+  like.focus();
+  like.click();
+  expect(like.getAttribute("aria-pressed")).toBe("true");
+  expect(document.activeElement).toBe(like);
+  like.click();
+  expect(like.getAttribute("aria-pressed")).toBe("false");
+  expect(h.editor.dirty).toBe(false);
+  const limit = row.querySelector<HTMLButtonElement>('.kl-preference-inline [data-level="hard_limit"]')!;
+  limit.click();
+  await h.editor.save();
+  expect(h.data().ratings[row.dataset.preferenceId!]).toBe("hard_limit");
+  row.querySelector<HTMLButtonElement>(".kl-preference-inline-clear")!.click();
+  await h.editor.save();
+  expect(h.data().ratings[row.dataset.preferenceId!]).toBeUndefined();
+});
+
+it("keeps keyboard focus when switching preference views without losing a pending rating", async () => {
+  const h = setup(true);
+  const host = document.createElement("div"), shadow = host.attachShadow({ mode: "open" });
+  document.body.append(host); shadow.append(h.editor.element);
+  await h.editor.load();
+  vi.useFakeTimers();
+  const row = firstRow(h.editor), id = row.dataset.preferenceId!;
+  row.querySelector<HTMLButtonElement>('.kl-preference-inline [data-level="like"]')!.click();
+  const search = h.editor.element.querySelector<HTMLInputElement>(".kl-preferences-search")!;
+  search.value = "rope"; search.dispatchEvent(new Event("input"));
+
+  for (const [before, after] of [["+ More preferences", "Back to quick setup"], ["Back to quick setup", "+ More preferences"]] as const) {
+    const original = h.button(before); original.focus(); original.click();
+    const replacement = h.button(after);
+    expect(original.isConnected).toBe(false);
+    expect(shadow.activeElement).toBe(replacement);
+    expect(h.editor.element.querySelector(".kl-preferences-search")).toBe(search);
+    expect(search.value).toBe("");
+    expect(h.editor.preferences?.ratings[id]).toBe("like");
+    expect(h.editor.dirty).toBe(true);
+  }
+
+  expect(h.request.mock.calls.every(call => call[0] === "GET")).toBe(true);
+  await h.editor.save();
+  expect(h.request.mock.calls.filter(call => call[0] === "PATCH")).toEqual([
+    ["PATCH", "/v1/preferences/me", { updates: { [id]: "like" }, revision: 0 }],
+  ]);
+  expect(h.data().ratings).toEqual({ [id]: "like" });
+  expect(h.data().mode).toBe("private");
+});
+
+it("does not steal focus when another control switches preference views programmatically", async () => {
+  const h = setup(true);
+  await h.editor.load();
+  const other = document.createElement("button"); other.textContent = "Other control"; document.body.append(other); other.focus();
+  for (const label of ["+ More preferences", "Back to quick setup"]) {
+    h.button(label).click();
+    expect(document.activeElement).toBe(other);
+  }
+  expect(h.request.mock.calls.every(call => call[0] === "GET")).toBe(true);
+  expect(h.editor.dirty).toBe(false);
+});
+
+it("uses the same preference visibility draft and save status from the Privacy section", async () => {
+  const h = setup(true);
+  const open = vi.fn();
+  const field = h.editor.profilePrivacyField(open);
+  document.body.append(field);
+  const select = field.querySelector("select")!;
+  expect(select.disabled).toBe(true);
+  h.request.mockRejectedValueOnce(new CloudError("community_unavailable", 404));
+  h.editor.setProfilePrivacyActive(true);
+  await vi.waitFor(() => expect(field.textContent).toContain("not enabled on this Cloud server"));
+  field.querySelector("button")!.click();
+  await vi.waitFor(() => expect(select.disabled).toBe(false));
+  expect(select.value).toBe("private");
+  select.value = "score";
+  select.dispatchEvent(new Event("change"));
+  await h.editor.save();
+  expect(h.request).toHaveBeenCalledWith("PATCH", "/v1/preferences/me", expect.objectContaining({ mode: "score", updates: {} }));
+  expect(field.querySelector('[role="status"]')?.textContent).toBe("Preferences saved.");
+  h.editor.setProfilePrivacyActive(false);
+  expect(h.editor.element.querySelector("select")).toBeNull();
+  expect(h.editor.element.querySelector('[role="status"]')?.textContent).toBe("Preferences saved.");
+  h.button("Manage preference visibility").click();
+  expect(open).toHaveBeenCalledOnce();
+});
 
 it("identifies disabled Community and loads preferences after the server becomes available", async () => {
   const h = setup();
@@ -121,7 +211,7 @@ it("shows loading, a failed response and a working retry after opening by click"
   h.request.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
   h.editor.element.querySelector<HTMLElement>("summary")!.click();
   expect(h.editor.element.textContent).toContain("Loading preferences…");
-  fail(new CloudError("community_disabled", 404));
+  await vi.waitFor(() => expect(fail).toBeTypeOf('function')); fail(new CloudError("community_disabled", 404));
   await vi.waitFor(() => expect(h.editor.element.textContent).toContain("Preferences are not enabled on this Cloud server yet"));
   expect(h.editor.element.open).toBe(true);
   h.button("Retry").click();
@@ -276,7 +366,7 @@ it.each(["like", "dislike"] as const)("keeps a second %s tap cleared and finishe
   }));
   tap(); const saving = h.editor.save(); tap();
   expect(row.dataset.level).toBe("not_set");
-  await finish(); await saving;
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function')); await finish(); await saving;
   expect(h.editor.preferences!.ratings).not.toHaveProperty(id);
   expect(h.data().ratings).not.toHaveProperty(id);
   expect(h.editor.dirty).toBe(false);
@@ -350,7 +440,7 @@ it("does not restore private values from a save completing after logout", async 
   let finish!: (value: Preferences) => void;
   h.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   const save = h.editor.save();
-  h.session();
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function')); h.session();
   finish({ mode: "private", ratings: { [id]: "like" }, revision: 1, catalogVersion: catalog.version });
   await expect(save).rejects.toMatchObject({ code: "session_changed" });
   expect(h.editor.element.querySelectorAll(".kl-preference-row")).toHaveLength(0);
@@ -513,6 +603,27 @@ it("explains score-only privacy, separates hard-limit conflicts, and supports in
   shared.querySelectorAll<HTMLButtonElement>(".kl-compatibility-edit")[0]!.click();
   shared.querySelector<HTMLButtonElement>('.kl-compatibility-quick-editor [data-level="dislike"]')!.click();
   await vi.waitFor(() => expect(setMine).toHaveBeenCalledWith(catalog.items[1]!.id, "dislike"));
+});
+
+it("shows category scores first and keeps quick editing in the platform's shared ratings disclosure", async () => {
+  const hidden = compatibilityDetails({ status: "available", count: 5, score: 82 }, { platform: true });
+  expect(hidden.querySelector("details")).toBeNull();
+  const setMine = vi.fn(async () => {});
+  const details = compatibilityDetails({ status: "available", count: 5, score: 82, hardLimitConflictCount: 1,
+    shared: catalog.items.slice(0, 5).map((item, i) => ({ id: item.id, yours: "like", theirs: i ? "love" : "hard_limit" })),
+  }, { platform: true, setMine });
+  document.body.append(details);
+  expect(details.querySelector(":scope > .kl-compatibility-categories")).not.toBeNull();
+  expect(details.querySelector(":scope > .kl-hard-limit-notice")).not.toBeNull();
+  const ratings = details.querySelector("details")!;
+  expect(ratings.open).toBe(false);
+  ratings.open = true;
+  ratings.querySelector<HTMLButtonElement>(".kl-compatibility-edit")!.click();
+  ratings.querySelector<HTMLButtonElement>('.kl-compatibility-quick-editor [data-level="like"]')!.click();
+  await vi.waitFor(() => expect(document.body.textContent).toContain("4 preferences compared"));
+  expect(setMine).toHaveBeenCalledWith(catalog.items[0]!.id, undefined);
+  expect(document.body.querySelector("details")?.open).toBe(true);
+  expect(document.body.querySelector(".kl-hard-limit-notice")).toBeNull();
 });
 
 it("keeps quick controls and detailed selectors mobile-safe", () => {

@@ -7,12 +7,14 @@ import type { KikiLinkPublicApi } from "../src/core/types";
 const harness = vi.hoisted(() => ({
   distribution: "userscript" as "userscript" | "fusam",
   devTest: false,
+  platformPreview: false,
   created: [] as KikiLinkPublicApi[],
 }));
 
 vi.mock("../src/core/distribution", () => ({
   get KIKILINK_DISTRIBUTION() { return harness.distribution; },
   get KIKILINK_DEV_TEST() { return harness.devTest; },
+  get KIKILINK_PLATFORM_PREVIEW() { return harness.platformPreview; },
 }));
 
 vi.mock("../src/core/kikilink", () => ({
@@ -22,9 +24,10 @@ vi.mock("../src/core/kikilink", () => ({
     constructor(version: string) {
       const distribution = harness.distribution;
       const devTest = harness.devTest;
+      const platformPreview = harness.platformPreview;
       this.#api = {
         name: "KikiLink",
-        getRuntimeInfo: () => ({ distribution, devTest, active: this.#active }),
+        getRuntimeInfo: () => ({ distribution, devTest, active: this.#active, ...(platformPreview ? { platformPreview: true } : {}) }),
         getVersion: () => version,
         destroy: vi.fn(async () => { this.#active = false; }),
         open: vi.fn(), openChat: vi.fn(), openRoster: vi.fn(), openActivities: vi.fn(), close: vi.fn(),
@@ -44,11 +47,14 @@ afterEach(() => {
   delete document.documentElement.dataset.kikilinkPageRealm;
   harness.created.length = 0;
   harness.devTest = false;
+  harness.platformPreview = false;
+  document.getElementById("kikilink-installation-conflict")?.remove();
 });
 
-async function load(distribution: KikiLinkDistribution, version: string, devTest = false) {
+async function load(distribution: KikiLinkDistribution, version: string, devTest = false, platformPreview = false) {
   harness.distribution = distribution;
   harness.devTest = devTest;
+  harness.platformPreview = platformPreview;
   vi.stubGlobal("__KIKILINK_VERSION__", version);
   vi.resetModules();
   await import("../src/index");
@@ -58,6 +64,45 @@ async function load(distribution: KikiLinkDistribution, version: string, devTest
 }
 
 describe("duplicate distribution loading", () => {
+  it("refuses platform preview over an active stable runtime without destroying it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const stable = await load("userscript", "1.1.8");
+    await load("fusam", "1.1.8", false, true);
+    expect(window.KikiLink).toBe(stable);
+    expect(stable.destroy).not.toHaveBeenCalled();
+    expect(harness.created).toHaveLength(1);
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Disable the other");
+  });
+
+  it("refuses a new ordinary loader over an active preview and supports a preview reload", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const preview = await load("fusam", "1.1.8", false, true);
+    await load("userscript", "1.1.8");
+    expect(window.KikiLink).toBe(preview);
+    expect(preview.destroy).not.toHaveBeenCalled();
+    const replacement = await load("fusam", "1.1.8", false, true);
+    expect(preview.destroy).toHaveBeenCalledOnce();
+    expect(replacement).not.toBe(preview);
+    expect(document.getElementById("kikilink-installation-conflict")).toBeNull();
+  });
+
+  it("allows the platform after an explicitly stopped stable runtime", async () => {
+    const stable = await load("fusam", "1.1.8");
+    await stable.destroy();
+    const preview = await load("fusam", "1.1.8", false, true);
+    expect(preview.getRuntimeInfo?.().platformPreview).toBe(true);
+    expect(preview).not.toBe(stable);
+  });
+
+  it("protects unknown older APIs from preview teardown", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const old = await load("fusam", "1.1.8");
+    delete old.getRuntimeInfo;
+    await load("fusam", "1.1.8", false, true);
+    expect(window.KikiLink).toBe(old);
+    expect(old.destroy).not.toHaveBeenCalled();
+  });
+
   it.each(["1.1.4", "1.2.0", "1.10.0"])(
     "retains the standalone %s upload runtime when FUSAM 1.1.4 loads later",
     async (version) => {

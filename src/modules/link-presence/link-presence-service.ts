@@ -437,19 +437,21 @@ export class LinkPresenceService {
     this.settings.update((draft) => {
       draft.linkPresence.enabled = enabled;
     });
+    this.applySharingChange(enabled);
+  }
+
+  /** Apply an already-persisted change from either presence editor. */
+  applySharingChange(enabled: boolean): void {
+    if (!this.#hasAuthenticatedIdentity() || enabled !== this.settings.getSection("linkPresence").enabled) return;
     this.#lastEffectiveStatus = this.getOwnStatus();
-    let clearedRemoteProfiles = false;
-    if (previous && !enabled) {
-      this.#publishOwnPresence("offline", true, false);
-      clearedRemoteProfiles = this.#clearRemoteProfiles();
-      this.#pendingProfileRequests.clear();
-    } else if (enabled) {
+    if (enabled) {
       this.#syncRoom(true);
+    } else {
+      this.#publishOwnPresence("offline", true, false);
+      this.#clearRemoteProfiles();
+      this.#pendingProfileRequests.clear();
     }
-    // Cached-only cards also need a full rerender so voluntary fields disappear immediately.
-    this.#notify(previous && !enabled || clearedRemoteProfiles
-      ? undefined
-      : this.#ownMemberNumber());
+    this.#notify(enabled ? this.#ownMemberNumber() : undefined);
   }
 
   setOwnProfile(profile: OwnProfilePreferences): void {

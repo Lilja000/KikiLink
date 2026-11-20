@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DeviceNotificationSoundStore,
+  readAudioDurationMs,
   MAX_NOTIFICATION_SOUND_DURATION_MS,
   MAX_NOTIFICATION_SOUND_TOTAL_BYTES,
   MAX_NOTIFICATION_SOUNDS,
@@ -78,3 +79,14 @@ function installMetadataAudio(duration: number): void {
   }
   vi.stubGlobal("Audio", MetadataAudio);
 }
+
+const metadataHarness=(kind='manual',duration=1)=>{
+ const audio=new class extends EventTarget {duration=duration;preload='';src='';play=vi.fn();removeAttribute=vi.fn(()=>{this.src='';});load=vi.fn(()=>{if(kind==='throw')throw Error('load failure');if(kind==='metadata'&&this.src)queueMicrotask(()=>this.dispatchEvent(new Event('loadedmetadata')));});}();
+ vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:metadata');const revoke=vi.spyOn(URL,'revokeObjectURL').mockImplementation(()=>{});const create=vi.fn(function(){return audio;});vi.stubGlobal('Audio',create);return {audio,revoke,create};
+};
+it('metadata inspection releases resources without playback on completion',async()=>{const f=metadataHarness('metadata',0.5);await expect(readAudioDurationMs(new Blob(['x']))).resolves.toBe(500);expect(f.audio.play).not.toHaveBeenCalled();expect(f.revoke).toHaveBeenCalledOnce();expect(f.audio.src).toBe('');});
+it('cancellation before inspection creates no audio or object URL',async()=>{const f=metadataHarness(),abort=new AbortController();abort.abort();await expect(readAudioDurationMs(new Blob(['x']),abort.signal)).rejects.toThrow('cancelled');expect(f.create).not.toHaveBeenCalled();expect(URL.createObjectURL).not.toHaveBeenCalled();});
+it('cancels pending metadata, unloads the source and ignores a late event',async()=>{const f=metadataHarness(),abort=new AbortController(),pending=readAudioDurationMs(new Blob(['x']),abort.signal);abort.abort();await expect(pending).rejects.toThrow('cancelled');f.audio.dispatchEvent(new Event('loadedmetadata'));expect(f.revoke).toHaveBeenCalledOnce();expect(f.audio.src).toBe('');expect(f.audio.play).not.toHaveBeenCalled();});
+it('times out a stalled metadata read and releases it exactly once',async()=>{vi.useFakeTimers();try{const f=metadataHarness(),pending=readAudioDurationMs(new Blob(['x'])),failed=expect(pending).rejects.toThrow('too long');await vi.advanceTimersByTimeAsync(12001);await failed;f.audio.dispatchEvent(new Event('loadedmetadata'));expect(f.revoke).toHaveBeenCalledOnce();}finally{vi.useRealTimers();}});
+it.each([0,NaN,Infinity])('rejects unreadable duration %s and releases its URL',async duration=>{const f=metadataHarness('metadata',duration);await expect(readAudioDurationMs(new Blob(['x']))).rejects.toThrow('readable duration');expect(f.revoke).toHaveBeenCalledOnce();});
+it('releases resources when load throws synchronously',async()=>{const f=metadataHarness('throw');await expect(readAudioDurationMs(new Blob(['x']))).rejects.toThrow('not supported');expect(f.revoke).toHaveBeenCalledOnce();});

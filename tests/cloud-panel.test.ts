@@ -18,7 +18,7 @@ function button(root: ParentNode, label: string): HTMLButtonElement {
   if (!result) throw new Error(`Missing ${label}`);
   return result;
 }
-async function setup(posts: CloudPost[] = []) {
+async function setup(posts: CloudPost[] = [], platformPreview = false) {
   const storage = new MemoryKeyValueStorage(),
     settings = new SettingsStore(storage),
     writes: Array<{ path: string; body: unknown }> = [];
@@ -48,8 +48,10 @@ async function setup(posts: CloudPost[] = []) {
           token: "t".repeat(43),
           expiresAt: Date.now() + 3600000,
         };
-      else if (path === "/v1/me") value = { moderator: false };
+      else if (path === "/v1/me") value = { memberNumber: 101, moderator: false,
+        ...(platformPreview ? { features: { reportReasons: true } } : {}) };
       else if (path === "/v1/feed") value = { items: posts, nextCursor: null };
+      else if (path === "/v1/reports" && platformPreview) value = { id: 42 };
       else if (path === "/v1/profiles/101")
         return new Response(JSON.stringify({ error: "not_found" }), {
           status: 404,
@@ -75,6 +77,7 @@ async function setup(posts: CloudPost[] = []) {
     fetchImpl,
   });
   const panel = new CloudPanel(client, {
+    platformPreview,
     settings: () => settings.get(),
     storage,
     ownName: () => "Kiki",
@@ -91,6 +94,7 @@ async function setup(posts: CloudPost[] = []) {
     writes,
     fetchImpl,
     settings,
+    storage,
     offline: () => {
       offline = true;
     },
@@ -102,6 +106,40 @@ async function connect(panel: CloudPanel) {
     expect(panel.element.querySelector('textarea[aria-label="Share a post"]')).not.toBeNull(),
   );
 }
+it('keeps an open group draft across recovery and waits for Read current group before reading the new history',async()=>{
+ const f=await setup(),original=f.fetchImpl.getMockImplementation()!;let generation='a'.repeat(32),latest=9,read=2;
+ const message=(sequence:number)=>({id:'m'+sequence,conversationId:'c',sequence,sender:202,text:'Message '+sequence,clientId:'id'+sequence,schemaVersion:1,encryption:'server-aes-256-gcm',membershipVersion:1,keyVersion:1,createdAt:1,deletedAt:null});
+ const group=()=>({id:'g',conversationId:'c',title:'Garden',owner:101,revision:1,membershipVersion:1,keyVersion:1,createdAt:1,legacyId:null,members:[{memberNumber:101,role:'owner',status:'active'},{memberNumber:202,role:'member',status:'active'}],readCursor:read,lastIncomingSequence:latest,lastMessage:message(latest),unreadMessages:latest-read});
+ const calls:Array<{method:string;path:string;body:any}>=[];
+ f.fetchImpl.mockImplementation(async(url,init)=>{
+  const u=new URL(String(url)),path=u.pathname,method=init?.method??'GET',body=typeof init?.body==='string'?JSON.parse(init.body):undefined;calls.push({method,path:u.pathname+u.search,body});let value:any;
+  if(path==='/v1/me')value={moderator:false,features:{groupReadRecoveryGeneration:true,messageReceipts:true,readCursors:true},directRecovery:{generation,restored:generation[0]==='b'}};
+  else if(path==='/v1/groups')value={items:[group()]};
+  else if(path==='/v1/groups/g')value=group();
+  else if(path==='/v1/conversations/c/messages')value={items:Array.from({length:latest},(_,i)=>message(i+1)),nextCursor:null};
+  else if(path==='/v1/conversations/c/receipts'&&method==='PUT')value={acknowledged:[...body.deliveredIds,...body.readIds]};
+  else if(path==='/v1/read-cursors'&&method==='PUT'){read=body.items[0].cursor;value={items:body.items};}
+  else return original(url,init);
+  const binding=method==='GET'?u.searchParams.get('recoveryGeneration'):body?.recoveryGeneration;
+  if(binding)value.recoveryGeneration=binding;
+  return new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
+ });
+ await connect(f.panel);f.panel.setVisible(true,'groups');await f.panel.openGroup('g');
+ const field=f.panel.element.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message this Cloud group"]')!;expect(field).not.toBeNull();field.value='Keep this group draft';field.dispatchEvent(new Event('input'));
+ await f.panel.inbox.flushReadCursors();await f.panel.inbox.flushReceipts();
+ const key='kikilink:cloud:group-state:101:v2',before=f.storage.getItem(key),start=calls.length;generation='b'.repeat(32);latest=6;read=2;
+ await f.panel.inbox.refresh(true);
+ expect(f.panel.element.querySelector('textarea[aria-label="Message this Cloud group"]')).toBeNull();expect(button(f.panel.element,'Read current group')).toBeDefined();expect(f.panel.inbox.unreadMessages).toBe(4);
+ expect(calls.slice(start).some(c=>c.method==='PUT'||c.path.includes('/messages'))).toBe(false);
+ expect(JSON.parse(f.storage.getItem(key+':recovery:'+generation)!).active).toBe(before);
+ button(f.panel.element,'Read current group').click();
+ await vi.waitFor(()=>expect(f.panel.element.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message this Cloud group"]')?.value).toBe('Keep this group draft'));
+ await vi.waitFor(()=>expect(f.panel.element.querySelector('[data-message-id="m6"]')).not.toBeNull());
+ expect(f.panel.element.querySelector('[data-message-id="m9"]')).toBeNull();
+ await f.panel.inbox.flushReadCursors();await f.panel.inbox.flushReceipts();expect(read).toBe(6);
+ expect(calls.slice(start).filter(c=>c.path.includes('/messages?')).every(c=>c.path.includes('cursor=0')&&c.path.includes('recoveryGeneration='+generation))).toBe(true);
+ expect(calls.slice(start).filter(c=>c.method==='PUT').every(c=>c.body.recoveryGeneration===generation)).toBe(true);
+});
 describe("Cloud UI automatic verification and recovery", () => {
   it("automatically reconciles coalesced Feed events and catches up after returning without a refresh button", async () => {
     const profile: CloudProfile = { memberNumber: 202, displayName: "Person", bio: "", avatarId: null, bannerId: null,
@@ -159,6 +197,49 @@ describe("Cloud UI automatic verification and recovery", () => {
     expect(document.activeElement).toBe(menu.querySelector("summary"));
     request.mockClear(); trigger.click(); button(dialog, "Cancel").click();
     expect(dialog.open).toBe(false); expect(request).not.toHaveBeenCalled();
+  });
+  it("uses the compact report dialog on the platform Feed and keeps its draft until explicitly discarded", async () => {
+    const post: CloudPost = { id: 7, author: 202, profile: { memberNumber: 202, displayName: "Friend" } as CloudProfile,
+      text: "A visible post", mediaIds: [], revision: 1, createdAt: 1, updatedAt: 1,
+      commentCount: 0, reactions: { counts: [], mine: null } };
+    const { panel, writes } = await setup([post], true);
+    button(panel.element, "Connect with this BC account").click();
+    await vi.waitFor(() => expect(panel.element.querySelector('[data-post-id="7"]')).not.toBeNull());
+    const trigger = button(panel.element, "Report post…"), menu = trigger.closest("details")!;
+    menu.open = true; trigger.focus(); trigger.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".kl-report-dialog")!;
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    expect(dialog.querySelector(".kl-mod-report-target")?.textContent).toContain("Friend: A visible post");
+    const reason = dialog.querySelector<HTMLSelectElement>('select[aria-label="Reason (required)"]')!;
+    expect(document.activeElement).toBe(reason);
+    reason.value = "spam"; reason.dispatchEvent(new Event("change", { bubbles: true }));
+    const details = dialog.querySelector("textarea")!;
+    details.value = "Draft detail"; details.dispatchEvent(new Event("input", { bubbles: true }));
+    const actions = dialog.querySelector(".kl-mod-dialog-footer")!;
+    button(actions, "Cancel").click();
+    expect(dialog.open).toBe(true);
+    button(dialog, "Keep editing").click();
+    expect(document.activeElement).toBe(details);
+    expect(details.value).toBe("Draft detail");
+    button(actions, "Cancel").click();
+    button(dialog, "Discard report").click();
+    expect(dialog.isConnected).toBe(false);
+    expect(document.activeElement).toBe(menu.querySelector("summary"));
+    expect(writes.some(write => write.path === "/v1/reports")).toBe(false);
+
+    menu.open = true; trigger.click();
+    const next = document.querySelector<HTMLDialogElement>(".kl-report-dialog")!;
+    await vi.waitFor(() => expect(next.open).toBe(true));
+    const nextReason = next.querySelector("select")!;
+    nextReason.value = "spam"; nextReason.dispatchEvent(new Event("change", { bubbles: true }));
+    button(next, "Submit report").click();
+    await vi.waitFor(() => expect(next.textContent).toContain("Report submitted"));
+    expect(writes.find(write => write.path === "/v1/reports")?.body).toEqual({
+      targetType: "post", targetId: "7", reason: "Spam report", reasonCode: "spam", clientId: expect.any(String),
+    });
+    expect(next.querySelector(".kl-mod-dialog-footer")?.children).toHaveLength(0);
+    button(next, "Close").click();
+    expect(next.isConnected).toBe(false);
   });
   it("releases observers for replaced offscreen images and its cleanup timer on destroy", async () => {
     const observed = new Set<Element>();
@@ -278,4 +359,57 @@ describe("Cloud UI automatic verification and recovery", () => {
     expect(media).not.toHaveBeenCalled();
     expect(card!.textContent).toContain("hidden by your preview setting");
   });
+});
+
+it('platform community reports require confirmation and lifting a restriction preserves explicit reason/revision',async()=>{
+  const {panel,fetchImpl}=await setup(),normal=fetchImpl.getMockImplementation()!;
+  let restricted=false,restored=false;const mutations:{path:string;body:Record<string,unknown>}[]=[];
+  fetchImpl.mockImplementation(async(url,init)=>{
+    const path=new URL(String(url)).pathname;let value:unknown;
+    if(path==='/v1/me')value={moderator:true,features:{communityDirectory:true}};
+    else if(path==='/v1/moderation/reports')value={items:restricted?[]:[{id:1,target_type:'community',target_id:'garden',reason:'Spam',status:'open',created_at:Date.now()}],nextCursor:null};
+    else if(path==='/v1/moderation/reports/1')value={author:202,text:'Reported garden snapshot',mediaIds:[]};
+    else if(path==='/v1/moderation/community-restrictions')value={items:restricted&&!restored?[{id:'garden',name:'Garden',revision:7}]:[],nextCursor:null};
+    else if(path==='/v1/moderation/remove'||path==='/v1/moderation/community-restrictions/garden/restore'){
+      mutations.push({path,body:JSON.parse(String(init?.body)) as Record<string,unknown>});if(path.endsWith('/remove'))restricted=true;else restored=true;return new Response(path.endsWith('/remove')?null:JSON.stringify({communityId:'garden',revision:8}),{status:path.endsWith('/remove')?204:200});
+    }else return normal(url,init);
+    return new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
+  });
+  await connect(panel);await panel.openReports();button(panel.element,'Review report #1').click();await vi.waitFor(()=>expect(panel.element.textContent).toContain('Reported garden snapshot'));
+  button(panel.element,'Review decision…').click();const select=panel.element.querySelector<HTMLSelectElement>('[aria-label="Decision"]')!;select.value='remove';select.dispatchEvent(new Event('change'));
+  const fill=(text:string)=>{const r=panel.element.querySelector<HTMLTextAreaElement>('[aria-label="Decision reason"]')!;r.value=text;r.dispatchEvent(new Event('input'));};
+  fill('Restriction after context review');button(panel.element,'Continue').click();expect(mutations).toHaveLength(0);button(panel.element,'Confirm decision').click();
+  await vi.waitFor(()=>expect(panel.element.textContent).toContain('Your queue is clear'));expect(mutations[0]).toMatchObject({path:'/v1/moderation/remove',body:{targetType:'community',targetId:'garden',reason:'Restriction after context review'}});
+  button(panel.element,'Restricted communities').click();await vi.waitFor(()=>expect(panel.element.textContent).toContain('Review restriction'));button(panel.element,'Review restriction').click();fill('Issue corrected after review');button(panel.element,'Continue').click();expect(mutations).toHaveLength(1);
+  expect(panel.element.textContent).toContain('stays archived');button(panel.element,'Confirm decision').click();await vi.waitFor(()=>expect(mutations).toHaveLength(2));
+  expect(mutations[1]).toMatchObject({body:{reason:'Issue corrected after review',revision:7,operationId:expect.any(String)}});
+});
+
+it('clears private report image URLs while preserving cached public Feed images', async () => {
+  const profile = { memberNumber: 202, displayName: 'Person', bio: '', avatarId: null, bannerId: null,
+    avatarFrame: 'none', profileStyle: 'classic', revision: 1, visible: true, updatedAt: 1 } as CloudProfile;
+  const post = { id: 1, author: 202, profile, text: 'Photo', mediaIds: ['feed-image'], revision: 1,
+    createdAt: 1, updatedAt: 1, commentCount: 0, reactions: { counts: [], mine: null } } as CloudPost;
+  const { panel, client, settings, fetchImpl } = await setup([post]), normal = fetchImpl.getMockImplementation()!;
+  fetchImpl.mockImplementation(async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (path === '/v1/me') return Response.json({ moderator: true });
+    if (path === '/v1/moderation/reports') return Response.json({ items: [{ id: 1, target_type: 'post', target_id: '9', reason: 'Review this', created_at: 1, status: 'open' }], nextCursor: null });
+    if (path === '/v1/moderation/reports/1') return Response.json({ author: 202, text: 'Private evidence', mediaIds: ['report-image'] });
+    return normal(url, init);
+  });
+  settings.update(s => { s.linkPresence.profileImagePreviews = 'ask'; });
+  vi.spyOn(client, 'media').mockResolvedValue(new Blob(['pixels'], { type: 'image/png' }));
+  const revoke = vi.spyOn(URL, 'revokeObjectURL'); await connect(panel);
+  button(panel.element, 'Show feed image').click(); await vi.waitFor(() => expect(panel.element.querySelector('.kl-feed-post img')).not.toBeNull());
+  const publicImage = panel.element.querySelector<HTMLImageElement>('.kl-feed-post img')!, publicUrl = publicImage.src;
+  // Follow the host's regular route transition so the Feed nodes are cached.
+  panel.setVisible(true, 'groups'); await vi.waitFor(() => expect(panel.element.querySelector('.kl-group-create')).not.toBeNull());
+  await panel.openReports(); button(panel.element, 'Review report #1').click(); await vi.waitFor(() => expect(panel.element.textContent).toContain('Private evidence'));
+  button(panel.element, 'Show reported image').click(); await vi.waitFor(() => expect(panel.element.querySelector('.kl-mod-evidence img')).not.toBeNull());
+  const privateUrl = panel.element.querySelector<HTMLImageElement>('.kl-mod-evidence img')!.src;
+  button(panel.element, 'Back to queue').click(); await vi.waitFor(() => expect(panel.element.textContent).toContain('Review report #1'));
+  expect(revoke.mock.calls.some(([url]) => url === privateUrl)).toBe(true);
+  expect(revoke.mock.calls.some(([url]) => url === publicUrl)).toBe(false);
+  panel.setVisible(true, 'feed'); expect(panel.element.querySelector('.kl-feed-post img')).toBe(publicImage); expect(publicImage.src).toBe(publicUrl);
 });

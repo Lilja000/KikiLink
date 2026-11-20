@@ -4,9 +4,11 @@ export type ClockDisplayKind =
   | "time"
   | "conversation"
   | "numeric-date-time"
+  | "short-date-and-time"
   | "medium-date-time"
   | "full-seen"
   | "long-date-time"
+  | "long-date-time-with-zone"
   | "gallery-expiry"
   | "music-stop"
   | "local-clock-title"
@@ -15,8 +17,8 @@ export type ClockDisplayKind =
 
 let currentTimeFormat: TimeFormatPreference = "12-hour";
 type DateStyle = "short" | "medium" | "long" | "full";
-type FormatterKind = "time" | "numeric" | "seen" | "long" | `date-${DateStyle}`;
-// Only eight shapes in two clock formats; avoid constructing an Intl formatter
+type FormatterKind = "time" | "numeric" | "seen" | "long" | "long-zone" | `date-${DateStyle}`;
+// Reuse the bounded formatter shapes in both clock formats instead of building one
 // for every row in a transcript or a retained tab. Values and DOM stay uncached.
 const formatters = new Map<string, Intl.DateTimeFormat>();
 function formatter(kind: FormatterKind, format: TimeFormatPreference, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
@@ -103,13 +105,15 @@ export function formatFullSeenTime(
 export function formatLongDateTime(
   value: number | Date,
   format: TimeFormatPreference = currentTimeFormat,
+  includeTimeZone = false,
 ): string {
-  return formatter("long", format, {
+  return formatter(includeTimeZone ? "long-zone" : "long", format, {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
     ...hourOptions(format),
+    ...(includeTimeZone ? { timeZoneName: "shortOffset" } : {}),
   }).format(value);
 }
 
@@ -130,12 +134,15 @@ function clockText(timestamp: number, kind: ClockDisplayKind): string {
       return formatConversationClock(timestamp);
     case "numeric-date-time":
       return formatNumericDateTime(timestamp);
+    case "short-date-and-time":
+      return `${dateOnlyFormatter.format(timestamp)} · ${formatClockTime(timestamp)}`;
     case "medium-date-time":
       return formatDateTime(timestamp);
     case "full-seen":
       return formatFullSeenTime(timestamp);
     case "long-date-time":
-      return formatLongDateTime(timestamp);
+    case "long-date-time-with-zone":
+      return formatLongDateTime(timestamp, currentTimeFormat, kind === "long-date-time-with-zone");
     case "gallery-expiry":
       return `Expires ${formatDateTime(timestamp)}`;
     case "music-stop":

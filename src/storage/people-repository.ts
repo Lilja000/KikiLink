@@ -1,3 +1,4 @@
+import { scopePersistenceName, scopedBrowserStorage } from "../core/storage-scope";
 import type { KeyValueStorage } from "../core/settings";
 import { MemoryKeyValueStorage } from "../core/settings";
 import type { PersonRecord } from "../core/types";
@@ -21,7 +22,7 @@ export interface PlayerNotebookImportResult {
 }
 
 export class PeopleRepository {
-  readonly #records = new Map<number, PersonRecord>();
+  #records = new Map<number, PersonRecord>();
 
   constructor(private readonly storage: KeyValueStorage = getDefaultStorage()) {
     this.#load();
@@ -38,16 +39,30 @@ export class PeopleRepository {
       .sort((left, right) => right.lastSeenAt - left.lastSeenAt);
   }
 
+  remove(memberNumber: number): void {
+    if (this.#records.delete(memberNumber)) this.#persist();
+  }
+
   count(): number {
     return this.#records.size;
   }
 
-  put(record: PersonRecord): PersonRecord {
+  put(record: PersonRecord, requirePersistence = false): PersonRecord {
     const sanitized = sanitizePerson(record);
     if (!sanitized) throw new Error("Invalid player record");
+    const previous = this.#records;
+    if (requirePersistence) this.#records = new Map(previous);
     this.#records.set(sanitized.memberNumber, sanitized);
     this.#prune();
-    this.#persist();
+    if (requirePersistence) {
+      try {
+        const bytes = JSON.stringify(this.list());
+        if (this.storage.setItemVerified) this.storage.setItemVerified(PEOPLE_KEY, bytes);
+        else this.storage.setItem(PEOPLE_KEY, bytes);
+        const read = this.storage.getPersistedItemResult?.(PEOPLE_KEY) ?? this.storage.getItemResult?.(PEOPLE_KEY);
+        if (read ? !read.ok || read.value !== bytes : this.storage.getItem(PEOPLE_KEY) !== bytes) throw new Error('Notebook write failed.');
+      } catch (error) { this.#records = previous; throw error; }
+    } else this.#persist();
     return structuredClone(sanitized);
   }
 
@@ -203,6 +218,7 @@ function sanitizePerson(value: unknown): PersonRecord | undefined {
     memberNumber: value.memberNumber,
     displayName,
     favorite: value.favorite === true,
+    ...(value.directoryBookmark === true && !firstSeenAt && !lastSeenAt && !encounterCount ? { directoryBookmark: true as const } : {}),
     note,
     tags,
     firstSeenAt,
@@ -238,6 +254,8 @@ function mergePeople(existing: PersonRecord, imported: PersonRecord): PersonReco
     memberNumber: existing.memberNumber,
     displayName: importedIsNewer ? imported.displayName : existing.displayName,
     favorite: existing.favorite || imported.favorite,
+    ...((existing.directoryBookmark || imported.directoryBookmark) && !existing.firstSeenAt && !imported.firstSeenAt &&
+      !existing.lastSeenAt && !imported.lastSeenAt && !existing.encounterCount && !imported.encounterCount ? { directoryBookmark: true as const } : {}),
     note: existing.note || imported.note,
     tags: mergeTags(existing.tags, imported.tags),
     firstSeenAt: earliestPositive(existing.firstSeenAt, imported.firstSeenAt),
@@ -272,8 +290,8 @@ function earliestPositive(left: number, right: number): number {
 function getDefaultStorage(): KeyValueStorage {
   try {
     if (typeof localStorage !== "undefined") {
-      localStorage.getItem("kikilink:people-storage-probe");
-      return localStorage;
+      localStorage.getItem(scopePersistenceName("kikilink:people-storage-probe"));
+      return scopedBrowserStorage(localStorage);
     }
   } catch {
     // Fall through to an in-memory store for privacy modes that deny localStorage access.

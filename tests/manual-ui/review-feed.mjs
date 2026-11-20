@@ -68,11 +68,15 @@ try {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await composer.waitFor();
   await page.waitForFunction(() => document.querySelector('#kikilink-root').shadowRoot.querySelector('textarea[aria-label="Share a post"]')?.value === 'A draft kept while new posts arrive.');
-  await page.getByRole('button', { name: 'Friends', exact: true }).click();
-  await page.waitForFunction(() => {
+  const following = page.getByRole('button', { name: 'Following', exact: true });
+  const includeOwn = await following.isVisible();
+  await (includeOwn ? following : page.getByRole('button', { name: 'Friends', exact: true })).click();
+  await page.waitForFunction(withOwn => {
     const root = document.querySelector('#kikilink-root').shadowRoot;
-    return [...root.querySelectorAll('.kl-feed-post')].length === 3;
-  });
+    const posts = [...root.querySelectorAll('.kl-feed-post')];
+    const ids = posts.map(post => post.dataset.postId).sort().join(',');
+    return ids === (withOwn ? '2,4,6,7,8' : '2,6,7');
+  }, includeOwn);
   await page.getByRole('button', { name: 'Hidden', exact: true }).click();
   await page.locator('.kl-feed-post[data-post-id="1"]').waitFor();
   await page.locator('[data-post-id="1"] summary').click();

@@ -1,3 +1,6 @@
+import type { LocalProfileRestrictions } from "../core/local-profile-restrictions";
+import {nativeRoomCapacity} from "./room-capacity";
+import {NativeRoomCreation, type BCRoomCreationDraft} from "./room-creation";
 import "bondage-club-mod-sdk";
 import { observeBCSend, sendBCPacket, setBCTrafficHookAvailable, setBCTrafficSocket, withBCNetworkReason } from "./traffic-audit";
 import type { ModSDKGlobalAPI, ModSDKModAPI } from "bondage-club-mod-sdk";
@@ -13,6 +16,7 @@ import type {
 import type { EventBus } from "../core/event-bus";
 import { cleanBeepMessageContent } from "./message-content";
 import { isReconnectNotice } from "./reconnect-notice";
+import { legacySelfBeepEchoes } from "./self-beep-echo";
 import { copyRoomMap } from "../core/room-map";
 import { roomOptions } from "./room-options";
 import { NATIVE_FRIEND_FRESH_MS } from "./friend-state";
@@ -44,6 +48,8 @@ interface RecentOutgoing {
   fingerprint: string;
   sentAt: number;
   capturedAt: number;
+  selfEcho?: { socket: boolean; log: boolean };
+  logObserved?: boolean;
 }
 
 type ResilientHook = (args: any[], next: (args: any[]) => any) => any;
@@ -95,6 +101,17 @@ export interface BCRoomCustomization {
   musicUrl: string;
   sizeMode: number;
   musicSync: boolean;
+}
+
+export interface BCRoomLeaveState {
+  status: "ready" | "leaving" | "joining" | "blocked" | "outside" | "unavailable";
+  message?: string;
+}
+
+export interface BCRoomLeaveTarget {
+  name: string;
+  space: string;
+  memberNumber: number;
 }
 
 export interface BCRoomAdminPlayer extends RoomCharacter {
@@ -155,6 +172,7 @@ export class BCAdapter {
   #seenIncomingPayloads = new WeakSet<object>();
   #seenRoomProtocolPayloads = new WeakSet<object>();
   #stopped = false;
+  readonly #roomCreation = new NativeRoomCreation(()=>this.getRoomAdminSnapshot(),()=>this.getOwnMemberNumber());
   #ready = false;
   #nativeBeepSubmission: { event: BeepEvent; handedOff: boolean } | undefined;
   #hasOnlineFriendSnapshot = false;
@@ -168,6 +186,8 @@ export class BCAdapter {
   #roomMembershipObservationFailed = false;
   #roomNameObservationFailed = false;
   #joinRoomPromise: Promise<void> | undefined;
+  #leaveRoomPromise: Promise<void> | undefined;
+  #leaveRoomAbortController: AbortController | undefined;
   #joinRoomTargetKey: string | undefined;
   #joinRoomAbortController: AbortController | undefined;
   #joinRoomQuarantine:
@@ -243,7 +263,11 @@ export class BCAdapter {
 
   stop(): void {
     this.#stopped = true;
+    this.#roomCreation.stop();
     this.#ready = false;
+    this.#leaveRoomAbortController?.abort();
+    this.#leaveRoomAbortController = undefined;
+    this.#leaveRoomPromise = undefined;
     this.#joinRoomAbortController?.abort();
     this.#joinRoomAbortController = undefined;
     this.#joinRoomPromise = undefined;
@@ -347,6 +371,16 @@ export class BCAdapter {
   ownFriends(): number[] {
     return typeof Player === "object" && Array.isArray(Player.FriendList) ? [...Player.FriendList] : [];
   }
+  localGhosts?: LocalProfileRestrictions;
+  localBlocks?: LocalProfileRestrictions;
+  locallyRestricted(member: number): boolean { return Boolean(this.localGhosts?.has(member) || this.localBlocks?.has(member)); }
+  ownHiddenLists(): { blacklist: readonly number[] | undefined; ghostList: readonly number[] | undefined } | undefined {
+    if (typeof Player !== "object" || !Player) return undefined;
+    return {
+      blacklist: Array.isArray(Player.BlackList) ? Player.BlackList : undefined,
+      ghostList: Array.isArray(Player.GhostList) ? Player.GhostList : undefined,
+    };
+  }
   subscribeFriends(listener: (members: number[]) => void): () => void {
     this.#friendListeners.add(listener); return () => this.#friendListeners.delete(listener);
   }
@@ -408,6 +442,8 @@ export class BCAdapter {
       const onlineRelationship = this.#onlineFriends.get(memberNumber)?.relationship;
       if (onlineRelationship) relationships.push(onlineRelationship);
     }
+    if (this.localBlocks?.has(memberNumber) && !relationships.includes("blacklist")) relationships.push("blacklist");
+    if (this.localGhosts?.has(memberNumber) && !relationships.includes("ghosted")) relationships.push("ghosted");
     return relationships;
   }
 
@@ -416,6 +452,7 @@ export class BCAdapter {
   }
 
   sendKikiLinkProtocol(target: number, payload: string, route?: "beep"): "room" | "beep" {
+    if (this.locallyRestricted(target)) throw new Error("Remove this profile’s local restriction before contacting it in KikiLink.");
     if (!Number.isSafeInteger(target) || target < 0) {
       throw new Error("A valid non-negative member number is required");
     }
@@ -453,6 +490,7 @@ export class BCAdapter {
   }
 
   sendBeep(target: number, content: string, includeRoom: boolean): BeepEvent {
+    if (this.locallyRestricted(target)) throw new Error("Remove this profile’s local restriction before contacting it in KikiLink.");
     if (!Number.isSafeInteger(target) || target < 0) {
       throw new Error("A valid non-negative member number is required");
     }
@@ -474,17 +512,23 @@ export class BCAdapter {
     // error must not turn an already submitted message into a retryable draft.
     const previous = this.#nativeBeepSubmission;
     const submission = { event, handedOff: false };
+    // A compatibility hook can dispatch the self echo inside the native helper call.
+    const selfSend = target === this.getOwnMemberNumber() ? this.#rememberOutgoing(event) : undefined;
     this.#nativeBeepSubmission = submission;
     try {
       withBCNetworkReason("direct-message", () => ServerSendBeepMessage(target, message, { includeRoom }));
     } catch (error) {
-      if (!submission.handedOff) throw error;
+      if (!submission.handedOff) {
+        const index = selfSend ? this.#recentOutgoing.indexOf(selfSend) : -1;
+        if (index >= 0) this.#recentOutgoing.splice(index, 1);
+        throw error;
+      }
       this.#logger.warn("Beep submitted, but the native helper could not finish its local bookkeeping", error);
     } finally {
       this.#nativeBeepSubmission = previous;
     }
     // Remember only successful sends for the later native-log recovery pass.
-    this.#rememberOutgoing(event);
+    if (!selfSend) this.#rememberOutgoing(event);
     return event;
   }
 
@@ -692,7 +736,7 @@ export class BCAdapter {
           ...(ChatRoomData.MapData === undefined ? { mapData: { Type: "Never" as const } } :
             copyRoomMap(ChatRoomData.MapData) ? { mapData: copyRoomMap(ChatRoomData.MapData)! } : {}),
           background: cleanText(ChatRoomData.Background, 120),
-          limit: boundedInteger(ChatRoomData.Limit, 2, 20, 10),
+          limit: boundedInteger(ChatRoomData.Limit, 2, 50, 10),
           game: cleanText(ChatRoomData.Game, 40),
           space: cleanText(ChatRoomData.Space, 20),
           language: cleanText(ChatRoomData.Language, 12),
@@ -775,6 +819,7 @@ export class BCAdapter {
     if (!snapshot.isAdmin) throw new Error("Only a room administrator can apply room presets");
     if (typeof ServerSend !== "function") throw new Error("Bondage Club is still connecting");
 
+    const capacity=nativeRoomCapacity(preset.limit,snapshot.players.length);
     const current = ChatRoomData as BCChatRoomData;
     const room = typeof ChatRoomGetSettings === "function"
       ? ChatRoomGetSettings(current)
@@ -790,9 +835,10 @@ export class BCAdapter {
     const admins = cleanMemberNumberArray(preset.admins, 20);
     if (!admins.includes(ownMemberNumber)) admins.unshift(ownMemberNumber);
     room.Name = cleanText(preset.name, 80) || snapshot.roomName;
+    if(preset.description.length>300)throw new Error("The native room description supports up to 300 characters. Shorten the draft before applying.");
     room.Description = cleanText(preset.description, 300);
     room.Background = cleanText(preset.background, 120);
-    room.Limit = boundedInteger(preset.limit, 2, 20, 10);
+    room.Limit = capacity;
     room.Game = cleanText(preset.game, 40);
     room.Space = cleanText(preset.space, 20);
     room.Language = cleanText(preset.language, 12) || cleanText(current.Language, 12) || "EN";
@@ -920,9 +966,63 @@ export class BCAdapter {
     }
   }
 
+  getRoomLeaveState(): BCRoomLeaveState {
+    if (this.#stopped) return { status: "unavailable", message: "KikiLink has stopped. Reload the game to continue." };
+    if (this.#roomCreation.blocked) return {status:"unavailable",message:"Room creation is still unconfirmed. Check the room in BC."};
+    if (this.#joinRoomPromise || this.#joinRoomQuarantine) return { status: "joining", message: "Wait for the current room join to finish." };
+    if (this.#leaveRoomPromise) return { status: "leaving", message: "Waiting for Bondage Club to finish leaving…" };
+    try {
+      if (!this.isInChatRoom()) {
+        return typeof ChatRoomData === "undefined" || ChatRoomData === null
+          ? { status: "outside" }
+          : { status: "unavailable", message: "Bondage Club is updating the current room. Try again in a moment." };
+      }
+      if (typeof ChatRoomIsLeavingSlowly !== "function" || typeof ChatRoomCanLeave !== "function" || typeof ChatRoomAttemptLeave !== "function") {
+        return { status: "unavailable", message: "The native leave controls are unavailable. Use Back to game to leave through Bondage Club." };
+      }
+      if (ChatRoomIsLeavingSlowly()) return { status: "leaving", message: "Bondage Club is already leaving this room…" };
+      return ChatRoomCanLeave() ? { status: "ready" }
+        : { status: "blocked", message: "Bondage Club currently prevents you from leaving this room." };
+    } catch {
+      return { status: "unavailable", message: "Could not check whether this room can be left. Try again in a moment." };
+    }
+  }
+
+  leaveRoom(expected?: BCRoomLeaveTarget): Promise<void> {
+    if(this.#roomCreation.blocked)return Promise.reject(new Error('Room creation is still unconfirmed. Check the room in BC.'));
+    // Keep native slow-leave and joins mutually exclusive: repeating AttemptLeave cancels it.
+    if (this.#joinRoomPromise || this.#joinRoomQuarantine) return Promise.reject(new Error("Wait for the current room join to finish before leaving."));
+    if (expected) {
+      try {
+        if (this.getOwnMemberNumber() !== expected.memberNumber || this.getCurrentRoomName() !== expected.name ||
+          this.getRoomSearchSpace() !== expected.space) {
+          return Promise.reject(new Error("The room or account changed. Review the current room before leaving."));
+        }
+      } catch { return Promise.reject(new Error("The current room could not be verified. Try again.")); }
+    }
+    if (this.#leaveRoomPromise) return this.#leaveRoomPromise;
+    const state = this.getRoomLeaveState();
+    if (state.status === "outside") return Promise.resolve();
+    if (state.status !== "ready" && state.status !== "leaving") return Promise.reject(new Error(state.message ?? "This room cannot be left right now."));
+    const controller = new AbortController();
+    this.#leaveRoomAbortController = controller;
+    const transition = this.#leaveCurrentRoomSafely(controller.signal,
+      "Bondage Club has not finished leaving. Check the room in the game before trying again.",
+      "Room leave was cancelled because KikiLink stopped");
+    const shared = transition.finally(() => {
+      if (this.#leaveRoomAbortController !== controller) return;
+      this.#leaveRoomAbortController = undefined;
+      this.#leaveRoomPromise = undefined;
+    });
+    this.#leaveRoomPromise = shared;
+    return shared;
+  }
+
   joinRoom(name: string): Promise<void> {
+    if(this.#roomCreation.blocked)return Promise.reject(new Error('Room creation is still unconfirmed. Check the room in BC.'));
     const roomName = cleanText(name, 80);
     if (!roomName) return Promise.reject(new Error("Choose a room first"));
+    if (this.#leaveRoomPromise) return Promise.reject(new Error("Wait for the current room leave to finish before joining another room."));
     const targetKey = lobbyRoomNameKey(roomName);
 
     // A second native leave attempt cancels BC's slow-leave state. Share the active transition
@@ -969,9 +1069,23 @@ export class BCAdapter {
     return shared;
   }
 
+  createRoom(draft: BCRoomCreationDraft, authorize: ()=>Promise<void>, current: ()=>boolean): Promise<void> {
+    if(this.#stopped || this.#joinRoomPromise || this.#leaveRoomPromise || this.#joinRoomQuarantine)
+      return Promise.reject(new Error('Wait for the current BC room transition to finish.'));
+    return this.#roomCreation.create(structuredClone(draft),authorize,()=>!this.#stopped&&current());
+  }
+
   async #joinRoomSafely(roomName: string, controller: AbortController): Promise<void> {
     const signal = controller.signal;
     throwIfRoomJoinAborted(signal);
+    await this.#leaveCurrentRoomSafely(signal, "Leaving the current room did not finish. The join was cancelled safely.");
+
+    throwIfRoomJoinAborted(signal);
+    await this.#joinAfterLeaving(roomName, controller);
+  }
+
+  async #leaveCurrentRoomSafely(signal: AbortSignal, timeoutMessage: string, cancelledMessage?: string): Promise<void> {
+    if (signal.aborted) throw new Error(cancelledMessage ?? roomJoinCancelledError().message);
     if (this.isInChatRoom()) {
       let alreadyLeaving = false;
       try {
@@ -979,6 +1093,7 @@ export class BCAdapter {
           typeof ChatRoomIsLeavingSlowly === "function" && ChatRoomIsLeavingSlowly();
       } catch (error) {
         this.#logger.warn("Bondage Club's slow-leave state was not readable", error);
+        throw new Error("Could not check Bondage Club's current leave state. Try leaving through the game.");
       }
       if (!alreadyLeaving) {
         if (
@@ -1009,10 +1124,14 @@ export class BCAdapter {
     await waitForRoomTransition(
       () => !this.isInChatRoom() && (typeof ChatRoomData === "undefined" || ChatRoomData === null),
       ROOM_LEAVE_TIMEOUT_MS,
-      "Leaving the current room did not finish. The join was cancelled safely.",
+      timeoutMessage,
       signal,
+      cancelledMessage,
     );
+  }
 
+  async #joinAfterLeaving(roomName: string, controller: AbortController): Promise<void> {
+    const signal = controller.signal;
     throwIfRoomJoinAborted(signal);
     if (typeof ServerRoomJoin === "function") {
       let result: BCServerResult<string> | typeof ROOM_JOIN_RESPONSE_TIMED_OUT;
@@ -1207,7 +1326,7 @@ export class BCAdapter {
     const events: BeepEvent[] = [];
     for (const entry of FriendListBeepLog.slice(-Math.max(0, limit))) {
       try {
-        const event = this.#normalizeBeepLogEntry(entry);
+        const event = this.#normalizeBeepLogEntry(entry, true);
         if (event) events.push(event);
       } catch (error) {
         // A revoked Firefox cross-compartment object must not hide later valid history during the
@@ -1215,7 +1334,10 @@ export class BCAdapter {
         this.#logger.warn("A recent native Beep log entry was not readable", error);
       }
     }
-    return events.sort((left, right) => left.sentAt - right.sentAt);
+    const echoes = legacySelfBeepEchoes(events, this.getOwnMemberNumber());
+    return events.filter(event => !echoes.has(event))
+      .map(event => ({ ...event, content: cleanBeepMessageContent(event.content) }))
+      .sort((left, right) => left.sentAt - right.sentAt);
   }
 
   #installCompatibilityHooks(): void {
@@ -1704,7 +1826,7 @@ export class BCAdapter {
       const protocol = this.#normalizeBeepProtocol(data);
       if (protocol) this.bus.emit("bc:protocol", protocol);
       const event = this.#normalizeIncoming(data);
-      if (!event) return;
+      if (!event || this.#consumeSelfEcho(event, "socket")) return;
       this.#rememberIncoming(event);
       this.bus.emit("beep:received", event);
     } catch (error) {
@@ -1730,7 +1852,7 @@ export class BCAdapter {
         if (!event) continue;
         if (entry.Sent) {
           this.#captureOutgoing(event, "log");
-        } else if (!this.#consumeRememberedIncoming(event)) {
+        } else if (!this.#consumeRememberedIncoming(event) && !this.#consumeSelfEcho(event, "log")) {
           this.bus.emit("beep:received", event);
         }
       } catch (error) {
@@ -1743,7 +1865,7 @@ export class BCAdapter {
     this.#pruneRememberedOutgoing();
   }
 
-  #normalizeBeepLogEntry(entry: BCFriendListBeepLogMessage): BeepEvent | null {
+  #normalizeBeepLogEntry(entry: BCFriendListBeepLogMessage, retainEnvelope = false): BeepEvent | null {
     if (!entry || !Number.isSafeInteger(entry.MemberNumber)) return null;
     if (isReconnectNotice({ direction: entry.Sent ? "outgoing" : "incoming", peerNumber: entry.MemberNumber,
       content: entry.Message ?? "", roomName: entry.ChatRoomName }, this.getOwnMemberNumber())) return null;
@@ -1757,7 +1879,7 @@ export class BCAdapter {
         this.getMemberNickname(entry.MemberNumber) ??
         cleanName(entry.MemberName) ??
         `Member ${entry.MemberNumber}`,
-      content: cleanBeepMessageContent(entry.Message),
+      content: retainEnvelope && typeof entry.Message === "string" ? entry.Message : cleanBeepMessageContent(entry.Message),
       sentAt,
       includeRoom: roomName !== undefined,
       ...(roomName !== undefined ? { roomName } : {}),
@@ -1797,28 +1919,45 @@ export class BCAdapter {
     if (source === "log") {
       const fingerprint = outgoingFingerprint(event);
       const index = this.#recentOutgoing.findIndex(candidate =>
-        candidate.fingerprint === fingerprint &&
+        !candidate.logObserved && candidate.fingerprint === fingerprint &&
         Math.abs(candidate.sentAt - event.sentAt) <= RECENT_OUTGOING_TTL_MS,
       );
       if (index >= 0) {
         // Pair observations once, allowing slow native hooks without swallowing
         // a second intentional send of the same text (including log-only sends).
-        this.#recentOutgoing.splice(index, 1);
+        const candidate = this.#recentOutgoing[index]!;
+        if (candidate.selfEcho) candidate.logObserved = true;
+        else this.#recentOutgoing.splice(index, 1);
         return;
       }
+      if (event.peerNumber === this.getOwnMemberNumber()) this.#rememberOutgoing(event).logObserved = true;
     } else {
       this.#rememberOutgoing(event);
     }
     this.bus.emit("beep:sent", event);
   }
 
-  #rememberOutgoing(event: BeepEvent): void {
-    this.#recentOutgoing.push({
+  #rememberOutgoing(event: BeepEvent): RecentOutgoing {
+    const record: RecentOutgoing = {
       fingerprint: outgoingFingerprint(event),
       sentAt: event.sentAt,
       capturedAt: Date.now(),
-    });
+      ...(event.peerNumber === this.getOwnMemberNumber() ? { selfEcho: { socket: false, log: false } } : {}),
+    };
+    this.#recentOutgoing.push(record);
     this.#pruneRememberedOutgoing();
+    return record;
+  }
+
+  #consumeSelfEcho(event: BeepEvent, source: "socket" | "log"): boolean {
+    if (event.peerNumber !== this.getOwnMemberNumber() || !event.content) return false;
+    this.#pruneRememberedOutgoing();
+    const fingerprint = outgoingFingerprint(event);
+    const candidate = this.#recentOutgoing.find(record => record.selfEcho && !record.selfEcho[source] &&
+      record.fingerprint === fingerprint && Math.abs(record.sentAt - event.sentAt) <= RECENT_OUTGOING_TTL_MS);
+    if (!candidate?.selfEcho) return false;
+    candidate.selfEcho[source] = true;
+    return true;
   }
 
   #pruneRememberedOutgoing(now = Date.now()): void {
@@ -2039,6 +2178,7 @@ function waitForRoomTransition(
   timeoutMs: number,
   timeoutMessage: string,
   signal?: AbortSignal,
+  cancelledMessage?: string,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -2052,7 +2192,7 @@ function waitForRoomTransition(
       if (error) reject(error);
       else resolve();
     };
-    const onAbort = (): void => finish(roomJoinCancelledError());
+    const onAbort = (): void => finish(cancelledMessage ? new Error(cancelledMessage) : roomJoinCancelledError());
     const check = (): void => {
       if (signal?.aborted) {
         onAbort();

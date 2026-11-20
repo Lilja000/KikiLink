@@ -22,7 +22,7 @@ function setup(storage = new MemoryKeyValueStorage(), memberNumber = 101) {
   const community = { supported: true, directEnabled: true, relationships: new Map([[202, { directMessages: true, canMessage: true }]]),
     client: { memberNumber, connected: true, request, subscribe: (fn: (kind: string) => void) => { eventListener = fn; return () => {}; } },
     adapter: { getMemberName: (peer: number) => `Member ${peer}` }, subscribe: () => () => {} } as unknown as CommunityService;
-  const options = { active: () => false, changed: vi.fn(), incoming: vi.fn() };
+  const options = { active: () => false, changed: vi.fn(), incoming: vi.fn(), sendingEnabled: () => settings.getSection("linkChat").directEnabled };
   const direct = new CloudDirect(community, chat, storage, options);
   cleanup.push(() => direct.destroy());
   return { repository, settings, chat, request, community, options, direct, storage, hint: (kind: string) => eventListener(kind) };
@@ -427,4 +427,104 @@ it("keeps a racing receipt follow-up behind server backoff and retains retry acr
   expect(receiptReads).toBe(2);
   expect(h.request).toHaveBeenCalledTimes(callsBeforeInboxCompletes);
   await vi.advanceTimersByTimeAsync(1); expect(receiptReads).toBe(3);
+});
+
+it("keeps private image IDs and the same message identity across an ambiguous POST and queue reopen", async () => {
+  const h = setup(); h.community.directMessageMedia = true;
+  const mediaIds = [crypto.randomUUID()]; let first: unknown;
+  h.request.mockImplementation(async (method, path, body) => {
+    if (method === "POST" && path.endsWith("/messages")) { first = body; throw new CloudError("offline"); }
+    return { items: [], cursor: 0, nextCursor: null };
+  });
+  const outgoing = await h.direct.send(202, "Friend", "", undefined, mediaIds);
+  await vi.waitFor(() => expect(first).toBeDefined());
+  expect((await h.chat.getMessages(202))[0]?.cloudMediaIds).toEqual(mediaIds);
+  expect((await h.chat.getConversation(202))?.lastMessage).toBe("Image");
+  h.direct.destroy();
+  h.request.mockImplementation(async (method, path, body) => {
+    if (method === "POST" && path.endsWith("/messages")) { expect(body).toEqual(first); return { id: "server-image", sequence: 3, state: "sent" }; }
+    return { items: [], cursor: 0, nextCursor: null };
+  });
+  const resumed = new CloudDirect(h.community, h.chat, h.storage, h.options); cleanup.push(() => resumed.destroy());
+  await resumed.sync();
+  expect(await h.chat.getMessages(202)).toEqual([expect.objectContaining({ id: outgoing.id, cloudMediaIds: mediaIds, delivery: "sent" })]);
+});
+it("persists incoming private image references before acknowledgment and rejects malformed envelopes", async () => {
+  const h = setup(), id = crypto.randomUUID(), mediaId = crypto.randomUUID(); let malformed = false;
+  h.request.mockImplementation(async (method, path) => {
+    if (path.includes("/inbox")) return { items: [{ id, clientMessageId: crypto.randomUUID(), sequence: 8, sender: 202, recipient: 101, text: "", mediaIds: [malformed ? "https://not-an-asset.invalid" : mediaId], createdAt: Date.now() }], cursor: 8, nextCursor: null };
+    if (method === "POST" && path.endsWith("acknowledge")) expect((await h.chat.getMessages(202))[0]?.cloudMediaIds).toEqual([mediaId]);
+    return { items: [], cursor: 0, nextCursor: null };
+  });
+  await h.direct.sync(); expect(h.options.incoming).toHaveBeenCalledOnce();
+  const calls = h.request.mock.calls.filter(([, path]) => path.endsWith("acknowledge")).length;
+  malformed = true; await expect(h.direct.sync()).rejects.toThrow("Invalid Direct envelope");
+  expect(h.request.mock.calls.filter(([, path]) => path.endsWith("acknowledge"))).toHaveLength(calls);
+});
+it("does not queue private images on an old server or when the local queue cannot be saved", async () => {
+  const h = setup(), image = crypto.randomUUID();
+  await expect(h.direct.send(202, "Friend", "", undefined, [image])).rejects.toThrow("updated Cloud server");
+  h.community.directMessageMedia = true;
+  vi.spyOn(h.storage, "setItem").mockImplementationOnce(() => { throw new Error("full"); });
+  await expect(h.direct.send(202, "Friend", "", undefined, [image])).rejects.toThrow("has not been sent");
+  expect(h.request.mock.calls.some(([, path]) => path.endsWith("/messages"))).toBe(false);
+  expect(await h.chat.getMessages(202)).toEqual([]);
+});
+
+it("keeps private audio IDs and the same message identity across an ambiguous POST and queue reopen", async () => {
+  const h = setup(); h.community.messageAudio = true;
+  const audioIds = [crypto.randomUUID()]; let first: unknown;
+  h.request.mockImplementation(async (method, path, body) => {
+    if (method === "POST" && path.endsWith("/messages")) { first = body; throw new CloudError("offline"); }
+    return { items: [], cursor: 0, nextCursor: null };
+  });
+  const outgoing = await h.direct.send(202, "Friend", "", undefined, [], audioIds);
+  await vi.waitFor(() => expect(first).toBeDefined());
+  expect((await h.chat.getMessages(202))[0]?.cloudAudioIds).toEqual(audioIds);
+  expect((await h.chat.getConversation(202))?.lastMessage).toBe("Audio");
+  h.direct.destroy();
+  h.request.mockImplementation(async (method, path, body) => {
+    if (method === "POST" && path.endsWith("/messages")) { expect(body).toEqual(first); return { id: "server-audio", sequence: 3, state: "sent" }; }
+    return { items: [], cursor: 0, nextCursor: null };
+  });
+  const resumed = new CloudDirect(h.community, h.chat, h.storage, h.options); cleanup.push(() => resumed.destroy());
+  await resumed.sync();
+  expect(await h.chat.getMessages(202)).toEqual([expect.objectContaining({ id: outgoing.id, cloudAudioIds: audioIds, delivery: "sent" })]);
+});
+it("persists incoming private audio references before acknowledgment and rejects malformed envelopes", async () => {
+  const h = setup(), id = crypto.randomUUID(), audioId = crypto.randomUUID(); let malformed = false;
+  h.request.mockImplementation(async (method, path) => {
+    if (path.includes("/inbox")) return { items: [{ id, clientMessageId: crypto.randomUUID(), sequence: 8, sender: 202, recipient: 101, text: "", audioIds: [malformed ? "https://not-an-asset.invalid" : audioId], createdAt: Date.now() }], cursor: 8, nextCursor: null };
+    if (method === "POST" && path.endsWith("acknowledge")) expect((await h.chat.getMessages(202))[0]?.cloudAudioIds).toEqual([audioId]);
+    return { items: [], cursor: 0, nextCursor: null };
+  });
+  await h.direct.sync(); expect(h.options.incoming).toHaveBeenCalledOnce();
+  const calls = h.request.mock.calls.filter(([, path]) => path.endsWith("acknowledge")).length;
+  malformed = true; await expect(h.direct.sync()).rejects.toThrow("Invalid Direct envelope");
+  expect(h.request.mock.calls.filter(([, path]) => path.endsWith("acknowledge"))).toHaveLength(calls);
+});
+
+
+it("holds a previously queued Direct while sending is disabled and resumes with the original id", async () => {
+  const h = setup();
+  const client = h.community.client as unknown as { connected: boolean };
+  client.connected = false;
+  const message = await h.direct.send(202, "Friend", "Queued before going offline");
+  const queuedId = message.clientMessageId;
+  h.settings.update(draft => { draft.linkChat.directEnabled = false; });
+  client.connected = true;
+  const sends = () => h.request.mock.calls.filter(([method, path]) => method === "POST" && path.endsWith("/messages"));
+  h.request.mockImplementation(async (_method, path, body) => {
+    if (path.endsWith("/messages")) return { id: "accepted", sequence: 1, state: "sent", clientMessageId: (body as {clientMessageId:string}).clientMessageId };
+    return { items: [], cursor: 0, nextCursor: null };
+  });
+  await h.direct.sync();
+  await expect(h.direct.send(202, "Friend", "Disabled")).rejects.toThrow("turned off");
+  await expect(h.direct.retry(message.id)).rejects.toThrow("turned off");
+  expect(sends()).toHaveLength(0);
+  expect((await h.chat.getMessages(202)).map(item => item.content)).toEqual(["Queued before going offline"]);
+  h.settings.update(draft => { draft.linkChat.directEnabled = true; });
+  await h.direct.sync();
+  expect(sends()).toHaveLength(1);
+  expect(sends()[0]?.[2]).toMatchObject({ clientMessageId: queuedId });
 });

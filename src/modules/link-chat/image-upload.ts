@@ -14,6 +14,7 @@ export const MAX_LOCAL_IMAGE_PIXELS = 32_000_000;
 export const PROFILE_BANNER_WIDTH = 1_200;
 export const PROFILE_BANNER_HEIGHT = 400;
 export const MAX_PROFILE_BANNER_BYTES = 2 * 1024 * 1024;
+export const MAX_PROFILE_AVATAR_BYTES = 2 * 1024 * 1024;
 export const MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
 export const MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
 
@@ -462,7 +463,63 @@ export async function prepareProfileBanner(file: File): Promise<PreparedLocalIma
   }
 }
 
-export async function validateLocalImageFile(file: File): Promise<void> {
+export type ProfileAvatarEdit =
+  | { kind: "framing"; x: number; y: number; zoom: number }
+  | { kind: "background"; colors: readonly [string, string]; initial: string };
+
+/** Upload only the displayed square, with no source metadata or pixels outside its framing. */
+export async function prepareProfileAvatar(source: Blob | undefined, edit: ProfileAvatarEdit): Promise<File> {
+  if (edit.kind === "framing" &&
+    (![edit.x, edit.y, edit.zoom].every(Number.isFinite) || edit.x < 0 || edit.x > 100 || edit.y < 0 || edit.y > 100 || edit.zoom < 1 || edit.zoom > 2))
+    throw new Error("Choose a valid avatar position and zoom");
+  if (source) {
+    if (source.size > MAX_PROFILE_AVATAR_BYTES) throw new Error("Choose an avatar up to 2 MiB");
+    await validateLocalImageFile(source);
+  } else if (edit.kind === "framing") throw new Error("Choose an image to frame");
+  const decoded = source && await decodeLocalImage(source);
+  try {
+    if (decoded) assertSafeLocalDimensions(decoded.width, decoded.height);
+    const canvas = document.createElement("canvas");
+    const edge = 512;
+    canvas.width = canvas.height = edge;
+    const context = canvas.getContext("2d", { alpha: true });
+    if (!context) throw new Error("Your browser could not prepare this avatar");
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    if (edit.kind === "background") {
+      const gradient = context.createLinearGradient(0, 0, edge, edge);
+      gradient.addColorStop(0, edit.colors[0]);
+      gradient.addColorStop(1, edit.colors[1]);
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, edge, edge);
+      if (decoded) {
+        const inset = edge * 0.07, side = edge - 2 * inset;
+        context.beginPath();
+        context.arc(edge / 2, edge / 2, side / 2, 0, 2 * Math.PI);
+        context.clip();
+        context.drawImage(decoded.source, inset, inset, side, side);
+      } else {
+        context.font = "800 205px system-ui, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillStyle = "#f5eee3";
+        context.fillText(edit.initial, edge / 2, edge / 2);
+      }
+    } else if (decoded) {
+      const side = Math.min(decoded.width, decoded.height) / edit.zoom;
+      const x = (decoded.width - side) * edit.x / 100;
+      const y = (decoded.height - side) * edit.y / 100;
+      context.drawImage(decoded.source, x, y, side, side, 0, 0, edge, edge);
+    }
+    const blob = await canvasToWebp(canvas);
+    if (!blob.size || blob.size > MAX_PROFILE_AVATAR_BYTES) throw new Error("Could not encode an avatar up to 2 MiB");
+    return new File([blob], "avatar.webp", { type: blob.type });
+  } finally {
+    decoded?.dispose();
+  }
+}
+
+export async function validateLocalImageFile(file: Blob): Promise<void> {
   if (file.size <= 0) throw new Error("Choose a non-empty image file");
   if (file.size > MAX_LOCAL_IMAGE_BYTES) throw new Error("Choose an image up to 10 MB");
 
@@ -917,7 +974,7 @@ function localImageHeaderError(): Error {
 }
 
 async function decodeLocalImage(
-  file: File,
+  file: Blob,
 ): Promise<{ source: CanvasImageSource; width: number; height: number; dispose: () => void }> {
   if (typeof globalThis.createImageBitmap === "function") {
     const bitmap = await globalThis.createImageBitmap(file, { imageOrientation: "from-image" });

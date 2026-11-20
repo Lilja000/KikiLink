@@ -15,12 +15,12 @@ afterEach(async () => {
 const profile = { memberNumber: 202, displayName: "Friend", avatarId: null, avatarFrame: "none" as const };
 const post = (reactions: CloudReactions = { counts: [], mine: null }): CloudPost => ({ id: 7, author: 202, profile, text: "A post", revision: 1, createdAt: Date.now(), updatedAt: 0, mediaIds: [], reactions, commentCount: 0 });
 const poll = (myVotes: number[] = []): CloudPoll => ({ question: "Tonight?", options: [{ id: 1, text: "Games", votes: 1 }, { id: 2, text: "Movie", votes: 0 }], multiple: false, closesAt: Date.now() + 3_600_000, totalVoters: 1, myVotes, closed: false });
-function setup(handler: (method: string, path: string, body: any) => Promise<unknown>) {
+function setup(handler: (method: string, path: string, body: any) => Promise<unknown>, platformPreview = false, openCommunity = vi.fn<(id: string) => void>()) {
   const request = vi.fn(handler), errors: unknown[] = [];
   const client = { memberNumber: 101, connected: true, request, profile: async () => profile, subscribe: () => () => {}, isProfileBlocked: () => false } as unknown as CloudClient;
   const ui = new SocialUI({ client, image: () => document.createElement("span"), openProfile: () => {}, isBlocked: () => false,
     run: async (action, button) => { if (button) button.disabled = true; try { await action(); } catch (error) { errors.push(error); } finally { if (button) button.disabled = false; } } });
-  const view = new CloudFeedView(ui, { openOwnProfile: () => {}, openGroups: () => {}, report: () => {} });
+  const view = new CloudFeedView(ui, { platformPreview, openCommunity, openOwnProfile: () => {}, openGroups: () => {}, report: () => {} });
   const surface = document.createElement("div"); surface.className = "kl-cloud"; surface.append(view.element); document.body.append(surface);
   cleanup.push(() => { view.destroy(); ui.destroy(); }); return { view, ui, request, errors };
 }
@@ -28,7 +28,7 @@ function setup(handler: (method: string, path: string, body: any) => Promise<unk
 describe("Feed interaction polish", () => {
   it("marks an attached photo using a corner icon without replacing the preview and posts its spoiler flag", async () => {
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:photo"); vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
-    const { view, request } = setup(async (method, path) => path === "/v1/media/feed" ? { id: "photo-id" } : method === "POST" ? post() : { items: [], nextCursor: null });
+    const { view, request } = setup(async (method, path) => path === "/v1/me" ? { memberNumber: 101 } : path === "/v1/media/feed" ? { id: "55555555-5555-4555-8555-555555555555" } : method === "POST" ? post() : { items: [], nextCursor: null });
     await view.render({ feedSpoilers: true });
     const style = document.createElement("style"); style.textContent = CLOUD_STYLES; document.body.append(style);
     const files = view.element.querySelector<HTMLInputElement>('input[type="file"]')!;
@@ -43,7 +43,7 @@ describe("Feed interaction polish", () => {
     expect(spoiler.getAttribute("aria-pressed")).toBe("true"); expect(spoiler.getAttribute("aria-label")).toBe("Remove spoiler from photo.png");
     expect(attachment.dataset.spoiler).toBe("true"); expect(attachment.querySelector("img")).toBe(image);
     view.element.querySelector<HTMLButtonElement>('[aria-label="Post"]')!.click();
-    await vi.waitFor(() => expect(request.mock.calls.find(([method, path]) => method === "POST" && path === "/v1/feed")?.[2]).toMatchObject({ mediaIds: ["photo-id"], spoilerMediaIds: ["photo-id"] }));
+    await vi.waitFor(() => expect(request.mock.calls.find(([method, path]) => method === "POST" && path === "/v1/feed")?.[2]).toMatchObject({ mediaIds: ["55555555-5555-4555-8555-555555555555"], spoilerMediaIds: ["55555555-5555-4555-8555-555555555555"] }));
   });
 
   it("keeps twenty choices in the picker while only active reaction counts occupy the post row", async () => {
@@ -81,11 +81,64 @@ describe("Feed interaction polish", () => {
     await view.render({ reactions: ["heart"] });
     const choice = view.element.querySelector<HTMLButtonElement>('.kl-reaction-choices [data-reaction="heart"]')!;
     choice.closest("details")!.open = true; choice.focus(); choice.click();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
     finish({ mine: "heart", counts: [{ reaction: "heart", count: 1 }] });
     await vi.waitFor(() => expect(document.activeElement).toBe(view.element.querySelector('.kl-reactions > [data-reaction="heart"]')));
-    const current = document.activeElement as HTMLButtonElement; current.click();
+    const previousFinish=finish,current = document.activeElement as HTMLButtonElement; current.click();
     const draft = view.element.querySelector<HTMLTextAreaElement>('[aria-label="Share a post"]')!; draft.focus();
-    finish({ mine: null, counts: [] }); await Promise.resolve(); await Promise.resolve(); expect(document.activeElement).toBe(draft);
+    await vi.waitFor(()=>expect(finish).not.toBe(previousFinish));
+    finish({ mine: null, counts: [] }); await vi.waitFor(()=>expect(view.element.querySelector('.kl-reactions[aria-busy="true"]')).toBeNull()); expect(document.activeElement).toBe(draft);
+  });
+
+  it("opens the exact attributed community and keeps ordinary posts without a community link", async () => {
+    const open = vi.fn<(id: string) => void>();
+    const associated = { ...post(), community: { id: "cafe", name: "The Café" } };
+    const { view } = setup(async (_method, path) => path === "/v1/me" ? {}
+      : { items: [associated, { ...post(), id: 8 }], nextCursor: null }, true, open);
+    await view.render({ feedFollowing: true });
+    const community = view.element.querySelector<HTMLButtonElement>('[data-post-id="7"] .kl-feed-community')!;
+    expect(community.textContent).toBe("The Café");
+    community.click();
+    expect(open).toHaveBeenCalledWith("cafe");
+    expect(view.element.querySelector('[data-post-id="8"] .kl-feed-community')).toBeNull();
+    expect([...view.element.querySelectorAll("button")].some(button => button.textContent === "Following")).toBe(true);
+  });
+
+  it("keeps archived community content, comments and poll results readable while pausing public writes", async () => {
+    const archived = { ...post(), author: 101, poll: poll(), community: {id: "cafe", name: "The Café", archived: true} };
+    const { view } = setup(async (_method, path) => path === "/v1/me" ? {} : {items: [archived], nextCursor:null}, true);
+    await view.render({ feedPollClose:true, feedBookmarks:true });
+    const card = view.element.querySelector<HTMLElement>('[data-post-id="7"]')!;
+    expect(card.dataset.communityArchived).toBe("true");
+    expect(card.querySelector(".kl-feed-archive-note")?.textContent).toBe("Archived · changes paused");
+    expect(card.querySelector<HTMLElement>(".kl-reactions")?.inert).toBe(true);
+    expect(card.querySelector<HTMLElement>(".kl-feed-write")?.inert).toBe(true);
+    expect(card.querySelector<HTMLButtonElement>(".kl-post-comments-button")?.disabled).toBe(false);
+    expect(card.querySelector(".kl-feed-poll-result")).not.toBeNull();
+    expect(card.querySelector('[aria-label="Vote"]')).toBeNull();
+  });
+
+  it("lets the author cancel or confirm poll closure from the mounted Feed and restores keyboard focus", async () => {
+    const original = { ...post(), author: 101, poll: poll() };
+    const closed = { ...original, poll: { ...original.poll, closesAt: Date.now(), closed: true } };
+    const { view, request } = setup(async (method, path) => {
+      if (path === "/v1/me") return { memberNumber: 101, features: {} };
+      if (method === "PUT" && path === "/v1/feed/7/poll/close") return closed;
+      return { items: [original], nextCursor: null };
+    }, true);
+    await view.render({ feedPollClose: true, feedFollowing: true });
+    const control = (scope: ParentNode, label: string) => [...scope.querySelectorAll("button")].find(b => b.textContent === label)!;
+    const close = control(view.element, "Close poll…");
+    close.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!;
+    const cancel = control(dialog, "Keep open");
+    expect(document.activeElement).toBe(cancel);
+    cancel.click();
+    expect(request.mock.calls.filter(([method]) => method === "PUT")).toHaveLength(0);
+    close.click(); control(dialog, "Close poll").click();
+    await vi.waitFor(() => expect(view.element.querySelector(".kl-feed-poll-closed")?.textContent).toBe("Voting closed"));
+    expect(document.activeElement).toBe(view.element.querySelector(".kl-feed-poll h3"));
+    expect(request.mock.calls.filter(([method]) => method === "PUT")).toEqual([["PUT", "/v1/feed/7/poll/close", {}]]);
   });
 
   it("shows Vote and Update vote as text-only actions", async () => {

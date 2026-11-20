@@ -1,9 +1,21 @@
 import type { ConversationMeta, LinkMessage } from "../core/types";
 import type { ChatCaptureResult, ChatRepository } from "./chat-repository";
+import {hydratePortableMessage,hydratePortableConversation,preparePortableChatRecords,type PortableChatRecords} from './portable-chat-records';
 
 export class MemoryChatRepository implements ChatRepository {
   readonly #messages = new Map<string, LinkMessage>();
   readonly #conversations = new Map<number, ConversationMeta>();
+
+  async hydratePortableChats(records:PortableChatRecords,current:()=>boolean=()=>true):Promise<void> {
+    if(!current())throw new Error('Portable chat restoration cancelled.');
+    const prepared=preparePortableChatRecords(records),messages:LinkMessage[]=[],conversations:ConversationMeta[]=[];
+    for(const row of prepared.messages){const next=hydratePortableMessage(this.#messages.get(row.id),row);if(next)messages.push(structuredClone(next));}
+    for(const row of prepared.conversations){const next=hydratePortableConversation(this.#conversations.get(row.peerNumber),row);if(next)conversations.push(structuredClone(next));}
+    // Clone every prospective change first: a failure never leaves a partial memory import.
+    if(!current())throw new Error('Portable chat restoration cancelled.');
+    for(const row of messages)this.#messages.set(row.id,row);
+    for(const row of conversations)this.#conversations.set(row.peerNumber,row);
+  }
 
   async captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult> {
     // Prepare both clones before touching either map so a clone failure cannot split the pair.

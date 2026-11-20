@@ -242,3 +242,98 @@ describe("Rooms and Players browsing", () => {
     } finally { f.view.destroy(); }
   });
 });
+
+describe('Lobbies snapshot filters', () => {
+  const choose = (f: Awaited<ReturnType<typeof setup>>, label: string, value: string) => {
+    const input = f.get<HTMLSelectElement>(`.kl-lobby-filter-dialog select[aria-label="${label}"]`);
+    input.value = value; input.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const names = (f: Awaited<ReturnType<typeof setup>>) => [...f.root.querySelectorAll('.kl-lobby-list .kl-lobby-name')].map(n => n.textContent);
+  const open = async (f: Awaited<ReturnType<typeof setup>>) => {
+    Object.assign(f.rooms[1]!, { language: ' RU ', privateRoom: true });
+    Object.assign(f.rooms[2]!, { language: 'en', canJoin: false, locked: true });
+    f.click('[data-target="room"]');
+    await vi.waitFor(() => expect(names(f)).toHaveLength(3));
+    f.click('.kl-lobby-filter-button');
+  };
+  it('combines Language/Access with Friends and search without additional requests or fabricated rooms', async () => {
+    const f = await setup();
+    try {
+      await open(f); const calls = vi.mocked(f.adapter.searchRooms).mock.calls.length;
+      choose(f, 'Language', 'l:ru'); choose(f, 'Access', 'private');
+      expect(names(f)).toEqual(['Dungeon']);
+      expect(f.get('.kl-lobby-filter-dialog [role="status"]').textContent).toContain('1 room matches');
+      f.click('[data-room-filter="friends"]'); expect(names(f)).toEqual(['Dungeon']);
+      f.get<HTMLInputElement>('.kl-lobby-search').value = 'missing'; f.get('.kl-lobby-search').dispatchEvent(new Event('input'));
+      expect(names(f)).toEqual([]); expect(f.get('.kl-lobby-filter-dialog [role="status"]').textContent).toContain('0 rooms match');
+      expect(vi.mocked(f.adapter.searchRooms).mock.calls).toHaveLength(calls);
+      expect(f.get('.kl-current-room-summary').textContent).toContain('Garden');
+      expect(f.get('.kl-lobby-filter-dialog').textContent).not.toContain('Offline friend');
+    } finally { f.view.destroy(); }
+  });
+  it('treats public locked rooms as Public, preserves Favorites, and never changes join permission', async () => {
+    const f = await setup();
+    try {
+      await open(f); choose(f, 'Access', 'public'); f.click('[data-room-filter="favorites"]');
+      expect(names(f)).toEqual(['Favorite']);
+      expect(f.get<HTMLButtonElement>('.kl-lobby-list .kl-lobby-join').disabled).toBe(true);
+      expect(f.get('.kl-lobby-list .kl-lobby-join').textContent).toBe('Locked');
+      choose(f, 'Access', 'private'); expect(names(f)).toEqual([]);
+      f.click('.kl-gallery-empty button'); await vi.waitFor(() => expect(names(f)).toHaveLength(3));
+      expect(f.settings.getSection('linkRoom').favoriteRoomNames).toEqual(['Favorite']);
+      expect(f.adapter.joinRoom).not.toHaveBeenCalled();
+    } finally { f.view.destroy(); }
+  });
+  it('resets query, scope, language, access and BC space and ignores an obsolete response', async () => {
+    const f = await setup();
+    try {
+      await open(f); choose(f, 'Language', 'l:ru'); choose(f, 'Access', 'private');
+      f.get<HTMLInputElement>('.kl-lobby-search').value = 'Dungeon'; f.click('[data-room-filter="friends"]');
+      let resolve!: (rows: BCLobbyRoom[]) => void;
+      vi.mocked(f.adapter.searchRooms).mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+      const space = f.get<HTMLSelectElement>('.kl-lobby-space'); space.value = 'M'; space.dispatchEvent(new Event('change'));
+      f.get<HTMLButtonElement>('.kl-lobby-filter-dialog footer button').click();
+      await vi.waitFor(() => expect(names(f)).toHaveLength(3));
+      expect(vi.mocked(f.adapter.searchRooms).mock.calls.at(-1)).toEqual(['', 'X']);
+      resolve([{ ...f.rooms[1]!, name: 'Obsolete male result' }]); await Promise.resolve(); await Promise.resolve();
+      expect(names(f)).not.toContain('Obsolete male result');
+      expect(space.value).toBe('X'); expect(f.get<HTMLInputElement>('.kl-lobby-search').value).toBe('');
+      expect(f.get('.kl-lobby-filter-dialog [role="status"]').textContent).toContain('3 rooms match');
+    } finally { f.view.destroy(); }
+  });
+  it('recounts an updated snapshot, keeps absent selected language at zero, and labels failed refresh', async () => {
+    const f = await setup();
+    try {
+      await open(f); choose(f, 'Language', 'l:ru');
+      vi.mocked(f.adapter.searchRooms).mockResolvedValue([f.rooms[2]!]); f.click('.kl-lobby-refresh');
+      await vi.waitFor(() => expect(names(f)).toHaveLength(0));
+      expect(f.get<HTMLSelectElement>('.kl-lobby-filter-dialog select[aria-label="Language"]').value).toBe('l:ru');
+      vi.mocked(f.adapter.searchRooms).mockRejectedValue(new Error('BC search failed')); f.click('.kl-lobby-refresh');
+      await vi.waitFor(() => expect(f.get('.kl-lobby-filter-dialog [role="status"]').textContent).toContain('Last loaded list'));
+      expect(f.get('.kl-room-directory-status').textContent).toContain('0 rooms in loaded list');
+      choose(f, 'Language', 'l:en'); expect(names(f)).toEqual(['Favorite']);
+      expect(f.get('.kl-room-directory-status').textContent).toContain('BC search failed');
+    } finally { f.view.destroy(); }
+  });
+  it('restores all filters after a player-room excursion and clears them for a direct lookup', async () => {
+    const f = await setup();
+    try {
+      await open(f); choose(f, 'Language', 'l:ru'); choose(f, 'Access', 'private');
+      f.get<HTMLDialogElement>('.kl-lobby-filter-dialog').close();
+      f.click('[data-room-name="Dungeon"] .kl-room-people-button');
+      f.click('.kl-roster-entry[data-member-number="2"] .kl-roster-location-button');
+      expect(f.get('.kl-lobby-filter-button').textContent).toBe('Filters');
+      f.click('.kl-room-page .kl-social-back'); f.click('.kl-roster-page .kl-social-back');
+      expect(names(f)).toEqual(['Dungeon']);
+      expect(f.get('.kl-lobby-filter-button').textContent).toBe('Filters · 2');
+    } finally { f.view.destroy(); }
+  });
+  it('closes the sheet with the addon while preserving the in-session selection', async () => {
+    const f = await setup();
+    try {
+      await open(f); choose(f, 'Access', 'private'); f.view.close();
+      expect(f.get<HTMLDialogElement>('.kl-lobby-filter-dialog').open).toBe(false);
+      await f.view.open(); f.click('[data-target="room"]'); expect(names(f)).toEqual(['Dungeon']);
+    } finally { f.view.destroy(); }
+  });
+});

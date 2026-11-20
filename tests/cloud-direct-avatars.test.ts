@@ -324,3 +324,20 @@ it("lets the Feed tab silence its badge, restore it, and mark server posts read 
   expect(request.mock.calls.some(([method, path]) => method === "POST" && path === "/v1/mailbox/read")).toBe(false);
   expect(h.settings.get().ui.tabAlerts.chat.mutedUntil).toBe(0);
 });
+
+
+it("Direct binds reactions only after a Cloud server identity exists and retains the message node", async () => {
+  const id = crypto.randomUUID();
+  const f = await setup({ response: async path => {
+    if (path === '/v1/me') return Response.json({ features: { community: true, messageReactions: true } });
+    if (path === '/v1/direct/reactions/query') return Response.json({ items: [{ messageId: id, available: true, revision: 1, mine: null, counts: [{ reaction: 'heart', count: 1 }] }] });
+    return undefined;
+  } });
+  const { message } = await f.service.captureCloud({ direction: 'outgoing', peerNumber: 202, peerName: 'Person 202', content: 'Waiting', sentAt: Date.now(), includeRoom: false }, { id: 'local-pending', clientMessageId: crypto.randomUUID(), delivery: 'waiting' }, true);
+  await f.view.onMessage(202, false, message);
+  const row = f.root.querySelector('[data-message-id="local-pending"]')!;
+  expect(row.querySelector('.kl-message-reactions')).toBeNull();
+  await f.view.onMessage(202, false, { ...message, cloudId: id, delivery: 'sent' });
+  await vi.waitFor(() => expect(row.querySelector('[aria-label="Love: 1"]')).not.toBeNull());
+  expect(f.root.querySelector('[data-message-id="local-pending"]')).toBe(row);
+});

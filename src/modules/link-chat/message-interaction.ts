@@ -10,7 +10,8 @@ export class MessageInteraction {
   #suppressClickUntil = 0;
 
   constructor(readonly root: HTMLElement, readonly history: HTMLElement,
-    readonly actions?: (row: HTMLElement) => HTMLElement[]) {
+    readonly actions?: (row: HTMLElement) => HTMLElement[], compact = false) {
+    this.#menu.classList.toggle("kl-chat-options-menu", compact);
     if (actions) root.append(this.#menu);
     const signal = this.#lifetime.signal;
     const rowAt = (event: Event): HTMLElement | undefined => {
@@ -21,15 +22,15 @@ export class MessageInteraction {
     };
     history.addEventListener("click", event => {
       if (Date.now() < this.#suppressClickUntil) { event.preventDefault(); event.stopPropagation(); return; }
+      if (event.target instanceof Node && this.#anchor?.hasAttribute("aria-haspopup") && this.#anchor.contains(event.target)) return;
       const row = rowAt(event);
-      this.#menu.hidden = true;
       if (this.#selected === row) { this.close(); return; }
       this.close();
       if (row) { this.#selected = row; row.dataset.actions = "true"; }
     }, { signal });
     history.addEventListener("contextmenu", event => {
       const row = rowAt(event); if (!row || !this.actions) return;
-      event.preventDefault(); event.stopPropagation(); this.#cancelHold(); this.#open(row);
+      event.preventDefault(); event.stopPropagation(); this.#cancelHold(); this.open(row);
     }, { signal });
     history.addEventListener("keydown", event => {
       const row = rowAt(event);
@@ -39,10 +40,12 @@ export class MessageInteraction {
       }
       if (!row) return;
       if (this.actions && (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))) {
-        event.preventDefault(); this.#open(row);
+        event.preventDefault(); this.open(row);
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault(); this.close(); this.#selected = row; row.dataset.actions = "true";
-        row.querySelector<HTMLButtonElement>(".kl-message-side-actions button")?.focus();
+        const focus = row.querySelector<HTMLButtonElement>('.kl-message-side-actions button[aria-haspopup="menu"]') ??
+          row.querySelector<HTMLButtonElement>(".kl-message-side-actions button");
+        focus?.focus({ preventScroll: true });
       }
     }, { signal });
     let x = 0, y = 0;
@@ -54,7 +57,7 @@ export class MessageInteraction {
       this.#hold = setTimeout(() => {
         this.#hold = undefined;
         if (!row.isConnected || !history.contains(row) || !row.dataset.actionable) return;
-        this.#suppressClickUntil = Date.now() + 700; this.#open(row);
+        this.#suppressClickUntil = Date.now() + 700; this.open(row);
       }, 550);
     }, { signal, passive: true });
     history.addEventListener("pointermove", event => {
@@ -64,8 +67,9 @@ export class MessageInteraction {
       history.addEventListener(name, () => this.#cancelHold(), { signal, passive: true });
     history.addEventListener("scroll", () => this.close(), { signal, passive: true });
     root.addEventListener("pointerdown", event => {
-      if (this.#menu.hidden || !(event.target instanceof Node) || this.#menu.contains(event.target)) return;
-      this.#menu.hidden = true;
+      if (this.#menu.hidden || !(event.target instanceof Node) || this.#menu.contains(event.target) ||
+          (this.#anchor?.hasAttribute("aria-haspopup") && this.#anchor.contains(event.target))) return;
+      this.close();
     }, { signal });
     this.#menu.addEventListener("keydown", event => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.close(true); return; }
@@ -76,13 +80,16 @@ export class MessageInteraction {
       } else if (event.key === "Tab") this.close(true);
     }, { signal });
   }
-  #open(row: HTMLElement): void {
+  open(row: HTMLElement, trigger?: HTMLElement): void {
+    if (trigger && this.#anchor === trigger && !this.#menu.hidden) { this.close(true); return; }
     this.close();
+    if (!this.history.contains(row) || !row.dataset.actionable) return;
     const actions = this.actions?.(row) ?? []; if (!actions.length) return;
-    this.#anchor = row.querySelector<HTMLElement>(".kl-message-bubble") ?? row;
+    this.#anchor = trigger ?? row.querySelector<HTMLElement>(".kl-message-bubble") ?? row;
+    if (trigger) trigger.setAttribute("aria-expanded", "true");
     for (const action of actions) {
       action.setAttribute("role", "menuitem");
-      action.addEventListener("click", () => { this.#menu.hidden = true; });
+      action.addEventListener("click", () => this.close(this.#menu.contains((this.root.getRootNode() as Document | ShadowRoot).activeElement)));
     }
     this.#menu.replaceChildren(...actions); this.#menu.hidden = false;
     const root = this.root.getBoundingClientRect(), anchor = this.#anchor.getBoundingClientRect();
@@ -96,6 +103,7 @@ export class MessageInteraction {
     this.#cancelHold(); this.#menu.hidden = true;
     if (this.#selected) delete this.#selected.dataset.actions;
     this.#selected = undefined;
+    if (this.#anchor?.hasAttribute("aria-haspopup")) this.#anchor.setAttribute("aria-expanded", "false");
     if (focus) this.#anchor?.focus({ preventScroll: true });
     this.#anchor = undefined;
   }

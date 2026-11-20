@@ -95,25 +95,24 @@ describe("social stability regressions", () => {
   });
   it("keeps report input after failure, prevents duplicate clicks, and confirms only saved reports", async () => {
     let fail!: (error: Error) => void;
-    const request = vi.fn().mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }))
-      .mockResolvedValueOnce({ id: 9 });
+    let lost=true;const request=vi.fn(async(method:string,..._args:any[])=>{if(method==='GET')return{features:{}};if(lost){lost=false;return new Promise((_resolve,reject)=>{fail=reject;});}return{id:9};});
     const submitted = vi.fn();
-    const form = reportForm({ request } as unknown as CloudClient, "post", "1", true, submitted);
+    const form = reportForm({ request, connected:true, memberNumber:101,origin:'https://cloud.example.test' } as unknown as CloudClient, "post", "1", true, submitted);
     document.body.append(form);
     form.querySelector<HTMLInputElement>('input[value="spam"]')!.click();
     const comment = form.querySelector("textarea")!; comment.value = "Please review";
     const submit = form.querySelector("button")!; submit.click(); submit.click();
-    expect(request).toHaveBeenCalledTimes(1); expect(submitted).not.toHaveBeenCalled();
+    await vi.waitFor(()=>expect(request).toHaveBeenCalledTimes(2)); expect(submitted).not.toHaveBeenCalled();
     fail(new CloudError("cloud_temporarily_unavailable"));
     await vi.waitFor(() => expect(submit.disabled).toBe(false));
     expect(comment.value).toBe("Please review"); submit.click();
     await vi.waitFor(() => expect(form.textContent).toContain("Report submitted. Thank you."));
-    expect(request.mock.calls[0]?.[2].clientId).toBe(request.mock.calls[1]?.[2].clientId);
+    const writes=request.mock.calls.filter(c=>c[0]==='POST');expect(writes[0]?.[2].clientId).toBe(writes[1]?.[2].clientId);
     expect(submitted).toHaveBeenCalledOnce();
   });
   it("requires an explicit report reason and explanation for Other without sending on selection", async () => {
-    const request = vi.fn().mockResolvedValue({ id: 3 });
-    const form = reportForm({ request } as unknown as CloudClient, "post", "1", true, vi.fn());
+    const request = vi.fn(async(method:string,..._args:any[])=>method==='GET'?{features:{}}:{id:3});
+    const form = reportForm({ request, connected:true, memberNumber:101,origin:'https://cloud.example.test' } as unknown as CloudClient, "post", "1", true, vi.fn());
     document.body.append(form);
     const submit = form.querySelector("button")!;
     submit.click(); expect(request).not.toHaveBeenCalled();
@@ -123,8 +122,8 @@ describe("social stability regressions", () => {
     expect(form.textContent).toContain("at least 5 characters");
     const comment = form.querySelector("textarea")!; expect(comment.required).toBe(true);
     comment.value = "Please investigate this issue"; submit.click();
-    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
-    expect(request.mock.calls[0]?.[2]).toMatchObject({ reasonCode: "other", reason: "Other: Please investigate this issue" });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(request.mock.calls[1]?.[2]).toMatchObject({ reasonCode: "other", reason: "Other: Please investigate this issue" });
   });
 });
 

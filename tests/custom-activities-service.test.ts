@@ -143,6 +143,59 @@ describe("native Custom Activities", () => {
     expect(replacementOrdering).toEqual(["Caress"]);
   });
 
+  it("keeps healthy registry entries and repairs equal-length duplicates and name collisions", () => {
+    vi.useFakeTimers();
+    const vanilla = { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] };
+    const otherAddon = { ...vanilla, Name: "OtherAddonGesture" };
+    const registered: BCActivity[] = [vanilla, otherAddon];
+    const ordering = [vanilla.Name, otherAddon.Name];
+    globalThis.ActivityFemale3DCG = registered;
+    globalThis.ActivityFemale3DCGOrdering = ordering;
+    const settings = settingsWithElbowTouch();
+    settings.update((draft) => {
+      draft.linkActivities.customActivities.push({
+        ...draft.linkActivities.customActivities[0]!,
+        id: "custom-wrist-touch",
+        name: "Wrist touch",
+      });
+    });
+    const service = new LinkActivitiesService(
+      { registerCustomActivityIntegration: () => () => undefined } as unknown as BCAdapter,
+      settings,
+    );
+    service.start();
+
+    try {
+      const first = registered[2]!;
+      const second = registered[3]!;
+      expect(ordering).toEqual([vanilla.Name, otherAddon.Name, first.Name, second.Name]);
+      vi.advanceTimersByTime(500);
+      expect(registered[2]).toBe(first);
+      expect(registered[3]).toBe(second);
+
+      ordering[3] = first.Name;
+      vi.advanceTimersByTime(500);
+      expect(ordering).toEqual([vanilla.Name, otherAddon.Name, first.Name, second.Name]);
+      expect(registered[2]).not.toBe(first);
+
+      const collidingActivity = { ...registered[2]! };
+      registered[2] = collidingActivity;
+      vi.advanceTimersByTime(500);
+      expect(registered.map((activity) => activity.Name)).toEqual(ordering);
+      expect(registered[2]).not.toBe(collidingActivity);
+
+      registered[3] = registered[2]!;
+      vi.advanceTimersByTime(500);
+      expect(registered.map((activity) => activity.Name)).toEqual(ordering);
+      expect(registered[0]).toBe(vanilla);
+      expect(registered[1]).toBe(otherAddon);
+    } finally {
+      service.stop();
+    }
+    expect(registered).toEqual([vanilla, otherAddon]);
+    expect(ordering).toEqual([vanilla.Name, otherAddon.Name]);
+  });
+
   it("offers only canonical, visually unique vanilla pictures from a fixed manifest", () => {
     globalThis.ActivityFemale3DCG = [
       { Name: "Caress", MaxProgress: 10, Prerequisite: [], Target: ["ItemArms"] },
@@ -168,6 +221,18 @@ describe("native Custom Activities", () => {
     expect(canonicalVanillaActivityImage("PenetrateFast")).toBe("PenetrateSlow");
     expect(canonicalVanillaActivityImage("LSCG_Choke")).toBe("Caress");
     expect(activityImageUrl("LSCG_Choke")).toBe("./Assets/Female3DCG/Activity/Caress.png");
+  });
+
+  it.each([
+    ["R132", "Assets/Female3DCG/Activity"],
+    ["R133", "Icons/Activity"],
+    ["R134", "Icons/Activity"],
+    ["R134Beta1", "Icons/Activity"],
+  ])("resolves the native icon directory in %s without changing saved names", (version, directory) => {
+    vi.stubGlobal("GameVersion", version);
+    expect(activityImageUrl("Nod")).toBe(`./${directory}/Nod.png`);
+    expect(activityImageUrl("Pet")).toBe(`./${directory}/Caress.png`);
+    expect(activityImageUrl("../missing")).toBe(`./${directory}/Caress.png`);
   });
 
   it("outlines every body zone, draws the selected zone last, and picks the smallest overlap", () => {
@@ -456,6 +521,7 @@ describe("native Custom Activities", () => {
 
   it("repairs and runs a native custom-activity button without relying on BC function hooks", async () => {
     vi.useFakeTimers();
+    vi.stubGlobal("GameVersion", "R134");
     const arms: BCAssetGroup = {
       Name: "ItemArms",
       Description: "Arms",
@@ -486,6 +552,7 @@ describe("native Custom Activities", () => {
 
     service.start();
     const itemActivity = globalThis.DialogActivity[0]!;
+    expect(service.resolveImage(itemActivity.Activity.Name)).toBe("./Icons/Activity/Caress.png");
     const button = document.createElement("button");
     button.className = "dialog-grid-button";
     button.name = itemActivity.Activity.Name;
@@ -493,7 +560,7 @@ describe("native Custom Activities", () => {
     button.dataset.group = "ItemArms";
     const brokenImage = document.createElement("img");
     brokenImage.className = "button-image";
-    brokenImage.src = "./Assets/Female3DCG/Activity/Missing.png";
+    brokenImage.src = `./Icons/Activity/${itemActivity.Activity.Name}.png`;
     const brokenLabel = document.createElement("span");
     brokenLabel.className = "button-label";
     brokenLabel.textContent = `MISSING TEXT IN \"ActivityDictionary.csv\": ${itemActivity.Activity.Name}`;
@@ -505,7 +572,7 @@ describe("native Custom Activities", () => {
     await Promise.resolve();
     vi.advanceTimersByTime(500);
     expect(brokenLabel.textContent).toBe("Elbow touch");
-    expect(brokenImage.getAttribute("src")).toBe("./Assets/Female3DCG/Activity/Caress.png");
+    expect(brokenImage.getAttribute("src")).toBe("./Icons/Activity/Caress.png");
     expect(button.querySelector("[data-kikilink-activity-mark]")).not.toBeNull();
 
     button.click();

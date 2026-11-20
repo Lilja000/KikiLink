@@ -4,8 +4,6 @@ import { createDeviceKey } from "../src/cloud/device-key";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import {
   profileImportDraft,
-  recordCloudMigration,
-  CLOUD_MIGRATION_KEY,
 } from "../src/cloud/migration";
 
 const origin = "https://cloud.example.test";
@@ -33,6 +31,32 @@ const response = (data: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 describe("Cloud client account and migration boundaries", () => {
+  it("remote revocation during proactive renewal invalidates pending private reads and never sends a new automatic proof", async () => {
+    const key = await createDeviceKey();
+    key.device = { id: crypto.randomUUID(), expiresAt: Date.now() + 86400000 };
+    let revoked = false, release!: (value: Response) => void;
+    const pause = vi.fn(async () => {}), sendProof = vi.fn();
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/auth/device-challenges") return revoked ? response({ error: "device_unavailable" }, 401)
+        : response({ challengeId: crypto.randomUUID(), nonce: "n".repeat(43), expiresAt: Date.now() + 60000 });
+      if (path === "/v1/auth/device-exchange") return response({ memberNumber: 101, token: "a".repeat(43), expiresAt: Date.now() + 3600000, device: key.device });
+      if (path === "/v1/account/sessions") return new Promise<Response>(r => { release = r; });
+      throw new Error("Unexpected automatic enrollment");
+    });
+    const client = new CloudClient({ origin, memberNumber: 101, getMemberNumber: () => 101, isBlocked: () => false, sendProof, fetchImpl,
+      pageOrigin: "https://bc.example.test", deviceStore: { load: async () => key, save: async () => {}, pause } });
+    try {
+      await client.connect();
+      const pending = client.request("GET", "/v1/account/sessions");
+      await vi.waitFor(() => expect(release).toBeDefined());
+      revoked = true; await expect(client.connect(true, true)).rejects.toMatchObject({ code: "device_access_revoked" });
+      release(response({ memberNumber: 101, private: "must not return" }));
+      await expect(pending).rejects.toMatchObject({ code: "session_changed" });
+      expect(client.connected).toBe(false); expect(pause).toHaveBeenCalledOnce();
+      await client.connect(true); expect(sendProof).not.toHaveBeenCalled();
+    } finally { client.destroy(); }
+  });
   it.each(["recover", "destroy", "logout", "account-switch"])("backs off persistent event authentication rejection despite successful renewal and other endpoints: %s", async action => {
     vi.useFakeTimers();
     const key = await createDeviceKey();
@@ -289,6 +313,53 @@ describe("Cloud client account and migration boundaries", () => {
     setMember(202); complete(new Response(new Blob(["pixels"]), { headers: { "content-type": "image/webp" } }));
     expect((await results).every(result => result.status === "rejected")).toBe(true); client.destroy();
   });
+  it("bypasses a cached image for explicit viewing and respects a new access denial", async () => {
+    let reads = 0, denied = false;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/auth/challenges") return response({ challengeId: crypto.randomUUID(), proof: "a".repeat(43), exchange: "b".repeat(43), verifierMember: 909, expiresAt: Date.now() + 60000 });
+      if (path === "/v1/auth/exchange") return response({ memberNumber: 101, token: "t".repeat(43), expiresAt: Date.now() + 3600000 });
+      reads++;
+      return denied ? new Response(JSON.stringify({ error: "forbidden" }), { status: 403 }) : new Response(new Blob(["pixels"]), { headers: { "content-type": "image/webp" } });
+    });
+    const { client } = setup(fetchImpl); await client.connect();
+    try {
+      await client.media("private"); await client.media("private"); expect(reads).toBe(1);
+      denied = true; await expect(client.media("private", undefined, { fresh: true })).rejects.toMatchObject({ status: 403 }); expect(reads).toBe(2);
+    } finally { client.destroy(); }
+  });
+  it.each(["pending", "historical"] as const)("checks %s invitation avatar access on each read and keeps its bytes out of general media", async kind => {
+    const groupId = crypto.randomUUID(), assetId = crypto.randomUUID(), generation = "a".repeat(32);
+    const path = kind === "pending" ? `/v1/group-invitations/${groupId}/avatar/${assetId}` : `/v1/mailbox/71/group-avatar/${assetId}`;
+    let revoked = false, responseGeneration = generation;
+    const reads: string[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const { pathname, searchParams } = new URL(String(url));
+      if (pathname === "/v1/auth/challenges") return response({ challengeId: crypto.randomUUID(), proof: "a".repeat(43),
+        exchange: "b".repeat(43), verifierMember: 909, expiresAt: Date.now() + 60000 });
+      if (pathname === "/v1/auth/exchange") return response({ memberNumber: 101, token: "t".repeat(43), expiresAt: Date.now() + 3600000 });
+      reads.push(pathname);
+      if (pathname !== path || revoked) return response({ error: "forbidden" }, 403);
+      expect(init?.method).toBe("GET");
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${"t".repeat(43)}`);
+      expect(searchParams.get("invitedAt")).toBe("100");
+      expect(searchParams.get("recoveryGeneration")).toBe(generation);
+      return new Response("invitation thumbnail", { headers: { "content-type": "image/webp", "x-recovery-generation": responseGeneration } });
+    });
+    const { client } = setup(fetchImpl);
+    try {
+      await client.connect();
+      const read = () => kind === "pending" ? client.invitationAvatar(groupId, assetId, 100, generation) :
+        client.historicalInvitationAvatar(71, assetId, 100, generation);
+      expect(await (await read()).text()).toBe("invitation thumbnail");
+      responseGeneration = "b".repeat(32);
+      await expect(read()).rejects.toMatchObject({ code: "recovery_generation_required" });
+      revoked = true;
+      await expect(read()).rejects.toMatchObject({ status: 403 });
+      await expect(client.media(assetId, undefined, { recoveryGeneration: generation })).rejects.toMatchObject({ status: 403 });
+      expect(reads).toEqual([path, path, path, `/v1/media/${assetId}`]);
+    } finally { client.destroy(); }
+  });
   it("is off by default and construction sends zero requests", () => {
     expect(KIKILINK_CLOUD_ORIGIN).toBe("");
     const fetchImpl = vi.fn();
@@ -363,17 +434,6 @@ describe("Cloud client account and migration boundaries", () => {
     expect(draft).not.toHaveProperty("avatarUrl");
     expect(draft).not.toHaveProperty("avatarId");
     expect(JSON.stringify(settings.get())).toBe(before);
-    recordCloudMigration(
-      storage,
-      101,
-      "group2_101_example12",
-      "cloud-group-test",
-    );
-    expect(JSON.parse(storage.getItem(CLOUD_MIGRATION_KEY)!)).toEqual({
-      version: 1,
-      memberNumber: 101,
-      groups: { group2_101_example12: "cloud-group-test" },
-    });
     expect(JSON.stringify(settings.get())).toBe(before);
   });
 });
@@ -393,4 +453,54 @@ it('queues a group profile burst within six active requests and rejects queued w
   const pending=Promise.allSettled(Array.from({length:12},(_,i)=>client.profile(400+i)));
   const before=fetchImpl.mock.calls.length;setMember(202);
   expect((await pending).every(r=>r.status==='rejected')).toBe(true);expect(fetchImpl.mock.calls).toHaveLength(before);client.destroy();
+});
+
+it.each(["profile-discovery", "privacy", "relationships"])("%s hints discard profile cache and reads started before permissions changed", async kind => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>, delayed!: (value: Response) => void, slow = false;
+  let profile = { memberNumber:202,displayName:"Member",bio:"Shared before change",statusMessage:"Custom",publicTags:["tag"],revision:1,visible:true,updatedAt:1,avatarFrame:"none",profileStyle:"classic",avatarId:null,bannerId:null };
+  const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v1/auth/challenges") return response({ challengeId:crypto.randomUUID(),proof:"a".repeat(43),exchange:"b".repeat(43),verifierMember:909,expiresAt:Date.now()+60000 });
+    if (path === "/v1/auth/exchange") return response({ memberNumber:101,token:"t".repeat(43),expiresAt:Date.now()+3600000 });
+    if (path === "/v1/profiles/202") return slow ? new Promise<Response>(r => { delayed = r; }) : response(profile);
+    if (path === "/v1/events") return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      stream=controller; init!.signal!.addEventListener("abort",()=>controller.error(new Error("closed")),{once:true});
+    } }), {headers:{"content-type":"text/event-stream"}});
+    throw new Error("Unexpected request");
+  });
+  const {client}=setup(fetchImpl);
+  try {
+    await client.connect();client.retainEvents();await vi.waitFor(()=>expect(stream).toBeDefined());
+    await client.profile(202);expect(client.peekProfile(202)?.bio).toBe("Shared before change");
+    slow=true;const pending=client.profile(202,true);const rejected=expect(pending).rejects.toMatchObject({code:"profile_changed"});
+    await vi.waitFor(()=>expect(delayed).toBeDefined());
+    stream.enqueue(new TextEncoder().encode(`event: ${kind}\ndata: {}\n\n`));
+    await vi.waitFor(()=>expect(client.peekProfile(202)).toBeUndefined());
+    delayed(response(profile));await rejected;expect(client.peekProfile(202)).toBeUndefined();
+    slow=false;profile={...profile,bio:"",statusMessage:"",publicTags:[]};
+    expect((await client.profile(202)).bio).toBe("");
+  } finally {client.destroy();}
+});
+it.each(['profile-communities','profile-discovery','profile-location'])('delivers content-free %s hints to active consumers',async kind=>{
+ let stream!:ReadableStreamDefaultController<Uint8Array>;
+ const fetchImpl=vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>{
+  const path=new URL(String(url)).pathname;
+  if(path==='/v1/auth/challenges')return response({challengeId:crypto.randomUUID(),proof:'a'.repeat(43),exchange:'b'.repeat(43),verifierMember:909,expiresAt:Date.now()+60000});
+  if(path==='/v1/auth/exchange')return response({memberNumber:101,token:'t'.repeat(43),expiresAt:Date.now()+3600000});
+  if(path==='/v1/events')return new Response(new ReadableStream<Uint8Array>({start(controller){stream=controller;init!.signal!.addEventListener('abort',()=>controller.error(new Error('closed')),{once:true});}}),{headers:{'content-type':'text/event-stream'}});
+  throw new Error('Unexpected request');
+ });
+ const {client}=setup(fetchImpl),hint=vi.fn();const unsubscribe=client.subscribe(hint);
+ try{await client.connect();client.retainEvents();await vi.waitFor(()=>expect(stream).toBeDefined());stream.enqueue(new TextEncoder().encode(`event: ${kind}\ndata: {}\n\n`));await vi.waitFor(()=>expect(hint).toHaveBeenCalledWith(kind));}finally{unsubscribe();client.destroy();}
+});
+
+it('a privacy acknowledgement invalidates local profile consumers even without an event stream',async()=>{
+ const fetchImpl=vi.fn(async(url:RequestInfo|URL)=>{
+  const path=new URL(String(url)).pathname;
+  if(path==='/v1/auth/challenges')return response({challengeId:crypto.randomUUID(),proof:'a'.repeat(43),exchange:'b'.repeat(43),verifierMember:909,expiresAt:Date.now()+60000});
+  if(path==='/v1/auth/exchange')return response({memberNumber:101,token:'t'.repeat(43),expiresAt:Date.now()+3600000});
+  return response({memberNumber:101,showLocation:false,revision:1});
+ });
+ const {client}=setup(fetchImpl),hint=vi.fn();const unsubscribe=client.subscribe(hint);
+ try{await client.connect();await client.request('PATCH','/v1/privacy/me',{revision:0,showLocation:false});expect(hint).toHaveBeenCalledWith('profiles-cleared');expect(hint).toHaveBeenCalledWith('privacy');}finally{unsubscribe();client.destroy();}
 });

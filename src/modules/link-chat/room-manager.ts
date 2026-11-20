@@ -13,19 +13,27 @@ export class RoomManager {
   #busy = false;
   #status = element("p", { className: "kl-room-manager-status" });
   #generation = 0;
-  constructor(private readonly apply: (room: RoomPresetData) => Promise<void>, private readonly ownNumber: () => number) {
+  #authorize: (() => Promise<void>) | undefined;
+  constructor(private readonly apply: (room: RoomPresetData, authorize?: () => Promise<void>) => Promise<void>, private readonly ownNumber: () => number) {
     this.#status.setAttribute("role", "status");
   }
   update(snapshot: BCRoomAdminSnapshot | undefined, force = false): void {
-    const changedRoom = this.#snapshot?.roomName !== snapshot?.roomName;
+    const changedRoom = this.#snapshot?.roomName !== snapshot?.roomName || this.#snapshot?.settings?.space !== snapshot?.settings?.space;
     const changedPermission = this.#snapshot?.isAdmin !== snapshot?.isAdmin;
     this.#snapshot = snapshot;
-    if (!snapshot) { this.#generation++; this.#busy = false; this.#dirty = false; this.#room = undefined; this.root.replaceChildren(); return; }
+    if (!snapshot) { this.#authorize=undefined; this.#generation++; this.#busy = false; this.#dirty = false; this.#room = undefined; this.root.replaceChildren(); return; }
+    if (changedRoom) { this.#authorize=undefined; this.#generation++; this.#busy = false; this.#status.textContent = ""; }
     if (changedRoom || !this.#room || (force && !this.#dirty && !this.#busy)) {
       this.#room = structuredClone(snapshot.settings); this.#dirty = false; this.#draw();
     } else if (changedPermission) this.#draw();
   }
+  get hasDraft(): boolean { return this.#dirty || this.#busy; }
+  loadPrepared(room: RoomPresetData, label: string, authorize: () => Promise<void>): void {
+    if(this.hasDraft)throw new Error("Finish or reset your existing room settings draft first.");
+    this.load(room,label);this.#authorize=authorize;
+  }
   load(room: RoomPresetData, label: string): void {
+    this.#authorize=undefined;
     this.#generation++; this.#busy = false;
     this.#room = structuredClone(room);
     // Legacy presets did not save maps. Keep the current map instead of clearing it.
@@ -52,7 +60,7 @@ export class RoomManager {
       select.addEventListener("change", () => { write(select.value); changed(); }); return field(label, select);
     };
     const size = element("input", { ariaLabel: "Room size", className: "kl-custom-arousal-range" });
-    size.type = "range"; size.min = "2"; size.max = "20"; size.step = "1"; size.value = String(room.limit);
+    size.type = "range"; size.min = "2"; size.max = "50"; size.step = "1"; size.value = String(room.limit);
     const sizeValue = element("output", { text: `${room.limit} people` });
     size.addEventListener("input", () => { room.limit = Number(size.value); sizeValue.textContent = `${room.limit} people`; changed(); });
     const basics = element("div", { className: "kl-room-form-grid" },
@@ -87,10 +95,10 @@ export class RoomManager {
     submit.addEventListener("click", () => { void this.#submit(); });
     const reset = element("button", { className: "kl-text-button", type: "button", text: "Reset changes", onClick: () => {
       if (!this.#snapshot) return;
-      this.#room = structuredClone(this.#snapshot.settings); this.#dirty = false; this.#status.textContent = ""; this.#draw();
+      this.#authorize=undefined; this.#room = structuredClone(this.#snapshot.settings); this.#dirty = false; this.#status.textContent = ""; this.#draw();
     } });
     const form = element("fieldset", { className: "kl-room-manager-fields" },
-      basics, input("Description", room.description, 300, value => { room.description = value; }, true),
+      basics, element("p", { className: "kl-setting-help", text: "Saved plans support 2–50 places. Applying uses the loaded BC client’s limit and current room occupancy." }), input("Description", room.description, 300, value => { room.description = value; }, true),
       disclosure("Access & visibility", element("div", { className: "kl-sequence-options" },
         element("div", { className: "kl-room-form-grid" }, field("Access", access), field("Visibility", visibility)),
         element("label", { className: "kl-sequence-restore" }, element("span", { text: "Locked" }),
@@ -175,9 +183,9 @@ export class RoomManager {
     const generation = ++this.#generation;
     this.#busy = true; this.#draw(); this.#status.textContent = "Waiting for Bondage Club…";
     try {
-      await this.apply(structuredClone(this.#room));
+      await this.apply(structuredClone(this.#room), this.#authorize);
       if (generation !== this.#generation) return;
-      this.#dirty = false; this.#status.textContent = "Room settings applied.";
+      this.#authorize=undefined; this.#dirty = false; this.#status.textContent = "Room settings applied.";
     } catch (error) {
       if (generation !== this.#generation) return;
       this.#status.textContent = error instanceof Error ? error.message : "Room settings could not be applied.";

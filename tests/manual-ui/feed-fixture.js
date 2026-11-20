@@ -53,9 +53,10 @@ export function createFeedFixture({ profile, now, friends, params, ownMember = 1
       const limit = Number(url.searchParams.get('limit')) || 20;
       const matches = item => (filter === 'hidden' ? item.hidden : !item.hidden)
         && (filter !== 'friends' || friends.includes(item.author))
+        && (filter !== 'following' || item.author === ownMember || friends.includes(item.author))
         && (filter !== 'mine' || item.author === ownMember)
         && (filter !== 'saved' || item.bookmarked)
-        && (!query || (query.startsWith('#') ? item.author === Number(query.slice(1)) : item.text.toLowerCase().includes(query)));
+        && (!query || (query.startsWith('#') ? item.author === Number(query.slice(1)) : [item.text,item.profile.displayName,item.community?.name,item.poll?.question].filter(Boolean).join(" ").toLowerCase().includes(query)));
       const visible = posts.filter(matches).sort((a, b) => b.id - a.id);
       const eligible = visible.filter(item => item.id < cursor);
       const items = eligible.slice(0, limit);
@@ -68,7 +69,7 @@ export function createFeedFixture({ profile, now, friends, params, ownMember = 1
       if (body.poll) item.poll = { ...body.poll, options: body.poll.options.map((text, index) => ({ id: index + 1, text, votes: 0 })), totalVoters: 0, myVotes: [], closed: false };
       posts.push(item); if (body.clientId) clientIds.set(body.clientId, item); return json(item);
     }
-    const itemRoute = /^\/v1\/feed\/(\d+)(?:\/(bookmark|hide|watch|pin|poll\/vote|comments))?$/u.exec(p);
+    const itemRoute = /^\/v1\/feed\/(\d+)(?:\/(bookmark|hide|watch|pin|poll\/vote|poll\/close|comments))?$/u.exec(p);
     if (itemRoute) {
       const item = posts.find(value => value.id === Number(itemRoute[1])); if (!item) return missing();
       const action = itemRoute[2];
@@ -85,7 +86,14 @@ export function createFeedFixture({ profile, now, friends, params, ownMember = 1
       if (action === 'hide') { item.hidden = body.hidden; return json(item); }
       if (action === 'watch') { item.watching = body.watching; return json(item); }
       if (action === 'pin') { item.pinnedAt = body.pinned ? Date.now() : null; return json(item); }
+      if (action === 'poll/close' && item.poll && m === 'PUT') {
+        if (item.author !== ownMember) return Response.json({error: 'author_required'}, {status: 403});
+        item.poll.closed = true;
+        item.poll.closesAt = Math.min(item.poll.closesAt, Date.now());
+        return json(item);
+      }
       if (action === 'poll/vote' && item.poll) {
+        if (item.poll.closed) return Response.json({error:'poll_closed'}, {status:409});
         if (item.poll.closed) return Response.json({ error: 'poll_closed' }, { status: 409 });
         const old = item.poll.myVotes; const votes = [...new Set(body.optionIds)];
         for (const option of item.poll.options) option.votes += Number(votes.includes(option.id)) - Number(old.includes(option.id));

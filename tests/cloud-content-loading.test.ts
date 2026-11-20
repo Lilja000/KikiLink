@@ -223,7 +223,10 @@ describe("stable Cloud profile rendering", () => {
 describe("shared decoded image previews", () => {
   it("holds a stable placeholder until decode and paints reopened avatars synchronously from the same URL", async () => {
     vi.stubGlobal("IntersectionObserver", undefined);
-    const decoded = deferred<void>(), decode = vi.fn(() => decoded.promise);
+    const decoded = deferred<void>(), decode = vi.fn(function(this: HTMLImageElement) {
+      Object.defineProperties(this, { naturalWidth: { value: 640 }, naturalHeight: { value: 360 } });
+      return decoded.promise;
+    });
     const previous = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "decode");
     Object.defineProperty(HTMLImageElement.prototype, "decode", { configurable: true, value: decode });
     disposers.push(() => { if (previous) Object.defineProperty(HTMLImageElement.prototype, "decode", previous); else delete (HTMLImageElement.prototype as Partial<HTMLImageElement>).decode; });
@@ -234,11 +237,21 @@ describe("shared decoded image previews", () => {
     const panel = new CloudPanel(client, { storage, settings: () => settings.get(), ownName: () => "Kiki", legacyGroups: () => [], isBlocked: () => false, openProfile: () => {} });
     disposers.push(() => panel.destroy()); document.body.append(panel.element);
     const one = panel.profileImage("same", "avatar"), two = panel.profileImage("same", "avatar"); document.body.append(one, two);
+    const paints: Array<{ state: string | undefined; image: Element | null; ratio: string }> = [];
+    one.addEventListener("cloud-image-before-paint", () => paints.push({
+      state: one.dataset.state, image: one.querySelector("img"), ratio: one.style.getPropertyValue("--kl-chat-image-ratio"),
+    }));
     await vi.waitFor(() => expect(decode).toHaveBeenCalledTimes(1));
     expect(one.dataset.state).toBe("loading"); expect(one.querySelector("img")).toBeNull();
     decoded.resolve(); await vi.waitFor(() => expect(two.dataset.state).toBe("ready"));
+    expect(paints).toEqual([{ state: "loading", image: null, ratio: "" }]);
     const reopened = panel.profileImage("same", "avatar"); document.body.append(reopened);
     expect(reopened.dataset.state).toBe("ready"); expect(reopened.querySelector("img")?.src).toBe("blob:shared-avatar");
+    for (const wrapper of [one, two, reopened]) {
+      expect(wrapper.querySelector("img")?.getAttribute("width")).toBe("640");
+      expect(wrapper.querySelector("img")?.getAttribute("height")).toBe("360");
+      expect(wrapper.style.getPropertyValue("--kl-chat-image-ratio")).toBe("640 / 360");
+    }
     expect(create).toHaveBeenCalledTimes(1); expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes("/v1/media/"))).toHaveLength(1);
     await client.logout(); expect(revoke).toHaveBeenCalledWith("blob:shared-avatar");
     settings.update(s => { s.linkPresence.profileImagePreviews = "never"; });

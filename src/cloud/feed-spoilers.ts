@@ -1,6 +1,7 @@
-import { appendFormattedText } from "../modules/link-chat/text-format";
 import { parseMessageLinks } from "../modules/link-chat/media";
 import type { MessageTextRange } from "../modules/link-chat/message-actions";
+import type { MessageMention } from '../core/types';
+import { appendMentionText, shiftMentions } from './mentions';
 
 interface FeedTextRange extends MessageTextRange {
   spoiler?: string;
@@ -9,7 +10,7 @@ interface FeedTextRange extends MessageTextRange {
 
 /** Feed-only spoilers reuse the existing safe formatter. Hidden contents are not
  * placed in the DOM (including accessible labels) until explicitly revealed. */
-export function appendFeedFormattedText(target: HTMLElement, value: string): void {
+export function appendFeedFormattedText(target: HTMLElement, value: string, mentions?: readonly MessageMention[], open?: (member: number) => void): void {
   const links = parseMessageLinks(value);
   const protectedParts: FeedTextRange[] = [];
   const escaped = (index: number) => {
@@ -39,7 +40,7 @@ export function appendFeedFormattedText(target: HTMLElement, value: string): voi
     ...protectedParts,
     ...links.filter(link => !protectedParts.some(part => link.start < part.end && link.end > part.start)),
   ];
-  appendFormattedText(target, value, ranges, range => {
+  appendMentionText(target, value, ranges, range => {
     if (range.spoiler === undefined) return target.ownerDocument.createTextNode(range.literal ?? value.slice(range.start, range.end));
     const button = target.ownerDocument.createElement("button");
     button.type = "button";
@@ -51,7 +52,8 @@ export function appendFeedFormattedText(target: HTMLElement, value: string): voi
       if (revealed) {
         button.removeAttribute("aria-label");
         button.title = "Hide spoiler";
-        appendFormattedText(button, range.spoiler!, parseMessageLinks(range.spoiler!));
+        // The spoiler is already a button; its revealed mentions are spans, not nested controls.
+        appendMentionText(button, range.spoiler!, parseMessageLinks(range.spoiler!), undefined, shiftMentions(mentions, range.start + 2));
       } else {
         button.setAttribute("aria-label", "Reveal spoiler");
         button.title = "Reveal spoiler";
@@ -61,7 +63,7 @@ export function appendFeedFormattedText(target: HTMLElement, value: string): voi
     button.addEventListener("click", () => { revealed = !revealed; render(); });
     render();
     return button;
-  });
+  }, mentions, open);
 }
 
 export const FEED_SPOILER_STYLES = `

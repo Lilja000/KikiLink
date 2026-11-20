@@ -99,9 +99,9 @@ export class LinkRosterService {
     });
   }
 
-  list(scope: RosterScope, query = ""): RosterEntry[] {
+  list(scope: RosterScope | "people", query = ""): RosterEntry[] {
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    const records = new Map(
+    const records = scope === "current" ? undefined : new Map(
       this.repository.list().map((record) => [record.memberNumber, record] as const),
     );
     const current = new Map(
@@ -113,31 +113,18 @@ export class LinkRosterService {
           .map((contact) => [contact.memberNumber, contact.memberName] as const)
         : [],
     );
-    const memberNumbers =
-      scope === "current"
-        ? [...current.keys()]
-        : [...new Set([...records.keys(), ...current.keys(), ...friends.keys()])];
+    const memberNumbers = records
+      ? [...new Set([...records.keys(), ...current.keys(), ...friends.keys()])]
+      : [...current.keys()];
 
     return memberNumbers
-      .map((memberNumber): RosterEntry => {
+      .map((memberNumber) => {
         const character = current.get(memberNumber);
-        const record =
-          records.get(memberNumber) ??
-          emptyPerson(memberNumber, character?.memberName ?? friends.get(memberNumber) ?? `Member ${memberNumber}`);
-        return {
-          ...record,
-          displayName: character?.memberName ?? friends.get(memberNumber) ?? record.displayName,
-          present: character !== undefined,
-          isFriend:
-            character?.isFriend === true ||
-            (typeof this.adapter.isKnownFriend === "function" &&
-              this.adapter.isKnownFriend(memberNumber)),
-          relationships:
-            typeof this.adapter.getPlayerRelationships === "function"
-              ? this.adapter.getPlayerRelationships(memberNumber)
-              : [],
-        };
+        const record = records ? records.get(memberNumber) : this.repository.get(memberNumber);
+        return this.#entry(memberNumber, record, character?.memberName ?? friends.get(memberNumber),
+          character !== undefined, this.#isFriend(memberNumber, character));
       })
+      .filter(entry => scope === "people" || !entry.directoryBookmark || entry.present || entry.isFriend)
       .filter((entry) => scope !== "favorites" || entry.favorite)
       .filter((entry) => scope !== "friends" || entry.isFriend)
       .filter(
@@ -152,6 +139,47 @@ export class LinkRosterService {
       .sort(compareRosterEntries);
   }
 
+  getEntry(memberNumber: number): RosterEntry {
+    const record = this.repository.get(memberNumber);
+    let character: RoomCharacter | undefined;
+    for (const current of this.adapter.getRoomCharacters()) {
+      if (current.memberNumber === memberNumber) character = current;
+    }
+    const isFriend = this.#isFriend(memberNumber, character);
+    let displayName = character?.memberName;
+    if (!character && !record) {
+      const contact = isFriend && typeof this.adapter.getKnownContacts === "function"
+        ? this.adapter.getKnownContacts().find((item) => item.memberNumber === memberNumber)
+        : undefined;
+      displayName = contact?.memberName ?? (this.adapter.getMemberName(memberNumber)?.trim() || undefined);
+    }
+    return this.#entry(memberNumber, record, displayName, character !== undefined, isFriend);
+  }
+
+  #isFriend(memberNumber: number, character?: RoomCharacter): boolean {
+    return character?.isFriend === true ||
+      (typeof this.adapter.isKnownFriend === "function" && this.adapter.isKnownFriend(memberNumber));
+  }
+
+  #entry(
+    memberNumber: number,
+    record: PersonRecord | undefined,
+    displayName: string | undefined,
+    present: boolean,
+    isFriend: boolean,
+  ): RosterEntry {
+    const person = record ?? emptyPerson(memberNumber, displayName ?? `Member ${memberNumber}`);
+    return {
+      ...person,
+      displayName: displayName ?? person.displayName,
+      present,
+      isFriend,
+      relationships: typeof this.adapter.getPlayerRelationships === "function"
+        ? this.adapter.getPlayerRelationships(memberNumber)
+        : [],
+    };
+  }
+
   get(memberNumber: number, fallbackName?: string): PersonRecord {
     return (
       this.repository.get(memberNumber) ??
@@ -164,6 +192,7 @@ export class LinkRosterService {
     displayName: string,
     note: string,
     tags: string[],
+    requirePersistence = false,
   ): PersonRecord {
     const existing = this.get(memberNumber, displayName);
     return this.repository.put({
@@ -171,13 +200,19 @@ export class LinkRosterService {
       displayName: displayName.trim() || existing.displayName,
       note: note.trim().slice(0, 2000),
       tags,
-    });
+    }, requirePersistence);
   }
 
-  toggleFavorite(memberNumber: number, displayName: string): PersonRecord {
-    const existing = this.get(memberNumber, displayName);
+  toggleFavorite(memberNumber: number, displayName: string, fromDirectory = false): PersonRecord {
+    const record = this.repository.get(memberNumber);
+    const existing = record ?? emptyPerson(memberNumber, displayName);
+    if (existing.directoryBookmark && existing.favorite && !existing.note && !existing.tags.length) {
+      this.repository.remove(memberNumber);
+      return emptyPerson(memberNumber, displayName);
+    }
     return this.repository.put({
       ...existing,
+      ...(!record && fromDirectory ? { directoryBookmark: true as const } : {}),
       displayName: displayName.trim() || existing.displayName,
       favorite: !existing.favorite,
     });

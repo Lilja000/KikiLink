@@ -1,7 +1,9 @@
+import { openGalleryDatabase } from "./gallery-database";
+import { scopePersistenceName } from "../core/storage-scope";
+
 export const MAX_DEVICE_GALLERY_IMAGE_BYTES = 8 * 1024 * 1024;
 export const MAX_DEVICE_GALLERY_IMAGES = 80;
 
-const DATABASE_VERSION = 1;
 const STORE_NAME = "images";
 
 export interface DeviceGalleryImage {
@@ -12,6 +14,8 @@ export interface DeviceGalleryImage {
   height: number;
   createdAt: number;
   blob: Blob;
+  /** Inactive original archive values; never spread onto live image properties. */
+  archivedFields?: string;
 }
 
 export interface DeviceGalleryImageInput {
@@ -56,12 +60,6 @@ export class DeviceGalleryStore implements GalleryStore {
     this.#persistenceRequest ??= requestPersistentStorage();
     await this.#persistenceRequest;
     const database = await this.#database();
-    const existing = await requestResult(
-      database.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).count(),
-    );
-    if (existing >= MAX_DEVICE_GALLERY_IMAGES) {
-      throw new Error(`Your device Gallery can hold up to ${MAX_DEVICE_GALLERY_IMAGES} images`);
-    }
     const record: DeviceGalleryImage = {
       id: createId(),
       name: "KikiLink image",
@@ -71,9 +69,19 @@ export class DeviceGalleryStore implements GalleryStore {
       createdAt: Date.now(),
       blob: image.blob.slice(0, image.blob.size, "image/webp"),
     };
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put(record);
-    await transactionDone(transaction);
+    await new Promise<void>((resolve,reject) => {
+      const transaction = database.transaction(STORE_NAME,"readwrite"), store = transaction.objectStore(STORE_NAME);
+      let reason = "Gallery storage failed";
+      const count = store.count();
+      count.onsuccess = () => {
+        try {
+          if (count.result >= MAX_DEVICE_GALLERY_IMAGES) throw new Error(`Your device Gallery can hold up to ${MAX_DEVICE_GALLERY_IMAGES} images`);
+          store.add(record);
+        } catch(e) { reason = e instanceof Error ? e.message : reason; transaction.abort(); }
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(new Error(reason));
+    });
     return record;
   }
 
@@ -94,7 +102,9 @@ export class DeviceGalleryStore implements GalleryStore {
     if (typeof indexedDB === "undefined") {
       return Promise.reject(new Error("Permanent Gallery storage is unavailable in this browser"));
     }
-    this.#databasePromise ??= openDatabase(deviceGalleryDatabaseName(this.memberNumber)).catch((error) => {
+    this.#databasePromise ??= openGalleryDatabase(deviceGalleryDatabaseName(this.memberNumber),indexedDB,true,() => {}).then(database => {
+      database.onversionchange = () => { database.close(); this.#databasePromise = undefined; }; return database;
+    }).catch((error) => {
       this.#databasePromise = undefined;
       throw error;
     });
@@ -130,21 +140,7 @@ async function requestPersistentStorage(): Promise<boolean> {
 
 export function deviceGalleryDatabaseName(memberNumber: number): string {
   const account = Number.isSafeInteger(memberNumber) && memberNumber > 0 ? memberNumber : "guest";
-  return `kikilink-device-gallery-${account}`;
-}
-
-function openDatabase(name: string): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(name, DATABASE_VERSION);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE_NAME)) {
-        request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Unable to open permanent Gallery storage"));
-    request.onblocked = () => reject(new Error("Gallery storage is blocked by another tab"));
-  });
+  return scopePersistenceName(`kikilink-device-gallery-${account}`);
 }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {

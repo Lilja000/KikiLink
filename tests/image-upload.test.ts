@@ -8,6 +8,7 @@ import {
   MAX_PROFILE_BANNER_BYTES,
   normalizeCloudinaryUploadConfig,
   normalizeLitterboxUploadConfig,
+  prepareProfileAvatar,
   prepareProfileBanner,
   PROFILE_BANNER_HEIGHT,
   PROFILE_BANNER_WIDTH,
@@ -122,6 +123,18 @@ describe("local image uploads", () => {
     expect(harness.context.imageSmoothingQuality).toBe("high");
     expect(harness.toBlob).toHaveBeenCalledWith(expect.any(Function), "image/webp", 0.88);
     expect(harness.close).toHaveBeenCalledOnce();
+  });
+
+  it("encodes just the chosen square of an avatar without its original filename", async () => {
+    const webp = new Blob([bytes(1, 2, 3)], { type: "image/webp" });
+    const harness = installImagePreparationHarness(800, 600, [webp]);
+    const file = pngFile("private-avatar.png", 800, 600);
+    const framed = await prepareProfileAvatar(file, { kind: "framing", x: 100, y: 25, zoom: 2 });
+    expect(harness.drawImage).toHaveBeenCalledWith(harness.bitmap, 500, 75, 300, 300, 0, 0, 512, 512);
+    expect(harness.close).toHaveBeenCalledOnce();
+    expect(framed.name).toBe("avatar.webp");
+    expect(framed.type).toBe("image/webp");
+    expect(framed.size).toBe(webp.size);
   });
 
   it("lowers WebP quality until a profile banner fits the 2 MiB limit", async () => {

@@ -1,5 +1,7 @@
+import { workshopPaletteReadable } from "./workshop-destinations";
+import { scopePersistenceName, scopedBrowserStorage } from "./storage-scope";
 import { activeAvatarFrame, normalizeAvatarDecoration, effectiveProfileStyle, publicProfileTags, DEFAULT_AVATAR_DECORATION } from "./profile-appearance";
-import type { KikiLinkSettings, QuickAction } from "./types";
+import type { KikiLinkSettings, QuickAction, MusicPlaylist, TabAlerts } from "./types";
 import {
   migrateLegacyCustomActivities,
   sanitizeCustomActivities,
@@ -7,6 +9,9 @@ import {
 import { sanitizeReactionRules } from "../modules/link-reactions/reaction-rules";
 import { normalizeImageUrl } from "../modules/link-chat/media";
 import { copyRoomMap } from "./room-map";
+import { SettingsPersistence, SETTINGS_SOURCE_LIMIT } from "./settings-persistence";
+import { importedSoundSettings, isNotificationSoundPreset, type SoundSettings } from './sound-settings-import';
+import { SettingsArchivedSources, type SettingsSourcesPlan } from './settings-archived-sources';
 
 export type KeyValueStorageReadResult =
   | { ok: true; value: string | null }
@@ -16,6 +21,12 @@ export interface KeyValueStorage {
   getItem(key: string): string | null;
   /** Distinguishes an absent key from a contained browser-storage read failure. */
   getItemResult?(key: string): KeyValueStorageReadResult;
+  /** Read the device copy, bypassing an in-memory or portable mirror, for verified saves. */
+  getPersistedItemResult?(key: string): KeyValueStorageReadResult;
+  /** Device-only revision of a key; detects intervening writes even when its bytes return. */
+  getMutationVersion?(key: string): string | null;
+  /** A device write must succeed before updating any portable mirror. */
+  setItemVerified?(key: string, value: string): void;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
 }
@@ -24,6 +35,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
   schemaVersion: 30,
   ui: {
     accent: "#d71932",
+    workshopPalette: null,
     theme: "dark",
     density: "comfortable",
     timeFormat: "12-hour",
@@ -33,6 +45,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     launcherOpen: "last",
     launcherSize: 58,
     notificationsMutedUntil: 0,
+    unreadBadges: true,
     hiddenTabs: [],
     tabAlerts: { feed: { mode: "all", mutedUntil: 0 }, chat: { mode: "all", mutedUntil: 0 } },
     launcherPosition: null,
@@ -46,6 +59,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
   },
   linkChat: {
     enabled: true,
+    directEnabled: true,
     saveHistory: true,
     includeRoomByDefault: false,
     retentionDays: 90,
@@ -110,7 +124,7 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
     sounds: {
       enabled: false,
       volume: 65,
-      chat: "chime",
+      chat: "kiki",
       friendOnline: "sparkle",
       roomJoin: "pop",
     },
@@ -132,14 +146,82 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
 
 export const SETTINGS_KEY = "kikilink:settings:v1";
 
+const RECOVERY_SECTIONS = { ui: 'Appearance & navigation', linkChat: 'Chat preferences & saved links',
+  linkPresence: 'Local profile', linkActivities: 'Custom activities', linkRoster: 'Players',
+  linkReactions: 'Alerts & automatic rules', linkRoom: 'Room presets', linkMusic: 'Music & playlists' } as const;
+export interface SettingsRestoreReview {
+  readonly copyId: number; readonly createdAt: number; readonly changedSections: readonly string[];
+  readonly archivedDataChanged?: boolean;
+  readonly activities: number; readonly playlists: number; readonly rules: number;
+}
+export interface SettingsImportReview {
+  readonly archivedDataChanged?: boolean;
+  readonly changedSections: readonly string[]; readonly activities: number; readonly rules: number;
+  readonly previousCopyId: number | null; readonly importedCopyId: number;
+}
+export interface SoundSettingsReview {
+  readonly archivedDataChanged?: boolean;
+  readonly before: Readonly<SoundSettings>; readonly after: Readonly<SoundSettings>; readonly changed: boolean;
+  readonly previousCopyId: number | null; readonly importedCopyId: number;
+}
+
+function recoverySettings(raw: string): KikiLinkSettings {
+  if (raw.length > SETTINGS_SOURCE_LIMIT || new TextEncoder().encode(raw).length > SETTINGS_SOURCE_LIMIT)
+    throw new Error('This copy is too large for this KikiLink version.');
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new Error('This copy is unreadable. It has not been changed.'); }
+  if (!isRecord(value) || (value.schemaVersion !== undefined && (!Number.isSafeInteger(value.schemaVersion) || Number(value.schemaVersion) < 1)))
+    throw new Error('This copy has an unsupported settings format.');
+  if (Number(value.schemaVersion) > DEFAULT_SETTINGS.schemaVersion) throw new Error('This copy needs a newer KikiLink version.');
+  const keys = Object.keys(RECOVERY_SECTIONS);
+  if (!keys.some(key => isRecord(value[key])) || keys.some(key => value[key] !== undefined && !isRecord(value[key])))
+    throw new Error('This copy does not contain supported settings sections.');
+  return sanitizeSettings(value);
+}
+
+export interface MusicSettingsBaseline { readonly canonical: string; readonly saved: string | null }
+
 export class SettingsStore {
   #settings: KikiLinkSettings;
+  #archived: SettingsArchivedSources | undefined;
   readonly #storage: KeyValueStorage;
+  readonly persistence: SettingsPersistence;
   readonly #listeners = new Set<(settings: KikiLinkSettings) => void>();
+  #restoreReview: { review: SettingsRestoreReview; before: string; next: KikiLinkSettings; archived: SettingsSourcesPlan;
+    source: ReturnType<SettingsPersistence['reviewCopy']> } | undefined;
+  #importReview: { review: SettingsImportReview; before: string; next: KikiLinkSettings; raw: string; archived: SettingsSourcesPlan;
+    baseline: ReturnType<SettingsPersistence['reviewImport']> } | undefined;
+  #soundReview: {review: SoundSettingsReview; canonical: string; raw: string; archived: SettingsSourcesPlan;
+    baseline: ReturnType<SettingsPersistence['reviewImport']>} | undefined;
 
   constructor(storage?: KeyValueStorage) {
     this.#storage = storage ?? getDefaultStorage();
-    this.#settings = this.#load();
+    this.persistence = new SettingsPersistence(this.#storage, SETTINGS_KEY, DEFAULT_SETTINGS.schemaVersion);
+    const saved = this.persistence.load();
+    this.#settings = saved === undefined ? structuredClone(DEFAULT_SETTINGS) : sanitizeSettings(saved);
+    try {
+      const raw = this.persistence.loadedSource();
+      this.#archived = new SettingsArchivedSources(this.#storage, DEFAULT_SETTINGS.schemaVersion,
+        saved !== undefined && raw !== null ? { raw, active: this.#settings } : undefined);
+    } catch (error) { this.persistence.blockWrites(error instanceof Error ? error.message : 'Additional settings data is unavailable.'); }
+    if (isRecord(saved) && isRecord(saved.ui) && !Object.hasOwn(saved.ui, "unreadBadges")) {
+      // Local347 omitted this default. Compare against its exact canonical bytes so an
+      // ordinary preference edit can still be saved with a full recovery journal.
+      const { unreadBadges, ...previousUi } = this.#settings.ui;
+      this.persistence.comparedWith(JSON.stringify({ ...this.#settings, ui: previousUi }));
+    } else {
+      this.persistence.comparedWith(JSON.stringify(this.#settings));
+    }
+  }
+
+  #archivePlan(raw?: string, imported?: string): SettingsSourcesPlan {
+    this.persistence.checkedSource();
+    if (!this.#archived) throw new Error('Additional settings data is unavailable. Reload before saving.');
+    return this.#archived.review(raw === undefined ? undefined : { raw, active: sanitizeSettings(JSON.parse(raw)) }, imported);
+  }
+  #preserveArchive(plan: SettingsSourcesPlan): void {
+    if (!this.#archived) throw new Error('Additional settings data is unavailable.');
+    this.#archived.persist(plan);
   }
 
   get(): KikiLinkSettings {
@@ -158,31 +240,158 @@ export class SettingsStore {
     const draft = this.get();
     mutator(draft);
     const previous = this.#settings;
-    this.#settings = sanitizeSettings(draft);
+    const next = sanitizeSettings(draft);
     try {
-      this.#storage.setItem(SETTINGS_KEY, JSON.stringify(this.#settings));
-    } catch {
+      const archived = this.#archivePlan();
+      this.persistence.write(JSON.stringify(next), false, undefined, () => this.#preserveArchive(archived));
+    } catch (error) {
       if (options?.requirePersistence) {
         this.#settings = previous;
-        throw new Error("Could not save on this device. Free some browser storage and try again.");
+        throw error;
       }
       // Keep the validated in-memory settings if persistent storage is unavailable.
     }
+    this.#settings = next;
     const settings = this.get();
     this.#notify(settings);
     return settings;
   }
 
   reset(): KikiLinkSettings {
-    this.#settings = structuredClone(DEFAULT_SETTINGS);
-    try {
-      this.#storage.removeItem(SETTINGS_KEY);
-    } catch {
-      // The in-memory reset still succeeds.
-    }
+    const next = structuredClone(DEFAULT_SETTINGS);
+    const archived = this.#archivePlan();
+    this.persistence.write(JSON.stringify(next), true, undefined, () => this.#preserveArchive(archived));
+    this.#settings = next;
     const settings = this.get();
     this.#notify(settings);
     return settings;
+  }
+
+  reviewRecoveryCopy(id: number): SettingsRestoreReview {
+    this.#restoreReview = undefined;
+    const source = this.persistence.reviewCopy(id), next = recoverySettings(source.copy.source), current = this.get();
+    const archived = this.#archivePlan(source.copy.source);
+    // Restoring preferences must not trim history or start automatic outgoing actions.
+    next.linkChat.saveHistory = current.linkChat.saveHistory;
+    next.linkChat.retentionDays = current.linkChat.retentionDays;
+    next.linkChat.maxMessagesPerConversation = current.linkChat.maxMessagesPerConversation;
+    next.linkRoster.retentionDays = current.linkRoster.retentionDays;
+    next.linkRoster.trackEncounters = current.linkRoster.trackEncounters;
+    next.linkPresence.afkAutoReply.enabled = false;
+    next.linkReactions.enabled = false;
+    for (const rule of next.linkReactions.rules) rule.enabled = false;
+    next.ui.settingsSection = current.ui.settingsSection;
+    const changed = (Object.keys(RECOVERY_SECTIONS) as Array<keyof typeof RECOVERY_SECTIONS>)
+      .filter(key => JSON.stringify(current[key]) !== JSON.stringify(next[key])).map(key => RECOVERY_SECTIONS[key]);
+    const review = Object.freeze({ copyId: id, createdAt: source.copy.createdAt, changedSections: Object.freeze(changed), archivedDataChanged: archived.changed,
+      activities: next.linkActivities.customActivities.length, playlists: next.linkMusic.playlists.length, rules: next.linkReactions.rules.length });
+    this.#restoreReview = { review, before: JSON.stringify(current), next, source, archived }; return review;
+  }
+
+  cancelRecoveryReview(): void { this.#restoreReview = undefined; }
+
+  reviewImportedSettings(raw: string, archivedSource?: string): SettingsImportReview {
+    this.#importReview = undefined;
+    const imported = recoverySettings(raw), source = JSON.parse(raw) as Record<string,unknown>, current = this.get(), next = this.get();
+    const keys = (Object.keys(RECOVERY_SECTIONS) as Array<keyof typeof RECOVERY_SECTIONS>).filter(key => key !== 'linkMusic');
+    if (!keys.some(key => isRecord(source[key]))) throw new Error('This archive has no settings sections that can be restored here.');
+    // Absent sections remain current. Device media is restored separately; never activate missing locators.
+    for (const key of keys) if (isRecord(source[key])) Object.assign(next,{[key]:imported[key]});
+    next.linkMusic = current.linkMusic; next.linkReactions.sounds = current.linkReactions.sounds;
+    next.linkChat.saveHistory = current.linkChat.saveHistory; next.linkChat.retentionDays = current.linkChat.retentionDays;
+    next.linkChat.maxMessagesPerConversation = current.linkChat.maxMessagesPerConversation;
+    next.linkRoster.retentionDays = current.linkRoster.retentionDays; next.linkRoster.trackEncounters = current.linkRoster.trackEncounters;
+    next.ui.settingsSection = current.ui.settingsSection; next.linkPresence.afkAutoReply.enabled = false;
+    next.linkReactions.enabled = false; for (const rule of next.linkReactions.rules) rule.enabled = false;
+    const baseline = this.persistence.reviewImport(raw);
+    const archived = this.#archivePlan(raw, archivedSource);
+    const changedSections = keys.filter(key => JSON.stringify(current[key]) !== JSON.stringify(next[key])).map(key => RECOVERY_SECTIONS[key]);
+    const review = Object.freeze({changedSections:Object.freeze(changedSections),archivedDataChanged:archived.changed,activities:next.linkActivities.customActivities.length,rules:next.linkReactions.rules.length,previousCopyId:baseline.previousCopyId,importedCopyId:baseline.importedCopyId});
+    this.#importReview = {review,before:JSON.stringify(current),next,raw,baseline,archived}; return review;
+  }
+  cancelImportedSettingsReview(review?: SettingsImportReview): void {
+    if (!review || this.#importReview?.review === review) this.#importReview = undefined;
+  }
+  reviewImportedSoundSettings(raw: string, archivedSource?: string): SoundSettingsReview {
+    this.#soundReview = undefined;
+    const after = importedSoundSettings(raw,DEFAULT_SETTINGS.schemaVersion), before = Object.freeze(this.getField('linkReactions','sounds'));
+    const canonical = JSON.stringify(this.#settings), saved = this.persistence.checkedSource();
+    const durable = saved === null ? DEFAULT_SETTINGS : sanitizeSettings(JSON.parse(saved));
+    if (JSON.stringify(durable) !== canonical) throw new Error('Save your current settings or reload before restoring sound choices.');
+    const baseline = this.persistence.reviewImport(raw);
+    const archived = this.#archivePlan(raw, archivedSource);
+    const review = Object.freeze({before,after,changed:JSON.stringify(before)!==JSON.stringify(after)||archived.changed,archivedDataChanged:archived.changed,
+      previousCopyId:baseline.previousCopyId,importedCopyId:baseline.importedCopyId});
+    this.#soundReview = {review,canonical,raw,baseline,archived}; return review;
+  }
+  cancelImportedSoundSettingsReview(): void { this.#soundReview = undefined; }
+  /** Caller has just rechecked the referenced durable custom files. No audio is played here. */
+  restoreImportedSoundSettings(review: SoundSettingsReview, current: () => boolean): void {
+    const pending = this.#soundReview; this.#soundReview = undefined;
+    if (!current() || !pending || pending.review !== review || pending.canonical !== JSON.stringify(this.#settings))
+      throw new Error('Settings changed or this sound review expired. Review the archive again.');
+    if (!review.changed) return;
+    const next = this.get(); next.linkReactions.sounds = {...review.after};
+    this.persistence.writeImport(JSON.stringify(next),pending.raw,pending.baseline,() => this.#preserveArchive(pending.archived));
+    this.#settings = next; this.#notify(this.get());
+  }
+  restoreImportedSettings(review: SettingsImportReview): KikiLinkSettings {
+    const pending = this.#importReview; this.#importReview = undefined;
+    if (!pending || pending.review !== review || pending.before !== JSON.stringify(this.#settings))
+      throw new Error('Settings changed or this review expired. Review the archive settings again.');
+    this.persistence.writeImport(JSON.stringify(pending.next),pending.raw,pending.baseline,() => this.#preserveArchive(pending.archived));
+    this.#settings = pending.next; const saved = this.get(); this.#notify(saved); return saved;
+  }
+
+  restoreRecoveryCopy(review: SettingsRestoreReview): KikiLinkSettings {
+    const pending = this.#restoreReview;
+    if (!pending || pending.review !== review || pending.before !== JSON.stringify(this.#settings) || pending.source.saved !== this.persistence.savedSource())
+      throw new Error('Settings changed or this review expired. Review the copy again before restoring.');
+    this.persistence.write(JSON.stringify(pending.next), true, pending.source.journal, () => this.#preserveArchive(pending.archived), pending.source.journalVersion);
+    this.#settings = pending.next; this.#restoreReview = undefined;
+    const saved = this.get(); this.#notify(saved); return saved;
+  }
+
+  musicImportSnapshot(): MusicSettingsBaseline {
+    this.#archivePlan();
+    const saved = this.persistence.checkedSource(), canonical = JSON.stringify(this.#settings);
+    const durable = saved === null ? structuredClone(DEFAULT_SETTINGS) : sanitizeSettings(JSON.parse(saved));
+    if (JSON.stringify(durable) !== canonical) throw new Error('Save your current settings or reload before importing music.');
+    return Object.freeze({canonical,saved});
+  }
+  /** The caller must first commit the native music pre-copy and protected files. */
+  applyImportedMusic(playlists: MusicPlaylist[], baseline: MusicSettingsBaseline, current: () => boolean): void {
+    const fresh = this.musicImportSnapshot();
+    if (!current() || fresh.canonical !== baseline.canonical || fresh.saved !== baseline.saved) throw new Error('Settings changed. Review the music import again.');
+    const draft = this.get(); draft.linkMusic.playlists = structuredClone(playlists);
+    const next = sanitizeSettings(draft);
+    if (JSON.stringify(next.linkMusic.playlists) !== JSON.stringify(playlists) || next.linkMusic.activePlaylistId !== draft.linkMusic.activePlaylistId) throw new Error('These playlists cannot be saved without changing current music settings.');
+    if (!current()) throw new Error('Music import cancelled.');
+    // Verified device persistence precedes memory/listeners/portable settings updates.
+    const archived = this.#archivePlan();
+    this.persistence.write(JSON.stringify(next), false, undefined, () => this.#preserveArchive(archived)); this.#settings = next; this.#notify(this.get());
+  }
+
+  /** Unreadable/future sources throw: callers must skip automatic file cleanup. */
+  recoveryMusicTrackIds(): Set<string> {
+    const current = this.persistence.savedSource(), sources = this.persistence.recoveryCopies().map(copy => copy.source);
+    sources.push(...this.#archivePlan().sources);
+    if (current !== null) sources.push(current);
+    const ids = new Set<string>();
+    for (const source of sources) {
+      recoverySettings(source); // Reject unreadable/future sources before allowing cleanup.
+      // Keep raw locators too: normalization can omit a damaged/unknown track record.
+      const pending: unknown[] = [JSON.parse(source).linkMusic];
+      while (pending.length) {
+        const value = pending.pop();
+        if (Array.isArray(value)) { for (const child of value) pending.push(child); }
+        else if (isRecord(value)) {
+          if (typeof value.locator === 'string') ids.add(value.locator);
+          for (const child of Object.values(value)) if (child && typeof child === 'object') pending.push(child);
+        }
+      }
+    }
+    return ids;
   }
 
   subscribe(listener: (settings: KikiLinkSettings) => void): () => void {
@@ -194,30 +403,6 @@ export class SettingsStore {
     for (const listener of [...this.#listeners]) listener(structuredClone(settings));
   }
 
-  #load(): KikiLinkSettings {
-    let raw: string | null = null;
-    try {
-      raw = this.#storage.getItem(SETTINGS_KEY);
-    } catch {
-      return structuredClone(DEFAULT_SETTINGS);
-    }
-    if (!raw) return structuredClone(DEFAULT_SETTINGS);
-
-    try {
-      const settings = sanitizeSettings(JSON.parse(raw) as unknown);
-      const canonical = JSON.stringify(settings);
-      if (canonical !== raw) {
-        try {
-          this.#storage.setItem(SETTINGS_KEY, canonical);
-        } catch {
-          // The sanitized in-memory copy remains authoritative for this session.
-        }
-      }
-      return settings;
-    } catch {
-      return structuredClone(DEFAULT_SETTINGS);
-    }
-  }
 }
 
 export class MemoryKeyValueStorage implements KeyValueStorage {
@@ -244,6 +429,11 @@ export class MemoryKeyValueStorage implements KeyValueStorage {
   }
 }
 
+/** Session fallback must not report that unavailable browser storage is durable. */
+export class UnavailableKeyValueStorage extends MemoryKeyValueStorage {
+  override getItemResult(_key: string): KeyValueStorageReadResult { return { ok: false }; }
+}
+
 export function sanitizeSettings(input: unknown): KikiLinkSettings {
   const source = isRecord(input) ? input : {};
   const sourceSchema =
@@ -264,6 +454,8 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
     schemaVersion: 30,
     ui: {
       accent: validColor(ui.accent) ? ui.accent : DEFAULT_SETTINGS.ui.accent,
+      workshopPalette: isRecord(ui.workshopPalette) && typeof ui.workshopPalette.packageId==='string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(ui.workshopPalette.packageId) && typeof ui.workshopPalette.version==='string' && /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/.test(ui.workshopPalette.version) && typeof ui.workshopPalette.primary==='string' && typeof ui.workshopPalette.secondary==='string' && workshopPaletteReadable({primary:ui.workshopPalette.primary,secondary:ui.workshopPalette.secondary,accent:'#d71932'})
+        ? {packageId:ui.workshopPalette.packageId,version:ui.workshopPalette.version,label:cleanBoundedText(ui.workshopPalette.label,80),primary:ui.workshopPalette.primary,secondary:ui.workshopPalette.secondary} : null,
       theme:
         ui.theme === "light" || ui.theme === "system" || ui.theme === "dark"
           ? ui.theme
@@ -281,13 +473,14 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
         ui.homeLayout === "compact" ? "compact" : DEFAULT_SETTINGS.ui.homeLayout,
       launcherSide: ui.launcherSide === "left" ? "left" : "right",
       launcherOpen:
-        ui.launcherOpen === "last" || ui.launcherOpen === "chat" || (sourceSchema >= 29 && ui.launcherOpen === "home")
+        ui.launcherOpen === "last" || ui.launcherOpen === "chat" || ui.launcherOpen === "explore" || (sourceSchema >= 29 && ui.launcherOpen === "home")
           ? ui.launcherOpen
           : DEFAULT_SETTINGS.ui.launcherOpen,
       launcherSize: integerInRange(ui.launcherSize, 40, 88, DEFAULT_SETTINGS.ui.launcherSize),
       notificationsMutedUntil: integerInRange(ui.notificationsMutedUntil, -1, Number.MAX_SAFE_INTEGER, 0),
+      unreadBadges: booleanOr(ui.unreadBadges, DEFAULT_SETTINGS.ui.unreadBadges),
       hiddenTabs: Array.isArray(ui.hiddenTabs) ? [...new Set(ui.hiddenTabs.filter((tab): tab is KikiLinkSettings["ui"]["hiddenTabs"][number] =>
-        ["home", "cloud", "chat", "roster", "room", "music", "activities"].includes(tab)))].slice(0, 7) : [],
+        ["home", "cloud", "chat", "roster", "room", "music", "activities", "explore", "create", "game", "you"].includes(tab)))] : [],
       tabAlerts: sanitizeTabAlerts(ui.tabAlerts),
       launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
       panelPosition: sanitizeLauncherPosition(ui.panelPosition),
@@ -299,6 +492,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
     },
     linkChat: {
       enabled: booleanOr(linkChat.enabled, DEFAULT_SETTINGS.linkChat.enabled),
+      directEnabled: booleanOr(linkChat.directEnabled, DEFAULT_SETTINGS.linkChat.directEnabled),
       saveHistory: booleanOr(linkChat.saveHistory, DEFAULT_SETTINGS.linkChat.saveHistory),
       includeRoomByDefault: booleanOr(
         linkChat.includeRoomByDefault,
@@ -439,7 +633,7 @@ function sanitizeRoomPresets(value: unknown): KikiLinkSettings["linkRoom"]["pres
         description: cleanBoundedText(room.description, 300),
         ...(copyRoomMap(room.mapData) ? { mapData: copyRoomMap(room.mapData)! } : {}),
         background: cleanBoundedText(room.background, 120),
-        limit: integerInRange(room.limit, 2, 20, 10),
+        limit: integerInRange(room.limit, 2, 50, 10),
         game: cleanBoundedText(room.game, 40),
         space: cleanBoundedText(room.space, 20),
         language: cleanBoundedText(room.language, 12),
@@ -461,6 +655,10 @@ function sanitizeRoomPresets(value: unknown): KikiLinkSettings["linkRoom"]["pres
     ids.add(id);
   }
   return presets.sort((left, right) => right.savedAt - left.savedAt);
+}
+
+export function isMusicDurationSeconds(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function sanitizeMusicSettings(
@@ -497,6 +695,7 @@ function sanitizeMusicSettings(
             title,
             source,
             locator,
+            ...(isMusicDurationSeconds(track.durationSeconds) ? { durationSeconds: track.durationSeconds } : {}),
             addedAt: finiteTimestamp(track.addedAt),
           });
           trackIds.add(trackId);
@@ -712,9 +911,7 @@ function notificationSoundOr(
   value: unknown,
   fallback: KikiLinkSettings["linkReactions"]["sounds"]["chat"],
 ): KikiLinkSettings["linkReactions"]["sounds"]["chat"] {
-  return value === "sparkle" ||
-    value === "pop" ||
-    value === "chime" ||
+  return isNotificationSoundPreset(value) ||
     (typeof value === "string" && /^custom:[a-z0-9_-]{1,64}$/iu.test(value))
     ? value as KikiLinkSettings["linkReactions"]["sounds"]["chat"]
     : fallback;
@@ -820,12 +1017,20 @@ function sanitizeLauncherPosition(value: unknown): { x: number; y: number } | nu
 
 function sanitizeTabAlerts(value: unknown): KikiLinkSettings["ui"]["tabAlerts"] {
   const source = isRecord(value) ? value : {};
-  const read = (tab: "feed" | "chat"): KikiLinkSettings["ui"]["tabAlerts"]["feed"] => {
+  const read = (tab: "feed" | "chat"): TabAlerts => {
     const item = isRecord(source[tab]) ? source[tab] : {};
-    return { mode: item.mode === "off" ? "off" : tab === "chat" && item.mode === "personal" ? "personal" : "all",
+    return { mode: item.mode === "off" ? "off" : item.mode === "personal" ? "personal" : "all",
       mutedUntil: integerInRange(item.mutedUntil, -1, Number.MAX_SAFE_INTEGER, 0) };
   };
-  return { feed: read("feed"), chat: read("chat") };
+  const feed = read("feed"), chat = read("chat");
+  const overrides = isRecord(source.chat) ? source.chat : {};
+  return {
+    feed: isRecord(source.feed) && source.feed.mode === "mentions" ? { ...feed, mode: "mentions" } : feed,
+    chat: { ...chat,
+      ...(typeof overrides.direct === "boolean" ? { direct: overrides.direct } : {}),
+      ...(typeof overrides.groups === "boolean" ? { groups: overrides.groups } : {}),
+    },
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -873,11 +1078,11 @@ function isSettingsSection(
 function getDefaultStorage(): KeyValueStorage {
   try {
     if (typeof localStorage !== "undefined") {
-      localStorage.getItem("kikilink:storage-probe");
-      return localStorage;
+      localStorage.getItem(scopePersistenceName("kikilink:storage-probe"));
+      return scopedBrowserStorage(localStorage);
     }
   } catch {
     // Some browser privacy modes expose localStorage but deny access to it.
   }
-  return new MemoryKeyValueStorage();
+  return new UnavailableKeyValueStorage();
 }

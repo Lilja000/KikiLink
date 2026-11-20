@@ -1967,7 +1967,7 @@ export class GroupChatPanel {
   }
 
   async #restoreSubmission(submission: { groupId: string; value: string; next: string; edited: boolean }): Promise<void> {
-    if (!this.service.getGroup(submission.groupId)) return;
+    if (this.#submission !== submission || !this.service.getGroup(submission.groupId)) return;
     if (submission.edited) {
       const failed = this.#failedSends.get(submission.groupId) ?? [];
       failed.push({ value: submission.value });
@@ -2159,6 +2159,10 @@ export class GroupChatPanel {
       if (this.#detailsGroupId === update.groupId) this.#closeGroupDetails(true);
     }
     if (update.kind === "cleared") {
+      clearTimeout(this.#draftTimer);
+      this.#draftTimer = undefined;
+      this.#pendingDraft = undefined;
+      this.#submission = undefined;
       this.#failedSends.clear();
       this.#closeGroupActionMenu(true);
       this.#closeGroupDetails(true);

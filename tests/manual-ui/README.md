@@ -171,3 +171,25 @@ density cases, then checks live draft/focus preservation, draft reload, Friends
 and Hidden restoration. It does not replace the Cloud integration tests or
 manual assistive-technology / Android / Firefox review. A missing browser is a
 failed prerequisite, not a passing or silently skipped visual check.
+
+## Local platform shell review
+
+Build the real addon view with the local-only platform flag and disposable BC/Cloud fixtures:
+
+```sh
+PORT=8766 node scripts/preview-ui.mjs --platform
+```
+
+The HTML is written to `.local-dev/platform-ui/index.html`; stable and Feed preview output are kept separate. `--build-only` creates the file without starting a server. This harness does not log in to Bondage Club, contact staging/production Cloud, or seed real user data.
+
+With Playwright installed outside the production dependency set, run the painted-browser review:
+
+```sh
+node tests/manual-ui/review-platform.mjs --serve
+```
+
+`--serve` starts and stops the local fixture server in the same process environment. To use an already running fixture, omit `--serve` and optionally set `KIKILINK_VISUAL_URL`. Set `KIKILINK_BROWSER_PATH` if Chromium is installed outside Playwright's default browser cache. `CODEX_PRIMARY_RUNTIME_NODE_MODULES` is an optional environment-specific fallback for locating Playwright; it is not needed with a normal local Playwright installation.
+
+The review covers the six navigation areas, retained workspaces, keyboard navigation, Inbox page/popover state, profile overlay, search visibility, last-route persistence, and viewport bounds at 1366×768, 1024×768, 844×390, and 390×844. Screenshots and JSON reports are written to `.local-dev/platform-review/`. `--interactions` skips the full route matrix when rechecking a focused interaction fix. Non-local network requests are blocked and recorded as failures.
+
+These are Chromium UI checks against synthetic adapters. They do not substitute for local FUSAM tests inside live BC, Firefox/Zen and Android testing, or a multi-account staging acceptance run.

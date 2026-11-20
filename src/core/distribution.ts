@@ -13,7 +13,15 @@ export const KIKILINK_DISTRIBUTION: KikiLinkDistribution =
 export const KIKILINK_DEV_TEST =
   typeof __KIKILINK_DEV_TEST__ === "boolean" && __KIKILINK_DEV_TEST__;
 
-export const KIKILINK_BUILD_ID = KIKILINK_DEV_TEST && typeof __KIKILINK_BUILD_ID__ === "string" ? __KIKILINK_BUILD_ID__ : "";
+/** Explicit local-only platform migration; all browser persistence is isolated. */
+export const KIKILINK_PLATFORM_PREVIEW =
+  typeof __KIKILINK_PLATFORM_PREVIEW__ === "boolean" && __KIKILINK_PLATFORM_PREVIEW__;
+
+/** Enable the 2.0 interface on the stable install, using existing account data. */
+export const KIKILINK_PLATFORM_RELEASE =
+  typeof __KIKILINK_PLATFORM_RELEASE__ === "boolean" && __KIKILINK_PLATFORM_RELEASE__;
+
+export const KIKILINK_BUILD_ID = (KIKILINK_DEV_TEST || KIKILINK_PLATFORM_PREVIEW) && typeof __KIKILINK_BUILD_ID__ === "string" ? __KIKILINK_BUILD_ID__ : "";
 
 const compiledCatboxRelayUrl =
   typeof __KIKILINK_CATBOX_RELAY_URL__ === "string"

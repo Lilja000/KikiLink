@@ -4,7 +4,7 @@ import { blankActivityStep, MAX_SEQUENCE_STEPS, MAX_SEQUENCE_TIME_MS, MAX_STEP_T
 import { hiddenActivityChoice, humanize, type ActivityCapabilities, type ExpressionChoice } from "./activity-capabilities";
 
 /** Progressive controls; only native capabilities become selectable options. No scripts or names to type. */
-export function activityEffectsEditor(draft: CustomActivityDefinition, capabilities: () => ActivityCapabilities): HTMLElement {
+export function activityEffectsEditor(draft: CustomActivityDefinition, capabilities: () => ActivityCapabilities, options: { preserveUnavailable?: boolean } = {}): HTMLElement {
   const effects: CustomActivityEffects = draft.effects ?? { subject: "actor", restore: true, steps: [] };
   const root = element("details", { className: "kl-activity-triggers" }) as HTMLDetailsElement;
   const title = element("summary", { text: "Triggers" });
@@ -28,7 +28,7 @@ export function activityEffectsEditor(draft: CustomActivityDefinition, capabilit
     effects.steps.forEach((_step, index) => timeline.append(element("span", { text: `Step ${index + 1}` })));
     if (effects.restore && effects.steps.length) timeline.append(element("span", { text: "Restore" }));
     const steps = element("div", { className: "kl-sequence-steps" });
-    effects.steps.forEach((step, index) => steps.append(stepEditor(step, index, caps, effects, () => { updateDraft(); draw(); }, () => { updateDraft(); updateTotal(); })));
+    effects.steps.forEach((step, index) => steps.append(stepEditor(step, index, caps, effects, () => { updateDraft(); draw(); }, () => { updateDraft(); updateTotal(); }, options.preserveUnavailable)));
     const add = button("Add step", () => { effects.steps.push(blankActivityStep()); updateDraft(); draw();
       body.querySelector<HTMLDetailsElement>(".kl-sequence-step:last-child")?.focus(); });
     add.classList.add("kl-sequence-add");
@@ -53,7 +53,7 @@ export function activityEffectsEditor(draft: CustomActivityDefinition, capabilit
   return root;
 }
 
-function stepEditor(step: CustomActivityStep, index: number, caps: ActivityCapabilities, effects: CustomActivityEffects, redraw: () => void, changed: () => void): HTMLElement {
+function stepEditor(step: CustomActivityStep, index: number, caps: ActivityCapabilities, effects: CustomActivityEffects, redraw: () => void, changed: () => void, preserveUnavailable = false): HTMLElement {
   const root = element("details", { className: "kl-sequence-step", tabIndex: -1 }) as HTMLDetailsElement;
   root.open = true;
   const summary = element("summary", { text: `Step ${index + 1}` });
@@ -61,10 +61,12 @@ function stepEditor(step: CustomActivityStep, index: number, caps: ActivityCapab
     secondsInput(`Step ${index + 1} delay`, "Delay", step.delayMs, value => { step.delayMs = value; changed(); }),
     secondsInput(`Step ${index + 1} duration`, "Duration", step.durationMs, value => { step.durationMs = value; changed(); }),
   );
-  // Retired authoring options disappear when this activity is edited and saved.
+  // The platform editor retains saved options even when this native client cannot offer them.
+  if (!preserveUnavailable) {
   step.expressions = step.expressions.filter(change => !hiddenActivityChoice({ Name: change.group, Description: "" }));
   step.removeClothing = step.removeClothing.filter(name => !hiddenActivityChoice({ Name: name, Description: "" }));
   if (step.wearClothing) step.wearClothing = step.wearClothing.filter(item => !hiddenActivityChoice({ Name: item.Group, Description: "" }));
+  }
   const expressionRows = element("div", { className: "kl-sequence-expression-rows" });
   const expressions = section("Expressions & face", expressionRows);
   expressions.open = step.expressions.length > 0;

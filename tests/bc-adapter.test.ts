@@ -1811,6 +1811,40 @@ describe("BCAdapter", () => {
     vi.useRealTimers();
   });
 
+  it("keeps each intentional self send and suppresses its live and native-log echoes", async () => {
+    vi.useFakeTimers();
+    connectNativeTransport();
+    globalThis.Player = { MemberNumber: 999, Name: "Kiki", FriendNames: new Map() };
+    globalThis.FriendListBeepLog = [];
+    globalThis.ServerAccountBeep = vi.fn(data => {
+      FriendListBeepLog.push({ ...data, Sent: false, Time: new Date() });
+    });
+    let messageId = 0;
+    globalThis.ServerSendBeepMessage = (target, message) => {
+      ServerSend("AccountBeep", { MemberNumber: target, BeepType: "", IsSecret: true, Message: message });
+      ServerAccountBeep({ MemberNumber: target, MemberName: "Kiki",
+        Message: `${message}\n\n\uf124${JSON.stringify({ messageColor: "#B72626", messageType: "Message", messageId: `wire${++messageId}` })}` });
+      FriendListBeepLog.push({ MemberNumber: target, MemberName: "Kiki", Sent: true, Time: new Date(), Message: message! });
+    };
+    const bus = new EventBus<KikiLinkEvents>();
+    const incoming = vi.fn(), sent = vi.fn();
+    bus.on("beep:received", incoming);
+    bus.on("beep:sent", sent);
+    const adapter = new BCAdapter(bus, "0.13.0");
+    await adapter.start();
+    try {
+      expect(adapter.sendBeep(999, "Test", false)).toMatchObject({ content: "Test", direction: "outgoing" });
+      expect(adapter.sendBeep(999, "Test", false)).toMatchObject({ content: "Test", direction: "outgoing" });
+      ServerAccountBeep({ MemberNumber: 999, MemberName: "Kiki", Message: "An addon update is available." });
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(sent).not.toHaveBeenCalled();
+      expect(incoming.mock.calls.map(([event]) => event.content)).toEqual(["An addon update is available."]);
+      expect(adapter.getRecentBeeps().map(event => [event.direction, event.content])).toEqual([
+        ["outgoing", "Test"], ["outgoing", "Test"], ["incoming", "An addon update is available."],
+      ]);
+    } finally { adapter.stop(); }
+  });
+
   it("skips a revoked native Beep-log entry without losing later valid entries", async () => {
     vi.useFakeTimers();
     globalThis.Player = {

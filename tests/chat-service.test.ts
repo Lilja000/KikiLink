@@ -153,6 +153,25 @@ describe("ChatService", () => {
     }
   });
 
+  it("hides an old native self echo beside its original sent message without deleting history", async () => {
+    const { repository, settings } = setup();
+    const base = { peerNumber: 999, peerName: "Kiki", includeRoom: false };
+    const raw = 'Test\n\n\uf124{"messageColor":"#B72626","messageType":"Message","messageId":"ilr2gxtaqkh"}';
+    await repository.addMessage({ ...base, id: "notice", content: "An addon update is available.",
+      direction: "incoming", sentAt: 100, read: false });
+    await repository.addMessage({ ...base, id: "send", content: "Test", direction: "outgoing", sentAt: 1_000, read: true });
+    await repository.addMessage({ ...base, id: "echo", content: raw, direction: "incoming", sentAt: 1_150, read: false });
+    await repository.putConversation({ ...base, lastMessage: raw, lastMessageAt: 1_150,
+      lastDirection: "incoming", unread: 2, pinned: false, draft: "" });
+    const service = new ChatService(repository, settings, 999);
+    expect(await service.getMessages(999, 1)).toMatchObject([{ id: "send", content: "Test" }]);
+    expect(await service.getMessages(999)).toMatchObject([{ id: "notice" }, { id: "send" }]);
+    expect(await service.getConversation(999)).toMatchObject({ lastMessage: "Test", lastMessageAt: 1_000, lastDirection: "outgoing", unread: 1 });
+    expect(await service.listConversations()).toMatchObject([{ lastDirection: "outgoing", unread: 1 }]);
+    expect(await repository.getMessages(999)).toMatchObject([{ id: "notice" }, { id: "send" }, { id: "echo", content: raw }]);
+    expect(await new ChatService(repository, settings, 999).getMessages(999)).toHaveLength(2);
+  });
+
   it("stores incoming Beeps and increments unread state", async () => {
     const { service } = setup();
     await service.capture(

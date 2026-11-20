@@ -13,15 +13,15 @@ const modSdkLicense = await readFile(
   resolve(root, "node_modules/bondage-club-mod-sdk/LICENSE"),
   "utf8",
 );
-const { devTest, local, trafficAudit, groupTrial, cloudOrigin, cloudTestMember,
+const { devTest, platformPreview, platformRelease, local, trafficAudit, groupTrial, cloudOrigin, cloudTestMember,
   cloudTestMembers, outputDirectory } = resolveBuildConfig(process.argv.slice(2), process.env);
 const branch = execFileSync("git", ["branch", "--show-current"], { cwd: root, encoding: "utf8" }).trim();
 const commit = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: root, encoding: "utf8" }).trim();
 let buildId = "";
-if (devTest) {
+if (devTest || platformPreview) {
   const inputs = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "src", "cloud/shared", "scripts", "package.json", "package-lock.json"], { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean);
-  const fingerprint = createHash("sha256").update(JSON.stringify({ cloudOrigin, cloudTestMember, cloudTestMembers, trafficAudit, groupTrial }));
+  const fingerprint = createHash("sha256").update(JSON.stringify({ cloudOrigin, cloudTestMember, cloudTestMembers, trafficAudit, groupTrial, platformPreview }));
   for (const path of [...new Set(inputs)].sort()) {
     fingerprint.update(path).update("\0");
     try { fingerprint.update(await readFile(resolve(root, path))); }
@@ -45,19 +45,24 @@ const thirdPartyNotice = `/*!
  *
 ${modSdkLicense.trim().split("\n").map((line) => line ? ` * ${line}` : " *").join("\n")}
  */`;
-const artifactNotice = `${kikiLinkNotice}\n${thirdPartyNotice}`;
+const emojiNotice = `/*!
+ * Twemoji graphics, copyright 2019 Twitter, Inc and other contributors.
+ * https://github.com/twitter/twemoji · https://creativecommons.org/licenses/by/4.0/
+ * Subset from Prototype17.3 with SVG metadata and fixed dimensions removed.
+ */`;
+const artifactNotice = `${kikiLinkNotice}\n${thirdPartyNotice}\n${emojiNotice}`;
 
 const userscriptHeader = `// ==UserScript==
-// @name         KikiLink${devTest ? " - DevTest" : ""}
-// @namespace    kikilink.bc${devTest ? ".devtest" : ""}
+// @name         KikiLink${platformPreview ? " - Platform Preview" : devTest ? " - DevTest" : ""}
+// @namespace    kikilink.bc${platformPreview ? ".platform-preview" : devTest ? ".devtest" : ""}
 // @version      ${packageJson.version}
-// @description  ${groupTrial ? "DevTest: Private Cloud groups for approved participants 72385, 95634, 259875." : cloudTestMember ? "DevTest: Cloud lobby login for test ALT 95634. Private staging." : devTest ? "DevTest: Rooms and Players browsing for desktop and mobile, based on the restored QoL addon." : "A polished social and interaction addon for Bondage Club."}${devTest ? ` Build ${buildId}.` : ""}
+// @description  ${platformPreview ? "Local KikiLink 2.0 platform preview with isolated test data." : groupTrial ? "DevTest: Private Cloud groups for approved participants 72385, 95634, 259875." : cloudTestMember ? "DevTest: Cloud lobby login for test ALT 95634. Private staging." : devTest ? "DevTest: Rooms and Players browsing for desktop and mobile, based on the restored QoL addon." : "A polished social and interaction addon for Bondage Club."}${devTest || platformPreview ? ` Build ${buildId}.` : ""}
 // @author       KikiLink contributors
 // @license      MIT
 // @homepageURL  https://github.com/Lilja000/KikiLink
 // @supportURL   https://github.com/Lilja000/KikiLink/issues
-// @downloadURL  ${devTest ? "none" : "https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js"}
-// @updateURL    ${devTest ? "none" : "https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js"}
+// @downloadURL  ${devTest || platformPreview ? "none" : "https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js"}
+// @updateURL    ${devTest || platformPreview ? "none" : "https://raw.githubusercontent.com/Lilja000/KikiLink/main/dist/KikiLink.user.js"}
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondageprojects.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -80,7 +85,7 @@ const buildOptions = {
   format: "iife",
   platform: "browser",
   target: ["es2022"],
-  loader: { ".png": "dataurl", ".svg": "dataurl", ".webp": "dataurl" },
+  loader: { ".png": "dataurl", ".svg": "dataurl", ".webp": "dataurl", ".mp3": "dataurl" },
   legalComments: "eof",
   sourcemap: false,
   minify: false,
@@ -88,6 +93,8 @@ const buildOptions = {
     __KIKILINK_VERSION__: JSON.stringify(packageJson.version),
     __KIKILINK_TRAFFIC_AUDIT__: JSON.stringify(trafficAudit),
     __KIKILINK_DEV_TEST__: JSON.stringify(devTest),
+    __KIKILINK_PLATFORM_PREVIEW__: JSON.stringify(platformPreview),
+    __KIKILINK_PLATFORM_RELEASE__: JSON.stringify(platformRelease),
     __KIKILINK_BUILD_ID__: JSON.stringify(buildId),
     __KIKILINK_CATBOX_RELAY_URL__: JSON.stringify(catboxRelayUrl),
     __KIKILINK_CLOUD_ORIGIN__: JSON.stringify(cloudOrigin),

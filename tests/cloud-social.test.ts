@@ -29,7 +29,7 @@ function setup(handler: (method: string, path: string, body: unknown) => Promise
   let connected = true;
   const listeners = new Set<(kind: string) => void>();
   const request = vi.fn((method: string, path: string, body?: unknown) => path === "/v1/me"
-    ? Promise.resolve({ features: { fullProfile: true, community: true } })
+    ? Promise.resolve({ memberNumber: 101, features: { fullProfile: true, community: true } })
     : handler(method, path, body)), errors: unknown[] = [], openProfile = vi.fn();
   const client = { memberNumber: 101, get connected() { return connected; }, request,
     connect: vi.fn(async () => { connected = true; for (const fn of listeners) fn("session"); }),
@@ -116,7 +116,7 @@ describe("bounded social feed", () => {
     button(view.element, "Load more posts").click();
     await vi.waitFor(() => expect(requests).toBe(5));
     expect(cursors.at(-1)).toBe(102);
-    expect(view.element.querySelector('[data-post-id="101"]')).not.toBeNull();
+    await vi.waitFor(() => expect(view.element.querySelector('[data-post-id="101"]')).not.toBeNull());
   });
 
   it("does not resurrect a deleted post from a Feed request that started before the deletion", async () => {
@@ -223,10 +223,10 @@ describe("bounded social feed", () => {
     expect(otherCard.querySelector('[aria-label="Edit post"]')).toBeNull(); expect(otherCard.querySelector('[aria-label="Delete post"]')).toBeNull();
     button(view.element, "Edit post").click();
     const dialog = document.querySelector<HTMLDialogElement>(".kl-feed-action-dialog")!;
-    const field = dialog.querySelector("textarea")!; field.value = "Discarded"; field.dispatchEvent(new Event("input"));
+    const field = dialog.querySelector("textarea")!; field.value = "Saved unfinished edit"; field.dispatchEvent(new Event("input"));
     button(dialog, "Cancel").click(); expect(dialog.open).toBe(false);
     expect(request.mock.calls.filter(([method]) => method !== "GET")).toEqual([]);
-    button(view.element, "Edit post").click(); expect(dialog.querySelector("textarea")!.value).toBe(own.text);
+    button(view.element, "Edit post").click(); expect(dialog.querySelector("textarea")!.value).toBe("Saved unfinished edit");
     view.clear(); expect(dialog.open).toBe(false); expect(dialog.querySelector("textarea")).toBeNull();
   });
 
@@ -288,10 +288,12 @@ describe("bounded social feed", () => {
     const dialog = document.querySelector<HTMLDialogElement>(".kl-feed-action-dialog")!;
     const field = dialog.querySelector("textarea")!; field.value = "Pending edit"; field.dispatchEvent(new Event("input"));
     const save = button(dialog, "Save changes"); save.click(); save.click();
-    expect(request.mock.calls.filter(([method]) => method === "PATCH")).toHaveLength(1);
+    await vi.waitFor(() => expect(request.mock.calls.filter(([method]) => method === "PATCH")).toHaveLength(1));
     button(dialog, "Cancel").click(); button(view.element, "Edit post").click();
     const newer = dialog.querySelector("textarea")!; newer.value = "Another draft"; newer.dispatchEvent(new Event("input"));
-    finish(); await vi.waitFor(() => expect(view.element.querySelector(".kl-feed-post-text")!.textContent).toBe("Pending edit"));
+    finish(); await vi.waitFor(() => expect(view.element.querySelector(".kl-feed-content-pending")!.textContent).toContain("Read confirmed result"));
+    expect(view.element.querySelector(".kl-feed-post-text")!.textContent).toBe(own.text);
+    expect(request.mock.calls.filter(([method]) => method === "PATCH")).toHaveLength(1);
     expect(dialog.open).toBe(true); expect(dialog.querySelector("textarea")).toBe(newer); expect(newer.value).toBe("Another draft");
   });
 
@@ -334,7 +336,7 @@ describe("bounded social feed", () => {
       const input = view.element.querySelector("textarea")!;
       input.value = text; input.dispatchEvent(new Event("input")); button(view.element, "Post").click();
       await vi.waitFor(() => expect(input.value).toBe(""));
-      expect(view.element.querySelector("textarea")).toBe(input);
+      expect(view.element.querySelector('textarea[aria-label="Share a post"]')).toBe(input);
     };
     await publish("Newest post");
     expect(view.element.querySelectorAll(".kl-feed-post")).toHaveLength(100);
@@ -385,7 +387,7 @@ describe("bounded social feed", () => {
     expect(request.mock.calls.some(([method]) => method === "POST")).toBe(false);
     expect(root.activeElement).toBe(input);
     enter(true); enter(true);
-    expect(request.mock.calls.filter(([method]) => method === "POST")).toHaveLength(1);
+    await vi.waitFor(() => expect(request.mock.calls.filter(([method]) => method === "POST")).toHaveLength(1));
     expect(input.disabled).toBe(false);
     if (next) { input.value = next; input.dispatchEvent(new Event("input")); }
     if (moveFocus) search.focus();
@@ -395,12 +397,13 @@ describe("bounded social feed", () => {
       else expect(view.element.querySelector('[data-post-id="2"]')).not.toBeNull();
       expect(button(view.element, "Photo").disabled).toBe(false);
     });
-    expect(view.element.querySelector("textarea")).toBe(input);
+    expect(view.element.querySelector('textarea[aria-label="Share a post"]')).toBe(input);
     expect(view.element.querySelector('[data-post-id="1"]')).toBe(firstPost);
     expect(input.value).toBe(next);
     expect(root.activeElement).toBe(moveFocus ? search : input);
     expect(shortcut).not.toHaveBeenCalled();
-    expect(request.mock.calls.filter(([method]) => method === "GET")).toHaveLength(1);
+    expect(request.mock.calls.filter(([method, path]) => method === "GET" && path !== "/v1/me")).toHaveLength(1);
+    expect(request.mock.calls.filter(([, path]) => path === "/v1/me")).toHaveLength(2);
     expect(button(view.element, "Post").disabled).toBe(!next);
   });
 
@@ -487,18 +490,60 @@ describe("bounded social feed", () => {
     const { ui } = setup(async (_m, path) => path.includes("q=old") ? new Promise(resolve => { complete = resolve; }) : { items: [post(8, "new")], nextCursor: null });
     const view = feed(ui); await view.render({ feedSearch: true });
     const search = (value: string) => { view.element.querySelector<HTMLInputElement>('input[type="search"]')!.value = value; view.element.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true })); };
-    search("old"); search("new"); await vi.waitFor(() => expect(view.element.querySelector(".kl-feed-post-text")?.textContent).toBe("new"));
+    search("old"); await vi.waitFor(() => expect(complete).toBeTypeOf("function")); search("new"); await vi.waitFor(() => expect(view.element.querySelector(".kl-feed-post-text")?.textContent).toBe("new"));
     complete({ items: [post(9, "old")], nextCursor: null }); await Promise.resolve();
     expect(view.element.querySelector(".kl-feed-post-text")?.textContent).toBe("new");
   });
 });
 describe("one profile editor", () => {
+  it("records visibility changes only after a confirmed save, keeping failed revisions out of the activity log", async () => {
+    let fail = true;
+    const h = setup(async (_method, _path, body) => { if (fail) throw new CloudError('revision_conflict', 409); return { ...profile(), ...(body as object), revision: 2 }; });
+    const record = vi.fn();
+    const editor = new CloudProfileEditor(h.client, () => new SettingsStore(new MemoryKeyValueStorage()).get(), () => 'Native', vi.fn(), undefined, false, false, record);
+    dispose.push(() => editor.destroy()); document.body.append(editor.element); editor.open(fields());
+    await vi.waitFor(() => expect(editor.name.value).toBe('Person 101')); expect(record).not.toHaveBeenCalled();
+    editor.visible.checked = false; await expect(editor.save()).rejects.toMatchObject({code:'revision_conflict'});expect(record).not.toHaveBeenCalled();
+    fail = false; await editor.save(); expect(record).toHaveBeenCalledExactlyOnceWith('privacy_saved');
+    await editor.save();expect(record).toHaveBeenCalledTimes(1);
+  });
+  it("hydrates public tags independently of an empty appearance and keeps a custom solid decoration", async () => {
+    const { client } = setup(async () => ({}));
+    const editor = new CloudProfileEditor(client, () => new SettingsStore(new MemoryKeyValueStorage()).get(), () => "Native", vi.fn());
+    dispose.push(() => editor.destroy());
+    const f = fields(); f.publicTags = document.createElement("input"); f.publicTags.value = "Old local tags";
+    f.setAvatarDecoration = vi.fn();
+    vi.spyOn(client, "profile").mockResolvedValueOnce({ ...profile(), publicTags: ["Tea", "Music"] });
+    editor.open(f); await vi.waitFor(() => expect(editor.busy).toBe(false)); vi.mocked(editor.client.request).mockClear();
+    expect(f.publicTags.value).toBe("Tea, Music"); expect(editor.dirty).toBe(false);
+    vi.spyOn(client, "profile").mockResolvedValueOnce({ ...profile(), avatarDecoration: { mode: "solid", preset: "moon", primary: "#123456", secondary: "#abcdef", angle: 90 } });
+    editor.open(f); await vi.waitFor(() => expect(editor.busy).toBe(false)); vi.mocked(editor.client.request).mockClear();
+    expect(f.setAvatarDecoration).toHaveBeenCalledWith(expect.objectContaining({ mode: "solid", primary: "#123456" }));
+  });
+
+  it.each(["capabilities", "upload"])("stops a stale save after session loss during %s", async phase => {
+    let release!: (value: unknown) => void;
+    const pending = new Promise(resolve => { release = resolve; });
+    const h = setup(async (_method, path) => path.startsWith("/v1/media/") ? pending : profile());
+    const editor = new CloudProfileEditor(h.client, () => new SettingsStore(new MemoryKeyValueStorage()).get(), () => "Native", vi.fn());
+    dispose.push(() => editor.destroy()); const f = fields(); editor.open(f);
+    await vi.waitFor(() => expect(editor.busy).toBe(false)); vi.mocked(editor.client.request).mockClear();
+    editor.choose("avatar", new File(["pixels"], "avatar.png", { type: "image/png" }));
+    if (phase === "capabilities") h.request.mockImplementation(() => pending);
+    const saved = editor.save(); const rejected = expect(saved).rejects.toMatchObject({ code: "session_changed" });
+    await vi.waitFor(() => expect(h.request).toHaveBeenCalledWith(phase === "upload" ? "POST" : "GET", phase === "upload" ? "/v1/media/avatar" : "/v1/me", ...(phase === "upload" ? [expect.any(File)] : [])));
+    h.disconnect(); release(phase === "upload" ? { id: "stale-upload" } : { memberNumber: 101, features: { fullProfile: true } });
+    await rejected;
+    expect(h.request.mock.calls.some(call => call[0] === "PUT")).toBe(false);
+    if (phase === "capabilities") expect(h.request).toHaveBeenCalledTimes(1);
+  });
+
   it("tracks profile fields and selected media as unsaved until a successful save", async () => {
     const { client } = setup(async (_method, _path, body) => ({ ...profile(), ...(body as object), revision: 2 }));
     const editor = new CloudProfileEditor(client, () => new SettingsStore(new MemoryKeyValueStorage()).get(), () => "Native", vi.fn());
     dispose.push(() => editor.destroy()); document.body.append(editor.element);
     const f = fields(); editor.open(f);
-    await vi.waitFor(() => expect(editor.busy).toBe(false));
+    await vi.waitFor(() => expect(editor.busy).toBe(false)); vi.mocked(editor.client.request).mockClear();
     expect(editor.dirty).toBe(false);
     f.bio.value = "Changed bio"; expect(editor.dirty).toBe(true);
     f.bio.value = "About me"; expect(editor.dirty).toBe(false);
@@ -513,10 +558,10 @@ describe("one profile editor", () => {
       ? { ...profile(), ...(body as object), revision: 2 } : {});
     const original = request.getMockImplementation()!;
     request.mockImplementation((method, path, body) => path === "/v1/me"
-      ? Promise.resolve({ features: { fullProfile: supported, community: false } }) : original(method, path, body));
+      ? Promise.resolve({ memberNumber: 101, features: { fullProfile: supported, community: false } }) : original(method, path, body));
     const editor = new CloudProfileEditor(client, () => new SettingsStore(new MemoryKeyValueStorage()).get(), () => "Native", vi.fn());
     dispose.push(() => editor.destroy()); const f = fields(); editor.open(f);
-    await vi.waitFor(() => expect(editor.busy).toBe(false)); editor.name.value = "My draft";
+    await vi.waitFor(() => expect(editor.busy).toBe(false)); vi.mocked(editor.client.request).mockClear(); editor.name.value = "My draft";
     if (supported) { await editor.save(); expect(editor.current?.displayName).toBe("My draft"); }
     else {
       await expect(editor.save()).rejects.toMatchObject({ code: "profile_schema_unsupported" });
@@ -533,7 +578,7 @@ describe("one profile editor", () => {
     let first = true;
     const editor = new CloudProfileEditor(h.client, () => new SettingsStore(new MemoryKeyValueStorage()).get(), () => "Native", vi.fn());
     dispose.push(() => editor.destroy()); document.body.append(editor.element);
-    const f = fields(); editor.open(f); await vi.waitFor(() => expect(editor.busy).toBe(false));
+    const f = fields(); editor.open(f); await vi.waitFor(() => expect(editor.busy).toBe(false)); vi.mocked(editor.client.request).mockClear();
     editor.name.value = "My draft"; f.bio.value = "Keep my bio";
     editor.choose("avatar", new File(["pixels"], "avatar.png", { type: "image/png" }));
     await expect(editor.save()).rejects.toMatchObject({ code: "authentication_required" });
@@ -548,14 +593,14 @@ describe("one profile editor", () => {
   it.each([false, true])("keeps the original decoration and gradient when migrating a default Cloud profile (angle=%s)", async angle => {
     const { client, request } = setup(async (_method, _path, body) => ({ ...profile(), ...(body as object), revision: 2 }));
     request.mockImplementation((_method, path, body) => Promise.resolve(path === "/v1/me"
-      ? { features: { fullProfile: true, profileGradientAngle: angle } }
+      ? { memberNumber: 101, features: { fullProfile: true, profileGradientAngle: angle } }
       : { ...profile(), ...(body as object), revision: 2 }));
     const storage = new MemoryKeyValueStorage(), settings = new SettingsStore(storage);
     const editor = new CloudProfileEditor(client, () => settings.get(), () => "Native", vi.fn(), storage);
     dispose.push(() => editor.destroy()); document.body.append(editor.element);
     const f = fields(); f.frame.value = "gold"; f.style.value = "garden";
     f.gradientEnabled.checked = true; f.gradientPrimary.value = "#123456"; f.gradientSecondary.value = "#654321";
-    editor.open(f); await vi.waitFor(() => expect(editor.busy).toBe(false));
+    editor.open(f); await vi.waitFor(() => expect(editor.busy).toBe(false)); vi.mocked(editor.client.request).mockClear();
     expect(f.frame.value).toBe("gold"); expect(f.style.value).toBe("garden"); expect(f.gradientEnabled.checked).toBe(true);
     await editor.save(); expect(request).toHaveBeenCalledWith("PUT", "/v1/profiles/me", expect.objectContaining({ avatarFrame: "gold", profileStyle: "garden", profileGradient: angle
       ? { start: "#123456", end: "#654321", enabled: false, angle: 135 }
@@ -574,7 +619,7 @@ describe("one profile editor", () => {
     vi.spyOn(client, "media").mockRejectedValue(new Error("preview offline"));
     const editor = new CloudProfileEditor(client, () => new SettingsStore(new MemoryKeyValueStorage()).get(), () => "Native name", vi.fn());
     dispose.push(() => editor.destroy()); document.body.append(editor.element); const f = fields(); editor.open(f);
-    await vi.waitFor(() => expect(editor.busy).toBe(false)); expect(editor.name.value).toBe("Person 101");
+    await vi.waitFor(() => expect(editor.busy).toBe(false)); vi.mocked(editor.client.request).mockClear(); expect(editor.name.value).toBe("Person 101");
     expect(request).not.toHaveBeenCalled(); editor.name.value = "New name";
     editor.choose("avatar", new File(["pixels"], "avatar.png", { type: "image/png" })); expect(request).not.toHaveBeenCalled();
     const source = f.avatarPreview.querySelector("img")!.src; f.avatarPreview.replaceChildren();
@@ -588,7 +633,7 @@ describe("one profile editor", () => {
     vi.spyOn(client, "profile").mockRejectedValueOnce(new Error("offline"));
     const editor = new CloudProfileEditor(client, () => new SettingsStore(new MemoryKeyValueStorage()).get(), () => "Native", vi.fn());
     dispose.push(() => editor.destroy()); document.body.append(editor.element); const f = fields(); editor.open(f);
-    await vi.waitFor(() => expect(editor.busy).toBe(false)); await expect(editor.save()).rejects.toMatchObject({ code: "profile_load_failed" }); expect(request).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(editor.busy).toBe(false)); vi.mocked(editor.client.request).mockClear(); await expect(editor.save()).rejects.toMatchObject({ code: "profile_load_failed" }); expect(request).not.toHaveBeenCalled();
     editor.open(f); await vi.waitFor(() => expect(editor.name.value).toBe("Person 101")); editor.name.value = "Unsent name";
     await expect(editor.save()).rejects.toMatchObject({ code: "revision_conflict" }); expect(editor.name.value).toBe("Unsent name");
   });
@@ -697,7 +742,7 @@ describe("group conversation ordering and drafts", () => {
 
   it("keeps an intervening incoming message when the send response arrives first", async () => {
     const g: CloudGroup = { id: "g", title: "Friends", owner: 202, conversationId: "c", revision: 1, membershipVersion: 1, keyVersion: 1, createdAt: 1, legacyId: null, members: [{ memberNumber: 101, role: "member", status: "active" }] };
-    const message = (sequence: number, sender = 202): CloudMessage => ({ id: `m${sequence}`, conversationId: "c", sequence, sender, text: `Message ${sequence}`, clientId: `client${sequence}`, schemaVersion: 1, encryption: "server-aes-256-gcm", membershipVersion: 1, keyVersion: 1, createdAt: Date.now(), deletedAt: null });
+    const message = (sequence: number, sender = 202): CloudMessage => ({ id: `m${sequence}`, conversationId: "c", sequence, sender, text: `Message ${sequence}`, mediaIds: sequence === 1 ? ["received-image"] : [], clientId: `client${sequence}`, schemaVersion: 1, encryption: "server-aes-256-gcm", membershipVersion: 1, keyVersion: 1, createdAt: Date.now(), deletedAt: null });
     let removed = false;
     const { ui, request } = setup(async (method, path) => path === "/v1/groups/g" ? g : method === "POST" ? message(3, 101) : path.includes("backward") ? { items: [message(1)], nextCursor: null } : { items: [message(2), message(3, 101)], nextCursor: null, removedIds: removed ? ["m1"] : [] });
     const draft = { text: "My message", clientId: "send1" };
@@ -705,8 +750,12 @@ describe("group conversation ordering and drafts", () => {
     dispose.push(() => thread.stop()); document.body.append(thread.element); await thread.loadOlder(); await thread.send();
     expect(request.mock.calls.some(call => call[1].endsWith("direction=forward&cursor=1"))).toBe(true);
     expect([...thread.element.querySelectorAll<HTMLElement>(".kl-group-message")].map(row => row.dataset.messageId)).toEqual(["m1", "m2", "m3"]);
+    expect(thread.element.querySelector('[data-message-id="m1"]')?.getAttribute("data-media")).toBe("true");
+    expect(thread.element.querySelector('[data-message-id="m2"]')?.hasAttribute("data-media")).toBe(false);
     expect(draft.text).toBe(""); await thread.updates(); expect(thread.element.querySelectorAll(".kl-group-message")).toHaveLength(3);
     removed = true; await thread.updates(); expect(thread.element.querySelector('[data-message-id="m1"] .kl-group-message-text')?.textContent).toBe("Message removed");
+    expect(thread.element.querySelector('[data-message-id="m1"]')?.hasAttribute("data-media")).toBe(false);
+    expect(thread.element.querySelector('[data-message-id="m1"] .kl-group-message-images')).toBeNull();
   });
   it("keeps a failed message and does not send Enter while composing or after leaving", async () => {
     const g = { id: "g", title: "Friends", conversationId: "c", membershipVersion: 1, keyVersion: 1 } as CloudGroup;
@@ -748,7 +797,7 @@ describe("Feed navigation, highlights and reaction details", () => {
     let resolve!: (post: CloudPost) => void;
     const { ui } = setup(async (_method, path) => path === "/v1/feed/7" ? new Promise<CloudPost>(done => { resolve = done; }) : { items: [post(9)], nextCursor: null });
     const view=feed(ui), pending=view.openPost(7);
-    await view.render(); resolve(post(7)); await pending;
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function")); await view.render(); resolve(post(7)); await pending;
     expect(view.element.querySelector('[data-post-id="9"]')).not.toBeNull();
     expect(view.element.querySelector('[data-post-id="7"]')).toBeNull();
   });
@@ -786,7 +835,7 @@ describe("Feed navigation, highlights and reaction details", () => {
       ? refresh ? new Promise<CloudPost>(done => { resolve = done; }) : post(7)
       : { items: path.includes("comments") ? [] : [post(9)], nextCursor: null });
     const view = feed(ui); await view.openPost(7); refresh = true;
-    const pending = view.sync(); await view.render(); resolve!(post(7, "Stale result")); await pending;
+    const pending = view.sync(); await vi.waitFor(() => expect(resolve).toBeTypeOf("function")); await view.render(); resolve!(post(7, "Stale result")); await pending;
     expect(view.element.querySelector('[data-post-id="9"]')).not.toBeNull();
     expect(view.element.querySelector('[data-post-id="7"]')).toBeNull();
   });

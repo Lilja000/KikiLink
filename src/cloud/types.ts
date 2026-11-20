@@ -1,9 +1,24 @@
-import type { AvatarFrame, AvatarDecoration, ProfileCardStyle } from "../core/types";
+import type { AvatarFrame, AvatarDecoration, ProfileCardStyle, MessageMention } from "../core/types";
 
 export interface CloudProfile {
   memberNumber: number;
   displayName: string;
+  username?: string | null;
+  /** Only present on the authenticated owner's profile when usernames are supported. */
+  usernameRevision?: number;
+  usernameChangeAllowedAt?: number;
+  /** Server-confirmed display state, never copied from BC/local profile metadata. */
+  legacyBadge?: boolean;
+  /** Owner-only eligibility and display preference. */
+  legacyEligible?: boolean;
+  legacyCohortReady?: boolean;
+  showLegacyBadge?: boolean;
+  languages?: string[];
+  utcOffsetMinutes?: number | null;
+  joinedAt?: number | null;
   bio: string;
+  /** Server has redacted About me fields for this viewer. */
+  aboutHidden?: boolean;
   statusMessage?: string;
   isDefault?: boolean;
   autoPublishAllowed?: boolean;
@@ -12,6 +27,7 @@ export interface CloudProfile {
   avatarFrame: AvatarFrame;
   avatarDecoration?: AvatarDecoration;
   publicTags?: string[];
+  activityVisibility?: "everyone" | "friends" | "private";
   profileStyle: ProfileCardStyle;
   profileOutlineColor?: string;
   profileGradient?: { start: string; end: string; angle?: number; enabled?: boolean };
@@ -51,6 +67,10 @@ export interface CloudMessage {
   sequence: number;
   clientId: string;
   text: string | null;
+  mentions?: MessageMention[];
+  /** Private images bound to this group message; never public URLs. */
+  mediaIds?: string[];
+  audioIds?: string[];
   schemaVersion: 1;
   encryption: "server-aes-256-gcm";
   membershipVersion: number;
@@ -80,6 +100,7 @@ export interface CloudPoll {
   closed: boolean;
 }
 export interface CloudPost {
+  community?: { id: string; name: string; archived?: boolean };
   id: number;
   author: number;
   profile: Pick<
@@ -87,6 +108,7 @@ export interface CloudPost {
     "memberNumber" | "displayName" | "avatarId" | "avatarFrame" | "avatarDecoration" | "publicTags"
   >;
   text: string;
+  mentions?: MessageMention[];
   revision: number;
   createdAt: number;
   updatedAt: number;

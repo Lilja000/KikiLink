@@ -611,6 +611,23 @@ describe("GroupChatService", () => {
     ]);
   });
 
+  it("clears messages and drafts while retaining membership and suppressing a replay after reload", async () => {
+    const harness = setup();
+    const id = "group_aaaaaaaa";
+    const incoming = { senderNumber: 20, payload: message(id, "gmsg_aaaaaaaa", "Before clearing") };
+    await harness.service.receiveProtocol({ senderNumber: 20, payload: invite() });
+    await harness.service.receiveProtocol(incoming);
+    await harness.service.setDraft(id, "My private draft");
+    expect(harness.service.getMessages(id)).toHaveLength(1);
+    expect(await harness.service.clearMessageHistory()).toBe(true);
+    const restored = setup(harness.storage).service;
+    try {
+      expect(restored.getGroup(id)).toMatchObject({ memberNumbers: [10, 20, 30], draft: "", lastMessage: "", unread: 0 });
+      await restored.receiveProtocol(incoming);
+      expect(restored.getMessages(id)).toHaveLength(0);
+    } finally { await restored.destroy(); await harness.service.destroy(); }
+  });
+
   it("creates and delivers a group with five total members", async () => {
     const harness = setup();
 

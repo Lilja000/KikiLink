@@ -1,21 +1,26 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it, vi } from "vitest";
 import { CloudGroupThread } from "../src/cloud/group-thread";
+import { MemoryKeyValueStorage } from '../src/core/settings';
+import { GroupMessagePresentation } from '../src/cloud/group-message-presentation';
 import { SocialUI } from "../src/cloud/social-ui";
 import { CloudError, type CloudClient } from "../src/cloud/client";
 import type { CloudGroup, CloudMessage } from "../src/cloud/types";
+import { ThreadHistoryArchivePanel } from "../src/modules/link-chat/thread-history-archive-panel";
+import { ThreadHistoryRestorePanel } from "../src/modules/link-chat/thread-history-restore-panel";
+import { ThreadHistoryTimelinePanel } from "../src/modules/link-chat/thread-history-timeline-panel";
 
 const disposers: Array<() => void> = [];
 afterEach(() => { for (const dispose of disposers.splice(0)) dispose(); document.body.replaceChildren(); vi.useRealTimers(); vi.restoreAllMocks(); });
-async function setup(pins = false) {
+async function setup(pins = false, platformPreview = false, presentation?: GroupMessagePresentation) {
   const group: CloudGroup = { id: "g", title: "Friends", owner: 101, conversationId: "c", revision: 1, membershipVersion: 1, keyVersion: 1, createdAt: 1, legacyId: null, members: [{ memberNumber: 101, role: "owner", status: "active" }] };
-  const messages = [202, 101].map((sender, i): CloudMessage => ({ id: `m${i}`, conversationId: "c", sequence: i + 1, sender, text: i ? "My reply" : "Hello there", clientId: `id${i}`, schemaVersion: 1, encryption: "server-aes-256-gcm", membershipVersion: 1, keyVersion: 1, createdAt: 1, deletedAt: null }));
+  const messages = [202, platformPreview && !presentation ? 202 : 101].map((sender, i): CloudMessage => ({ id: `m${i}`, conversationId: "c", sequence: i + 1, sender, text: i ? "My reply" : "Hello there", clientId: `id${i}`, schemaVersion: 1, encryption: "server-aes-256-gcm", membershipVersion: 1, keyVersion: 1, createdAt: 1, deletedAt: null }));
   const request = vi.fn(async (method: string, _path?: string): Promise<unknown> => method === "GET" ? { items: messages, nextCursor: null } : {});
   const client = { memberNumber: 101, connected: true, request, subscribe: () => () => {}, profile: async (memberNumber: number) => ({ memberNumber, displayName: memberNumber === 101 ? "Kiki" : "Snowy", avatarId: null, avatarFrame: "none" }) } as unknown as CloudClient;
   const errors: unknown[] = [], report = vi.fn();
   const ui = new SocialUI({ client, run: async action => { try { await action(); } catch (error) { errors.push(error); } }, image: () => document.createElement("div"), openProfile: vi.fn(), isBlocked: () => false });
   const draft = { text: "Draft", clientId: "draft-id" };
-  const thread = new CloudGroupThread(ui, group, draft, { enterToSend: () => true, membershipChanged: vi.fn(), report, groupPins: pins, readUntil: vi.fn() });
+  const thread = new CloudGroupThread(ui, group, draft, { enterToSend: () => true, membershipChanged: vi.fn(), report, groupPins: pins, readUntil: vi.fn(), platformPreview, ...(presentation?{presentation,persistLocalChanges:()=>true}:{}) });
   document.body.append(thread.element); await thread.loadOlder();
   disposers.push(() => { thread.stop(); ui.destroy(); });
   const bubbles = [...thread.element.querySelectorAll<HTMLElement>(".kl-group-message-bubble")];
@@ -23,6 +28,87 @@ async function setup(pins = false) {
   return { thread, bubbles, menu, draft, request, report, errors, group, messages, ui };
 }
 const button = (root: ParentNode, label: string) => root.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+
+it("expires retained group edits under the device history setting and keeps session-only edits off disk",async()=>{
+  const h=await setup(), storage=new MemoryKeyValueStorage(), message={...h.messages[1]!,createdAt:Date.now()-2*86400000};
+  let days=30;
+  const store=new GroupMessagePresentation(storage,101,'https://group.test',()=>days);
+  store.change(h.group,undefined,message,'My edit',true);
+  expect(store.project(h.group,undefined,message)?.text).toBe('My edit');
+  days=1;expect(store.project(h.group,undefined,message)?.text).toBe('My reply');
+  days=30;expect(store.project(h.group,undefined,message)?.text).toBe('My reply');
+  store.change(h.group,undefined,message,'This session',false);
+  expect(new GroupMessagePresentation(storage,101,'https://group.test').project(h.group,undefined,message)?.text).toBe('My reply');
+  store.clearSession();expect(store.project(h.group,undefined,message)?.text).toBe('My reply');
+});
+
+it("edits and hides owned group messages locally without a Cloud write, including pinned excerpts", async () => {
+  const storage=new MemoryKeyValueStorage(), presentation=new GroupMessagePresentation(storage,101,'https://group.test');
+  const h=await setup(true,true,presentation), mine=h.messages[1]!;
+  h.group.pinnedMessage=mine;h.request.mockClear();
+  const open=(index:number)=>h.thread.element.querySelectorAll<HTMLElement>('.kl-group-message-bubble')[index]!
+    .dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+  open(0);expect(button(h.menu,'Edit message')).toBeNull();expect(button(h.menu,'Delete message…')).toBeNull();
+  open(1);expect(button(h.menu,'Delete from group…')).not.toBeNull();button(h.menu,'Edit message').click();
+  const dialog=()=>h.thread.element.querySelector<HTMLDialogElement>('dialog[open]')!;
+  const field=dialog().querySelector('textarea')!;field.value='My revised note';field.dispatchEvent(new Event('input'));
+  const submit=(text:string)=>[...dialog().querySelectorAll('button')].find(b=>b.textContent===text)!.click();
+  submit('Save message');await vi.waitFor(()=>expect(h.thread.element.querySelector('[data-message-id="m1"]')?.textContent).toContain('My revised note'));
+  expect(h.thread.element.querySelector('.kl-group-pin-bar')?.textContent).toContain('My revised note');
+  expect(new GroupMessagePresentation(storage,101,'https://group.test').project(h.group,undefined,mine)?.text).toBe('My revised note');
+  expect(presentation.project(h.group,'different-restore',mine)?.text).toBe('My reply');
+  open(1);button(h.menu,'Delete message…').click();submit('Delete message');
+  await vi.waitFor(()=>expect(h.thread.element.querySelector('[data-message-id="m1"]')).toBeNull());
+  expect((h.thread.element.querySelector('.kl-group-pin-bar') as HTMLElement).hidden).toBe(true);
+  expect(mine.text).toBe('My reply');expect(h.request.mock.calls.filter(([method])=>method!=='GET')).toEqual([]);
+  expect(presentation.project(h.group,undefined,{...mine,text:null,deletedAt:2})?.text).toBeNull();
+  presentation.clear();
+  expect(new GroupMessagePresentation(storage,101,'https://group.test').project(h.group,undefined,mine)?.text).toBe('My reply');
+});
+
+it("opens the compact message menu from the keyboard and returns focus to its trigger", async () => {
+  const { bubbles, menu } = await setup(false, true);
+  const row = bubbles[1]!.closest<HTMLElement>(".kl-group-message")!;
+  expect(row.hasAttribute("data-grouped")).toBe(true);
+  expect(row.querySelector<HTMLButtonElement>(".kl-social-name")!.tabIndex).toBe(-1);
+  const more = button(row, "Message options");
+  bubbles[1]!.focus();
+  bubbles[1]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  expect(document.activeElement).toBe(more);
+  more.click();
+  expect(menu.hidden).toBe(false);
+  expect(more.getAttribute("aria-expanded")).toBe("true");
+  expect(button(menu, "Copy message")).not.toBeNull();
+  menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  expect(menu.hidden).toBe(true);
+  expect(more.getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(more);
+});
+
+it("keeps history tools behind one disclosure, with Escape focus and existing access checks", async () => {
+  const archive = vi.spyOn(ThreadHistoryArchivePanel.prototype, "open").mockImplementation(() => {});
+  const restore = vi.spyOn(ThreadHistoryRestorePanel.prototype, "open").mockImplementation(() => {});
+  const timeline = vi.spyOn(ThreadHistoryTimelinePanel.prototype, "open").mockImplementation(() => {});
+  const { thread, ui } = await setup();
+  const tools = thread.element.querySelector<HTMLDetailsElement>(".kl-group-history-tools")!;
+  const summary = tools.querySelector("summary")!;
+  const [save, copies, combined] = [...tools.querySelectorAll("button")];
+  expect(tools.open).toBe(false);
+  tools.open = true; save!.focus();
+  save!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  expect(tools.open).toBe(false); expect(document.activeElement).toBe(summary);
+  for (const action of [save, copies, combined]) { tools.open = true; action!.click(); expect(tools.open).toBe(false); }
+  expect(archive).toHaveBeenCalledOnce(); expect(archive.mock.calls[0]![3]).toBe(summary);
+  expect(restore).toHaveBeenCalledOnce(); expect(restore.mock.calls[0]![3]).toBe(summary);
+  expect(timeline).toHaveBeenCalledOnce(); expect(timeline.mock.calls[0]![1].focus).toBe(summary);
+  expect(archive.mock.calls[0]![2]()).toBe(true);
+  Object.defineProperty(ui.options.client, "connected", { value: false, configurable: true });
+  save!.click(); combined!.click(); copies!.click();
+  expect(archive).toHaveBeenCalledOnce(); expect(timeline).toHaveBeenCalledOnce(); expect(restore).toHaveBeenCalledTimes(2);
+  tools.open = true; thread.pause(); expect(tools.open).toBe(false);
+  save!.click(); copies!.click(); combined!.click();
+  expect(restore).toHaveBeenCalledTimes(2); expect(archive.mock.calls[0]![2]()).toBe(false);
+});
 
 it("shares a pin, loads its original with context, retains the reply draft, and handles deletion", async () => {
   const { thread, group, messages, bubbles, menu, request, draft } = await setup(true);

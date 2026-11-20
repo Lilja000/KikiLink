@@ -1,10 +1,14 @@
+import {reviewOwnerSettings, writeOwnerSettings, OwnerSettingsGenerationError, type OwnerSettingsSource} from './owner-settings-generation';
 import { CloudError, type CloudClient } from "./client";
 import { element } from "./dom";
+import { focusedElement } from "../utils/dom";
 import { kikiIcon } from "../modules/link-chat/icons";
 import { exportPreferences, importPreferences, MAX_PREFERENCES_FILE_BYTES } from "./preference-transfer";
+import { syncErrorMessage, type CloudSyncQueue } from "./sync-queue";
 import {
   PREFERENCE_LEVEL_LABELS,
   PREFERENCE_LEVELS,
+  PREFERENCE_MODE_LABELS,
   catalog,
   catalogById,
   compatibilitySection,
@@ -64,9 +68,15 @@ export class PreferencesEditor {
     ariaLabel: "Search preferences",
   });
   readonly #mode = element("select", { ariaLabel: "Preference privacy" });
+  #profilePrivacyField: HTMLElement | undefined;
+  #openProfilePrivacy: (() => void) | undefined;
+  #profilePrivacyActive = false;
   readonly #importFile = element("input", { type: "file", hidden: true });
   readonly #listeners = new Set<() => void>();
   readonly #pending = new Map<string, PreferenceLevel | null>();
+  #source: OwnerSettingsSource | undefined;
+  #owner = 0;
+  #origin = "";
   #data: Preferences | undefined;
   #base: Preferences | undefined;
   #modeDirty = false;
@@ -84,7 +94,8 @@ export class PreferencesEditor {
   #importToken = 0;
   #unsubscribe: () => void;
 
-  constructor(readonly client: CloudClient) {
+  constructor(readonly client: CloudClient, readonly syncQueue?: CloudSyncQueue, private readonly platform = false) {
+    this.element.classList.toggle("kl-preferences-editor--platform", platform);
     const summary = element(
       "summary",
       { className: "kl-preferences-summary" },
@@ -99,12 +110,8 @@ export class PreferencesEditor {
       kikiIcon("next", "kl-preferences-summary-arrow"),
     );
     this.element.append(summary, this.#body);
-    for (const [value, label] of [
-      ["private", "Private"],
-      ["score", "Compatibility only"],
-      ["friends", "Friends only"],
-      ["public", "Public in KikiLink"],
-    ] as const) this.#mode.append(element("option", { value, text: label }));
+    for (const [value, label] of Object.entries(PREFERENCE_MODE_LABELS))
+      this.#mode.append(element("option", { value, text: label }));
     this.#mode.addEventListener("change", () => {
       if (!this.#data) return;
       this.#data.mode = this.#mode.value as Preferences["mode"];
@@ -124,6 +131,7 @@ export class PreferencesEditor {
     this.#unsubscribe = client.subscribe(kind => {
       if (kind !== "session") return;
       if (!client.connected && client.connectionState !== "idle" && this.dirty) {
+        if (this.#profilePrivacyField) this.#mode.disabled = true;
         clearTimeout(this.#saveTimer);
         this.#generation++;
         this.#resumeDraft = true;
@@ -131,13 +139,15 @@ export class PreferencesEditor {
         return;
       }
       if (client.connected && this.#resumeDraft) {
+        if (this.#profilePrivacyField) this.#mode.disabled = false;
         this.#resumeDraft = false;
+        if (this.syncQueue) { this.#status.textContent = "Connected. Check queued changes in Settings → Cloud, or save your remaining editor changes explicitly."; return; }
         this.#status.textContent = "Connected. Saving your pending preference changes…";
         this.#scheduleSave();
         return;
       }
       this.#reset();
-      if (this.element.open) void this.load();
+      if (this.element.open || this.#profilePrivacyActive) void this.load();
     });
   }
 
@@ -145,17 +155,49 @@ export class PreferencesEditor {
   get preferences(): Preferences | undefined { return this.#data ? structuredClone(this.#data) : undefined; }
   subscribe(listener: () => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener); }
 
+  profilePrivacyField(open: () => void): HTMLElement {
+    this.#openProfilePrivacy = open;
+    this.#mode.classList.add("kl-select");
+    this.#mode.disabled = !this.#data;
+    if (!this.#data) this.#mode.selectedIndex = -1;
+    return this.#profilePrivacyField ??= element("div", { className: "kl-profile-privacy-preferences" },
+      element("label", { className: "kl-profile-privacy-audience" }, "Preferences & compatibility", this.#mode));
+  }
+
+  setProfilePrivacyActive(active: boolean): void {
+    if (!this.#profilePrivacyField || active === this.#profilePrivacyActive) return;
+    this.#profilePrivacyActive = active;
+    if (active) {
+      if (this.#status.querySelector(".kl-preferences-confirm-clear, .kl-preferences-confirm-delete")) this.#status.replaceChildren();
+      this.#profilePrivacyField.append(this.#status);
+      if (!this.#data && !this.#busy) void this.load();
+    } else {
+      this.#status.remove();
+      this.#body.querySelector(".kl-preferences-content")?.after(this.#status);
+    }
+  }
+
   async load(): Promise<void> {
     if (!this.client.connected) {
-      this.#body.replaceChildren(element("p", { className: "kl-preferences-empty", text: "Connect to KikiLink Cloud to edit preferences." }));
+      const message = "Connect to KikiLink Cloud to edit preferences.";
+      this.#body.replaceChildren(element("p", { className: "kl-preferences-empty", text: message }));
+      if (this.#profilePrivacyActive) this.#status.textContent = message;
       return;
     }
     const generation = ++this.#generation;
     this.#busy = true;
+    if (this.#profilePrivacyField) {
+      this.#mode.disabled = true;
+      this.#status.textContent = "Loading preferences…";
+    }
     this.#body.replaceChildren(element("p", { className: "kl-preferences-empty", role: "status", text: "Loading preferences…" }));
     try {
-      const received = await this.client.request<Preferences>("GET", "/v1/preferences/me");
+      const owner = this.client.memberNumber, origin = this.client.origin;
+      const review = await reviewOwnerSettings<Preferences>(this.client, "/v1/preferences/me", () => generation === this.#generation);
+      const received = review.value;
       if (generation !== this.#generation) return;
+      if (!received || !Object.hasOwn(PREFERENCE_MODE_LABELS, received.mode) || !Number.isSafeInteger(received.revision) || received.revision < 0 || typeof received.catalogVersion !== "string" || !received.ratings || typeof received.ratings !== "object") throw new Error("Invalid preferences");
+      this.#owner = owner; this.#origin = origin; this.#source = review.source;
       const data = { ...received, ratings: normalizePreferenceRatings(received.ratings) };
       this.#legacyCatalog = received.catalogVersion === LEGACY_CATALOG_VERSION;
       this.#data = data;
@@ -163,6 +205,8 @@ export class PreferencesEditor {
       this.#pending.clear();
       this.#modeDirty = false;
       this.#mode.value = data.mode;
+      this.#mode.disabled = false;
+      if (this.#profilePrivacyField) this.#status.textContent = "";
       this.#render();
       if (this.#legacyCatalog)
         this.#status.textContent = "Cloud compatibility mode: 111 preferences are available. New entries and Hard Limit require a Cloud update.";
@@ -179,6 +223,8 @@ export class PreferencesEditor {
           element("p", { className: "kl-preferences-empty", text: message }),
           retry,
         );
+        if (this.#profilePrivacyField)
+          this.#status.replaceChildren(element("span", { text: message }), this.#textButton("Retry", () => this.load()));
       }
     } finally {
       if (generation === this.#generation) this.#busy = false;
@@ -200,7 +246,7 @@ export class PreferencesEditor {
       this.#render();
       const target = id ? this.#body.querySelector<HTMLElement>(`[data-preference-id="${CSS.escape(id)}"]`) : undefined;
       target?.scrollIntoView({ block: "nearest" });
-      target?.querySelector<HTMLButtonElement>(".kl-preference-name")?.focus({ preventScroll: true });
+      target?.querySelector<HTMLButtonElement>(this.platform ? ".kl-preference-inline button" : ".kl-preference-name")?.focus({ preventScroll: true });
     };
     if (this.#data) open(); else void this.load().then(open);
   }
@@ -211,18 +257,25 @@ export class PreferencesEditor {
       "div",
       { className: "kl-preferences-intro" },
       element("div", {}, element("strong", { text: this.#showFull ? "All preferences" : "Quick setup" }),
-        element("p", { text: this.#showFull ? "Search or open a category. Only categories you open are rendered." : "Pick only what matters to you. Ten to twenty choices are enough to start." })),
-      element("label", { className: "kl-preferences-privacy" }, element("span", { text: "Visibility" }), this.#mode),
+        element("p", { text: this.platform ? "Select Like or Dislike again to clear it, or use Clear for any rating." :
+          this.#showFull ? "Search or open a category. Only categories you open are rendered." : "Pick only what matters to you. Ten to twenty choices are enough to start." })),
+      this.#openProfilePrivacy
+        ? this.#textButton("Manage preference visibility", async () => this.#openProfilePrivacy?.())
+        : element("label", { className: "kl-preferences-privacy" }, element("span", { text: "Visibility" }), this.#mode),
     );
     const content = element("div", { className: "kl-preferences-content" });
     const switchView = this.#textButton(this.#showFull ? "Back to quick setup" : "+ More preferences", async () => {
+      const restoreFocus = focusedElement(this.element) === switchView;
       this.#showFull = !this.#showFull;
       this.#activeSelector = undefined;
       this.#search.value = "";
       this.#render();
+      if (restoreFocus) this.#body.querySelector<HTMLButtonElement>(".kl-preferences-more")?.focus({ preventScroll: true });
     });
     switchView.classList.add("kl-preferences-more");
-    const tools = element("div", { className: "kl-preferences-tools" }, this.#showFull ? this.#search : undefined, switchView);
+    const search = this.platform ? element("div", { className: "kl-preferences-inline-search" }, kikiIcon("search"), this.#search) :
+      this.#showFull ? this.#search : undefined;
+    const tools = element("div", { className: "kl-preferences-tools" }, search, switchView);
     const maintenance = element(
       "details",
       { className: "kl-preferences-maintenance" },
@@ -239,7 +292,8 @@ export class PreferencesEditor {
     const importButton = this.#textButton("Import", () => this.#importFile.click());
     importButton.title = "Import a KikiLink preferences JSON file";
     const transfer = element("div", { className: "kl-preferences-transfer" }, exportButton, importButton, this.#importFile);
-    this.#body.replaceChildren(intro, tools, content, this.#status, maintenance, transfer);
+    this.#body.replaceChildren(intro, tools, content, maintenance, transfer);
+    if (!this.#profilePrivacyActive) content.after(this.#status);
     this.#renderBrowser();
     this.#updateCount();
   }
@@ -249,12 +303,19 @@ export class PreferencesEditor {
     if (!content || !this.#data) return;
     const available = this.#availableItems();
     content.replaceChildren();
-    if (!this.#showFull) {
+    const query = this.#search.value;
+    if (!this.#showFull && !(this.platform && query.trim())) {
       const popular = available.filter(item => item.popular);
-      content.append(element("div", { className: "kl-preference-list kl-preference-list--quick" }, ...popular.map(item => this.#row(item))));
+      if (this.platform) {
+        for (const category of this.#availableCategories(popular)) {
+          const items = popular.filter(item => item.category === category);
+          content.append(element("section", { className: "kl-preference-inline-category" },
+            element("h3", { text: category }),
+            element("div", { className: "kl-preference-list" }, ...items.map(item => this.#row(item)))));
+        }
+      } else content.append(element("div", { className: "kl-preference-list kl-preference-list--quick" }, ...popular.map(item => this.#row(item))));
       return;
     }
-    const query = this.#search.value;
     if (query.trim()) {
       const matches = available.filter(item => preferenceMatchesSearch(item, query));
       const result = element("div", { className: "kl-preference-search-results" });
@@ -300,6 +361,10 @@ export class PreferencesEditor {
     const level = this.#data?.ratings[item.id];
     row.dataset.level = level ?? "not_set";
     row.dataset.preferenceId = item.id;
+    if (this.platform) {
+      this.#paintInlineRow(row, item, level);
+      return;
+    }
     const name = element("button", { type: "button", className: "kl-preference-name", text: item.label, ariaLabel: `${item.label}. Open detailed preference choices.` });
     name.addEventListener("click", () => this.#toggleSelector(item.id));
     const dislike = element("button", {
@@ -323,6 +388,31 @@ export class PreferencesEditor {
     const actions = element("div", { className: "kl-preference-actions" }, dislike, like, state);
     row.replaceChildren(name, actions);
     if (this.#activeSelector === item.id) row.append(this.#selector(item, level));
+  }
+
+  #paintInlineRow(row: HTMLElement, item: PreferenceCatalogItem, level: PreferenceLevel | undefined): void {
+    if (!row.hasChildNodes()) {
+      const clear = element("button", { type: "button", className: "kl-preference-inline-clear", text: "Clear", ariaLabel: `Clear ${item.label} rating` });
+      clear.addEventListener("click", () => {
+        this.#set(item.id, undefined);
+        row.querySelector<HTMLButtonElement>(".kl-preference-inline button")?.focus({ preventScroll: true });
+      });
+      const choices = element("div", { className: "kl-preference-inline", role: "group", ariaLabel: item.label });
+      for (const choice of PREFERENCE_LEVELS) {
+        if (choice === "hard_limit" && this.#legacyCatalog) continue;
+        const button = element("button", { type: "button", text: PREFERENCE_LEVEL_LABELS[choice], ariaLabel: `${item.label}: ${PREFERENCE_LEVEL_LABELS[choice]}` });
+        button.dataset.level = choice;
+        button.addEventListener("click", () => this.#set(item.id, preferenceLevelAfterTap(this.#data?.ratings[item.id], choice)));
+        choices.append(button);
+      }
+      row.append(element("div", { className: "kl-preference-inline-copy" },
+        element("strong", { text: item.label }),
+        element("div", {}, element("span", { className: "kl-preference-inline-value" }), clear)), choices);
+    }
+    row.querySelector<HTMLElement>(".kl-preference-inline-value")!.textContent = level ? PREFERENCE_LEVEL_LABELS[level] : "Not Set";
+    row.querySelector<HTMLButtonElement>(".kl-preference-inline-clear")!.hidden = level === undefined;
+    for (const button of row.querySelectorAll<HTMLButtonElement>(".kl-preference-inline button"))
+      button.setAttribute("aria-pressed", String(button.dataset.level === level));
   }
 
   #selector(item: PreferenceCatalogItem, selected: PreferenceLevel | undefined): HTMLElement {
@@ -421,25 +511,30 @@ export class PreferencesEditor {
 
   async #flush(retryConflict: boolean): Promise<void> {
     if (!this.#data || !this.#base || !this.dirty) return;
-    const generation = this.#generation;
+    const generation = this.#generation, source = this.#source;
+    const valid = () => generation === this.#generation && this.client.memberNumber === this.#owner && this.client.origin === this.#origin;
+    if (!valid()) throw new CloudError("session_changed");
     const updates = Object.fromEntries([...this.#pending.entries()].slice(0, MAX_PATCH_ENTRIES));
     const mode = this.#modeDirty ? this.#data.mode : undefined;
     const revision = this.#data.revision;
     this.#lastSaveAt = Date.now();
     this.#status.textContent = "Saving preferences…";
     try {
+      const write = <T>(method: "PUT" | "PATCH", body: unknown): Promise<T> => this.syncQueue
+        ? this.syncQueue.write<T>("Preferences", method, body, undefined, source) : writeOwnerSettings<T>(this.client, method, "/v1/preferences/me", body as Record<string, unknown>, source, method === "PUT" ? "preferences-put" : "preferences-patch", valid, false);
       const saved = this.#legacyCatalog
-        ? await this.client.request<Preferences>("PUT", "/v1/preferences/me", {
+        ? await write<Preferences>("PUT", {
           mode: mode ?? this.#base.mode,
           ratings: this.#legacyRatings(updates),
           revision,
         })
-        : await this.client.request<Preferences>("PATCH", "/v1/preferences/me", {
+        : await write<Preferences>("PATCH", {
           ...(mode ? { mode } : {}),
           updates,
           revision,
         });
       if (generation !== this.#generation || !this.#data) throw new CloudError("session_changed");
+      if (!saved || (this.syncQueue ? !Number.isSafeInteger(saved.revision) || saved.revision < revision : saved.revision !== revision + 1) || mode !== undefined && saved.mode !== mode || !saved.ratings || typeof saved.ratings !== "object" || Object.entries(updates).some(([id, value]) => (normalizePreferenceRatings(saved.ratings)[id] ?? null) !== value)) throw new CloudError("invalid_response");
       const canonical = { ...saved, ratings: normalizePreferenceRatings(saved.ratings) };
       this.#retryAt = 0;
       this.#rateLimitRetries = 0;
@@ -459,9 +554,9 @@ export class PreferencesEditor {
       this.#emit();
     } catch (error) {
       if (generation !== this.#generation || !this.#data) throw new CloudError("session_changed");
-      if (retryConflict && error instanceof CloudError && error.status === 409) {
+      if (!this.syncQueue && retryConflict && error instanceof CloudError && error.code === "preferences_changed_on_another_device") {
         let latestRaw: Preferences | undefined;
-        try { latestRaw = await this.client.request<Preferences>("GET", "/v1/preferences/me"); }
+        try { latestRaw = (await reviewOwnerSettings<Preferences>(this.client, "/v1/preferences/me", valid, source)).value; }
         catch (refreshError) { error = refreshError; }
         if (generation !== this.#generation || !this.#data) throw new CloudError("session_changed");
         if (latestRaw) {
@@ -477,7 +572,7 @@ export class PreferencesEditor {
           return;
         }
       }
-      if (error instanceof CloudError && error.status === 429) {
+      if (!this.syncQueue && error instanceof CloudError && error.status === 429) {
         this.#retryAt = Date.now() + Math.max(1_000, error.retryAfterMs || 60_000);
         // One timed retry handles a temporary limit without polling a failing API.
         if (++this.#rateLimitRetries === 1) this.#scheduleSave();
@@ -488,7 +583,7 @@ export class PreferencesEditor {
   }
 
   #showSaveError(error: unknown): string {
-    const message = error instanceof CloudError && error.status === 429
+    const message = error instanceof OwnerSettingsGenerationError ? error.message : this.syncQueue ? syncErrorMessage(error) : error instanceof CloudError && error.status === 429
       ? `Cloud save limit reached. Your changes are kept on this screen; retry in ${Math.max(1, Math.ceil((this.#retryAt - Date.now()) / 1000))} seconds.`
       : error instanceof CloudError && error.code === "unknown_preference"
         ? "Cloud needs a preferences catalog update. Your changes are kept on this screen; export them as a backup."
@@ -587,9 +682,12 @@ export class PreferencesEditor {
     if (!this.#status.querySelector(".kl-preferences-confirm-clear")) {
       const confirm = this.#textButton("Confirm clear", async () => {
         if (!this.#data) return;
+        const source = this.#source, generation = this.#generation;
         await this.save();
-        if (!this.#data) return;
-        const saved = await this.client.request<Preferences>("PUT", "/v1/preferences/me", { mode: this.#data.mode, ratings: {}, revision: this.#data.revision });
+        if (!this.#data || generation !== this.#generation) return;
+        const revision = this.#data.revision, mode = this.#data.mode;
+        const saved = await writeOwnerSettings<Preferences>(this.client, "PUT", "/v1/preferences/me", {mode, ratings: {}, revision}, source, "preferences-put", () => generation === this.#generation && this.client.memberNumber === this.#owner && this.client.origin === this.#origin, false);
+        if (saved.revision !== revision + 1 || saved.mode !== mode || !saved.ratings || Object.keys(saved.ratings).length) throw new Error("Unconfirmed clear result.");
         this.#data = { ...saved, ratings: {} };
         this.#base = structuredClone(this.#data);
         this.#pending.clear(); this.#modeDirty = false; this.#status.textContent = "Configured preferences cleared."; this.#render(); this.#emit();
@@ -602,8 +700,12 @@ export class PreferencesEditor {
   async #confirmDelete(): Promise<void> {
     if (!this.#status.querySelector(".kl-preferences-confirm-delete")) {
       const confirm = this.#textButton("Confirm deletion", async () => {
+        const source = this.#source, generation = this.#generation;
         await this.save();
-        await this.client.request("DELETE", "/v1/preferences/me");
+        if (!this.#data || generation !== this.#generation) return;
+        const revision = this.#data.revision;
+        const result = await writeOwnerSettings<{revision:number;deleted:boolean}>(this.client, "DELETE", "/v1/preferences/me", source?.required ? {revision} : {}, source, "preferences-delete", () => generation === this.#generation && this.client.memberNumber === this.#owner && this.client.origin === this.#origin, false);
+        if (source?.required && (!result || result.deleted !== true || result.revision !== revision + 1 && !(revision === 0 && result.revision === 0))) throw new Error("Unconfirmed deletion result.");
         await this.load();
       });
       confirm.classList.add("kl-preferences-confirm-delete");
@@ -618,6 +720,9 @@ export class PreferencesEditor {
       const failed = (error: unknown): void => {
         this.#status.textContent = error instanceof Error ? error.message : "Could not complete the action.";
       };
+      const inEditor = this.element.contains(button);
+      const inPrivacy = this.#profilePrivacyActive && this.#profilePrivacyField?.contains(button);
+      if (!button.isConnected || !inEditor && !inPrivacy) { button.disabled = false; return; }
       try { void Promise.resolve(action()).catch(failed).finally(() => { button.disabled = false; }); }
       catch (error) { failed(error); button.disabled = false; }
     });
@@ -634,6 +739,7 @@ export class PreferencesEditor {
   #emit(): void { for (const listener of this.#listeners) listener(); }
 
   #reset(): void {
+    this.#source = undefined;
     clearTimeout(this.#saveTimer);
     this.#resumeDraft = false;
     this.#generation++;
@@ -645,6 +751,11 @@ export class PreferencesEditor {
     this.#activeSelector = undefined;
     this.#busy = false;
     this.#body.replaceChildren();
+    if (this.#profilePrivacyField) {
+      this.#mode.disabled = true;
+      this.#mode.selectedIndex = -1;
+      this.#status.textContent = "";
+    }
     this.#count.textContent = "";
     this.#emit();
   }
@@ -689,26 +800,53 @@ export function preferenceSummary(
 
 export function compatibilityDetails(
   result: Compatibility,
-  options: { setMine?: (id: string, level: PreferenceLevel | undefined) => Promise<void> } = {},
+  options: { setMine?: (id: string, level: PreferenceLevel | undefined) => Promise<void>; platform?: boolean } = {},
 ): HTMLElement {
   const root = element("div", { className: "kl-compatibility-details" });
   const label = result.status === "available" ? `${result.score}% compatibility`
     : result.status === "insufficient" ? "Not enough shared preferences"
       : result.status === "opt_in_required" ? "Enable Compatibility sharing in Preferences"
         : "Preferences are private or unavailable";
-  root.append(element("h3", { text: label }));
+  if (options.platform) {
+    const score = result.status === "available" && typeof result.score === "number" ? `${result.score}%` : "—";
+    root.append(element("div", { className: "kl-compatibility-score" }, kikiIcon("heart", "kl-icon", true),
+      element("strong", { text: score }), element("span", { text: score === "—" ? label : "Based on your shared ratings" })));
+  } else root.append(element("h3", { text: label }));
   if (result.count !== undefined) root.append(element("p", { className: "kl-compatibility-count", text: `${result.count} preference${result.count === 1 ? "" : "s"} compared · at least 5 are needed for a score` }));
   if (result.hardLimitConflictCount) root.append(
     element("div", { className: "kl-hard-limit-notice" }, kikiIcon("warning"),
       element("div", {}, element("strong", { text: "Hard Limit Conflict" }),
         element("p", { text: `${result.hardLimitConflictCount} shared preference${result.hardLimitConflictCount === 1 ? " has" : "s have"} a hard limit on one side and Like or Love on the other. Boundaries take priority over the score.` }))),
   );
-  root.append(element("p", { className: "kl-compatibility-explanation", text: "Only preferences explicitly set by both people are compared. Not Set is excluded; Neutral remains an explicit choice. This is a conversation aid, not consent." }));
+  const explanation = element("p", { className: "kl-compatibility-explanation", text: "Only preferences explicitly set by both people are compared. Not Set is excluded; Neutral remains an explicit choice. This is a conversation aid, not consent." });
+  root.append(explanation);
   if (!result.shared && (result.status === "available" || result.status === "insufficient")) {
     root.append(element("p", { text: "Compatibility-only privacy is enabled, so the detailed ratings are not available." }));
     return root;
   }
   if (!result.shared) return root;
+  if (options.platform && result.shared.length) {
+    const categories = new Map<string, { count: number; total: number }>();
+    for (const entry of result.shared) {
+      const item = catalogById.get(entry.id);
+      if (!item) continue;
+      const category = categories.get(item.category) ?? { count: 0, total: 0 };
+      category.count++;
+      category.total += preferenceSimilarity(entry.yours, entry.theirs);
+      categories.set(item.category, category);
+    }
+    const summary = element("div", { className: "kl-compatibility-categories" });
+    for (const [name, { count, total }] of categories)
+      summary.append(element("div", { className: "kl-compatibility-category" },
+        element("div", {}, element("strong", { text: name }),
+          element("small", { text: `${count} shared ${count === 1 ? "rating" : "ratings"}` })),
+        element("span", { text: `${Math.round(total / count * 100)}%` })));
+    if (summary.childElementCount) explanation.before(summary);
+  }
+  const ratings = options.platform
+    ? element("details", { className: "kl-compatibility-shared-ratings" }, element("summary", { text: "Shared ratings" }))
+    : undefined;
+  const groups = ratings ? element("div", { className: "kl-compatibility-shared-groups" }) : root;
   const definitions = [
     ["hard_limit", "Hard Limit Conflicts"],
     ["strong", "Strong Matches"],
@@ -750,7 +888,12 @@ export function compatibilityDetails(
                 const shared = nextLevel === undefined
                   ? result.shared!.filter(candidate => candidate !== entry)
                   : result.shared!.map(candidate => candidate === entry ? { ...candidate, yours: nextLevel } : candidate);
-                root.replaceWith(compatibilityDetails(recalculateCompatibility(result, shared), options));
+                const replacement = compatibilityDetails(recalculateCompatibility(result, shared), options);
+                const nextRatings = replacement.querySelector<HTMLDetailsElement>(".kl-compatibility-shared-ratings");
+                if (ratings?.open && nextRatings) nextRatings.open = true;
+                const hadFocus = editor.matches(":focus-within");
+                root.replaceWith(replacement);
+                if (hadFocus) nextRatings?.querySelector("summary")?.focus({ preventScroll: true });
               }).catch(() => {
                 for (const button of editor.querySelectorAll<HTMLButtonElement>("button")) button.disabled = false;
                 editor.append(element("small", { text: "Could not save. Retry when connected." }));
@@ -764,7 +907,11 @@ export function compatibilityDetails(
       }
       group.append(row);
     }
-    root.append(group);
+    groups.append(group);
+  }
+  if (ratings && groups.childElementCount) {
+    ratings.append(groups);
+    root.append(ratings);
   }
   return root;
 }

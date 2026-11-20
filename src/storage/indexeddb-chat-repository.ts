@@ -1,8 +1,10 @@
+import { scopePersistenceName } from "../core/storage-scope";
 import type { ConversationMeta, LinkMessage } from "../core/types";
 import type { ChatCaptureResult, ChatRepository } from "./chat-repository";
 import { sortConversations } from "./memory-chat-repository";
+import {hydratePortableMessage,hydratePortableConversation,preparePortableChatRecords,type PortableChatRecords} from './portable-chat-records';
 
-const DATABASE_NAME = "kikilink";
+const DATABASE_NAME = scopePersistenceName("kikilink");
 const DATABASE_VERSION = 1;
 const MESSAGE_STORE = "messages";
 const CONVERSATION_STORE = "conversations";
@@ -11,8 +13,33 @@ const TIME_INDEX = "time";
 
 export class IndexedDbChatRepository implements ChatRepository {
   #databasePromise: Promise<IDBDatabase> | undefined;
+  #hydrationGeneration=0;
 
   constructor(private readonly databaseName = DATABASE_NAME) {}
+
+  deviceHistoryDatabase(owner: number): string | undefined {
+    return this.databaseName === scopePersistenceName(`kikilink-account-${owner}`) ? this.databaseName : undefined;
+  }
+
+  async hydratePortableChats(records:PortableChatRecords,current:()=>boolean=()=>true):Promise<void> {
+    const generation=this.#hydrationGeneration,check=()=>{if(generation!==this.#hydrationGeneration||!current())throw new Error('Portable chat restoration cancelled.');};
+    check();const prepared=preparePortableChatRecords(records);if(!prepared.messages.length&&!prepared.conversations.length)return;
+    const database=await this.#database();check();
+    await new Promise<void>((resolve,reject)=>{
+      const tx=database.transaction([MESSAGE_STORE,CONVERSATION_STORE],'readwrite');let reason:unknown;
+      const abort=(error:unknown)=>{reason??=error;try{tx.abort();}catch{}};
+      const timer=setTimeout(()=>abort(new Error('Portable chat restoration timed out.')),20000);
+      tx.onabort=()=>{clearTimeout(timer);reject(reason??tx.error??new Error('Portable chat restoration transaction failed.'));};
+      tx.onerror=()=>{reason??=tx.error??new Error('Portable chat restoration request failed.');};
+      tx.oncomplete=()=>{clearTimeout(timer);try{check();resolve();}catch(e){reject(e);}};
+      try{
+        const messages=tx.objectStore(MESSAGE_STORE),conversations=tx.objectStore(CONVERSATION_STORE);
+        if(messages.keyPath!=='id'||conversations.keyPath!=='peerNumber'||messages.autoIncrement||conversations.autoIncrement)throw new Error('Portable chat restoration requires a compatible native layout.');
+        for(const row of prepared.messages){const request=messages.get(row.id);request.onerror=()=>abort(request.error);request.onsuccess=()=>{try{check();const next=hydratePortableMessage(request.result,row);if(next)messages.put(next);}catch(e){abort(e);}};}
+        for(const row of prepared.conversations){const request=conversations.get(row.peerNumber);request.onerror=()=>abort(request.error);request.onsuccess=()=>{try{check();const next=hydratePortableConversation(request.result,row);if(next)conversations.put(next);}catch(e){abort(e);}};}
+      }catch(e){abort(e);}
+    });
+  }
 
   async captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult> {
     const database = await this.#database();
@@ -182,6 +209,7 @@ export class IndexedDbChatRepository implements ChatRepository {
   }
 
   close(): void {
+    ++this.#hydrationGeneration;
     if (!this.#databasePromise) return;
     void this.#databasePromise.then((database) => database.close()).catch(() => undefined);
     this.#databasePromise = undefined;

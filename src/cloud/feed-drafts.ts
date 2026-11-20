@@ -1,8 +1,14 @@
+import { scopePersistenceName } from "../core/storage-scope";
 import type { KeyValueStorage } from "../core/settings";
 import { AccountKeyValueStorage } from "../storage/account-data-storage";
 import type { CloudPollDraft } from "./types";
 
-const METADATA_KEY = "kikilink:feed-draft:v1";
+import { FEED_DRAFT_METADATA_KEY as METADATA_KEY, parseMetadata, metadataFiles, validPoll, validMediaIds, type DraftMetadata, type SnapshotMetadata } from "./feed-draft-metadata";
+import { openFeedDatabase, FEED_ATTACHMENTS, FEED_IMPORTS } from "../storage/feed-database";
+import { feedRecoveryHoldIds } from "../storage/feed-import-recovery";
+import { feedRowsKey, FEED_CURRENT_BYTES_LIMIT } from "../storage/feed-import-model";
+import { readArchivedFeedFields } from "../storage/feed-archived-fields";
+import { prepareFeedDraftFields } from '../storage/feed-draft-archived-fields';
 const ATTACHMENT_STORE = "attachments";
 const MAX_FILES = 4;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -23,6 +29,7 @@ export type FeedDraftStatus = "pending" | "saved" | "error";
 export interface FeedDraftAttachment {
   id: string;
   file: Blob;
+  archivedFields?: string;
 }
 /** Injectable storage boundary; production uses a database for this account only. */
 export interface FeedDraftAttachmentStorage {
@@ -34,26 +41,6 @@ export interface FeedDraftBacking {
   metadata?: KeyValueStorage;
   attachments?: FeedDraftAttachmentStorage;
 }
-interface FileMetadata {
-  id: string;
-  name: string;
-  type: string;
-  size: number;
-  lastModified: number;
-  spoiler: boolean;
-}
-interface SnapshotMetadata {
-  text: string;
-  clientId: string;
-  files: FileMetadata[];
-  poll: CloudPollDraft | null;
-}
-interface DraftMetadata extends SnapshotMetadata {
-  version: 1;
-  revision: string;
-  pending?: SnapshotMetadata & { mediaIds?: string[]; spoilerMediaIds?: string[] };
-}
-
 /**
  * Device-only Feed drafts, never mirrored into BC or sent to Cloud. Small text/poll
  * metadata is committed synchronously. Blobs are written only when files change.
@@ -64,10 +51,12 @@ export class FeedDraftStore {
   readonly #metadata: AccountKeyValueStorage;
   readonly #attachments: FeedDraftAttachmentStorage;
   readonly #fileIds = new WeakMap<File, string>();
+  readonly #archivedFields = new WeakMap<File, string>();
   readonly #listeners = new Set<(status: FeedDraftStatus) => void>();
   #committedIds = new Set<string>();
   #requestedSignature: string | undefined;
   #lastMetadata: string | null | undefined;
+  #archivedMetadata: string | undefined;
   #mutation = 0;
   #attachmentMutation = 0;
   #pending = 0;
@@ -83,7 +72,7 @@ export class FeedDraftStore {
       throw new Error("A valid BC account is required to save a Feed draft");
     }
     this.#metadata = new AccountKeyValueStorage(memberNumber, backing.metadata ?? browserMetadataStorage);
-    this.#attachments = backing.attachments ?? new IndexedDbFeedDraftAttachments(memberNumber, this.#metadata);
+    this.#attachments = backing.attachments ?? new IndexedDbFeedDraftAttachments(memberNumber);
   }
 
   get status(): FeedDraftStatus { return this.#status; }
@@ -99,16 +88,18 @@ export class FeedDraftStore {
     const mutation = this.#mutation;
     let raw: string | null;
     let metadata: DraftMetadata | undefined;
+    let archivedMetadata: string | undefined;
     try {
       raw = this.#metadata.getItem(METADATA_KEY);
       metadata = parseMetadata(raw);
+      archivedMetadata = metadata ? prepareFeedDraftFields(metadata) : undefined;
       this.#metadataError = undefined;
     } catch (error) {
       this.#metadataError = storageError(error);
       this.#notify();
       return undefined;
     }
-    if (!metadata) return undefined;
+    if (!metadata) { this.#archivedMetadata = undefined; return undefined; }
     const fileMetadata = metadataFiles(metadata);
     const restoredFiles = new Map<string, File>();
     let attachmentError: Error | undefined;
@@ -124,6 +115,10 @@ export class FeedDraftStore {
             continue;
           }
           const file = new File([record.file], entry.name, { type: entry.type, lastModified: entry.lastModified });
+          if (record.archivedFields !== undefined) {
+            readArchivedFeedFields(record.archivedFields);
+            this.#archivedFields.set(file, record.archivedFields);
+          }
           this.#fileIds.set(file, entry.id);
           restoredFiles.set(entry.id, file);
         }
@@ -143,11 +138,12 @@ export class FeedDraftStore {
     }
     this.#attachmentError = attachmentError;
     this.#lastMetadata = raw;
+    this.#archivedMetadata = archivedMetadata;
     this.#committedIds = new Set(restoredFiles.keys());
     this.#requestedSignature = fileMetadata.map(file => file.id).join("|");
     this.#notify();
     const restore = (snapshot: SnapshotMetadata): FeedDraftSnapshot => ({
-      text: snapshot.text, clientId: snapshot.clientId, poll: snapshot.poll,
+      text: snapshot.text, clientId: snapshot.clientId, poll: knownPoll(snapshot.poll),
       files: snapshot.files.flatMap(entry => {
         const file = restoredFiles.get(entry.id);
         return file ? [{ file, spoiler: entry.spoiler }] : [];
@@ -173,29 +169,34 @@ export class FeedDraftStore {
         throw new Error("The pending Feed post has invalid media data");
       }
     }
+    let archivedMetadata = this.#archivedMetadata;
     try {
       // Another tab may have replaced this draft and pruned our old image records.
       // Re-saving this tab's composition must re-persist its actual File objects.
-      if (this.#metadata.getItem(METADATA_KEY) !== this.#lastMetadata) {
+      const raw = this.#metadata.getItem(METADATA_KEY), saved = parseMetadata(raw);
+      if (saved) archivedMetadata = prepareFeedDraftFields(saved, archivedMetadata);
+      if (raw !== this.#lastMetadata) {
         this.#committedIds.clear();
         this.#requestedSignature = undefined;
       }
-    } catch { /* The following write reports an unavailable metadata store. */ }
+    } catch (error) { this.#metadataError = storageError(error); this.#notify(); return; }
     const files = new Map<string, FeedDraftAttachment>();
     const snapshot = (draft: FeedDraftSnapshot): SnapshotMetadata => ({
       text: draft.text, clientId: draft.clientId,
       files: draft.files.map(({ file, spoiler }) => {
         let id = this.#fileIds.get(file);
         if (!id) { id = createId(); this.#fileIds.set(file, id); }
-        files.set(id, { id, file });
+        const archivedFields = this.#archivedFields.get(file);
+        files.set(id, { id, file, ...(archivedFields !== undefined ? { archivedFields } : {}) });
         return { id, name: file.name, type: file.type, size: file.size, lastModified: file.lastModified, spoiler };
       }),
-      poll: draft.poll ? { ...draft.poll, options: [...draft.poll.options] } : null,
+      poll: knownPoll(draft.poll),
     });
     const metadata: DraftMetadata = {
       version: 1,
       revision: createId(),
       ...snapshot(draft),
+      ...(archivedMetadata !== undefined ? { archivedFields: archivedMetadata } : {}),
     };
     if (draft.pending) metadata.pending = { ...snapshot(draft.pending),
       ...(draft.pending.mediaIds ? { mediaIds: [...draft.pending.mediaIds] } : {}),
@@ -204,6 +205,7 @@ export class FeedDraftStore {
     this.#mutation++;
     this.#writeMetadata(metadata);
     if (this.#metadataError) return;
+    this.#archivedMetadata = archivedMetadata;
     this.#queueFiles([...files.values()]);
   }
 
@@ -219,6 +221,8 @@ export class FeedDraftStore {
     this.#mutation++;
     // Keep a tiny tombstone rather than restoring anything from a stale blob record.
     this.#writeMetadata({ version: 1, revision: createId(), cleared: true });
+    if (this.#metadataError) return this.flush();
+    this.#archivedMetadata = undefined;
     this.#queueFiles([], true);
     return this.flush();
   }
@@ -238,7 +242,9 @@ export class FeedDraftStore {
   #writeMetadata(value: object): void {
     try {
       const raw = JSON.stringify(value);
+      parseMetadata(raw); // Bound the combined active metadata and inactive fields before writing.
       this.#metadata.setItem(METADATA_KEY, raw);
+      if (this.#metadata.getItem(METADATA_KEY) !== raw) throw new Error('Saving the Feed draft could not be confirmed. Reload and check the saved draft.');
       this.#lastMetadata = raw;
       this.#metadataError = undefined;
     } catch (error) {
@@ -288,6 +294,9 @@ export class FeedDraftStore {
   }
 }
 
+const knownPoll = (poll: CloudPollDraft | null): CloudPollDraft | null => poll ?
+  { question: poll.question, options: [...poll.options], multiple: poll.multiple, closesAt: poll.closesAt } : null;
+
 const browserMetadataStorage: KeyValueStorage = {
   getItem(key) { return requiredLocalStorage().getItem(key); },
   setItem(key, value) { requiredLocalStorage().setItem(key, value); },
@@ -314,49 +323,6 @@ function validateDraft(draft: FeedDraft): void {
   }
 }
 
-function validPoll(value: unknown): value is CloudPollDraft | null {
-  if (value === null) return true;
-  if (!value || typeof value !== "object") return false;
-  const poll = value as CloudPollDraft;
-  return typeof poll.question === "string" && poll.question.length <= 200 && Array.isArray(poll.options) &&
-    poll.options.length <= 6 && poll.options.every(option => typeof option === "string" && option.length <= 100) &&
-    typeof poll.multiple === "boolean" && Number.isSafeInteger(poll.closesAt) && poll.closesAt > 0;
-}
-
-function parseMetadata(raw: string | null): DraftMetadata | undefined {
-  if (raw === null) return undefined;
-  if (raw.length > 32_000) throw new Error("The saved Feed draft is invalid");
-  const value: unknown = JSON.parse(raw);
-  if (!value || typeof value !== "object") throw new Error("The saved Feed draft is invalid");
-  const entry = value as DraftMetadata & { cleared?: boolean };
-  if (entry.version === 1 && entry.cleared === true) return undefined;
-  if (entry.version !== 1 || typeof entry.revision !== "string" || !validSnapshot(entry) ||
-    (entry.pending !== undefined && (!validSnapshot(entry.pending) || !validMediaIds(entry.pending.mediaIds) ||
-      !validMediaIds(entry.pending.spoilerMediaIds) || entry.pending.spoilerMediaIds?.some(id => !entry.pending!.mediaIds?.includes(id))))) {
-    throw new Error("The saved Feed draft is invalid");
-  }
-  return entry;
-}
-
-function validSnapshot(entry: SnapshotMetadata): boolean {
-  return Boolean(entry && typeof entry.text === "string" && entry.text.length <= 4000 &&
-    typeof entry.clientId === "string" && /^[a-z0-9_-]{1,128}$/iu.test(entry.clientId) && validPoll(entry.poll) &&
-    Array.isArray(entry.files) && entry.files.length <= MAX_FILES && entry.files.every(file =>
-      file && typeof file.id === "string" && /^[a-z0-9_-]{1,128}$/iu.test(file.id) && typeof file.name === "string" && file.name.length <= 1024 &&
-      typeof file.type === "string" && file.type.startsWith("image/") && Number.isSafeInteger(file.size) && file.size > 0 && file.size <= MAX_FILE_BYTES &&
-      Number.isSafeInteger(file.lastModified) && file.lastModified >= 0 && typeof file.spoiler === "boolean") &&
-    new Set(entry.files.map(file => file.id)).size === entry.files.length);
-}
-
-function validMediaIds(value: unknown): value is string[] | undefined {
-  return value === undefined || (Array.isArray(value) && value.length <= MAX_FILES &&
-    value.every(id => typeof id === "string" && /^[a-z0-9_-]{1,128}$/iu.test(id)) && new Set(value).size === value.length);
-}
-
-function metadataFiles(metadata: DraftMetadata): FileMetadata[] {
-  return [...new Map([...metadata.files, ...metadata.pending?.files ?? []].map(file => [file.id, file])).values()];
-}
-
 function storageError(error: unknown): Error {
   return error instanceof Error ? error : new Error("The draft could not be saved on this device");
 }
@@ -368,7 +334,7 @@ function createId(): string {
 }
 
 class IndexedDbFeedDraftAttachments implements FeedDraftAttachmentStorage {
-  constructor(private readonly memberNumber: number, private readonly metadata: AccountKeyValueStorage) {}
+  constructor(private readonly memberNumber: number) {}
 
   close(): void { /* Every transaction closes its connection, including failures. */ }
 
@@ -383,60 +349,53 @@ class IndexedDbFeedDraftAttachments implements FeedDraftAttachmentStorage {
     });
   }
 
-  async update(added: readonly FeedDraftAttachment[], keepIds: readonly string[]): Promise<void> {
-    return this.#transaction("readwrite", store => {
-      const keep = new Set(keepIds);
-      for (const file of added) store.put(file);
-      const request = store.getAllKeys();
-      request.onsuccess = () => {
-        // A late write from another open tab must never prune the active draft's
-        // files. Stale, unreferenced records are removed on the next image update.
+  async update(added: readonly FeedDraftAttachment[], _keepIds: readonly string[]): Promise<void> {
+    return this.#transaction("readwrite", (store,_result,tx,fail) => {
+      const copies = tx.objectStore(FEED_IMPORTS).getAll(), rows = store.getAll(); let ready = 0;
+      const write = () => {
+        if (++ready !== 2) return;
         try {
-          const current = parseMetadata(this.metadata.getItem(METADATA_KEY));
-          for (const file of current ? metadataFiles(current) : []) keep.add(file.id);
-        } catch { return; /* Retain blobs when the authoritative metadata cannot be read. */ }
-        for (const id of request.result) if (typeof id !== "string" || !keep.has(id)) store.delete(id);
+          const held = feedRecoveryHoldIds(copies.result,this.memberNumber);
+          const current = rows.result as FeedDraftAttachment[];
+          feedRowsKey(current.map(value => ({key:value.id,value})));
+          const existing = new Map(current.map(file => [file.id,file]));
+          const missing = added.filter(file => !existing.has(file.id));
+          if (new Set(added.map(file => file.id)).size !== added.length ||
+            current.length + missing.length > 32 ||
+            [...current,...missing].reduce((n,file) => n+file.file.size,0) > FEED_CURRENT_BYTES_LIMIT)
+            throw new Error("Saved Feed files are full. Download or remove unused files in Settings → Data & about → Saved device files.");
+          for (const file of added) {
+            if (held.has(file.id)) throw new Error("Finish the saved Feed import before replacing its image.");
+            const previous = existing.get(file.id);
+            if (previous) {
+              if (previous.file.size !== file.file.size || previous.file.type !== file.file.type || previous.archivedFields !== file.archivedFields)
+                throw new Error("A different saved Feed image already uses this ID. Its original bytes were kept.");
+              continue; // Immutable file IDs: no rewriting another writer's existing bytes.
+            }
+            store.add(file);
+          }
+          // Metadata and files live in separate stores. A stale keep-list cannot
+          // prove that another editor no longer needs an image. Removal is explicit.
+        } catch (error) { fail(error); }
       };
+      copies.onsuccess = rows.onsuccess = write;
     });
   }
 
   async #open(): Promise<IDBDatabase> {
     if (typeof indexedDB === "undefined") throw new Error("Permanent draft image storage is unavailable in this browser");
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(`kikilink-feed-drafts-${this.memberNumber}`, 1);
-      let settled = false;
-      const fail = () => {
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error("Permanent draft image storage is unavailable"));
-      };
-      const timer = setTimeout(fail, STORAGE_TIMEOUT_MS);
-      request.onupgradeneeded = () => {
-        if (settled) request.transaction?.abort();
-        else if (!request.result.objectStoreNames.contains(ATTACHMENT_STORE)) {
-          request.result.createObjectStore(ATTACHMENT_STORE, { keyPath: "id" });
-        }
-      };
-      request.onsuccess = () => {
-        clearTimeout(timer);
-        if (settled) { request.result.close(); return; }
-        settled = true;
-        request.result.onversionchange = () => request.result.close();
-        resolve(request.result);
-      };
-      request.onerror = request.onblocked = fail;
-    });
+    return openFeedDatabase(scopePersistenceName(`kikilink-feed-drafts-${this.memberNumber}`),indexedDB,true,()=>{});
   }
 
-  async #transaction<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore, result: (value: T) => void) => void): Promise<T> {
+  async #transaction<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore, result: (value: T) => void, tx: IDBTransaction, fail: (error: unknown) => void) => void): Promise<T> {
     const db = await this.#open();
     try {
       return await new Promise<T>((resolve, reject) => {
-        const tx = db.transaction(ATTACHMENT_STORE, mode);
-        let value!: T;
+        const tx = db.transaction([FEED_ATTACHMENTS,FEED_IMPORTS], mode);
+        let value!: T, reason: unknown;
         const fail = () => {
           clearTimeout(timer);
-          reject(tx.error ?? new Error("Draft image storage failed. Please keep this page open and try again."));
+          reject(reason ?? tx.error ?? new Error("Draft image storage failed. Please keep this page open and try again."));
         };
         const timer = setTimeout(() => {
           try { tx.abort(); } catch { /* The transaction may have just completed. */ }
@@ -444,7 +403,7 @@ class IndexedDbFeedDraftAttachments implements FeedDraftAttachmentStorage {
         }, STORAGE_TIMEOUT_MS);
         tx.oncomplete = () => { clearTimeout(timer); resolve(value); };
         tx.onerror = tx.onabort = fail;
-        try { work(tx.objectStore(ATTACHMENT_STORE), result => { value = result; }); }
+        try { work(tx.objectStore(ATTACHMENT_STORE), result => { value = result; }, tx, error => { reason = error; try { tx.abort(); } catch {} }); }
         catch (error) {
           clearTimeout(timer);
           try { tx.abort(); } catch { /* Already aborted. */ }

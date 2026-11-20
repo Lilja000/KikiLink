@@ -292,7 +292,10 @@ describe("published userscript runtime", () => {
     afc.unload();
   });
 
-  it("runs Blossom and activities in the page while sharing one ModSDK router", async () => {
+  it.each([
+    ["R131", "Assets/Female3DCG/Activity"],
+    ["R134", "Icons/Activity"],
+  ])("runs Blossom and activities in the %s page while sharing one ModSDK router", async (gameVersion, iconDirectory) => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     setGlobal("alert", vi.fn());
@@ -396,7 +399,7 @@ describe("published userscript runtime", () => {
     });
     setGlobal("DrawImageResize", vi.fn(() => true));
 
-    setGlobal("GameVersion", "R131");
+    setGlobal("GameVersion", gameVersion);
     setGlobal("AssetGroup", groups);
     setGlobal("ActivityFemale3DCG", [vanillaActivity]);
     setGlobal("ActivityFemale3DCGOrdering", ["Caress"]);
@@ -440,7 +443,7 @@ describe("published userscript runtime", () => {
         if (options?.image) button.dataset.image = options.image;
         const image = document.createElement("img");
         image.className = "button-image";
-        image.src = options?.image ?? `./Assets/Female3DCG/Activity/${itemActivity.Activity.Name}.png`;
+        image.src = options?.image ?? `./${iconDirectory}/${itemActivity.Activity.Name}.png`;
         const label = document.createElement("span");
         label.className = "button-label";
         label.textContent = getGlobal<(keyword: string) => string>("ActivityDictionaryText")(
@@ -631,11 +634,12 @@ describe("published userscript runtime", () => {
     const customLabel = customButton.querySelector<HTMLElement>(".button-label");
     const customImage = customButton.querySelector<HTMLImageElement>(".button-image");
     if (!customLabel || !customImage) throw new Error("Custom activity card is incomplete");
+    expect(customImage.getAttribute("src")).toBe(`./${iconDirectory}/Caress.png`);
     customLabel.textContent = `MISSING TEXT IN \"ActivityDictionary.csv\": ${customActivity.Name}`;
-    customImage.setAttribute("src", `./Assets/Female3DCG/Activity/${customActivity.Name}.png`);
+    customImage.setAttribute("src", `./${iconDirectory}/${customActivity.Name}.png`);
     await vi.waitFor(() => {
       expect(customLabel.textContent).toBe("Runtime elbow touch");
-      expect(customImage.getAttribute("src")).toBe("./Assets/Female3DCG/Activity/Caress.png");
+      expect(customImage.getAttribute("src")).toBe(`./${iconDirectory}/Caress.png`);
     });
     customButton.click();
     expect(nativeActivityRun).not.toHaveBeenCalled();

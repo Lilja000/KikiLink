@@ -1142,6 +1142,30 @@ export class GroupChatService {
     return durable;
   }
 
+  /** Clear local content while preserving memberships, revocations and replay protection. */
+  async clearMessageHistory(): Promise<boolean> {
+    this.#assertOpen();
+    await this.#settleMutations();
+    this.#assertBoundAccount();
+    const seenAt = safeNow(this.#now);
+    for (const group of this.#groups.values()) {
+      const id = group.groupId;
+      for (const message of this.#messages.get(id) ?? []) {
+        this.#rememberMessageId(id, message.senderNumber, message.id, seenAt);
+      }
+      this.#messages.delete(id);
+      this.#visibleMessageIds.delete(id);
+      group.draft = "";
+      this.#recomputeGroupSummary(group, []);
+    }
+    this.#clearRelayQueue();
+    this.#markPersistenceDirty();
+    this.#clearPersistenceTimers();
+    const saved = this.#flushPersistenceNow();
+    this.#notify({ kind: "cleared" });
+    return saved;
+  }
+
   /** Removes stored messages older than the supplied absolute timestamp. */
   async prune(olderThan: number): Promise<number> {
     this.#assertOpen();

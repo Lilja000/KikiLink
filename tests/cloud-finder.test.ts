@@ -138,6 +138,26 @@ describe("Cloud destinations in LinkFinder", () => {
     expect(settings.getSection("linkPresence").bio).toBe("Saved through confirmation");
   });
 
+  it("retains the profile draft when Escape is used repeatedly to return from the confirmation", async () => {
+    const { shadow, settings } = await setup(false);
+    shadow.querySelector<HTMLButtonElement>(".kl-presence-trigger")!.click();
+    const editor = shadow.querySelector<HTMLDialogElement>(".kl-presence-dialog")!;
+    const warning = shadow.querySelector<HTMLDialogElement>(".kl-unsaved-dialog")!;
+    const bio = editor.querySelector<HTMLTextAreaElement>(".kl-profile-bio-input")!;
+    bio.value = "Still editing";
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      bio.dispatchEvent(escape);
+      expect(escape.defaultPrevented).toBe(true);
+      expect(warning.open).toBe(true);
+      warning.dispatchEvent(new Event("cancel", { cancelable: true }));
+      expect(warning.open).toBe(false);
+      expect(editor.open).toBe(true);
+      expect(bio.value).toBe("Still editing");
+    }
+    expect(settings.getSection("linkPresence").bio).toBe("");
+  });
+
   it.each(["comfortable", "compact", "super-compact"] as const)(
     "retains the profile disclosure and drafts when the keyboard reduces the viewport at %s density",
     async density => {
@@ -342,7 +362,7 @@ it('shows Direct, Groups and Unread with one contextual action and marks both in
   expect([...shadow.querySelectorAll('.kl-chat-filter')].map(n=>n.textContent)).toEqual(['Direct','Groups','Unread']);
   shadow.querySelector<HTMLButtonElement>('[data-chat-filter="unread"]')!.click();
   await vi.waitFor(()=>expect(shadow.querySelector('.kl-conversations:not(.kl-cloud-group-list)')!.textContent).toContain('Direct unread'));
-  expect(shadow.querySelector('.kl-cloud-group-list')!.textContent).toContain('Group unread');
+  await vi.waitFor(()=>expect(shadow.querySelector('.kl-cloud-group-list')!.textContent).toContain('Group unread'));
   expect(shadow.querySelector<HTMLElement>('.kl-sidebar-new-group')!.hidden).toBe(true);
   const read=shadow.querySelector<HTMLButtonElement>('.kl-sidebar-read-all')!;expect(read.hidden).toBe(false);read.click();
   await vi.waitFor(()=>expect(service.totalUnread()).resolves.toBe(0));

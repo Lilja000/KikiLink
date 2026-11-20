@@ -4,6 +4,7 @@ import { CloudClient, CloudError } from "../src/cloud/client";
 import { CloudFeedView, type SocialFeatures } from "../src/cloud/feed-view";
 import { FeedPollView } from "../src/cloud/feed-poll";
 import { SocialUI } from "../src/cloud/social-ui";
+import { formatClockTime, getTimeFormatPreference, refreshClockText } from "../src/core/time-format";
 import type { CloudComment, CloudPoll, CloudPost, CloudProfile } from "../src/cloud/types";
 
 const cleanup: Array<() => void> = [];
@@ -20,7 +21,7 @@ function input(root: ParentNode, label: string, value: string): HTMLInputElement
   const field = root.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)!;
   field.value = value; field.dispatchEvent(new Event("input")); return field;
 }
-function setup(handler: (method: string, path: string, body: any) => Promise<unknown>) {
+function setup(handler: (method: string, path: string, body: any) => Promise<unknown>, platformPreview = false) {
   const request = vi.fn(handler), errors: unknown[] = [], image = vi.fn((id: string) => {
     const node = document.createElement("span"); node.dataset.image = id; return node;
   });
@@ -30,12 +31,177 @@ function setup(handler: (method: string, path: string, body: any) => Promise<unk
     if (button) button.disabled = true;
     try { await action(); } catch (error) { errors.push(error); } finally { if (button) button.disabled = false; }
   } });
-  const view = new CloudFeedView(ui, { openOwnProfile: () => {}, openGroups: () => {}, report: () => {} });
+  const view = new CloudFeedView(ui, { platformPreview, openOwnProfile: () => {}, openGroups: () => {}, report: () => {} });
   document.body.append(view.element); cleanup.push(() => { view.destroy(); ui.destroy(); });
   return { view, ui, request, image, errors, blocked, client };
 }
 
 describe("Feed community tools", () => {
+  it("starts the platform Feed at the post list and resumes a closed draft in its dialog", async () => {
+    const { view, request } = setup(async (method, path, body) => method === "POST" && path === "/v1/feed"
+      ? post({ id: 8, author: 101, text: body.text }) : { items: [post()], nextCursor: null }, true);
+    await view.render(features);
+    const card = view.element.querySelector(".kl-feed-post");
+    expect(view.element.querySelector("h1")?.textContent).toBe("Feed");
+    expect(card).not.toBeNull();
+    expect(view.element.querySelector('[aria-label="Share a post"]')).toBeNull();
+
+    const opener = button(view.element, "Post"); opener.click();
+    const dialog = view.element.querySelector<HTMLDialogElement>(".kl-feed-compose-dialog")!;
+    expect(dialog.open).toBe(true);
+    const editor = input(dialog, "Share a post", "A draft kept when closing");
+    expect(document.activeElement).toBe(editor);
+    button(dialog, "Cancel").click();
+    await vi.waitFor(() => expect(dialog.isConnected).toBe(false));
+    expect(document.activeElement).toBe(opener);
+    expect(request.mock.calls.some(([method]) => method === "POST")).toBe(false);
+
+    button(view.element, "Resume draft").click();
+    const reopened = view.element.querySelector<HTMLDialogElement>(".kl-feed-compose-dialog")!;
+    expect(reopened.querySelector("textarea")?.value).toBe("A draft kept when closing");
+    button(reopened, "Post").click();
+    await vi.waitFor(() => expect(view.element.querySelector('[data-post-id="8"]')?.textContent).toContain("A draft kept when closing"));
+    await vi.waitFor(() => expect(reopened.isConnected).toBe(false));
+    expect(view.element.querySelector('[data-post-id="7"]')).toBe(card);
+    expect(document.activeElement).toBe(opener);
+    expect(opener.textContent).toBe("Post");
+  });
+
+  it("opens Comments with the live post and preserves its actions, draft and opener when closed", async () => {
+    const entry = post({ commentCount: 0, text: "Discuss this update" });
+    const { view } = setup(async (_method, path) => path.includes("/comments")
+      ? { items: [], nextCursor: null } : { items: [structuredClone(entry)], nextCursor: null }, true);
+    await view.render(features);
+    const card = view.element.querySelector<HTMLElement>("[data-post-id]")!;
+    const opener = button(card, "Comments · 0");
+    const author = card.querySelector(".kl-social-author");
+    opener.click();
+    await vi.waitFor(() => expect(card.querySelector("dialog[open] textarea")).not.toBeNull());
+    const dialog = card.querySelector<HTMLDialogElement>("dialog[open]")!;
+    expect(dialog.querySelector(".kl-comment-subject .kl-social-author")).toBe(author);
+    expect(dialog.querySelector(".kl-comment-subject")?.textContent).toContain("Discuss this update");
+    expect(dialog.querySelector("label")?.textContent).toBe("Add a comment");
+    const draft = input(dialog, "Comment", "Remember my draft");
+    expect(draft.maxLength).toBe(500);
+    expect(dialog.querySelector(".kl-comment-spoiler-tool")).toBeNull();
+    expect(dialog.querySelector(".kl-comment-counter")?.textContent).toContain(String(draft.value.length));
+    button(dialog, "Close").click();
+    expect(card.querySelector("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(card.querySelector(".kl-social-author")).toBe(author);
+    opener.click();
+    await vi.waitFor(() => expect(card.querySelector<HTMLTextAreaElement>("dialog[open] textarea")?.value).toBe("Remember my draft"));
+    view.destroy();
+  });
+
+  it("opens archived community comments for reading while keeping posting and reply controls locked", async () => {
+    const entry = post({ community: { id: "garden", name: "Garden", archived: true }, commentCount: 1 });
+    const own = { id: 31, postId: 7, author: 101, profile: profile(101), text: "Saved comment", revision: 1,
+      createdAt: 5, updatedAt: 5, reactions: { counts: [], mine: null }, parentId: null };
+    const { view, request } = setup(async (_method, path) => path.includes("/comments")
+      ? { items: [own], nextCursor: null } : { items: [structuredClone(entry)], nextCursor: null }, true);
+    await view.render(features); button(view.element, "Comments · 1").click();
+    await vi.waitFor(() => expect(view.element.querySelector("[data-comment-id]")).not.toBeNull());
+    const dialog = view.element.querySelector("dialog[open]")!;
+    expect(dialog.textContent).toContain("Saved comment");
+    expect(dialog.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(true);
+    expect(button(dialog, "Reply").disabled).toBe(true);
+    expect(button(dialog, "Send comment").disabled).toBe(true);
+    expect(dialog.querySelector('[data-comment-id] [aria-label="Edit"]')).toBeNull();
+    expect(dialog.querySelector<HTMLElement>("[data-comment-id] .kl-reactions")?.inert).toBe(true);
+    expect(request.mock.calls.every(([method]) => method === "GET")).toBe(true);
+  });
+
+  it("matches the post menu for owners and peers, persists private pins across refresh and keeps other tools accessible", async () => {
+    const owner = post({ id: 5, author: 101, profile: profile(101), createdAt: 2 });
+    const other = post({ id: 7, createdAt: 3 });
+    const { view, request } = setup(async () => ({ items: [structuredClone(other), structuredClone(owner)], nextCursor: null }), true);
+    const capabilities = { ...features, reactionDetails: true, feedPins: false };
+    await view.render(capabilities);
+    const card = (id: number) => view.element.querySelector<HTMLElement>(`[data-post-id="${id}"]`)!;
+    const menu = (id: number) => card(id).querySelector('[aria-label="Post options"]')!.parentElement!;
+    const labels = (node: Element) => [...node.querySelectorAll("button")].map(b => b.textContent);
+    expect(labels(menu(7))).toEqual(["Open conversation", "Who reacted", "Save post", "Report post…"]);
+    expect(labels(menu(5))).toEqual(["Open conversation", "Who reacted", "Save post", "Edit post", "Pin your post", "Delete post…"]);
+    button(menu(5), "Pin your post").click();
+    await vi.waitFor(() => expect(labels(menu(5))).toContain("Unpin your post"));
+    expect(view.element.querySelector(".kl-feed-posts > article")?.getAttribute("data-post-id")).toBe("5");
+    await view.render(capabilities);
+    expect(card(5).dataset.pinned).toBe("true"); expect(card(7).dataset.pinned).toBe("false");
+    button(menu(5), "Unpin your post").click();
+    await vi.waitFor(() => expect(card(5).dataset.pinned).toBe("false"));
+    expect(request.mock.calls.some(([method]) => method === "PUT")).toBe(false);
+    menu(7).querySelector("summary")!.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true }));
+    expect(card(7).querySelector<HTMLDetailsElement>(".kl-feed-additional-menu")!.open).toBe(true);
+    expect(labels(card(7).querySelector(".kl-feed-additional-menu")!)).toContain("Hide post");
+  });
+
+  it("clears a submitted platform search, restores focus and keeps compact post labels accessible", async () => {
+    const now = Date.now();
+    let state = post({ pinnedAt: now, createdAt: now - 1, updatedAt: now, commentCount: 2 });
+    const { view, request, errors } = setup(async (_method, path) => ({
+      items: path.includes("q=") ? [] : [structuredClone(state)], nextCursor: null,
+    }), true);
+    await view.render(features);
+    const search = input(view.element, "Search feed", "missing");
+    expect(button(view.element, "Clear search").hidden).toBe(false);
+    search.closest("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(view.element.querySelector(".kl-feed-empty h2")?.textContent).toBe("No posts found"));
+    expect(request.mock.calls.at(-1)?.[1]).toContain("q=missing");
+
+    button(view.element, "Clear search").click();
+    await vi.waitFor(() => expect(view.element.querySelector(".kl-feed-post")).not.toBeNull());
+    expect(document.activeElement).toBe(view.element.querySelector(".kl-feed-search"));
+    expect(button(view.element, "Clear search").hidden).toBe(true);
+    expect(request.mock.calls.at(-1)?.[1]).not.toContain("q=");
+    expect(view.element.querySelector(".kl-feed-post-header .kl-social-meta .kl-feed-highlights")?.textContent).toBe("Pinned");
+    expect(view.element.querySelector(".kl-feed-post-header .kl-social-meta .kl-social-edited")?.textContent).toBe("Edited");
+    expect(button(view.element, "Comments · 2").textContent).toBe("2");
+
+    state = { ...state, commentCount: 3 };
+    await view.sync();
+    expect(button(view.element, "Comments · 3").textContent).toBe("3");
+    expect(errors).toEqual([]);
+  });
+
+  it("shows the author's local date and chosen clock, and keeps reactions ahead of the picker", async () => {
+    const at = new Date(2026, 9, 13, 18, 35).getTime();
+    const entry = post({ createdAt: at, updatedAt: at, reactions: { mine: null, counts: [{ reaction: "heart", count: 2 }] } });
+    const { view } = setup(async () => ({ items: [entry], nextCursor: null }), true);
+    await view.render(features);
+    const stamp = view.element.querySelector("time")!;
+    const format = getTimeFormatPreference();
+    try {
+      for (const preference of ["12-hour", "24-hour"] as const) {
+        refreshClockText(view.element, preference);
+        expect(stamp.textContent).toContain(` · ${formatClockTime(at, preference)}`);
+        expect(stamp.dateTime).toBe(new Date(at).toISOString());
+      }
+    } finally { refreshClockText(view.element, format); }
+    const actions = view.element.querySelector(".kl-feed-post-actions > .kl-reactions")!;
+    expect(actions.firstElementChild?.classList.contains("kl-reaction")).toBe(true);
+    expect(actions.lastElementChild?.classList.contains("kl-reaction-picker")).toBe(true);
+  });
+
+  it("keeps a pending poll choice through a count refresh and marks the confirmed choice when voting closes", async () => {
+    const start = poll();
+    let entry = post({ poll: start });
+    const { view } = setup(async () => ({ items: [structuredClone(entry)], nextCursor: null }), true);
+    await view.render(features);
+    const field = view.element.querySelector<HTMLInputElement>('.kl-feed-poll-choice input[aria-label="Games"]')!;
+    field.click();
+    entry = { ...entry, poll: { ...start, totalVoters: 2 } };
+    await view.sync();
+    expect(view.element.querySelector('.kl-feed-poll-choice input[aria-label="Games"]')).toBe(field);
+    expect(field.checked).toBe(true);
+    expect(view.element.querySelector(".kl-feed-poll-meta")?.textContent).toContain("2 voters · Single answer");
+    entry = { ...entry, poll: { ...start, closed: true, myVotes: [1] } };
+    await view.sync();
+    expect(view.element.querySelector('.kl-feed-poll-result[data-mine="true"]')?.textContent).toContain("Games · Your vote");
+    expect(view.element.querySelector(".kl-feed-poll-actions")?.textContent).toBe("Voting closed");
+    expect(view.element.querySelector(".kl-feed-poll-actions button")).toBeNull();
+  });
+
   it("uses server views for Friends, Saved and Hidden, and leaves old servers on Everyone/My posts", async () => {
     const { view, request } = setup(async () => ({ items: [], nextCursor: null })); await view.render(features);
     for (const [label, filter] of [["Friends", "friends"], ["Saved", "saved"], ["Hidden", "hidden"]]) {
@@ -98,6 +264,59 @@ describe("Feed community tools", () => {
     const sent = request.mock.calls.filter(([method, path]) => method === "POST" && path === "/v1/feed").map(([, , body]) => body);
     expect(sent[1]).toEqual(sent[0]); expect(sent[1].text).toBe("First");
     await vi.waitFor(() => expect(view.element.querySelector<HTMLTextAreaElement>('[aria-label="Share a post"]')!.value).toBe(" plus next"));
+  });
+
+  it("retries an uncertain comment with its original mention text and key while preserving newer typing", async () => {
+    let reject!: (error: Error) => void, attempts = 0;
+    const created: CloudComment = { ...post(), id: 11, author: 101, profile: profile(), text: "Hello @bravo", postId: 7, parentId: null, replyTo: null };
+    const { view, request, errors } = setup(async (method, path) => {
+      if (path.includes("comments")) {
+        if (method === "POST") { attempts++; if (attempts === 1) return new Promise((_resolve, fail) => { reject = fail; }); return created; }
+        return { items: [], nextCursor: null };
+      }
+      return { items: [post()], nextCursor: null };
+    });
+    await view.render({ ...features, mentions: true }); button(view.element, "Comments · 0").click();
+    await vi.waitFor(() => expect(view.element.querySelector('[aria-label="Comment"]')).not.toBeNull());
+    input(view.element, "Comment", created.text); button(view.element, "Send comment").click();
+    await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+    input(view.element, "Comment", "A separate newer thought"); reject(new CloudError("network_error"));
+    await vi.waitFor(() => expect(errors).toHaveLength(1)); button(view.element, "Send comment").click();
+    await vi.waitFor(() => expect(view.element.querySelector('[data-comment-id="11"]')).not.toBeNull());
+    const sent = request.mock.calls.filter(([method]) => method === "POST").map(([, , body]) => body);
+    expect(sent).toHaveLength(2); expect(sent[1]).toEqual(sent[0]);
+    expect(sent[0]).toMatchObject({ text: created.text, clientId: expect.any(String) });
+    expect(view.element.querySelector<HTMLTextAreaElement>('[aria-label="Comment"]')!.value).toBe("A separate newer thought");
+    expect(view.element.querySelectorAll('[data-comment-id="11"]')).toHaveLength(1);
+    expect(button(view.element, "Comments · 1")).toBeTruthy();
+  });
+
+  it("allows a corrected comment with a new key after a definite validation failure", async () => {
+    let attempts = 0;
+    const { view, request, errors } = setup(async (method, path, body) => {
+      if (path.includes("comments")) {
+        if (method === "POST") {
+          if (++attempts === 1) throw new CloudError("too_many_mentions", 400);
+          return { ...post(), id: 11, author: 101, profile: profile(), text: body.text, postId: 7, parentId: null, replyTo: null };
+        }
+        return { items: [], nextCursor: null };
+      }
+      return { items: [post()], nextCursor: null };
+    });
+    await view.render({ ...features, mentions: true }); button(view.element, "Comments · 0").click();
+    await vi.waitFor(() => expect(view.element.querySelector('[aria-label="Comment"]')).not.toBeNull());
+    input(view.element, "Comment", "Rejected draft"); button(view.element, "Send comment").click();
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(view.element.querySelector<HTMLTextAreaElement>('[aria-label="Original Feed draft"]')!.value).toBe('Rejected draft');
+    expect(request.mock.calls.filter(([method])=>method==='POST')).toHaveLength(1);
+    button(view.element,'Discard saved request').click();button(view.element,'Discard').click();
+    await vi.waitFor(()=>expect(view.element.querySelector('[aria-label="Original Feed draft"]')).toBeNull());
+    button(view.element,'Comments · 0').click();await vi.waitFor(()=>expect(view.element.querySelector('[aria-label="Comment"]')).not.toBeNull());
+    input(view.element, "Comment", "Hello @bravo"); button(view.element, "Send comment").click();
+    await vi.waitFor(() => expect(view.element.querySelector('[data-comment-id="11"]')).not.toBeNull());
+    const sent = request.mock.calls.filter(([method]) => method === "POST").map(([, , body]) => body);
+    expect(sent[1].text).toBe("Hello @bravo"); expect(sent[1].clientId).not.toBe(sent[0].clientId);
+    expect(view.element.querySelector<HTMLTextAreaElement>('[aria-label="Comment"]')!.value).toBe("");
   });
 
   it("sends parent IDs and displays compact reply threads without inserting name prefixes into text", async () => {

@@ -21,10 +21,11 @@ export class ReplyComposer {
   readonly #lifetime = new AbortController();
   #prefix = "";
 
-  constructor(readonly input: HTMLTextAreaElement, readonly limit: number) {
+  constructor(readonly input: HTMLTextAreaElement, readonly limit: number,
+    readonly options: { beforeChange?(): (() => void) | undefined } = {}) {
     this.element.setAttribute("role", "group");
     input.addEventListener("keydown", event => {
-      if (event.key !== "Escape" || event.isComposing || !this.#prefix || input.disabled) return;
+      if (event.key !== "Escape" || event.isComposing || !this.#prefix || input.disabled || input.readOnly) return;
       event.preventDefault(); event.stopPropagation(); this.cancel();
     }, { signal: this.#lifetime.signal });
     this.load(input.value);
@@ -38,16 +39,21 @@ export class ReplyComposer {
     this.#render();
   }
   replyTo(author: string, content: string): void {
-    if (this.input.disabled) return;
+    if (this.input.disabled || this.input.readOnly) return;
     const prefix = formatInlineReplyPrefix(author, content);
     if (prefix.length + this.input.value.length > this.limit) {
       throw new Error(`That reply would exceed the ${this.limit}-character message limit.`);
     }
-    this.#prefix = prefix; this.#render(); this.#changed();
+    this.#change(prefix);
   }
   cancel(): void {
-    if (this.input.disabled || !this.#prefix) return;
-    this.#prefix = ""; this.#render(); this.#changed();
+    if (this.input.disabled || this.input.readOnly || !this.#prefix) return;
+    this.#change("");
+  }
+  #change(prefix: string): void {
+    const afterChange = this.options.beforeChange?.();
+    this.#prefix = prefix; this.#render(); this.#changed();
+    afterChange?.();
   }
   #render(): void {
     this.input.maxLength = Math.max(0, this.limit - this.#prefix.length);
@@ -60,7 +66,7 @@ export class ReplyComposer {
   }
   #changed(): void {
     this.input.dispatchEvent(new Event("input", { bubbles: true }));
-    this.input.focus(); this.input.setSelectionRange(this.input.value.length, this.input.value.length);
+    this.input.focus({ preventScroll: true }); this.input.setSelectionRange(this.input.value.length, this.input.value.length);
   }
   destroy(): void { this.#lifetime.abort(); this.element.remove(); this.#prefix = ""; }
 }

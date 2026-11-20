@@ -8,6 +8,22 @@ export function focusedElement(root: Node): HTMLElement | undefined {
   } catch { return undefined; }
 }
 
+/** Order existing children by identity, leaving children already in place connected. */
+export function reconcileChildren(parent: Element, children: readonly Node[]): void {
+  const retained = new Set(children);
+  let current = parent.firstChild;
+  while (current) {
+    const next = current.nextSibling;
+    if (!retained.has(current)) current.remove();
+    current = next;
+  }
+  let cursor = parent.firstChild;
+  for (const child of children) {
+    if (child === cursor) cursor = cursor.nextSibling;
+    else parent.insertBefore(child, cursor);
+  }
+}
+
 export function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   options: {

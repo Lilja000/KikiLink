@@ -857,3 +857,17 @@ function conversation(): ConversationMeta {
     draft: "",
   };
 }
+
+it('preserves validated archived attachment references through portable capture and hydration',async()=>{
+ const refs={version:1 as const,images:['00000000-0000-4000-8000-000000000001'],audio:['10000000-0000-4000-8000-000000000001']};
+ globalThis.Player={MemberNumber:101,Name:'Synthetic',FriendNames:new Map(),ExtensionSettings:{}};globalThis.ServerPlayerExtensionSettingsSync=vi.fn();
+ const account=new AccountDataStorage(101,new MemoryKeyValueStorage()),repository=new MemoryChatRepository();
+ await repository.addMessage({...message(),archivedAttachments:refs});await repository.putConversation(conversation());await account.attachChatRepository(repository);account.markChatChanged();await account.flush();
+ expect(readCloudChatState().messages[0]?.archivedAttachments).toEqual(refs);await account.destroy();
+ const restored=new AccountDataStorage(101,new MemoryKeyValueStorage()),target=new MemoryChatRepository();await restored.attachChatRepository(target);expect((await target.getMessages(303))[0]?.archivedAttachments).toEqual(refs);await restored.destroy();
+});
+it('omits future or URL-bearing archived attachment fields from portable hydration without losing text',async()=>{
+ const refs={version:2,images:['https://example.test/file'],audio:[]};
+ globalThis.Player={MemberNumber:101,Name:'Synthetic',FriendNames:new Map(),ExtensionSettings:{KikiLink:'JSON:'+JSON.stringify({version:1,owner:101,updatedAt:50,chats:{conversations:[conversation()],messages:[{...message(),archivedAttachments:refs}]}})}};globalThis.ServerPlayerExtensionSettingsSync=vi.fn();
+ const account=new AccountDataStorage(101,new MemoryKeyValueStorage()),repository=new MemoryChatRepository();await account.attachChatRepository(repository);const saved=(await repository.getMessages(303))[0]!;expect(saved.content).toBe(message().content);expect(saved.archivedAttachments).toBeUndefined();await account.destroy();
+});

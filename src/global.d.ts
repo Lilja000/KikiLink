@@ -4,6 +4,8 @@ declare global {
   const __KIKILINK_VERSION__: string;
   const __KIKILINK_TRAFFIC_AUDIT__: boolean;
   const __KIKILINK_DEV_TEST__: boolean;
+  const __KIKILINK_PLATFORM_PREVIEW__: boolean;
+  const __KIKILINK_PLATFORM_RELEASE__: boolean;
   const __KIKILINK_BUILD_ID__: string;
   const __KIKILINK_DISTRIBUTION__: "userscript" | "fusam";
   const __KIKILINK_CATBOX_RELAY_URL__: string;

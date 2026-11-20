@@ -1,5 +1,22 @@
 /** Shared Direct/Groups interaction geometry, including touch and composer quotes. */
 export const MESSAGE_INTERACTION_STYLES = `
+.kl-message-reactions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; max-width: 100%; }
+.kl-message-reactions[hidden] { display: none !important; }
+.kl-message-reaction, .kl-message-reaction-picker>summary { box-sizing: border-box; min-width: 30px; min-height: 30px; padding: 3px 7px; border: 1px solid var(--kl-border); border-radius: 12px; background: var(--kl-surface-2); color: var(--kl-text); font: inherit; font-size: 13px; cursor: pointer; }
+.kl-message-reaction { font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", system-ui, sans-serif; }
+.kl-message-reaction[aria-pressed="true"] { border-color: var(--kl-gold); background: color-mix(in srgb, var(--kl-gold) 16%, var(--kl-surface-2)); }
+.kl-message-reaction:disabled, .kl-message-reaction-picker>summary[aria-disabled="true"] { opacity: .6; cursor: wait; }
+.kl-message-reaction:focus-visible, .kl-message-reaction-picker>summary:focus-visible { outline: 2px solid var(--kl-gold); outline-offset: 2px; }
+.kl-message-reaction-picker { max-width: 100%; }
+.kl-message-reaction-picker>summary { display: grid; place-items: center; list-style: none; width: 30px; color: var(--kl-muted); }
+.kl-message-reaction-picker>summary::-webkit-details-marker { display: none; }
+.kl-message-reaction-picker>summary .kl-icon { width: 16px; height: 16px; }
+.kl-message-reaction-picker[open] { flex-basis: 100%; }
+.kl-message-reaction-choices { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; width: 208px; max-width: 100%; padding-top: 6px; }
+.kl-message-reaction-choices .kl-message-reaction { font-size: 19px; min-height: 36px; padding: 4px; }
+.kl-message-reaction-error { flex-basis: 100%; font-size: 11px; color: var(--kl-muted); }
+@media (pointer: coarse) { .kl-message-reaction, .kl-message-reaction-picker>summary { min-height: 44px; min-width: 44px; } .kl-message-reaction-choices { width: 236px; } }
+
 .kl-message-line { min-width: 0; display: flex; align-items: center; gap: 6px; }
 .kl-message-line>.kl-message-bubble { min-width: 0; flex: 0 1 auto; }
 .kl-message-line[data-direction="outgoing"] { flex-direction: row-reverse; }

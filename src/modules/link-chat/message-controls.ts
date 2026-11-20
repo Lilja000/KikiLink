@@ -2,9 +2,20 @@ import { element } from "../../utils/dom";
 import { kikiIcon } from "./icons";
 
 /** The same controls and clipboard path for native Direct and Cloud group messages. */
-export function messageActions(reply: () => void, copy: () => Promise<void>, onError: (error: unknown) => void): HTMLDivElement {
+export function messageActions(reply: () => void, copy: () => Promise<void>, onError: (error: unknown) => void,
+  onMore?: (trigger: HTMLButtonElement) => void): HTMLDivElement {
   const actions = element("div", { className: "kl-message-side-actions", ariaLabel: "Message actions" });
   actions.setAttribute("role", "group");
+  actions.append(element("button", { className: "kl-message-action", type: "button", title: "Quote this message in your reply",
+    ariaLabel: "Reply to message", onClick: reply }, kikiIcon("reply")));
+  if (onMore) {
+    const more = element("button", { className: "kl-message-action kl-message-options", type: "button",
+      title: "Message options", ariaLabel: "Message options", onClick: () => onMore(more) }, kikiIcon("more"));
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    actions.append(more);
+    return actions;
+  }
   const copyButton = element("button", { className: "kl-message-action", type: "button", title: "Copy message",
     ariaLabel: "Copy message", onClick: () => {
       copyButton.disabled = true;
@@ -14,11 +25,7 @@ export function messageActions(reply: () => void, copy: () => Promise<void>, onE
         copyButton.replaceChildren(kikiIcon("check"));
       }).catch(onError).finally(() => { copyButton.disabled = false; });
     } }, kikiIcon("copy"));
-  actions.append(
-    element("button", { className: "kl-message-action", type: "button", title: "Quote this message in your reply",
-      ariaLabel: "Reply to message", onClick: reply }, kikiIcon("reply")),
-    copyButton,
-  );
+  actions.append(copyButton);
   return actions;
 }
 

@@ -16,6 +16,7 @@ const LIKO_MAT_TRAILER_PATTERNS = [
 interface MessageMetadata {
   messageType: "Message" | "Emote" | "Action";
   messageColor?: string;
+  messageId?: string;
 }
 
 /**
@@ -25,23 +26,29 @@ interface MessageMetadata {
  * character elsewhere in a message is preserved verbatim.
  */
 export function cleanBeepMessageContent(value: unknown): string {
-  if (typeof value !== "string") return "";
+  return parseBeepMessageContent(value).content;
+}
+
+export function parseBeepMessageContent(value: unknown): { content: string; messageId?: string } {
+  if (typeof value !== "string") return { content: "" };
 
   let content = value;
+  let messageId: string | undefined;
   for (let index = 0; index < MAX_TRANSPORT_ENVELOPES; index += 1) {
     const withoutLikoMat = stripLikoMatTrailer(content);
     if (withoutLikoMat !== content) {
       content = withoutLikoMat;
       continue;
     }
-    const withoutMessageMetadata = stripMessageMetadata(content);
-    if (withoutMessageMetadata !== content) {
-      content = withoutMessageMetadata;
+    const metadata = trailingMessageMetadata(content);
+    if (metadata) {
+      content = content.slice(0, metadata.start).trimEnd();
+      messageId ??= metadata.value.messageId;
       continue;
     }
     break;
   }
-  return content.replace(BIDI_CONTROLS, "").slice(0, MAX_BEEP_MESSAGE_LENGTH);
+  return { content: content.replace(BIDI_CONTROLS, "").slice(0, MAX_BEEP_MESSAGE_LENGTH), ...(messageId ? { messageId } : {}) };
 }
 
 function stripLikoMatTrailer(value: string): string {
@@ -52,17 +59,17 @@ function stripLikoMatTrailer(value: string): string {
   return value;
 }
 
-function stripMessageMetadata(value: string): string {
+function trailingMessageMetadata(value: string): { start: number; value: MessageMetadata } | undefined {
   const markerIndex = value.lastIndexOf(MESSAGE_METADATA_MARKER);
-  if (markerIndex < 0) return value;
+  if (markerIndex < 0) return;
 
   const encodedMetadata = value.slice(markerIndex + MESSAGE_METADATA_MARKER.length).trim();
-  if (!encodedMetadata || encodedMetadata.length > MAX_METADATA_LENGTH) return value;
+  if (!encodedMetadata || encodedMetadata.length > MAX_METADATA_LENGTH) return;
   try {
     const metadata: unknown = JSON.parse(encodedMetadata);
-    return isMessageMetadata(metadata) ? value.slice(0, markerIndex).trimEnd() : value;
+    if (isMessageMetadata(metadata)) return { start: markerIndex, value: metadata };
   } catch {
-    return value;
+    return;
   }
 }
 
@@ -72,15 +79,16 @@ function isMessageMetadata(value: unknown): value is MessageMetadata {
   const metadata = value as Record<string, unknown>;
   const keys = Object.keys(metadata);
   const hasColor = keys.includes("messageColor");
+  const hasId = keys.includes("messageId");
   return (
-    (keys.length === 1 || keys.length === 2) &&
+    keys.length === 1 + Number(hasColor) + Number(hasId) &&
     keys.includes("messageType") &&
-    (keys.length === 1 || hasColor) &&
     (metadata.messageType === "Message" ||
       metadata.messageType === "Emote" ||
       metadata.messageType === "Action") &&
     (!hasColor ||
       (typeof metadata.messageColor === "string" &&
-        /^#[0-9a-f]{6}$/iu.test(metadata.messageColor)))
+        /^#[0-9a-f]{6}$/iu.test(metadata.messageColor))) &&
+    (!hasId || (typeof metadata.messageId === "string" && /^[a-zA-Z0-9]{1,32}$/u.test(metadata.messageId)))
   );
 }

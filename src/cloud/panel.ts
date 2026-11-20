@@ -1,29 +1,46 @@
+import {confirmCloudBlock} from './account-control-ui';
+import {AccountControlIntent, AccountControlGenerationError, AccountControlUnconfirmedError, reviewAccountControl, accountControlRead, accountControlPath} from './account-control-generation';
+import {FeedContentError} from './feed-content-intent';
+import {FeedInteractionError} from './feed-interaction-intent';
+import {GroupCreationDraft,GroupCreationRecoveryError,type GroupCreationDestination} from './group-creation-intent';
+import {groupCreationView} from './group-creation-view';
+import type {GroupManagementDraft,GroupManagementTarget} from './group-management-intent';
+import type {ReportSource} from './report-source';
 import { element } from "./dom";
+import { PlatformModerationPanel } from "./moderation-panel";
 import { kikiIcon } from "../modules/link-chat/icons";
-import { bindClockText } from "../core/time-format";
+import type { MediaViewerItem } from "../modules/platform-shell/media-viewer";
 import type { KikiLinkSettings } from "../core/types";
 import type { KeyValueStorage } from "../core/settings";
 import type { GroupConversation } from "../modules/link-chat/group-chat-service";
-import { CloudClient, CloudError } from "./client";
+import { CloudClient, CloudError, mediaReportKey, type MediaReportScope } from "./client";
 import { CloudFeedView, type SocialFeatures } from "./feed-view";
 import { SocialUI } from "./social-ui";
-import { CloudGroupThread } from "./group-thread";
-import { CloudGroupInbox } from "./group-inbox";
-import { profileImportDraft, recordCloudMigration } from "./migration";
+import type {ArchiveTarget} from "../modules/link-chat/conversation-archive";
+import { CloudGroupThread, groupArchiveDraft, type GroupDraft } from "./group-thread";
+import { showGroupOptions } from './group-options-dialog';
+import { CloudGroupInbox, type GroupOption, type GroupMuteScope } from "./group-inbox";
+import { profileImportDraft } from "./migration";
+import { groupMigrationView } from "./group-migration-view";
 import type { PeoplePickerRequest } from "../modules/link-chat/people-picker";
 import { reportForm } from "./report-form";
+import { targetReportDialog } from "./target-report-dialog";
 import { ContentDialog } from "../modules/link-chat/content-dialog";
 import type {
   CloudGroup,
   CloudMessage,
   CloudMedia,
-  CloudPage,
   CloudProfile,
 } from "./types";
 
 interface PanelOptions {
+  platformPreview?: boolean;
+  resetChatFilters?(): void;
+  openGroupMute?(scope: GroupMuteScope, anchor: HTMLElement): void;
+  openImageViewer?(items: () => MediaViewerItem[], id: string): void;
+  closeImageViewer?(): void;
   choosePeople?(request: PeoplePickerRequest): void;
-  readFeed?(id: number): void | Promise<void>;
+  readFeed?(id: number, recoveryGeneration?: string): void | Promise<void>;
   canReadFeed?(): boolean;
   settings(): KikiLinkSettings;
   ownName(): string;
@@ -34,21 +51,30 @@ interface PanelOptions {
   openOwnProfile?(): void;
   openGroups?(): void;
   openFeed?(): void;
+  openUpcomingEvents?(anchor: HTMLButtonElement, current: () => boolean): void;
+  openModeration?(): void;
+  openSaved?(): void;
+  openCommunity?(id: string): void;
   openDirectChats?(): void;
+  openNewMessage?(): void;
   enterToSend?(): boolean;
   embeddedGroups?: boolean;
   groupSelection?(selected: boolean): void;
+  groupArchiveChanged?(archived:boolean):void;
   groupsChanged?(): void;
+  mutedGroupMessage?(messageId: string): void;
   groupIncoming?(group: CloudGroup, message: CloudMessage): void;
   canReadGroup?(): boolean;
   relatedMembers?(): ReadonlySet<number>;
+  inviteContacts?(): {memberNumber:number; memberName:string}[];
+  memberPresence?(member:number): string | undefined;
 }
 const safeColor = (value: string | undefined) =>
   value && /^#[0-9a-f]{6}$/iu.test(value) ? value : "";
-export type CloudDestination = "feed" | "groups" | "profile";
+export type CloudDestination = "feed" | "saved" | "groups" | "profile";
 type CloudTab = CloudDestination | "moderation";
-interface SessionInfo { moderator: boolean; features?: SocialFeatures & { reportReasons?: boolean } }
-interface CloudImageEntry { url: string; elements: Set<HTMLElement>; bytes: number; at: number; used: number; ready: Promise<void>; decoded: boolean }
+interface SessionInfo { moderator: boolean; features?: SocialFeatures & { reportReasons?: boolean; communityDirectory?: boolean } }
+interface CloudImageEntry { url: string; elements: Set<HTMLElement>; bytes: number; at: number; used: number; ready: Promise<void>; decoded: boolean; width?: number; height?: number }
 
 /** Development-only social surface inside the existing KikiLink shell and theme. */
 export class CloudPanel {
@@ -60,12 +86,56 @@ export class CloudPanel {
   readonly #body = element("div", { className: "kl-cloud-body" });
   readonly #tabs = element("div", { className: "kl-cloud-actions kl-cloud-tabs" });
   readonly #heading = element("h2", { text: "Feed" });
+  readonly #moderation: PlatformModerationPanel;
   readonly #ui: SocialUI;
   readonly #feedView: CloudFeedView;
+  readonly #savedView: CloudFeedView | undefined;
   readonly #reportDialog = new ContentDialog();
+  readonly #groupOptionDialog = new ContentDialog();
+  #closeFeedReport: (() => void) | undefined;
   readonly inbox: CloudGroupInbox;
+  get activeGroup(): CloudGroup | undefined {
+    const active = this.#group;
+    return active && this.inbox.groups.some(g => g.id === active.id && g.conversationId === active.conversationId) ? active : undefined;
+  }
+  clearGroupSelection(): void {
+    if (!this.#group && !this.#createGroup) return;
+    this.#groupNavigation++; this.#renderToken++; this.#groupOptionDialog.close(); this.#thread?.stop();
+    this.#thread = undefined; this.#group = undefined; this.#groupTarget = undefined; this.#settingsGroup = undefined;
+    this.#createGroup = false; this.#syncGroupMute = undefined; this.#refreshMessages = undefined;
+    this.inbox.select(); this.#surfaces.delete('groups'); this.options.groupSelection?.(false);
+    if (this.#tab === 'groups' && !this.element.hidden) void this.#run(() => this.refresh());
+  }
+  showActiveGroupMembers(anchor: HTMLElement): void {
+    const group = this.activeGroup;
+    if (group) this.#openGroupOption('members',group,anchor);
+  }
+  #openGroupOption(action: GroupOption, group: CloudGroup, anchor: HTMLElement): void {
+    const navigation = this.#groupNavigation;
+    const current = () => !this.#destroyed && !this.element.hidden && this.#tab === 'groups' && this.#groupNavigation === navigation;
+    const root = this.element.getRootNode();
+    if (!current() || !this.client.connected) return;
+    (root instanceof ShadowRoot ? root : document.body).append(this.#groupOptionDialog.element);
+    showGroupOptions(this.#groupOptionDialog, this.inbox, this.#ui, {
+      action, group, anchor, current, canUploadAvatar: this.#sessionInfo?.features?.groupAvatar === true,
+      contacts: () => this.options.inviteContacts?.() ?? [],
+      presence: member => this.options.memberPresence?.(member),
+      refresh: async removed => {
+        if (!current()) return;
+        if (removed && this.#group?.id === group.id) {
+          this.#group = undefined; this.#groupTarget = undefined; this.#settingsGroup = undefined;
+          this.inbox.select(); this.options.groupSelection?.(false);
+        }
+        this.inbox.invalidate(); await this.refresh();
+        if (removed && current() && !anchor.isConnected) this.inbox.element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+      },
+    });
+  }
+  isReadingGroup(id: string): boolean { return this.#group?.id === id && !!this.#thread?.isReading(); }
   #chatActive = false;
+  #syncGroupMute: (() => void) | undefined;
   #createGroup = false;
+  #creationDraft:GroupCreationDraft|undefined;
   #settingsGroup: string | undefined;
   #surfaces = new Map<CloudTab, { nodes: Node[]; tabs: Node[]; scroll: number }>();
   #completedTab: CloudTab | undefined;
@@ -78,11 +148,16 @@ export class CloudPanel {
   #tab: CloudTab = "feed";
   #renderToken = 0;
   #postNavigation = 0;
-  #groupDrafts = new Map<string, { text: string; clientId: string }>();
+  #groupNavigation = 0;
+  #groupTarget: { groupId: string; messageId: string } | undefined;
+  #openingGroupMessage: object | undefined;
+  #groupDrafts = new Map<string, GroupDraft>();
   #group: CloudGroup | undefined;
   #urls = new Map<string, CloudImageEntry>();
   #urlBytes = 0;
   #imageVersion = 0;
+  #reportImageVersion = 0;
+  readonly #viewerItems = new WeakMap<HTMLElement, MediaViewerItem>();
   #observer: IntersectionObserver | undefined;
   #observedImages = new Map<HTMLElement, number>();
   #imageCleanupTimer: ReturnType<typeof setInterval> | undefined;
@@ -91,59 +166,128 @@ export class CloudPanel {
   #imageActive = 0;
   #destroyed = false;
   #moderator = false;
+  #externalModeration: { current(): boolean; back(): void } | undefined;
   #sessionInfo: SessionInfo | undefined;
   #sessionTask: Promise<SessionInfo> | undefined;
   #refreshMessages: (() => Promise<void>) | undefined;
   #thread: CloudGroupThread | undefined;
   readonly #unsubscribe: () => void;
 
+  async #toggleGroupArchive(group:CloudGroup,target:ArchiveTarget):Promise<void> {
+    if(this.#destroyed)return;
+    try {
+    await this.inbox.readyForArchive();
+    if(this.#destroyed)return;
+    const archived=this.inbox.archive.archived(target);
+    const draft=this.#groupDrafts.get(group.id);
+    const snapshot=!archived&&draft?groupArchiveDraft(draft,target):undefined;
+    this.inbox.setArchived(group,target,!archived,snapshot);
+    if(this.#group?.id===group.id)this.#thread?.archiveChanged();
+    else this.options.groupSelection?.(false);
+    this.options.groupArchiveChanged?.(!archived);
+    }catch(error){if(!this.#destroyed)this.#status.textContent=error instanceof Error?error.message:"The archive preference could not be saved. Your draft is kept.";}
+  }
+
   constructor(
     readonly client: CloudClient,
     private readonly options: PanelOptions,
   ) {
+    this.#moderation = new PlatformModerationPanel(client, {
+      storage: options.storage,
+      current: () => !this.#destroyed && (this.#externalModeration ? this.#externalModeration.current() : !this.element.hidden && this.#tab === 'moderation'),
+      image: (id, report, generation) => this.#image(id, 'Reported image', 'kl-cloud-image', report, false, false, undefined, generation),
+      releaseImages: () => this.#releaseReportImages(),
+      backLabel: () => this.#externalModeration ? 'Back to moderation' : 'Back to Feed',
+      back: () => { if (this.#externalModeration) this.#externalModeration.back(); else if (options.openFeed) options.openFeed(); else { this.#tab = 'feed'; void this.#run(() => this.refresh()); } },
+    });
     this.#ui = new SocialUI({ client, run: (action, button) => this.#run(action, button),
       image: (id, alt, className, passive) => this.#image(id, alt, className, undefined, passive),
       openProfile: options.openProfile, isBlocked: member => options.isBlocked(member) || (client.isProfileBlocked?.(member) ?? false) });
     this.inbox = new CloudGroupInbox(client, this.#ui, options.storage, {
-      select: group => { this.#group = group; this.#createGroup = false; this.inbox.select(group.id);
+      retentionDays: () => options.settings().linkChat.retentionDays,
+      platformPreview: options.platformPreview === true,
+      resetFilters: () => options.resetChatFilters?.(),
+      ...(options.platformPreview ? {openGroupOption:(action:GroupOption, group:CloudGroup, anchor:HTMLElement) => this.#openGroupOption(action,group,anchor)} : {}),
+      ...(options.openGroupMute ? { openGroupMute: options.openGroupMute } : {}),
+      createGroup: () => this.createGroup(),
+      archiveGroup:(group,target)=>this.#toggleGroupArchive(group,target),
+      select: group => { this.#groupNavigation++; this.#groupTarget = undefined; this.#group = group; this.#createGroup = false; this.inbox.select(group.id);
         this.options.groupSelection?.(true); if (this.#tab === "groups") void this.#run(() => this.refresh()); },
-      changed: () => options.groupsChanged?.(),
+      changed: () => {
+        if (this.inbox) this.#creationDraft?.observe(this.inbox.creationSource);
+        if (this.#group && this.inbox.removedLocally(this.#group.id)) this.clearGroupSelection();
+        this.#syncGroupMute?.(); options.groupsChanged?.();
+      },
+      mutedMessage: id => options.mutedGroupMessage?.(id),
       incoming: (group, message) => {
-        const reading = this.#group?.id === group.id && !this.element.hidden && this.#tab === "groups" &&
-          document.visibilityState !== "hidden" && (this.options.canReadGroup?.() ?? true);
+        const reading = this.isReadingGroup(group.id);
         if (!reading) this.options.groupIncoming?.(group, message);
       },
       inviteChanged: async () => { if (this.#tab === "groups" && !this.element.hidden) await this.refresh(); },
+      recoveryChanged: () => {
+        this.#groupOptionDialog.close();
+        if(!this.#thread)return;
+        this.#thread.stop();this.#thread=undefined;this.#refreshMessages=undefined;this.#groupTarget=undefined;this.#surfaces.delete('groups');
+        if(this.#tab==='groups'&&!this.element.hidden)this.#body.replaceChildren(
+          element('p',{className:'kl-empty-copy',text:'Cloud history changed. Your current draft is kept.'}),
+          this.#ui.button('Read current group',()=>this.refresh(),'refresh'));
+      },
     });
+    const upcomingFrom = (tab: "feed" | "saved") => (anchor: HTMLButtonElement, surfaceCurrent: () => boolean) => {
+      const current = () => this.#tab === tab && !this.#destroyed && !this.element.hidden
+        && this.#body.contains(anchor) && surfaceCurrent();
+      if (current()) options.openUpcomingEvents?.(anchor, current);
+    };
     this.#feedView = new CloudFeedView(this.#ui, {
+      platformPreview: options.platformPreview === true,
+      ...(options.openCommunity ? { openCommunity: options.openCommunity } : {}),
+      ...(options.openSaved ? { openSaved: options.openSaved } : {}),
+      ...(options.openUpcomingEvents ? { openUpcomingEvents: upcomingFrom("feed") } : {}),
       openOwnProfile: () => options.openOwnProfile ? options.openOwnProfile() : this.setVisible(true, "profile"),
       openGroups: () => options.openGroups ? options.openGroups() : this.setVisible(true, "groups"),
-      report: (container, type, id) => this.#report(container, type, id),
+      report: (container, type, id, source) => this.#report(container, type, id, source),
       relatedMembers: () => options.relatedMembers?.() ?? new Set(),
       canPin: () => this.#moderator,
-      readFresh: id => options.readFeed?.(id),
+      readFresh: (id, generation) => generation ? options.readFeed?.(id, generation) : options.readFeed?.(id),
       canRead: () => !this.element.hidden && this.#tab === "feed" && (options.canReadFeed?.() ?? true),
+    });
+    if (options.openSaved) this.#savedView = new CloudFeedView(this.#ui, {
+      platformPreview: options.platformPreview === true,
+      savedOnly: true,
+      ...(options.openCommunity ? { openCommunity: options.openCommunity } : {}),
+      ...(options.platformPreview ? { draftHost: this.#feedView } : {}),
+      ...(options.openUpcomingEvents ? { openUpcomingEvents: upcomingFrom("saved") } : {}),
+      relatedMembers: () => options.relatedMembers?.() ?? new Set(),
+      openFeed: () => options.openFeed ? options.openFeed() : this.setVisible(true, "feed"),
+      openOwnProfile: () => options.openOwnProfile?.(),
+      openGroups: () => options.openGroups?.(),
+      report: (container, type, id, source) => this.#report(container, type, id, source),
+      canPin: () => this.#moderator,
+      // Reading bookmarks must not advance the main Feed's unread cursor.
+      canRead: () => false,
     });
     this.element.hidden = true;
     this.#status.setAttribute("role", "status");
     this.#status.setAttribute("aria-live", "polite");
     document.addEventListener("visibilitychange", this.#resumeFeed);
     this.#unsubscribe = client.subscribe((kind) => {
+      if (['session', 'disconnected', 'profiles-cleared'].includes(kind)) this.#moderation.hide();
       if (kind === "receipts") {
         if (this.#thread && this.#tab === "groups" && !this.element.hidden)
           void this.#run(() => this.#thread?.refreshReceipts());
         return;
       }
       if (kind === "reports" || kind === "ready") {
+        if(this.#externalModeration?.current()) void this.#moderation.refresh();
         if (kind === "ready") void this.inbox.flushReceipts().catch(() => {});
         if (kind === "ready") this.#invalidateFeed();
         if (this.#moderator && this.#tab === "moderation" && !this.element.hidden) void this.#run(() => this.refresh());
-        return;
+        if (kind !== "ready") return;
       }
       if (kind.startsWith("profile:")) return;
       if (kind === "profiles-cleared") {
         this.#surfaces.clear(); this.#completedTab = undefined;
-        this.#feedView.removeBlocked(); this.inbox.invalidate();
+        this.#feedView.removeBlocked(); this.#savedView?.removeBlocked(); this.inbox.invalidate();
         return;
       }
       if (kind === "media-invalidated") { this.#releaseImages(); return; }
@@ -153,7 +297,9 @@ export class CloudPanel {
         return;
       }
       if (kind === "session") {
-        this.#reportDialog.close();
+        this.#groupNavigation++; this.#groupTarget = undefined;
+        this.#reportDialog.close(); this.#groupOptionDialog.close();
+        this.#closeFeedReport?.();
         this.#sessionInfo = undefined;
         this.#sessionTask = undefined;
         if (client.connected && this.#chatActive) { client.startEvents(); this.inbox.invalidate(); void this.#run(() => this.inbox.refresh()); }
@@ -164,8 +310,9 @@ export class CloudPanel {
         this.#thread?.stop(); this.#thread = undefined;
         this.#releaseImages();
         this.#group = undefined;
-        this.#groupDrafts.clear();
+        this.#groupDrafts.clear();this.#creationDraft=undefined;
         this.#feedView.clear();
+        this.#savedView?.clear();
         if (!this.element.hidden) void this.refresh();
       } else if (kind === "session" && !this.element.hidden) {
         client.startEvents();
@@ -202,17 +349,25 @@ export class CloudPanel {
   #invalidateFeed(): void {
     this.#feedDirty = true; this.#feedRetries = 0; this.#queueFeedSync();
   }
+  async prepareFeedDraftImport(owner:number) {
+    if(this.#destroyed || this.client.memberNumber!==owner)throw new Error("The Feed account changed.");
+    return this.#feedView.prepareDraftImport(owner);
+  }
+  #activeFeedView(): CloudFeedView | undefined {
+    return this.#tab === "feed" ? this.#feedView : this.#tab === "saved" ? this.#savedView : undefined;
+  }
   #queueFeedSync(delay = 350): void {
     if (!this.#feedDirty || this.#destroyed || this.#feedUpdating || this.#feedUpdateTimer !== undefined ||
-        this.element.hidden || this.#tab !== "feed" || this.#completedTab !== "feed" ||
+        this.element.hidden || !this.#activeFeedView() || this.#completedTab !== this.#tab ||
         !this.client.connected || document.visibilityState === "hidden") return;
     this.#feedUpdateTimer = setTimeout(() => {
       this.#feedUpdateTimer = undefined;
-      if (this.#destroyed || this.element.hidden || this.#tab !== "feed" || !this.client.connected || document.visibilityState === "hidden") return;
+      const view = this.#activeFeedView();
+      if (this.#destroyed || this.element.hidden || !view || !this.client.connected || document.visibilityState === "hidden") return;
       this.#feedDirty = false; this.#feedUpdating = true;
       void (async () => {
         let retryDelay = 350, failed = false;
-        try { if (!await this.#feedView.sync()) this.#feedDirty = true; }
+        try { if (!await view.sync()) this.#feedDirty = true; }
         catch {
           failed = true; this.#feedDirty = true; this.#feedRetries++;
           retryDelay = Math.max(5000, (this.client.retryDelay || 0) + 50);
@@ -223,24 +378,50 @@ export class CloudPanel {
       })();
     }, delay);
   }
-  async openGroup(id: string): Promise<void> {
+  async openGroupMessage(id: string, messageId: string): Promise<void> {
+    const opening = {};
+    this.#openingGroupMessage = opening; this.#thread?.pause();
+    this.options.openGroups?.();
+    try { await this.openGroup(id, messageId); }
+    finally { if (this.#openingGroupMessage === opening) this.#openingGroupMessage = undefined; }
+  }
+  async openGroup(id: string, messageId?: string): Promise<void> {
+    const navigation = ++this.#groupNavigation;
+    const owner = this.client.memberNumber, origin = this.client.origin, source = this.inbox.managementSource;
+    this.#groupTarget = messageId ? { groupId: id, messageId } : undefined;
+    this.#renderToken++; this.#thread?.pause();
     await this.inbox.refresh(true);
+    if (navigation !== this.#groupNavigation || this.#destroyed || this.element.hidden || this.#tab !== "groups") return;
+    if (!this.client.connected || this.client.memberNumber !== owner || this.client.origin !== origin ||
+      (source.required && source.generation !== this.inbox.managementSource.generation)) return;
+    this.inbox.restoreRemovedGroup(id);
     const group = this.inbox.groups.find(g => g.id === id);
-    if (!group) { this.#status.textContent = "This group is no longer available. Check invitations."; return; }
+    if (!group) { this.#group = undefined; this.#groupTarget = undefined; this.#body.replaceChildren(); this.#status.textContent = "This group is no longer available. Check invitations."; return; }
     this.#group = group; this.#tab = "groups"; this.options.groupSelection?.(true); await this.refresh();
   }
-  async openReports(): Promise<void> { this.#tab = "moderation"; await this.refresh(); }
-  async openPost(id: number, comment?: number): Promise<void> {
+  async showSettingsModeration(host: HTMLElement, current: () => boolean, back: () => void): Promise<void> {
+    this.#moderation.hide(); this.#externalModeration = { current, back }; host.append(this.#moderation.element); await this.#moderation.show();
+  }
+  hideSettingsModeration(): void { if(this.#externalModeration) { this.#moderation.hide(); this.#externalModeration=undefined; } }
+  async openReports(): Promise<void> { if(this.options.openModeration){this.options.openModeration();return;} this.#tab = "moderation"; await this.refresh(); }
+  async openPost(id: number, comment?: number, recoveryGeneration?: string): Promise<void> {
     const navigation = ++this.#postNavigation;
     this.#tab = "feed"; await this.refresh();
     if (navigation !== this.#postNavigation || this.#tab !== "feed" || this.#destroyed || this.element.hidden) return;
-    await this.#feedView.openPost(id, comment);
+    await this.#feedView.openPost(id, comment, recoveryGeneration);
+  }
+  #syncFeedShell(): void {
+    const preview = this.options.platformPreview && this.client.connected && Boolean(this.#activeFeedView());
+    this.element.toggleAttribute("data-platform-feed", preview);
   }
   setVisible(visible: boolean, destination?: CloudDestination, chatActive = false): void {
     if (this.#destroyed) return;
-    if (!visible || (destination && destination !== this.#tab)) this.#postNavigation++;
+    if (destination === "saved" && !this.#savedView) destination = "feed";
+    if (!visible || (destination && destination !== this.#tab)) { this.#postNavigation++; this.#groupNavigation++; this.#groupOptionDialog.close(); }
     const previous = this.#tab, wasVisible = !this.element.hidden;
-    if (wasVisible && this.#completedTab === previous) this.#surfaces.set(previous, {
+    if (!visible || (destination && destination !== previous)) this.#activeFeedView()?.closeDialogs();
+    if ((!visible || destination) && !this.#externalModeration) this.#moderation.hide();
+    if (wasVisible && previous !== "moderation" && this.#completedTab === previous) this.#surfaces.set(previous, {
       nodes: [...this.#body.childNodes], tabs: [...this.#tabs.childNodes], scroll: this.element.scrollTop,
     });
     this.#chatActive = chatActive;
@@ -253,16 +434,23 @@ export class CloudPanel {
         this.#tab = "feed";
         this.options.openOwnProfile();
       }
-      this.element.dataset.surface = this.#tab === "groups" ? "groups" : "feed";
+      this.element.dataset.surface = this.#tab === "groups" ? "groups" : this.#tab === "saved" ? "saved" : this.#tab === "moderation" ? "moderation" : "feed";
+      this.#syncFeedShell();
       if (this.#tab !== "groups") this.#thread?.pause();
-      this.#heading.textContent = this.#tab === "groups" ? "Group chats" : this.#tab === "moderation" ? "Reports" : "Feed";
+      this.#heading.textContent = this.#tab === "groups" ? "Group chats" : this.#tab === "moderation" ? "Reports" : this.#tab === "saved" ? "Saved" : "Feed";
       const cached = this.#surfaces.get(this.#tab);
       if (cached && this.client.connected) {
         this.#renderToken++;
         this.#body.replaceChildren(...cached.nodes); this.#tabs.replaceChildren(...cached.tabs);
         this.element.scrollTop = cached.scroll; this.#completedTab = this.#tab;
         if (this.#tab === "groups") { this.#thread?.resume(); void this.#run(async () => { await this.inbox.refresh(); await this.#thread?.updates(); }); }
-        else { this.#thread?.pause(); this.#feedView.observeFresh(); if (this.#tab === "feed") this.#invalidateFeed(); }
+        else {
+          this.#thread?.pause();
+          const feed = this.#activeFeedView();
+          feed?.refreshContentSurface();
+          feed?.observeFresh();
+          if (feed) this.#invalidateFeed();
+        }
         return;
       }
       if (wasVisible && previous === this.#tab && this.#completedTab === this.#tab) return;
@@ -274,6 +462,7 @@ export class CloudPanel {
   }
   get activeGroupId(): string | undefined { return this.#group?.id; }
   createGroup(): void {
+    this.#groupNavigation++; this.#groupTarget = undefined;
     this.options.openGroups?.(); this.#createGroup = true; this.#group = undefined; this.inbox.select();
     this.options.groupSelection?.(true); if (this.#tab === "groups") void this.#run(() => this.refresh());
   }
@@ -282,6 +471,7 @@ export class CloudPanel {
     this.client.rememberProfile?.(profile);
     this.#ui.refreshAuthor(profile);
     this.#feedView.profileUpdated(profile);
+    this.#savedView?.profileUpdated(profile);
   }
   #button(
     label: string,
@@ -306,9 +496,12 @@ export class CloudPanel {
       await action();
     } catch (error) {
       if (this.#destroyed) return;
+      if(error instanceof AccountControlGenerationError||error instanceof AccountControlUnconfirmedError){this.#status.textContent=error.message;return;}
+      if(error instanceof FeedContentError||error instanceof FeedInteractionError){this.#status.textContent="Review the saved Feed action below before continuing.";return;}
       const code =
         error instanceof CloudError ? error.code : "cloud_request_failed";
       const explanations: Record<string, string> = {
+        too_many_mentions: "Use up to 10 different usernames and 40 mentions in one message.",
         too_many_images: "Choose up to 4 images for one post.",
         image_size_or_type: "Use PNG, JPEG or WebP, up to 5 MiB each (2 MiB for an avatar).",
         clipboard_unavailable: "Select the text to copy it on this device.",
@@ -325,6 +518,8 @@ export class CloudPanel {
           "This content changed in another session. Refresh before saving again.",
         membership_changed:
           "The group membership changed. Refresh the group before sending; your draft is kept.",
+        recovery_generation_required:
+          "Cloud history changed. Refresh groups before continuing; your draft is kept.",
         development_allowlist:
           "This BC account is not enabled for the private Cloud test.",
         rate_limited:
@@ -344,10 +539,12 @@ export class CloudPanel {
     if (this.#destroyed || this.element.hidden) return;
     const operation = ++this.#renderToken;
     this.#surfaces.delete(this.#tab); this.#completedTab = undefined;
-    if (this.#tab === "groups") { this.#thread?.stop(); this.#thread = undefined; this.#refreshMessages = undefined; }
-    else if (this.#tab === "feed") this.#feedView.pause();
-    this.element.dataset.surface = this.#tab === "groups" ? "groups" : "feed";
-    this.#heading.textContent = this.#tab === "groups" ? "Group chats" : this.#tab === "moderation" ? "Reports" : "Feed";
+    if (this.#tab === "groups") { this.#thread?.stop(); this.#thread = undefined; this.#refreshMessages = undefined; this.#syncGroupMute = undefined; }
+    else this.#activeFeedView()?.pause();
+    if (this.#tab !== "moderation" && !this.#externalModeration) this.#moderation.hide();
+    this.element.dataset.surface = this.#tab === "groups" ? "groups" : this.#tab === "saved" ? "saved" : this.#tab === "moderation" ? "moderation" : "feed";
+    this.#syncFeedShell();
+    this.#heading.textContent = this.#tab === "groups" ? "Group chats" : this.#tab === "moderation" ? "Reports" : this.#tab === "saved" ? "Saved" : "Feed";
     this.#tabs.replaceChildren();
     if (!this.client.connected) {
       this.#connection();
@@ -363,15 +560,18 @@ export class CloudPanel {
       } finally { if (this.#sessionTask === task) this.#sessionTask = undefined; }
     }
     this.#moderator = this.#sessionInfo.moderator;
-    if (!(this.#tab === "groups" && this.options.embeddedGroups)) {
+    if (!this.element.hasAttribute("data-platform-feed") && !(this.#tab === "groups" && this.options.embeddedGroups)) {
     for (const [key, label] of [
       ["feed", "Feed"],
+      ...(this.#savedView ? [["saved", "Saved"]] : []),
       ["groups", "Groups"],
       ["profile", "My profile"],
       ...(this.#moderator ? [["moderation", "Reports"]] : []),
     ] as Array<[CloudTab, string]>) {
       const button = this.#ui.button(label, async () => {
+        if (key === "moderation" && this.options.openModeration) { this.options.openModeration(); return; }
         if (key === "feed" && this.options.openFeed) { this.options.openFeed(); return; }
+        if (key === "saved" && this.options.openSaved) { this.options.openSaved(); return; }
         if (key === "profile" && this.options.openOwnProfile) { this.options.openOwnProfile(); return; }
         if (key === "groups" && this.options.openGroups) { this.options.openGroups(); return; }
         this.#tab = key;
@@ -383,15 +583,24 @@ export class CloudPanel {
     }
     if (this.#tab === "groups" && this.options.openDirectChats && !this.options.embeddedGroups)
       this.#tabs.prepend(this.#ui.button("Direct chats", () => this.options.openDirectChats!(), "chat"));
+    const accountCurrent=()=>!this.#destroyed&&!this.element.hidden&&operation===this.#renderToken;
+    const confirmLogout=async(all:boolean)=>{
+      if(!accountCurrent())return;const accountReview=await reviewAccountControl(this.client,accountCurrent);
+      if(!accountCurrent())return;let box:Element|null=null,attempted=false;
+      this.#ui.confirm(this.#body,all?'Sign out of KikiLink Cloud on every device?':'Disconnect this device from KikiLink Cloud?',async()=>{
+        if(!accountCurrent()||!box?.isConnected||attempted)return;attempted=true;
+        await this.client.logout(all,accountReview);
+      },all?'Sign out everywhere':'Disconnect');box=this.#body.querySelector('.kl-social-confirm');
+    };
     this.#tabs.append(this.#ui.menu("Account options", [
-      this.#ui.button("Disconnect", () => this.client.logout(), "lock"),
-      this.#ui.button("Sign out on all devices", () => this.client.logout(true), "lock"),
+      this.#ui.button("Disconnect", () => confirmLogout(false), "lock"),
+      this.#ui.button("Sign out on all devices", () => confirmLogout(true), "lock"),
     ]));
     }
-    if (this.#tab === "feed") await this.#feed(operation);
+    if (this.#activeFeedView()) await this.#feed(operation);
     else if (this.#tab === "groups") await this.#groups(operation);
     else if (this.#tab === "profile") await this.#profileEditor(operation);
-    else await this.#reports(operation);
+    else { this.#body.replaceChildren(this.#moderation.element); await this.#moderation.show(); }
     if (operation === this.#renderToken) { this.#completedTab = this.#tab; this.#queueFeedSync(); }
   }
   #connection(): void {
@@ -473,24 +682,58 @@ export class CloudPanel {
     return this.client.request<CloudMedia>("POST", `/v1/media/${kind}`, file);
   }
   async #feed(_operation: number): Promise<void> {
-    this.#body.replaceChildren(this.#feedView.element);
-    await this.#feedView.render(this.#sessionInfo?.features);
+    const view = this.#activeFeedView()!;
+    this.#body.replaceChildren(view.element);
+    // A new surface starts at its heading, not at the old Feed's scroll offset.
+    // Cached returns restore their own position in setVisible instead.
+    this.element.scrollTop = 0;
+    await view.render(this.#sessionInfo?.features);
   }
 
-  #report(container: HTMLElement, type: string, id: string): void {
-    if (this.#reportDialog.element.open) return;
+  #report(container: HTMLElement, type: string, id: string, source?:ReportSource): void {
+    if (this.#reportDialog.element.open || this.#closeFeedReport) return;
     const root = container.getRootNode();
+    if (this.options.platformPreview && (type === "post" || type === "comment")) {
+      this.#reportFeed(container, type, id, root instanceof ShadowRoot ? root : document.body, source);
+      return;
+    }
     (root instanceof ShadowRoot ? root : document.body).append(this.#reportDialog.element);
     this.#reportDialog.element.classList.add("kl-report-dialog");
     this.#reportDialog.element.querySelector("button")?.setAttribute("aria-label", "Close report");
     const form = reportForm(this.client, type, id, this.#sessionInfo?.features?.reportReasons === true,
-      () => { this.#status.textContent = "Report submitted. Thank you."; }, () => this.#reportDialog.close());
+      () => { this.#status.textContent = "Report submitted. Thank you."; }, () => this.#reportDialog.close(),'/v1/reports',{source,current:()=>this.#reportDialog.element.open});
     // The menu has already collapsed. Restore focus to its visible trigger when
     // the modal closes, not to the now-hidden Report action inside it.
     const active = root instanceof ShadowRoot ? root.activeElement : document.activeElement;
     active?.closest("details")?.querySelector("summary")?.focus({ preventScroll: true });
     this.#reportDialog.show(`Report ${type}`, form);
     form.querySelector("input")?.focus({ preventScroll: true });
+  }
+  #reportFeed(container: HTMLElement, type: "post" | "comment", id: string, root: ShadowRoot | HTMLElement, source?: ReportSource): void {
+    const label = type === "post" ? "Post" : "Comment";
+    const returnFocus = container.querySelector<HTMLElement>(":scope > header summary");
+    const author = container.querySelector(":scope > header .kl-social-name")?.textContent?.trim();
+    const copy = container.querySelector(":scope > p")?.cloneNode(true) as HTMLElement | undefined;
+    copy?.querySelectorAll(".kl-feed-text-spoiler").forEach(spoiler => spoiler.remove());
+    const text = copy?.textContent?.replace(/\s+/gu, " ").trim().slice(0, 80);
+    const close = () => {
+      this.#closeFeedReport = undefined;
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+    };
+    const dialog = targetReportDialog(this.client, {
+      type, id, label, title: `Report ${type}`,
+      summary: [author, text].filter(Boolean).join(": ") || `${label} #${id}`,
+      notice: "Platform moderators can review your reason and the reported content.",
+      structured: this.#sessionInfo?.features?.reportReasons === true,
+      source, panel: container.closest<HTMLElement>('.kl-panel') ?? undefined,
+      current: () => this.#closeFeedReport === close, close,
+      submitted: () => { this.#status.textContent = "Report submitted. Thank you."; },
+    });
+    this.#closeFeedReport = close;
+    returnFocus?.focus({ preventScroll: true });
+    root.append(dialog);
   }
   async #profileEditor(operation: number): Promise<void> {
     let current: CloudProfile | undefined;
@@ -577,9 +820,8 @@ export class CloudPanel {
         this.options.openProfile(member, `Member ${member}`);
       }),
     );
-    const blocks = await this.client.request<{
-      items: Array<{ memberNumber: number }>;
-    }>("GET", "/v1/blocks");
+    const blockReview=await reviewAccountControl(this.client,()=>operation===this.#renderToken&&!this.#destroyed);
+    const blocks=accountControlRead<{items:Array<{memberNumber:number}>}>(await this.client.request('GET',accountControlPath('/v1/blocks',blockReview)),blockReview);
     if (operation !== this.#renderToken) return;
     if (blocks.items.length) {
       const list = element(
@@ -587,13 +829,13 @@ export class CloudPanel {
         { className: "kl-cloud-card" },
         element("h3", { text: "Blocked Cloud users" }),
       );
-      for (const b of blocks.items)
-        list.append(
-          this.#button(`Unblock ${b.memberNumber}`, async () => {
-            await this.client.request("DELETE", `/v1/blocks/${b.memberNumber}`);
-            await this.refresh();
-          }),
-        );
+      for (const b of blocks.items) {
+        const intent=new AccountControlIntent(this.client,blockReview,{action:'unblock',member:b.memberNumber});
+        list.append(this.#button(`Unblock ${b.memberNumber}`,async()=>{
+          const current=()=>operation===this.#renderToken&&!this.#destroyed&&list.isConnected&&!this.element.hidden;
+          await intent.run(current);if(!current())return;this.client.rememberBlock(b.memberNumber,false);await this.refresh();
+        }));
+      }
       card.append(list);
     }
     this.#body.replaceChildren(card);
@@ -644,14 +886,17 @@ export class CloudPanel {
         this.#button("Report profile", () =>
           this.#report(card, "profile", String(member)),
         ),
-        this.#button("Block in Cloud", async () => {
-          await this.client.request("PUT", `/v1/blocks/${member}`, {});
-          card.replaceChildren(
-            element("p", { text: "User blocked in Cloud." }),
-          );
-        }),
+        this.#button("Block in Cloud", () => confirmCloudBlock(this.#ui,card,member,()=>!this.#destroyed,()=>{
+          card.replaceChildren(element('p',{text:'User blocked in Cloud.'}));
+        })),
       );
     return card;
+  }
+  messageImage(id: string, reportId?: MediaReportScope, generation?: string): HTMLElement {
+    return this.#image(id, "Message image", "kl-cloud-image", reportId, false, false, this.options.settings().linkChat.imagePreviews, generation);
+  }
+  profileAlbumCover(id: string, title: string, open: (button: HTMLButtonElement) => void): HTMLElement {
+    return this.#image(id, title, "kl-cloud-image", undefined, false, false, this.options.settings().linkChat.imagePreviews, undefined, open);
   }
   profileImage(id: string, kind: "avatar" | "banner"): HTMLElement {
     return this.#image(id, `Profile ${kind}`, kind === "avatar" ? "kl-unified-preview-image" : "kl-addon-profile-banner-image");
@@ -662,14 +907,13 @@ export class CloudPanel {
   profileActions(member: number, card: HTMLElement): HTMLElement[] {
     if (member === this.client.memberNumber) return [];
     return [this.#ui.button("Report profile", () => this.#report(card, "profile", String(member)), "warning"),
-      this.#ui.button("Block in Cloud", () => this.#ui.confirm(card, "Block this person's Cloud profile and content?", async () => {
-        await this.client.request("PUT", `/v1/blocks/${member}`, {});
+      this.#ui.button("Block in Cloud", () => confirmCloudBlock(this.#ui,card,member,()=>!this.#destroyed,()=>{
         this.#surfaces.clear(); this.#completedTab = undefined;
         card.replaceChildren(element("p", { text: "User blocked in Cloud." }));
-      }, "Block"), "lock")];
+      }), "lock")];
   }
   async #groups(operation: number): Promise<void> {
-    if (this.options.embeddedGroups) {
+    {
       await this.inbox.refresh();
       if (operation !== this.#renderToken) return;
       if (this.#group && !this.inbox.groups.some(g => g.id === this.#group?.id)) this.#group = undefined;
@@ -678,40 +922,11 @@ export class CloudPanel {
       await this.#groupView(operation, this.#group.id);
       return;
     }
-    const [groups, invitations] = this.options.embeddedGroups ? [{ items: this.inbox.groups }, { items: [] }] : await Promise.all([
-      this.client.request<{ items: CloudGroup[] }>("GET", "/v1/groups"),
-      this.client.request<{
-        items: Array<{ id: string; title: string; owner: number }>;
-      }>("GET", "/v1/group-invitations"),
-    ]);
-    if (operation !== this.#renderToken) return;
-    const list = element("div", { className: "kl-group-list" });
-    for (const invite of invitations.items) {
-      if (this.options.isBlocked(invite.owner)) continue;
-      list.append(
-        element(
-          "div",
-          { className: "kl-cloud-card" },
-          element("h3", { text: invite.title }),
-          this.#ui.member(invite.owner),
-          element("small", { text: "Invites you to join this group" }),
-          this.#button("Accept invitation", async () => {
-            await this.client.request(
-              "POST",
-              `/v1/groups/${invite.id}/accept`,
-              {},
-            );
-            this.inbox.invalidate(); await this.refresh();
-          }),
-          this.#button("Decline", async () => {
-            await this.client.request(
-              "DELETE",
-              `/v1/groups/${invite.id}/invitation`,
-            );
-            this.inbox.invalidate(); await this.refresh();
-          }),
-        ),
-      );
+    const groups={items:this.inbox.groups};
+    if(operation!==this.#renderToken)return;
+    const list=element('div',{className:'kl-group-list'});
+    if(!this.options.embeddedGroups)for(const invite of this.inbox.invitations){
+      if(!this.options.isBlocked(invite.owner))list.append(this.inbox.invitationCard(invite));
     }
     const search = element("input", { type: "search", placeholder: "Find a group…", ariaLabel: "Find a group", maxLength: 60 });
     const tiles = element("div", { className: "kl-group-list" });
@@ -733,87 +948,28 @@ export class CloudPanel {
       empty.hidden = [...tiles.children].some(tile => tile instanceof HTMLElement && !tile.hidden);
     });
     list.append(search, tiles, empty);
-    const create = element("div", { className: "kl-cloud-card" }),
-      title = this.#field("Group name", "", 60),
-      members = this.#field(
-        "Invite 2–4 verified Member Numbers, separated by commas",
-        "",
-        90,
-      );
-    members.label.hidden = !!this.options.choosePeople;
-    create.append(
-      element("h3", { text: "Start a group chat" }),
-      title.label,
-      members.label,
-      this.#button("Create and invite", async () => {
-        if (this.options.choosePeople) {
-          this.options.choosePeople({ mode: "Create group", minimum: 2, maximum: 4, confirm: async values => {
-            this.#group = await this.client.request<CloudGroup>("POST", "/v1/groups", { title: title.input.value, members: values });
-            this.inbox.invalidate(); await this.refresh();
-          } }); return;
-        }
-        const values = members.input.value
-          .split(",")
-          .map((n) => Number(n.trim()));
-        if (
-          values.some(
-            (n) =>
-              !Number.isSafeInteger(n) || n <= 0 || this.options.isBlocked(n),
-          )
-        )
-          throw new CloudError("invalid_members");
-        this.#group = await this.client.request<CloudGroup>(
-          "POST",
-          "/v1/groups",
-          { title: title.input.value, members: values },
-        );
-        this.inbox.invalidate(); await this.refresh();
-      }),
-      element("p", {
-        className: "kl-cloud-note",
-        text: "Invited people accept with their verified Cloud identity. BC friendships and room locations are not required. Messages are retained for 30 days (up to 5,000 per group).",
-      }),
-    );
-    const legacy = this.options
-      .legacyGroups()
-      .filter(
-        (g) =>
-          g.creatorNumber === this.client.memberNumber &&
-          g.protocolVersion === 2,
-      )
-      .slice(0, 20);
-    if (legacy.length) {
-      create.append(
-        element("h3", { text: "Bring an existing group to Cloud" }),
-        element("p", {
-          className: "kl-cloud-note",
-          text: "Creates invitations for the same people. Original group and history stay intact. All members must first register with Cloud; their acceptance is required.",
-        }),
-      );
-      for (const g of legacy)
-        create.append(
-          this.#button(`Prepare ${g.title}`, async () => {
-            const numbers = g.memberNumbers.filter(
-              (n) => n !== this.client.memberNumber,
-            );
-            if (numbers.some((n) => this.options.isBlocked(n)))
-              throw new CloudError("blocked_member");
-            const fresh = await this.client.request<CloudGroup>(
-              "POST",
-              "/v1/groups",
-              { title: g.title, members: numbers, legacyId: g.groupId },
-            );
-            recordCloudMigration(
-              this.options.storage,
-              this.client.memberNumber,
-              g.groupId,
-              fresh.id,
-            );
-            this.#group = fresh;
-            this.inbox.invalidate(); await this.refresh();
-          }),
-        );
-    }
+    const source=this.inbox.creationSource;
+    if(!this.#creationDraft||!this.#creationDraft.dirty)this.#creationDraft=new GroupCreationDraft(this.client,source);
+    const draft=this.#creationDraft;draft.observe(source);
+    const currentMigrationView=()=>!this.#destroyed&&!this.element.hidden&&this.#tab==='groups'&&operation===this.#renderToken;
+    const openCreated=async(destination:GroupCreationDestination)=>{
+      const access=await this.inbox.historyAccess();
+      if(!currentMigrationView())return;
+      if(destination.generation!==undefined&&destination.generation!==access.generation)throw new GroupCreationRecoveryError();
+      const group=await access.request<CloudGroup>('GET',`/v1/groups/${destination.groupId}`);
+      if(!currentMigrationView()||!access.current())return;
+      if(group.id!==destination.groupId)throw new GroupCreationRecoveryError();
+      this.#group=group;this.inbox.invalidate();await this.refresh();
+    };
+    const create=element('div',{className:'kl-cloud-card'});
+    create.append(groupCreationView({draft,current:currentMigrationView,isBlocked:n=>this.options.isBlocked(n),open:openCreated,
+      discard:async()=>{if(!currentMigrationView()||this.#creationDraft!==draft)return;this.#creationDraft=undefined;this.inbox.invalidate();await this.refresh();},
+      ...this.options.choosePeople?{choosePeople:this.options.choosePeople}:{}}));
+    create.append(groupMigrationView({client:this.client,storage:this.options.storage,source,
+      groups:this.options.legacyGroups(),current:currentMigrationView,sourceCurrent:()=>this.inbox.creationSource,isBlocked:n=>this.options.isBlocked(n),
+      refresh:async()=>{if(!currentMigrationView())return;this.inbox.invalidate();await this.refresh();},
+      open:async(id,generation)=>openCreated({groupId:id,...generation?{generation}:{}}),
+    }));
     create.className = "kl-group-create-content";
     const createPanel = element("details", { className: "kl-cloud-card kl-group-create" },
       element("summary", {}, kikiIcon("plus"), "New group"), create);
@@ -824,159 +980,185 @@ export class CloudPanel {
         this.#body.replaceChildren(this.#ui.button("Back to groups", () => {
           this.#createGroup = false; this.options.groupSelection?.(false); void this.refresh();
         }, "back"), createPanel);
+      } else if (this.options.platformPreview) {
+        this.#body.replaceChildren(element("div", { className: "kl-empty kl-group-thread-empty" },
+          element("div", { className: "kl-empty-mark" }, kikiIcon("chat")),
+          element("h2", { className: "kl-empty-title", text: "Choose a conversation" }),
+          this.options.openNewMessage
+            ? this.#ui.button("New message", this.options.openNewMessage, undefined, "kl-text-button", false)
+            : this.#ui.button("New group", () => this.createGroup(), undefined, "kl-text-button", false)));
       } else this.#body.replaceChildren(element("div", { className: "kl-group-empty" },
         kikiIcon("users"), element("h3", { text: "Your group conversations" }),
         element("p", { text: "Choose a group from the list, or start a conversation with your people." }),
         this.#ui.button("Create group", () => this.createGroup(), "plus")));
     } else this.#body.replaceChildren(list, createPanel);
+    this.#body.append(this.inbox.management.surface("panel",this.#ui,()=>!this.#destroyed&&!this.element.hidden&&this.#tab==="groups"&&operation===this.#renderToken,async()=>{this.inbox.invalidate();await this.refresh();},e=>!this.options.embeddedGroups||!['accept','decline'].includes(e.intent.target.action)));
   }
   async #groupView(operation: number, groupId: string): Promise<void> {
-    const g = await this.client.request<CloudGroup>(
+    const history=await this.inbox.historyAccess();
+    const g = await history.request<CloudGroup>(
       "GET",
       `/v1/groups/${groupId}`,
     );
     if (operation !== this.#renderToken) return;
     this.#group = g;
+    const queue=this.inbox.management,source=history.managementSource??{required:false};
+    let mounted=false;
+    const current=()=>!this.#destroyed&&!this.element.hidden&&this.#tab==='groups'&&operation===this.#renderToken&&this.#group?.id===g.id&&(!mounted||details.isConnected);
+    const capture=(key:string,action:GroupManagementTarget['action'],data:Record<string,unknown>={},memberNumber?:number)=>queue.capture(`${g.id}:${key}`,{action,groupId:g.id,membershipVersion:g.membershipVersion,...memberNumber===undefined?{}:{memberNumber},label:`${g.title} · ${key}`},source,data);
+    const perform=async(entry:GroupManagementDraft)=>{
+      if(entry.intent.pending||!current())return false;
+      if(!await queue.perform(entry,current))return false;
+      this.inbox.invalidate();await this.refresh();return true;
+    };
     const own = g.members.find(
         (m) => m.memberNumber === this.client.memberNumber,
       ),
       manage = own?.role === "owner" || own?.role === "admin";
     const online = element("span", { className: "kl-group-online", text: "" });
     const activeMembers = g.members.filter(m => m.status === "active");
+    const preview = this.options.platformPreview === true;
     const members = element("div", { className: "kl-group-member-list" });
     const section = (title: string, ...content: Node[]) => element("section", { className: "kl-group-settings-section", ariaLabel: title }, element("h4", { text: title }), ...content);
     const identitySettings = section("Group identity");
     const memberSettings = section("Members & roles", members);
     const notifications = section("Notifications");
-    const muted = element("input", { type: "checkbox", ariaLabel: "Mute this group" });
-    muted.setAttribute("role", "switch"); muted.checked = this.inbox.isMuted(g.id);
-    muted.addEventListener("change", () => { if (muted.checked !== this.inbox.isMuted(g.id)) this.inbox.toggleMuted(g.id); });
-    notifications.append(element("label", { className: "kl-group-settings-toggle" }, element("span", { text: "Mute this group" }),
-      element("span", { className: "kl-switch" }, muted, element("span", { className: "kl-switch-track" }))));
+    const muteIndicator = element("span");
+    const timed = preview && this.options.openGroupMute;
+    const muteScope = timed ? this.inbox.muteScope(g) : undefined;
+    if (timed && muteScope) {
+      const button = this.#ui.button("Mute conversation…", () => {
+        if (this.inbox.hasMuteScope(muteScope)) timed(muteScope, button);
+      }, undefined, "kl-social-button", false);
+      notifications.append(button);
+      this.#syncGroupMute = () => {
+        const muted = this.inbox.hasMuteScope(muteScope) && this.inbox.isMuted(g.id);
+        const label = muted ? "Manage mute…" : "Mute conversation…";
+        if (button.title === label) return;
+        muteIndicator.textContent = muted ? " · Muted" : "";
+        button.querySelector("span")!.textContent = label;
+        button.title = label;
+        button.setAttribute("aria-label", label);
+      };
+      this.#syncGroupMute();
+    } else {
+      const muted = element("input", { type: "checkbox", ariaLabel: "Mute this group" });
+      muted.setAttribute("role", "switch"); muted.checked = this.inbox.isMuted(g.id);
+      muted.addEventListener("change", () => { if (muted.checked !== this.inbox.isMuted(g.id)) this.inbox.toggleMuted(g.id); });
+      notifications.append(element("label", { className: "kl-group-settings-toggle" }, element("span", { text: "Mute this group" }),
+        element("span", { className: "kl-switch" }, muted, element("span", { className: "kl-switch-track" }))));
+    }
     const permissions = section("Permissions", element("p", { text: own?.role === "owner" ? "You own this group. Only you can change roles or transfer ownership." :
       own?.role === "admin" ? "You are an admin. You can edit the group, invite or remove members, and manage messages." : "You are a member. Owners and admins manage this group." }),
       element("p", { text: "Only owners and admins can pin messages. Members can delete their own messages." }));
     const destructive = section("Leave or delete"); destructive.classList.add("kl-group-settings-danger");
     const details = element("section", { className: "kl-group-management", hidden: this.#settingsGroup !== g.id, ariaLabel: "Group settings" },
       element("div", { className: "kl-group-management-heading" }, element("h3", { text: "Group settings" }),
-        this.#ui.button("Close group settings", () => { details.hidden = true; this.#settingsGroup = undefined; gear.setAttribute("aria-expanded", "false"); gear.focus(); }, "close", "kl-social-icon-button")), identitySettings, memberSettings, notifications, permissions, destructive);
-    const toggle = () => { details.hidden = !details.hidden; this.#settingsGroup = details.hidden ? undefined : g.id; gear.setAttribute("aria-expanded", String(!details.hidden)); };
+        this.#ui.button("Close group settings", () => { details.hidden = true; this.#settingsGroup = undefined; settingsButton.setAttribute("aria-expanded", "false"); settingsButton.focus(); }, "close", "kl-social-icon-button")), identitySettings, memberSettings, notifications, permissions, destructive);
+    const toggle = () => { details.hidden = !details.hidden; this.#settingsGroup = details.hidden ? undefined : g.id; settingsButton.setAttribute("aria-expanded", String(!details.hidden)); };
     const avatar = element("span", { className: "kl-avatar kl-group-header-avatar", ariaHidden: "true" }, kikiIcon("users"));
     if (g.avatarId) avatar.replaceChildren(this.#image(g.avatarId, "Group avatar", "kl-social-avatar-image", undefined, true));
-    const identity = this.#ui.button("Show group members", toggle, undefined, "kl-group-identity");
-    identity.replaceChildren(avatar, element("span", { className: "kl-group-identity-copy" }, element("strong", { text: g.title }),
-      element("span", { className: "kl-group-subtitle" }, `${activeMembers.length} members`, online)));
+    const identity = preview ? element("div", { className: "kl-group-identity" }) : this.#ui.button("Show group members", toggle, undefined, "kl-group-identity");
+    identity.replaceChildren(avatar, element("span", { className: "kl-group-identity-copy" }, element(preview ? "h2" : "strong", { text: g.title }),
+      element("span", { className: "kl-group-subtitle" }, `${activeMembers.length} members${preview && own?.role === "owner" ? " · You own this group" : ""}`, muteIndicator, online)));
     const stack = element("div", { className: "kl-group-avatar-stack", ariaLabel: "Group members" });
-    for (const member of activeMembers.slice(0, 3)) stack.append(this.#ui.member(member.memberNumber, undefined, toggle));
-    if (activeMembers.length > 3) stack.append(this.#ui.button(`+${activeMembers.length - 3}`, toggle, undefined, "kl-group-avatar-more"));
-    const gear = this.#ui.button("Group settings", toggle, "settings", "kl-social-icon-button kl-group-settings-button");
-    gear.setAttribute("aria-expanded", String(!details.hidden));
+    if (!preview) {
+      for (const member of activeMembers.slice(0, 3)) stack.append(this.#ui.member(member.memberNumber, undefined, toggle));
+      if (activeMembers.length > 3) stack.append(this.#ui.button(`+${activeMembers.length - 3}`, toggle, undefined, "kl-group-avatar-more"));
+    }
+    const settingsButton = this.#ui.button(preview ? "Group members" : "Group settings", toggle, preview ? "users" : "settings", "kl-social-icon-button kl-group-settings-button");
+    settingsButton.setAttribute("aria-expanded", String(!details.hidden));
     details.addEventListener("keydown", event => {
-      if (event.key === "Escape") { event.stopPropagation(); details.hidden = true; this.#settingsGroup = undefined; gear.setAttribute("aria-expanded", "false"); gear.focus(); }
+      if (event.key === "Escape") { event.stopPropagation(); details.hidden = true; this.#settingsGroup = undefined; settingsButton.setAttribute("aria-expanded", "false"); settingsButton.focus(); }
     });
     const card = element("header", { className: "kl-group-header" },
-      this.#ui.button("Back to groups", async () => {
+      this.#ui.button(this.options.platformPreview ? "Back to conversations" : "Back to groups", async () => {
         this.#group = undefined; this.#createGroup = false; this.#settingsGroup = undefined; this.inbox.select(); this.options.groupSelection?.(false);
         this.inbox.invalidate(); await this.refresh();
-      }, "previous", "kl-social-icon-button kl-group-back"), identity, stack, gear);
-    for (const m of g.members) {
-      const row = element(
-        "div",
-        { className: "kl-group-member" },
-        this.#ui.member(m.memberNumber),
-        element("small", { text: `${m.role} · ${m.status}` }),
-      );
-      if (
-        manage &&
-        m.role !== "owner" && (own?.role === "owner" || m.role === "member") &&
-        m.memberNumber !== this.client.memberNumber
-      )
-        row.append(
-          this.#ui.button("Remove", () => this.#ui.confirm(row, `Remove #${m.memberNumber} from this group?`, async () => {
-            await this.client.request(
-              "DELETE",
-              `/v1/groups/${g.id}/members/${m.memberNumber}`,
-            );
-            this.inbox.invalidate(); await this.refresh();
-          }, "Remove"), "close"),
-        );
-      if (own?.role === "owner" && m.role !== "owner" && m.status === "active")
-        row.append(
-          this.#button(
-            m.role === "admin" ? "Make member" : "Make admin",
-            async () => {
-              await this.client.request(
-                "PUT",
-                `/v1/groups/${g.id}/members/${m.memberNumber}/role`,
-                { role: m.role === "admin" ? "member" : "admin" },
-              );
-              this.inbox.invalidate(); await this.refresh();
-            },
-          ),
-          this.#ui.button("Transfer ownership", () => this.#ui.confirm(row, `Make #${m.memberNumber} the group owner?`, async () => {
-            await this.client.request(
-              "PUT",
-              `/v1/groups/${g.id}/members/${m.memberNumber}/role`,
-              { role: "owner" },
-            );
-            this.inbox.invalidate(); await this.refresh();
-          }, "Transfer ownership")),
-        );
+      }, this.options.platformPreview ? "back" : "previous", "kl-social-icon-button kl-group-back"), identity, ...(preview ? [] : [stack]), settingsButton);
+    for(const m of g.members){
+      const row=element('div',{className:'kl-group-member'},this.#ui.member(m.memberNumber),element('small',{text:`${m.role} · ${m.status}`}));
+      if(manage&&m.role!=='owner'&&(own?.role==='owner'||m.role==='member')&&m.memberNumber!==this.client.memberNumber){
+        const remove=capture(`remove #${m.memberNumber}`,'remove',{},m.memberNumber);
+        row.append(this.#ui.button('Remove',()=>{if(current())this.#ui.confirm(row,`Remove #${m.memberNumber} from this group?`,()=>perform(remove),'Remove');},'close'));
+      }
+      if(own?.role==='owner'&&m.role!=='owner'&&m.status==='active'){
+        const role=capture(`role #${m.memberNumber}`,'role',{role:m.role==='admin'?'member':'admin'},m.memberNumber);
+        const transfer=capture(`transfer ownership to #${m.memberNumber}`,'role',{role:'owner'},m.memberNumber);
+        row.append(this.#button(m.role==='admin'?'Make member':'Make admin',()=>perform(role)),
+          this.#ui.button('Transfer ownership',()=>{if(current())this.#ui.confirm(row,`Make #${m.memberNumber} the group owner?`,()=>perform(transfer),'Transfer ownership');}));
+      }
       members.append(row);
     }
-    if (manage && this.#sessionInfo?.features?.groupAvatar) {
-      const file = element("input", { type: "file", accept: "image/png,image/jpeg,image/webp", hidden: true });
-      file.addEventListener("change", () => void this.#run(async () => {
-        const image = file.files?.[0]; if (!image) return;
-        if (!/^image\/(png|jpeg|webp)$/u.test(image.type) || image.size > 2 * 1024 ** 2) throw new CloudError("avatar_size_limit");
-        const uploaded = await this.client.request<CloudMedia>("POST", "/v1/media/avatar", image);
-        await this.client.request("PATCH", `/v1/groups/${g.id}`, { title: g.title, revision: g.revision, avatarId: uploaded.id });
-        this.inbox.invalidate(); await this.refresh();
+    if(manage&&this.#sessionInfo?.features?.groupAvatar){
+      const avatarChange=capture('change avatar','settings',{title:g.title,revision:g.revision});
+      const file=element('input',{type:'file',accept:'image/png,image/jpeg,image/webp',hidden:true});
+      file.addEventListener('change',()=>void this.#run(async()=>{
+        if(!current()||!queue.available(avatarChange)||avatarChange.intent.pending||avatarChange.intent.held||avatarChange.preparing)return;
+        const image=file.files?.[0];if(!image)return;
+        if(!/^image\/(png|jpeg|webp)$/u.test(image.type)||image.size>2*1024**2)throw new CloudError('avatar_size_limit');
+        queue.prepare(avatarChange,true);
+        try{
+          const uploaded=await this.client.request<CloudMedia>('POST','/v1/media/avatar',image);
+          queue.attachment(avatarChange,uploaded.id);
+          if(current())await perform(avatarChange);
+        }finally{queue.prepare(avatarChange,false);}
       }));
-      identitySettings.append(element("div", { className: "kl-group-settings-actions" }, file,
-        this.#ui.button("Change group avatar", () => file.click(), "image"),
-        ...(g.avatarId ? [this.#ui.button("Remove avatar", async () => {
-          await this.client.request("PATCH", `/v1/groups/${g.id}`, { title: g.title, revision: g.revision, avatarId: null });
-          this.inbox.invalidate(); await this.refresh();
-        }, "trash")] : [])));
+      const removeAvatar=capture('remove avatar','settings',{title:g.title,revision:g.revision,avatarId:null});
+      identitySettings.append(element('div',{className:'kl-group-settings-actions'},file,
+        this.#ui.button('Change group avatar',()=>{if(current()&&!avatarChange.intent.pending&&!avatarChange.intent.held)file.click();},'image'),
+        ...(g.avatarId?[this.#ui.button('Remove avatar',()=>perform(removeAvatar),'trash')]:[])));
     }
-    if (manage) {
-      const title = this.#field("Group name", g.title, 60);
+    if(manage){
+      const name=capture('name','settings',{title:g.title,revision:g.revision});
+      const title=this.#field('Group name',String(name.data.title??g.title),60);
+      title.input.readOnly=name.intent.held||!!name.intent.pending;
+      title.input.addEventListener('input',()=>{if(!current()||!queue.edit(name,{...name.data,title:title.input.value})){title.input.value=String(name.data.title??g.title);}});
       identitySettings.prepend(title.label);
-      identitySettings.append(this.#ui.button("Save name", async () => {
-        await this.client.request("PATCH", `/v1/groups/${g.id}`, { title: title.input.value.trim(), revision: g.revision });
-        this.inbox.invalidate(); await this.refresh();
-      }, "check"));
-      if (this.options.choosePeople) {
-        const add = this.#ui.button("Add members", () => this.options.choosePeople!({ mode: "Add members", maximum: Math.max(0, 5 - g.members.length),
-          exclude: g.members.map(member => member.memberNumber), confirm: async members => {
-            await this.client.request("POST", `/v1/groups/${g.id}/invitations`, { members });
-            this.inbox.invalidate(); await this.refresh();
-          } }), "group-add");
-        add.disabled = g.members.length >= 5; memberSettings.append(add);
-      } else {
-      const invite = this.#field("Invite Member Number", "", 16); invite.input.inputMode = "numeric";
-      memberSettings.append(element("div", { className: "kl-group-invite-row" }, invite.label,
-        this.#ui.button("Invite", async () => {
-          const memberNumber = Number(invite.input.value);
-          if (this.options.isBlocked(memberNumber)) throw new CloudError("blocked_member");
-          await this.client.request("POST", `/v1/groups/${g.id}/invitations`, { memberNumber });
-          this.inbox.invalidate(); await this.refresh();
-        }, "group-add")));
+      identitySettings.append(this.#ui.button('Save name',async()=>{try{await perform(name);}finally{title.input.readOnly=name.intent.held||!!name.intent.pending;}},'check'));
+      const invitations=capture('invite members','invite');
+      if(this.options.choosePeople){
+        const add=this.#ui.button('Add members',()=>{if(current()&&!invitations.intent.pending&&!invitations.intent.held)this.options.choosePeople!({mode:'Add members',maximum:Math.max(0,5-g.members.length),exclude:g.members.map(m=>m.memberNumber),confirm:async members=>{
+          if(!current()||!queue.edit(invitations,{members}))return;await perform(invitations);
+        }});},'group-add');add.disabled=g.members.length>=5;memberSettings.append(add);
+      }else{
+        const invite=this.#field('Invite Member Number',String(invitations.data.memberNumber??''),16);invite.input.inputMode='numeric';
+        invite.input.readOnly=invitations.intent.held||!!invitations.intent.pending;
+        invite.input.addEventListener('input',()=>{if(!current()||!queue.edit(invitations,{memberNumber:invite.input.value})){invite.input.value=String(invitations.data.memberNumber??'');}});
+        memberSettings.append(element('div',{className:'kl-group-invite-row'},invite.label,this.#ui.button('Invite',async()=>{
+          const memberNumber=Number(invitations.data.memberNumber??invite.input.value);
+          if(this.options.isBlocked(memberNumber))throw new CloudError('blocked_member');
+          if(!current()||!queue.edit(invitations,{memberNumber}))return;
+          try{await perform(invitations);}finally{invite.input.readOnly=invitations.intent.held||!!invitations.intent.pending;}
+        },'group-add')));
       }
-    } else identitySettings.append(element("strong", { text: g.title }));
-    destructive.append(this.#button(own?.role === "owner" ? "Delete group" : "Leave group",
-      () => this.#ui.confirm(destructive, own?.role === "owner" ? "Delete this group and its conversation?" : "Leave this group?", async () => {
-        await this.client.request("DELETE", own?.role === "owner" ? `/v1/groups/${g.id}` : `/v1/groups/${g.id}/members/${this.client.memberNumber}`);
-        this.#group = undefined; this.inbox.invalidate(); await this.refresh();
-      }, own?.role === "owner" ? "Delete group" : "Leave group")));
-    if (!this.#groupDrafts.has(g.id)) this.#groupDrafts.set(g.id, { text: "", clientId: crypto.randomUUID() });
+    }else identitySettings.append(element('strong',{text:g.title}));
+    const leaving=capture(own?.role==='owner'?'delete group':'leave group',own?.role==='owner'?'delete':'remove',{},own?.role==='owner'?undefined:this.client.memberNumber);
+    destructive.append(this.#button(own?.role==='owner'?'Delete group':'Leave group',()=>{
+      if(current())this.#ui.confirm(destructive,own?.role==='owner'?'Delete this group and its conversation?':'Leave this group?',async()=>{
+        if(leaving.intent.pending||!await queue.perform(leaving,current))return;
+        this.#group=undefined;this.inbox.invalidate();await this.refresh();
+      },own?.role==='owner'?'Delete group':'Leave group');
+    }));
+    const archiveTarget=this.inbox.archiveTarget(g);
+    if (!this.#groupDrafts.has(g.id)) this.#groupDrafts.set(g.id, this.inbox.archive.draft(archiveTarget)??{ text: "", clientId: crypto.randomUUID() });
     const thread = new CloudGroupThread(this.#ui, g, this.#groupDrafts.get(g.id)!, {
+      ...(preview ? { presentation:this.inbox.presentation, persistLocalChanges:()=>this.options.settings().linkChat.saveHistory,
+        localChanged:()=>this.inbox.render() } : {}),
+      platformPreview: preview,
+      history,management:queue,
+      archived:()=>this.inbox.archive.archived(archiveTarget),restoreArchive:()=>this.#toggleGroupArchive(g,archiveTarget),
+      beforeDraftChange:()=>this.inbox.archive.forgetDraft(archiveTarget),
+      mentions: this.#sessionInfo?.features?.mentions ?? false,
       enterToSend: () => this.options.enterToSend?.() ?? false,
       messageChanges: this.#sessionInfo?.features?.messageChanges ?? false,
       groupLive: this.#sessionInfo?.features?.groupLive ?? false,
       groupPins: this.#sessionInfo?.features?.groupPins ?? false,
       messageReceipts: this.#sessionInfo?.features?.messageReceipts ?? false,
+      groupMessageMedia: this.#sessionInfo?.features?.groupMessageMedia ?? false,
+      messageAudio: this.#sessionInfo?.features?.messageAudio ?? false,
+      messageReactions: this.#sessionInfo?.features?.messageReactions ?? false,
+      chatReactionChoices: this.#sessionInfo?.features?.chatReactionChoices ?? false,
       liveChanged: live => {
         const count = live.members.filter(m => m.status !== "unavailable" && !this.options.isBlocked(m.memberNumber)).length;
         online.textContent = ` · ${count} online`;
@@ -987,124 +1169,87 @@ export class CloudPanel {
         if (!this.#group) this.options.groupSelection?.(false);
         await this.refresh();
       },
-      observed: (messages, read) => this.inbox.observe(g.id, messages, read),
+      observed: (messages, read) => {if(history.current())this.inbox.observe(g.id, messages, read);},
       acknowledgeReceipts: (deliveredIds, readIds) =>
-        this.inbox.acknowledgeReceipts(g.id, g.conversationId, deliveredIds, readIds),
+        {if(history.current())this.inbox.acknowledgeReceipts(g.id, g.conversationId, deliveredIds, readIds);},
       draftChanged: text => this.inbox.draft(g.id, text),
-      canRead: () => !this.element.hidden && this.#tab === "groups" && (this.options.canReadGroup?.() ?? true),
-      readUntil: sequence => this.inbox.markRead(g.id, sequence),
-      report: (row, id) => this.#report(row, "message", id),
+      canRead: () => !this.#openingGroupMessage && !this.element.hidden && this.#tab === "groups" && (this.options.canReadGroup?.() ?? true),
+      readUntil: sequence => {if(history.current())this.inbox.markRead(g.id, sequence);},
+      messageTargetChanged: messageId => { this.#groupTarget = messageId ? { groupId: g.id, messageId } : undefined; },
+      report: (row, id) => this.#report(row, "message", id, history),
     });
+    if (preview) {
+      const tools = section('Conversation history');
+      details.insertBefore(tools, destructive);
+      card.append(thread.conversationOptions((id, close, anchor) =>
+        muteScope && !this.inbox.hasMuteScope(muteScope) ? [] : this.inbox.conversationActions(id, close, anchor), tools));
+    }
     this.#thread = thread;
     this.inbox.select(g.id);
-    this.#body.replaceChildren(card, details, thread.element);
-    await thread.loadOlder();
+    this.#body.replaceChildren(card, details,queue.surface("panel",this.#ui,current,async()=>{this.inbox.invalidate();await this.refresh();},e=>!this.options.embeddedGroups||!['accept','decline'].includes(e.intent.target.action)),thread.element);mounted=true;
+    if (this.#groupTarget?.groupId === g.id) await thread.openMessage(this.#groupTarget.messageId);
+    else await thread.loadOlder();
     if (operation === this.#renderToken) this.#refreshMessages = () => thread.updates();
-  }
-  async #reports(operation: number, cursor = 0, existing?: HTMLElement): Promise<void> {
-    const page = await this.client.request<
-      CloudPage<{
-        id: number;
-        target_type: string;
-        target_id: string;
-        reason: string;
-        created_at: number;
-        status: string;
-      }>
-    >("GET", `/v1/moderation/reports?limit=40&cursor=${cursor}`);
-    if (operation !== this.#renderToken) return;
-    const list = existing ?? element("div", { className: "kl-cloud-body" });
-    list.querySelector(".kl-reports-more")?.remove();
-    if (!existing) list.append(this.#button("Refresh reports", () => this.refresh()));
-    for (const r of page.items) {
-      const preview = element("div", {});
-      const metadata = element("small");
-      metadata.append(
-        document.createTextNode(`${r.status} · `),
-        bindClockText(element("time"), r.created_at, "numeric-date-time"),
-        document.createTextNode(` · ${r.target_type} #${r.target_id}`),
-      );
-      list.append(
-        element(
-          "article",
-          { className: "kl-cloud-card" },
-          element("h3", { text: `Report #${r.id} · ${r.target_type}` }),
-          metadata,
-          element("p", { text: r.reason }),
-          this.#button("Review reported content", async () => {
-            let content;
-            try { content = await this.client.request<{
-              author: number;
-              text: string;
-              mediaIds: string[];
-            }>("GET", `/v1/moderation/reports/${r.id}`); }
-            catch (error) {
-              if (error instanceof CloudError && error.status === 404) {
-                preview.textContent = "The reported content is no longer available. The report can still be dismissed."; return;
-              }
-              throw error;
-            }
-            if (operation !== this.#renderToken) return;
-            preview.replaceChildren(
-              element("small", {
-                text: `Reported content by #${content.author}`,
-              }),
-              element("p", { text: content.text }),
-            );
-            for (const asset of content.mediaIds)
-              preview.append(
-                this.#image(asset, "Reported image", "kl-cloud-image", r.id),
-              );
-          }),
-          preview,
-          this.#button("Remove reported content", async () => {
-            await this.client.request("POST", "/v1/moderation/remove", {
-              targetType: r.target_type,
-              targetId: r.target_id,
-              reason: "Removed after administrator report review",
-            });
-            await this.refresh();
-          }),
-          this.#button("Dismiss report", async () => {
-            await this.client.request(
-              "POST",
-              `/v1/moderation/reports/${r.id}/dismiss`,
-              {},
-            );
-            await this.refresh();
-          }),
-        ),
-      );
-    }
-    if (!page.items.length && !existing)
-      list.append(element("p", { text: "No open reports." }));
-    if (page.nextCursor !== null) {
-      const more = this.#button("Load more reports", () => this.#reports(operation, Number(page.nextCursor), list));
-      more.classList.add("kl-reports-more"); list.append(more);
-    }
-    if (!existing) this.#body.replaceChildren(list);
   }
   #image(
     assetId: string,
     alt: string,
     className = "kl-cloud-image",
-    reportId?: number,
+    reportId?: MediaReportScope,
     passive = false,
     own = false,
+    preview?: "always" | "ask" | "never",
+    generation?: string,
+    openPreview?: (button: HTMLButtonElement) => void,
   ): HTMLElement {
     const wrapper = element("div", {}),
       img = element("img", { className, alt });
-    const key = `${reportId ?? "profile"}:${assetId}`;
+    const key = `${mediaReportKey(reportId)}:${assetId}${generation ? `:${generation}` : ''}`;
+    const reportVersion = typeof reportId === 'number' ? this.#reportImageVersion : undefined;
+    const reportCurrent = () => reportVersion === undefined || reportVersion === this.#reportImageVersion;
+    if (reportVersion !== undefined) wrapper.dataset.platformReport = String(reportId);
     img.decoding = "async";
     img.referrerPolicy = "no-referrer";
     wrapper.className = passive ? "kl-social-avatar-media" : "kl-cloud-image-wrap";
     wrapper.dataset.state = "loading";
     const paint = (entry: CloudImageEntry) => {
-      if (this.#urls.get(key) !== entry || this.#destroyed || !this.client.connected) return;
+      if (!reportCurrent() || this.#urls.get(key) !== entry || this.#destroyed || !this.client.connected) return;
       entry.elements.add(wrapper); entry.used = Date.now();
+      wrapper.dispatchEvent(new Event("cloud-image-before-paint"));
       if (img.src !== entry.url) img.src = entry.url;
+      const width = img.naturalWidth || entry.width, height = img.naturalHeight || entry.height;
+      if (width && height) {
+        entry.width = img.width = width; entry.height = img.height = height;
+        wrapper.style.setProperty("--kl-chat-image-ratio", `${width} / ${height}`);
+      }
       wrapper.dataset.state = "ready"; wrapper.removeAttribute("aria-busy");
-      wrapper.replaceChildren(img);
+      if (openPreview) {
+        const open = element("button", { className: "kl-cloud-full-image", type: "button", ariaLabel: `Open ${alt}` }, img);
+        open.addEventListener("click", () => { if (open.isConnected && wrapper.contains(open) && !wrapper.closest("[hidden]")) openPreview(open); });
+        wrapper.replaceChildren(open);
+      } else if (!passive && this.options.openImageViewer) {
+        const version = this.#imageVersion;
+        const available = () => reportCurrent() && !this.#destroyed && this.client.connected && version === this.#imageVersion && wrapper.isConnected && !wrapper.closest("[hidden]");
+        const item: MediaViewerItem = { id: key, title: alt, detail: "KikiLink image", load: async signal => {
+          if (!available() || signal.aborted) throw new Error("This image is no longer available.");
+          // Re-authorize the original, including report access; never expose an asset URL.
+          const blob = await this.client.media(assetId, reportId, { fresh: true, ...(generation ? { recoveryGeneration: generation } : {}) });
+          if (!available() || signal.aborted) throw new Error("This image is no longer available.");
+          const url = URL.createObjectURL(blob); let released = false;
+          return { url, release: () => { if (!released) { released = true; URL.revokeObjectURL(url); } } };
+        } };
+        this.#viewerItems.set(wrapper, item);
+        const open = element("button", { className: "kl-cloud-full-image", type: "button", ariaLabel: `View ${alt.toLowerCase()}` });
+        open.append(img);
+        open.addEventListener("click", () => this.options.openImageViewer?.(() => {
+          if (!available()) return [];
+          const context = wrapper.closest(".kl-group-message-images,.kl-message-media,.kl-feed-media");
+          const nodes = context ? [...context.querySelectorAll<HTMLElement>(".kl-cloud-image-wrap")] : [wrapper];
+          return nodes.filter(node => node.isConnected && !node.closest("[hidden]") && node.dataset.state === "ready")
+            .flatMap(node => { const image = this.#viewerItems.get(node); return image ? [image] : []; });
+        }, key));
+        wrapper.replaceChildren(open);
+      } else wrapper.replaceChildren(img);
       wrapper.dispatchEvent(new Event("cloud-image-ready"));
       queueMicrotask(() => {
         for (const node of entry.elements) if (!this.#retainsImage(node)) entry.elements.delete(node);
@@ -1117,13 +1262,13 @@ export class CloudPanel {
     };
     const load = async () => {
       if (loading) return loading;
-      if (this.#destroyed || !this.#retainsImage(wrapper)) return;
+      if (!reportCurrent() || this.#destroyed || !this.#retainsImage(wrapper)) return;
       const version = this.#imageVersion;
       wrapper.dataset.state = "loading";
       delete wrapper.dataset.errorStatus;
       loading = (async () => {
-      const blob = await this.client.media(assetId, reportId);
-      if (version !== this.#imageVersion || this.#destroyed || !this.#retainsImage(wrapper)) return;
+      const blob = generation ? await this.client.media(assetId, reportId, { recoveryGeneration: generation }) : await this.client.media(assetId, reportId);
+      if (!reportCurrent() || version !== this.#imageVersion || this.#destroyed || !this.#retainsImage(wrapper)) return;
       let entry = this.#urls.get(key);
       if (!entry) {
         this.#pruneImages(blob.size);
@@ -1164,7 +1309,7 @@ export class CloudPanel {
     };
     const reveal = this.#button(`Show ${alt.toLowerCase()}`, load);
     const preference =
-      own ? "always" : this.options.settings().linkPresence.profileImagePreviews;
+      preview ?? (own ? "always" : this.options.settings().linkPresence.profileImagePreviews);
     if (preference !== "always") wrapper.dataset.state = "hidden";
     if (!passive) wrapper.append(reveal);
     if (preference === "never") {
@@ -1222,7 +1367,7 @@ export class CloudPanel {
     }
   }
   #retainsImage(node: HTMLElement): boolean {
-    return node.isConnected || this.#feedView.element.contains(node) || Boolean(this.#thread?.element.contains(node)) ||
+    return node.isConnected || this.#feedView.element.contains(node) || Boolean(this.#savedView?.element.contains(node)) || Boolean(this.#thread?.element.contains(node)) ||
       [...this.#surfaces.values()].some(surface => surface.nodes.some(root => root.contains(node)));
   }
   #pumpImages(): void {
@@ -1235,8 +1380,15 @@ export class CloudPanel {
       });
     }
   }
+  #releaseReportImages(): void {
+    this.#reportImageVersion++;
+    this.options.closeImageViewer?.();
+    for (const [node,timer] of this.#imageRetries) if (node.dataset.platformReport) { clearTimeout(timer); this.#imageRetries.delete(node); }
+    for (const [key,entry] of this.#urls) if (/^\d+:/u.test(key)) { URL.revokeObjectURL(entry.url); this.#urls.delete(key); this.#urlBytes -= entry.bytes; }
+  }
   #releaseImages(): void {
     this.#imageVersion++;
+    this.options.closeImageViewer?.();
     for (const timer of this.#imageRetries.values()) clearTimeout(timer);
     this.#imageRetries.clear();
     for (const entry of this.#urls.values()) URL.revokeObjectURL(entry.url);
@@ -1246,11 +1398,14 @@ export class CloudPanel {
   destroy(): void {
     document.removeEventListener("visibilitychange", this.#resumeFeed);
     clearTimeout(this.#feedUpdateTimer);
-    this.#reportDialog.destroy();
+    this.#moderation.destroy();
+    this.#reportDialog.destroy(); this.#groupOptionDialog.destroy();
+    this.#closeFeedReport?.();
     this.#ui.destroy();
     clearTimeout(this.#groupUpdateTimer); this.inbox.destroy(); this.#surfaces.clear();
     this.#thread?.stop();
     this.#feedView.destroy();
+    this.#savedView?.destroy();
     this.#destroyed = true;
     this.#renderToken++;
     this.#observer?.disconnect();
@@ -1258,7 +1413,7 @@ export class CloudPanel {
     clearInterval(this.#imageCleanupTimer); this.#imageCleanupTimer = undefined;
     this.#imageQueue = [];
     this.#releaseImages();
-    this.#groupDrafts.clear();
+    this.#groupDrafts.clear();this.#creationDraft=undefined;
     this.#unsubscribe();
     this.client.destroy();
     this.element.remove();

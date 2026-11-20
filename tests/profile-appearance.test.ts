@@ -38,6 +38,29 @@ it("keeps the previous decoration through mutually exclusive custom modes and le
     expect(card.style.getPropertyValue("--kl-avatar-ring")).toBe(""); expect(avatar.style.getPropertyValue("--kl-profile-bg")).toBe("");
   }
 });
+it("keeps the remembered preset in the platform decoration buttons and resets only the draft", () => {
+  const presets = document.createElement("select");
+  let changes = 0;
+  const editor = new AvatarAppearanceEditor(presets, () => { changes++; }, true);
+  const button = (name: string) => [...editor.element.querySelectorAll("button")].find(item => item.textContent === name)!;
+  expect(presets.hidden).toBe(true);
+  expect(button("None").getAttribute("aria-pressed")).toBe("true");
+  button("Presets").click();
+  button("Moon").click();
+  expect(editor.get()).toMatchObject({ mode: "preset", preset: "moon" });
+  button("Gradient").click();
+  editor.primary.value = "#112233";
+  button("Presets").click();
+  expect(editor.get()).toMatchObject({ mode: "preset", preset: "moon", primary: "#112233" });
+  editor.disabled(true);
+  expect(button("Reset decoration").disabled).toBe(true);
+  button("None").click();
+  expect(editor.get().mode).toBe("preset");
+  editor.disabled(false);
+  button("Reset decoration").click();
+  expect(editor.get()).toEqual(normalizeAvatarDecoration(undefined));
+  expect(changes).toBe(5);
+});
 it("keeps appearance and public tags bounded in presence while private ratings cannot enter the packet", () => {
   const wire = serializePresencePacket({ t: "ps", s: "online", u: 1, v: "0.30.0", j: normalizeAvatarDecoration({ mode: "gradient" }), k: ["Public tag"], f: "none", c: "glacier" });
   expect(new TextEncoder().encode(wire).length).toBeLessThanOrEqual(700);
@@ -45,14 +68,20 @@ it("keeps appearance and public tags bounded in presence while private ratings c
   const avatar = document.createElement("div");
   for (const preset of AVATAR_PRESETS) { applyAvatarAppearance(avatar, { avatarFrame: preset }); expect(avatar.dataset.avatarFrame).toBe(preset); }
 });
-it("keeps a solid nested surface while painting a custom card gradient", () => {
+it("passes the custom gradient to the profile styles and clears it when switching presets", () => {
   const card = document.createElement("div");
   applyProfileAppearance(card, {
     profileStyle: "gradient",
     profileGradient: { enabled: true, primary: "#8a1538", secondary: "#2a9d8f", angle: 225 },
   });
-  expect(card.style.background).toContain("linear-gradient(225deg");
-  expect(card.style.getPropertyValue("--kl-profile-bg")).toBe("#171923");
-  expect(card.style.getPropertyValue("--kl-profile-status-ring")).toBe("#171923");
-  expect(card.style.getPropertyValue("--kl-profile-bg")).not.toContain("gradient");
+  expect(card.style.background).toBe("");
+  expect(card.style.getPropertyValue("--kl-profile-bg")).toBe("");
+  expect(card.style.getPropertyValue("--kl-profile-gradient-primary")).toBe("#8a1538");
+  expect(card.style.getPropertyValue("--kl-profile-gradient-secondary")).toBe("#2a9d8f");
+  expect(card.style.getPropertyValue("--kl-profile-gradient-angle")).toBe("225deg");
+  applyProfileAppearance(card, { profileStyle: "garden" });
+  expect(card.dataset.customGradient).toBeUndefined();
+  expect(card.style.getPropertyValue("--kl-profile-gradient-primary")).toBe("");
+  expect(card.style.getPropertyValue("--kl-profile-gradient-secondary")).toBe("");
+  expect(card.style.getPropertyValue("--kl-profile-gradient-angle")).toBe("");
 });

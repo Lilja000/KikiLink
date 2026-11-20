@@ -796,25 +796,33 @@ export class LinkActivitiesService implements BCCustomActivityIntegration {
   }
 
   #registryInjectionIsHealthy(registry: NativeActivityRegistry): boolean {
-    const registeredActivities = registry.activities.filter((activity) =>
-      typeof activity?.Name === "string" && activity.Name.startsWith(ACTIVITY_PREFIX),
-    );
-    const registeredOrdering = registry.ordering.filter((name) =>
-      typeof name === "string" && name.startsWith(ACTIVITY_PREFIX),
-    );
-    if (
-      registeredActivities.length !== this.#runtimeActivities.size ||
-      registeredOrdering.length !== this.#runtimeActivities.size ||
-      this.#injectedActivities.size !== this.#runtimeActivities.size
-    ) {
+    const count = this.#runtimeActivities.size;
+    if (this.#injectedActivities.size !== count) return false;
+
+    const registeredActivities = new Set<BCActivity>();
+    for (const activity of registry.activities) {
+      const name = activity?.Name;
+      if (typeof name !== "string" || !name.startsWith(ACTIVITY_PREFIX)) continue;
+      if (registeredActivities.has(activity)) return false;
+      registeredActivities.add(activity);
+    }
+
+    const registeredOrdering = new Set<string>();
+    for (const name of registry.ordering) {
+      if (typeof name !== "string" || !name.startsWith(ACTIVITY_PREFIX)) continue;
+      if (registeredOrdering.has(name)) return false;
+      registeredOrdering.add(name);
+    }
+
+    if (registeredActivities.size !== count || registeredOrdering.size !== count) {
       return false;
     }
     for (const runtimeName of this.#runtimeActivities.keys()) {
       const injected = this.#injectedActivities.get(runtimeName);
       if (
         !injected ||
-        registeredActivities.filter((activity) => activity === injected).length !== 1 ||
-        registeredOrdering.filter((name) => name === runtimeName).length !== 1
+        !registeredActivities.has(injected) ||
+        !registeredOrdering.has(runtimeName)
       ) {
         return false;
       }
@@ -850,7 +858,10 @@ function nativeActivityMarkSize(viewportWidth: number): number {
 }
 
 export function activityImageUrl(image: string): string {
-  return `./Assets/Female3DCG/Activity/${canonicalVanillaActivityImage(image)}.png`;
+  const version = typeof GameVersion === "string" ? /^R(\d+)/u.exec(GameVersion)?.[1] : undefined;
+  // BC moved the vanilla activity images into Icons starting with R133.
+  const directory = Number(version) >= 133 ? "Icons/Activity" : "Assets/Female3DCG/Activity";
+  return `./${directory}/${canonicalVanillaActivityImage(image)}.png`;
 }
 
 export function canonicalVanillaActivityImage(image: string): string {

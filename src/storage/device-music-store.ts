@@ -1,8 +1,11 @@
+import { scopePersistenceName } from "../core/storage-scope";
+import { openMusicDatabase, MUSIC_IMPORTS } from "./music-database";
+import { musicRecoveryHoldIds, type MusicImportCopy } from "./music-import-recovery";
+
 export const MAX_LOCAL_MUSIC_BYTES = 80 * 1024 * 1024;
 export const MAX_LOCAL_MUSIC_TRACKS = 100;
 export const MAX_LOCAL_MUSIC_TOTAL_BYTES = 512 * 1024 * 1024;
 
-const DATABASE_VERSION = 1;
 const STORE_NAME = "tracks";
 
 export interface DeviceMusicTrack {
@@ -13,14 +16,18 @@ export interface DeviceMusicTrack {
   roomExtension?: "mp3" | "mp4";
   createdAt: number;
   blob: Blob;
+  /** Inactive archive fields and related playlist metadata; never playback actions. */
+  archivedFields?: string;
 }
 
 export interface MusicStore {
+  /** Only native, account-owned storage can receive durable archive imports. */
+  archiveImportDestination?(owner: number): boolean;
   list(): Promise<DeviceMusicTrack[]>;
   get(id: string): Promise<DeviceMusicTrack | undefined>;
   add(file: File): Promise<DeviceMusicTrack>;
   delete(id: string): Promise<void>;
-  /** Removes device blobs that no longer have a playlist reference. */
+  /** Reconciles session-only files. Durable unlinked files require explicit removal. */
   reconcile?(
     referencedIds: ReadonlySet<string>,
     protectedIds?: ReadonlySet<string>,
@@ -38,6 +45,10 @@ export class DeviceMusicStore implements MusicStore {
   #databaseUnavailable = false;
 
   constructor(private readonly memberNumber: number) {}
+
+  archiveImportDestination(owner: number): boolean {
+    return owner === this.memberNumber && !this.#databaseUnavailable && typeof indexedDB !== "undefined";
+  }
 
   async list(): Promise<DeviceMusicTrack[]> {
     const database = await this.#database().catch(() => undefined);
@@ -85,7 +96,7 @@ export class DeviceMusicStore implements MusicStore {
       const store = transaction.objectStore(STORE_NAME);
       const existing = await requestResult(store.getAll()) as DeviceMusicTrack[];
       assertMusicStorageCapacity(existing.length, totalBlobBytes(existing), record.blob.size);
-      store.put(record);
+      store.add(record);
       await transactionDone(transaction);
       return record;
     } catch (error) {
@@ -100,9 +111,7 @@ export class DeviceMusicStore implements MusicStore {
     this.#memory.delete(id);
     const database = await this.#database().catch(() => undefined);
     if (!database) return;
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).delete(id);
-    await transactionDone(transaction);
+    await guardedDelete(database,this.memberNumber,new Set([id]),true);
   }
 
   async reconcile(
@@ -122,7 +131,10 @@ export class DeviceMusicStore implements MusicStore {
       }
       return removed;
     }
-    return await deleteUnreferencedRecords(database, keep);
+    musicRecoveryHoldIds(await requestResult(database.transaction(MUSIC_IMPORTS,'readonly').objectStore(MUSIC_IMPORTS).getAll()),this.memberNumber);
+    // Other tabs can be between their file write and playlist commit. Absence
+    // from this caller's snapshot is never authority to delete durable bytes.
+    return [];
   }
 
   releaseStaged(ids: ReadonlySet<string>): void {
@@ -140,7 +152,10 @@ export class DeviceMusicStore implements MusicStore {
       this.#databaseUnavailable = true;
       return Promise.reject(new Error("IndexedDB is unavailable"));
     }
-    this.#databasePromise ??= openDatabase(databaseName(this.memberNumber)).catch((error) => {
+    this.#databasePromise ??= openMusicDatabase(deviceMusicDatabaseName(this.memberNumber),indexedDB,true,() => {}).then(database => {
+      database.onversionchange = () => { database.close(); this.#databasePromise = undefined; };
+      return database;
+    }).catch((error) => {
       this.#databaseUnavailable = true;
       this.#databasePromise = undefined;
       throw error;
@@ -170,23 +185,9 @@ export function assertMusicStorageCapacity(
   }
 }
 
-function databaseName(memberNumber: number): string {
+export function deviceMusicDatabaseName(memberNumber: number): string {
   const account = Number.isSafeInteger(memberNumber) && memberNumber > 0 ? memberNumber : "guest";
-  return `kikilink-device-music-${account}`;
-}
-
-function openDatabase(name: string): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(name, DATABASE_VERSION);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE_NAME)) {
-        request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Unable to open local music storage"));
-    request.onblocked = () => reject(new Error("Local music storage is blocked by another tab"));
-  });
+  return scopePersistenceName(`kikilink-device-music-${account}`);
 }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -204,27 +205,27 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
   });
 }
 
-function deleteUnreferencedRecords(
-  database: IDBDatabase,
-  keep: ReadonlySet<string>,
-): Promise<string[]> {
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.getAllKeys();
+/** The journal and tracks share one transaction, so a stale cleanup cannot race an import. */
+function guardedDelete(database: IDBDatabase, owner: number, ids: ReadonlySet<string>, explicit: boolean): Promise<string[]> {
+  return new Promise((resolve,reject) => {
+    const transaction = database.transaction([STORE_NAME,MUSIC_IMPORTS],"readwrite"), store = transaction.objectStore(STORE_NAME);
+    const journal = transaction.objectStore(MUSIC_IMPORTS).getAll(), keys = store.getAllKeys(); let done = 0, reason = 'Local music cleanup could not be confirmed.';
     const removed: string[] = [];
-    request.onsuccess = () => {
-      for (const key of request.result) {
-        const id = typeof key === "string" ? key : "";
-        if (id && keep.has(id)) continue;
-        store.delete(key);
-        if (id) removed.push(id);
-      }
+    const ready = () => {
+      if (++done !== 2) return;
+      try {
+        const holds = musicRecoveryHoldIds(journal.result as MusicImportCopy[],owner,explicit);
+        if (explicit && [...ids].some(id => holds.has(id))) throw new Error('Finish the music import before removing its files.');
+        for (const key of keys.result) {
+          const id = typeof key === 'string' ? key : '';
+          if (explicit ? !ids.has(id) : ids.has(id) || holds.has(id)) continue;
+          store.delete(key); if (id) removed.push(id);
+        }
+      } catch(e) { reason = e instanceof Error ? e.message : reason; transaction.abort(); }
     };
-    request.onerror = () => reject(request.error ?? new Error("Local music storage request failed"));
+    journal.onsuccess = keys.onsuccess = ready;
     transaction.oncomplete = () => resolve(removed);
-    transaction.onerror = () => reject(transaction.error ?? new Error("Local music storage failed"));
-    transaction.onabort = () => reject(transaction.error ?? new Error("Local music storage was cancelled"));
+    transaction.onabort = () => reject(new Error(reason));
   });
 }
 

@@ -3,6 +3,7 @@ import { PRODUCTION_CLOUD_ORIGIN } from "../cloud/src/production.mjs";
 /** Resolve build inputs without changing files or contacting a service. */
 export function resolveBuildConfig(args = [], env = {}) {
   const flags = new Set(args);
+  const platformPreview = flags.has("--platform");
   const devTest = flags.has("--dev-test");
   const local = flags.has("--local") || devTest;
   const production = flags.has("--production") || !local;
@@ -10,6 +11,12 @@ export function resolveBuildConfig(args = [], env = {}) {
   const browserFixture = flags.has("--browser-fixture");
   const groupTrial = flags.has("--group-trial");
   const cloud = production || flags.has("--cloud");
+  if (platformPreview && (!flags.has("--local") || production || devTest || browserFixture || groupTrial)) {
+    throw new Error("Platform preview requires --local and cannot include production, DevTest or fixture modes.");
+  }
+  if (platformPreview && cloud && !env.KIKILINK_CLOUD_ORIGIN) {
+    throw new Error("Platform preview Cloud requires an explicit staging KIKILINK_CLOUD_ORIGIN.");
+  }
   if (production && (devTest || trafficAudit || browserFixture || groupTrial)) {
     throw new Error("Production builds cannot include development fixtures or traffic instrumentation.");
   }
@@ -26,6 +33,9 @@ export function resolveBuildConfig(args = [], env = {}) {
   }
   if (cloud) {
     const origin = new URL(cloudOrigin);
+    if (platformPreview && origin.origin === new URL(PRODUCTION_CLOUD_ORIGIN).origin) {
+      throw new Error("Platform preview cannot connect to the production Cloud origin.");
+    }
     const base = `${origin.origin}${origin.pathname === "/" ? "" : origin.pathname.replace(/\/$/u, "")}`;
     if (origin.protocol !== "https:" || origin.username || origin.password || origin.search || origin.hash ||
         !/^\/(?:[A-Za-z0-9._~-]+\/?)*$/u.test(origin.pathname) || base !== cloudOrigin) {
@@ -33,11 +43,11 @@ export function resolveBuildConfig(args = [], env = {}) {
     }
   }
   return {
-    devTest, local, production, cloud, trafficAudit, browserFixture, groupTrial, cloudOrigin,
+    devTest, platformPreview, platformRelease: production, local, production, cloud, trafficAudit, browserFixture, groupTrial, cloudOrigin,
     // Local scope guards are not an identity proof. The server authenticates every login.
     cloudTestMember: cloud && devTest && !browserFixture ? 95634 : 0,
     cloudTestMembers: groupTrial ? [72385, 95634, 259875] : [],
-    outputDirectory: production ? (local ? ".local-dev/production" : "dist")
+    outputDirectory: platformPreview ? ".local-dev/platform" : production ? (local ? ".local-dev/production" : "dist")
       : trafficAudit ? (cloud ? ".local-dev/network-audit-cloud" : ".local-dev/network-audit")
       : groupTrial ? ".local-dev/cloud-group-devtest"
       : browserFixture ? ".local-dev/browser-cloud/bundle"

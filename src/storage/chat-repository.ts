@@ -1,4 +1,6 @@
 import type { ConversationMeta, LinkMessage } from "../core/types";
+import type { ChatImportPolicy } from './chat-import-model';
+import type { PortableChatRecords } from './portable-chat-records';
 
 export interface ChatCaptureResult {
   removed: number;
@@ -6,6 +8,11 @@ export interface ChatCaptureResult {
 }
 
 export interface ChatRepository {
+  /** Restore bounded portable rows without replacing unknown native fields. */
+  hydratePortableChats?(records:PortableChatRecords,current?:()=>boolean):Promise<void>;
+  deviceHistoryDatabase?(owner: number): string | undefined;
+  deviceHistoryImportPolicy?(): ChatImportPolicy;
+  prepareDeviceHistoryImport?(): void;
   /** Commits a captured message, its conversation, and retention as one storage operation. */
   captureMessage(message: LinkMessage, conversation: ConversationMeta, keepNewest: number): Promise<ChatCaptureResult>;
   addMessage(message: LinkMessage): Promise<void>;

@@ -10,6 +10,7 @@ declare global {
     WhiteList?: number[];
     BlackList?: number[];
     GhostList?: number[];
+    OnlineSettings?: { AutoBanBlackList?: boolean; AutoBanGhostList?: boolean };
     Ownership?: {
       MemberNumber?: number;
       Name?: string;
@@ -37,12 +38,17 @@ declare global {
     offAnyOutgoing?(listener: (event: string, data: unknown) => void): unknown;
     connected?: boolean;
     on(event: "connect" | "ChatRoomSync", listener: () => void): unknown;
+    off?(event: "ChatRoomSync", listener: () => void): unknown;
+    removeListener?(event: "ChatRoomSync", listener: () => void): unknown;
     on(event: "disconnect", listener: () => void): unknown;
     off?(event: "disconnect", listener: () => void): unknown;
     removeListener?(event: "disconnect", listener: () => void): unknown;
     on(event: "AccountBeep", listener: (data: BCServerAccountBeepResponse) => void): unknown;
     on(event: "AccountQueryResult", listener: (data: BCAccountQueryResponse) => void): unknown;
     on(event: "ChatRoomMessage", listener: (data: BCChatRoomMessage) => void): unknown;
+    on(event: "ChatRoomCreateResponse", listener: (data: unknown) => void): unknown;
+    off?(event: "ChatRoomCreateResponse", listener: (data: unknown) => void): unknown;
+    removeListener?(event: "ChatRoomCreateResponse", listener: (data: unknown) => void): unknown;
     off?(event: "AccountBeep", listener: (data: BCServerAccountBeepResponse) => void): unknown;
     off?(event: "AccountQueryResult", listener: (data: BCAccountQueryResponse) => void): unknown;
     off?(event: "ChatRoomMessage", listener: (data: BCChatRoomMessage) => void): unknown;
@@ -203,12 +209,14 @@ declare global {
   var ChatAdminBackgroundList: string[] | null;
   function BackgroundsTextGet(name: string): string;
   var ServerChatRoomDataValidate: {
+    Limit?(value: number): number;
     Custom: ((value: BCChatRoomData["Custom"]) => NonNullable<BCChatRoomData["Custom"]>) & {
       ImageURL(value: string): string | undefined;
       MusicURL(value: string): string | undefined;
       ImageFilter(value: string): string | undefined;
     };
   };
+  var ServerChatRoomDataValidationRecord: Record<string, ((value: any) => any) | undefined>;
 
   interface BCServerAccountBeepResponse {
     MemberNumber: number;

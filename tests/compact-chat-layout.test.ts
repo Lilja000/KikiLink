@@ -54,8 +54,12 @@ describe("Chat screenshot regressions across viewport and density", () => {
       expect(portrait.width).toBe("100%");
       expect(portrait.height).toBe("100%");
       expect(portrait.objectFit).toBe("cover");
-      // Happy DOM leaves inherited border-radius unresolved.
-      expect(["inherit", css(".kl-avatar").borderRadius]).toContain(portrait.borderRadius);
+      // Happy DOM omits the computed value for this explicit inheritance.
+      const portraitRule = Array.from(root.querySelector("style")!.sheet!.cssRules)
+        .filter(rule => rule instanceof win.CSSStyleRule)
+        .find(rule => rule.selectorText === ".kl-avatar > img");
+      expect(portraitRule?.style.borderRadius).toBe("inherit");
+      expect(css(".kl-avatar").borderRadius).toBe(density === "super-compact" ? "10px" : "15px");
 
       expect(css(".kl-addon-badge").width).toBe(css(".kl-presence-dot").width);
       expect(css(".kl-addon-badge").height).toBe(css(".kl-presence-dot").height);

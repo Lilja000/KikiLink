@@ -1,12 +1,15 @@
 import { cleanBeepMessageContent } from "../../bc/message-content";
 import { isReconnectNotice } from "../../bc/reconnect-notice";
+import { legacySelfBeepEchoes } from "../../bc/self-beep-echo";
 import type { SettingsStore } from "../../core/settings";
 import type { BeepEvent, ConversationMeta, LinkMessage } from "../../core/types";
 import type { ChatRepository } from "../../storage/chat-repository";
+import type { ChatImportRules } from '../../storage/chat-import-model';
 import { sortConversations } from "../../storage/memory-chat-repository";
 import { createId } from "../../utils/id";
 import { remainingDraftAfterSend } from "../../utils/sent-draft";
 import { parseMessageLinks } from "./media";
+import { DirectPresentation } from "./direct-presentation";
 import { conversationMuted } from "./conversation-mute";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -22,11 +25,31 @@ export interface ChatMediaItem {
 }
 
 export class ChatService {
+  // Explicitly paged Cloud history can outlive the durable device retention window.
+  presentation: DirectPresentation | undefined;
+  readonly #cloudHistory = new Map<number, Map<string, LinkMessage>>();
+  #historyGeneration = 0;
+  readonly #peerHistoryGeneration = new Map<number, number>();
   readonly #ephemeralMessages = new Map<number, LinkMessage[]>();
   readonly #ephemeralConversations = new Map<number, ConversationMeta>();
   readonly #peerMutationTails = new Map<number, Promise<void>>();
   #globalMutationTail: Promise<void> = Promise.resolve();
-  onCloudRead: ((peer: number, sequence: number) => void) | undefined;
+  cloudReadGeneration: string | undefined;
+  onCloudRead: ((peer: number, sequence: number, generation?: string) => void) | undefined;
+
+  deviceHistoryImportRules(owner: number): ChatImportRules {
+    const database = this.repository.deviceHistoryDatabase?.(owner), settings = this.settings.getSection('linkChat');
+    if (!database || this.repository.canSafelyCapturePortableSnapshot?.() === false || this.ownMemberNumber !== undefined && this.ownMemberNumber !== owner)
+      throw new Error('Durable chat storage is unavailable for this account. Reload before importing.');
+    return {database,saveHistory:settings.saveHistory,retentionDays:settings.retentionDays,maxMessages:settings.maxMessagesPerConversation,
+      policy:this.repository.deviceHistoryImportPolicy?.() ?? {clearedAt:0,prunedBefore:0,deletedPeers:[],prunedPeers:[]}};
+  }
+  importDeviceHistory<T>(owner: number, expected: ChatImportRules, current: () => boolean, operation: (guard: () => void, prepared: () => void) => Promise<T>): Promise<T> {
+    return this.#enqueueGlobalMutation(async () => {
+      const guard = () => { if (!current() || JSON.stringify(this.deviceHistoryImportRules(owner)) !== JSON.stringify(expected)) throw new Error('The account or history policy changed. Review the archive again.'); };
+      guard(); return operation(guard,() => { this.repository.prepareDeviceHistoryImport?.(); this.#historyGeneration++; });
+    });
+  }
 
   constructor(
     private readonly repository: ChatRepository,
@@ -44,15 +67,18 @@ export class ChatService {
   async #captureUnlocked(
     canonicalEvent: BeepEvent,
     activeConversation: boolean,
-    cloud?: Pick<LinkMessage, "id" | "clientMessageId" | "cloudId" | "cloudSequence" | "delivery" | "deliveryError">,
+    cloud?: Pick<LinkMessage, "id" | "clientMessageId" | "cloudMediaIds" | "cloudAudioIds" | "cloudMentions" | "cloudId" | "cloudSequence" | "cloudGeneration" | "delivery" | "deliveryError">,
+    historicalRead?: boolean,
+    current?: () => boolean,
   ): Promise<LinkMessage> {
     const message: LinkMessage = {
       ...canonicalEvent,
       id: cloud?.id ?? createId("beep"),
       ...cloud,
-      read: canonicalEvent.direction === "outgoing" || activeConversation,
+      read: canonicalEvent.direction === "outgoing" || (historicalRead ?? activeConversation),
     };
     const previous = await this.#getStoredConversationUnlocked(canonicalEvent.peerNumber);
+    if (current && !current()) throw new Error("History request is no longer current");
     const conversation: ConversationMeta = {
       peerNumber: canonicalEvent.peerNumber,
       peerName: preferredPeerName(
@@ -61,13 +87,14 @@ export class ChatService {
         canonicalEvent.peerNumber,
       ),
       ...(previous?.localAlias ? { localAlias: previous.localAlias } : {}),
-      lastMessage: previous && previous.lastMessageAt > canonicalEvent.sentAt ? previous.lastMessage : canonicalEvent.content,
+      ...(previous?.archivedFields !== undefined ? { archivedFields: previous.archivedFields } : {}),
+      lastMessage: previous && previous.lastMessageAt > canonicalEvent.sentAt ? previous.lastMessage : canonicalEvent.content || (cloud?.cloudAudioIds?.length ? "Audio" : cloud?.cloudMediaIds?.length ? "Image" : ""),
       lastMessageAt: Math.max(previous?.lastMessageAt ?? 0, canonicalEvent.sentAt),
       lastDirection: previous && previous.lastMessageAt > canonicalEvent.sentAt ? previous.lastDirection : canonicalEvent.direction,
       unread:
-        canonicalEvent.direction === "incoming" && !activeConversation
+        canonicalEvent.direction === "incoming" && !message.read
           ? (previous?.unread ?? 0) + 1
-          : activeConversation ? 0 : (previous?.unread ?? 0),
+          : activeConversation && historicalRead === undefined ? 0 : (previous?.unread ?? 0),
       pinned: previous?.pinned ?? false,
       draft: previous?.draft ?? "",
       ...(previous?.muteUntil !== undefined ? { muteUntil: previous.muteUntil } : {}),
@@ -93,48 +120,130 @@ export class ChatService {
     return message;
   }
 
-  async captureCloud(event: BeepEvent, metadata: Pick<LinkMessage, "id" | "clientMessageId" | "cloudId" | "cloudSequence" | "delivery" | "deliveryError">, active: boolean): Promise<{ message: LinkMessage; fresh: boolean }> {
+  async captureCloud(event: BeepEvent, metadata: Pick<LinkMessage, "id" | "clientMessageId" | "cloudMediaIds" | "cloudAudioIds" | "cloudMentions" | "cloudId" | "cloudSequence" | "cloudGeneration" | "delivery" | "deliveryError">, active: boolean): Promise<{ message: LinkMessage; fresh: boolean }> {
     return this.#enqueuePeerMutation(event.peerNumber, async () => {
       const old = (await this.#getMessagesUnlocked(event.peerNumber, this.settings.getSection("linkChat").maxMessagesPerConversation)).find(m => m.id === metadata.id);
       if (old) return { message: old, fresh: false };
       const message = await this.#captureUnlocked(canonicalizeBeepEvent(event), active, metadata);
-      if (active && message.direction === "incoming" && message.cloudSequence) this.onCloudRead?.(event.peerNumber, message.cloudSequence);
+      if (active && message.direction === "incoming" && message.cloudSequence) this.#notifyCloudRead(event.peerNumber, message.cloudSequence, message.cloudGeneration);
       return { message, fresh: true };
     });
   }
-  async updateDelivery(peer: number, id: string, metadata: Partial<Pick<LinkMessage, "cloudId" | "cloudSequence" | "delivery" | "deliveryError">>): Promise<LinkMessage | undefined> {
+  cloudHistoryGuard(peer?: number): () => boolean {
+    const global = this.#historyGeneration, generation = peer === undefined ? 0 : this.#peerHistoryGeneration.get(peer) ?? 0;
+    return () => global === this.#historyGeneration && (peer === undefined || generation === (this.#peerHistoryGeneration.get(peer) ?? 0));
+  }
+  /** An explicit Cloud archive can exceed device retention, but never a clear/delete boundary. */
+  cloudArchiveCutoff(peer:number):number {
+    const policy=this.repository.deviceHistoryImportPolicy?.();
+    if(!policy)return 0;
+    const time=(value:unknown):value is number=>Number.isSafeInteger(value)&&Number(value)>=0&&Number(value)<=8640000000000000;
+    if(!time(policy.clearedAt)||!Array.isArray(policy.deletedPeers)||policy.deletedPeers.some(pair=>!Array.isArray(pair)||pair.length!==2||!Number.isSafeInteger(pair[0])||pair[0]<=0||!time(pair[1])))
+      throw new Error('Saved history deletion policy could not be checked.');
+    return Math.max(policy.clearedAt,...policy.deletedPeers.filter(([member])=>member===peer).map(([,at])=>at));
+  }
+  /** Imports a server envelope without sending, notifying or manufacturing a read receipt. */
+  async restoreCloud(event: BeepEvent, metadata: Pick<LinkMessage, "id" | "clientMessageId" | "cloudMediaIds" | "cloudAudioIds" | "cloudMentions" | "cloudId" | "cloudSequence" | "cloudGeneration" | "delivery" | "deliveryError">,
+    read: boolean, current: () => boolean = () => true, retain = false): Promise<{ message: LinkMessage; fresh: boolean } | undefined> {
+    return this.#enqueuePeerMutation(event.peerNumber, async () => {
+      if (!current()) return;
+      const previous = await this.#getStoredConversationUnlocked(event.peerNumber);
+      if (!current() || previous?.hiddenAt !== undefined && event.sentAt <= previous.hiddenAt) return;
+      const messages = await this.#getMessagesUnlocked(event.peerNumber, Number.MAX_SAFE_INTEGER);
+      if (!current()) return;
+      const old = messages.find(m => m.direction === event.direction && (m.id === metadata.id ||
+        !!metadata.cloudId && m.cloudId === metadata.cloudId || !!metadata.clientMessageId && m.clientMessageId === metadata.clientMessageId));
+      let message: LinkMessage;
+      if (old && previous) {
+        const rank = { waiting: 0, failed: 0, sent: 1, delivered: 2, read: 3 };
+        const delivery = old.delivery && metadata.delivery && rank[old.delivery] > rank[metadata.delivery] ? old.delivery : metadata.delivery ?? old.delivery;
+        message = { ...old, ...metadata, id: old.id, read: old.read || read, ...(delivery ? { delivery } : {}) };
+        if (this.#ephemeralMessages.get(event.peerNumber)?.some(m => m.id === old.id)) {
+          this.#ephemeralMessages.set(event.peerNumber, this.#ephemeralMessages.get(event.peerNumber)!.map(m => m.id === old.id ? message : m));
+        } else if (this.settings.getSection("linkChat").saveHistory) {
+          // A session-only older row must not bypass the durable retention cap.
+          await this.repository.captureMessage(message, previous, this.settings.getSection("linkChat").maxMessagesPerConversation);
+        }
+        if (!old.read && message.read && previous) await this.#saveConversation({ ...previous, unread: Math.max(0, previous.unread - 1) });
+      } else {
+        message = await this.#captureUnlocked(canonicalizeBeepEvent(event), false, metadata, read, current);
+      }
+      if (!current()) return;
+      if (retain || this.#cloudHistory.get(event.peerNumber)?.has(message.id)) {
+        const history = this.#cloudHistory.get(event.peerNumber) ?? new Map<string, LinkMessage>();
+        history.set(message.id, message); this.#cloudHistory.set(event.peerNumber, history);
+      }
+      return { message: structuredClone(message), fresh: !old };
+    });
+  }
+  releaseCloudHistory(peer: number): void { this.#cloudHistory.delete(peer); }
+  async #replaceRetainedMessage(message: LinkMessage): Promise<void> {
+    const peer = message.peerNumber, ephemeral = this.#ephemeralMessages.get(peer);
+    if (ephemeral?.some(m => m.id === message.id)) {
+      this.#ephemeralMessages.set(peer, ephemeral.map(m => m.id === message.id ? message : m));
+    } else {
+      // Updating a session-only old receipt must not reinsert it beyond retention.
+      const session = this.#cloudHistory.get(peer)?.has(message.id);
+      if (!session || (await this.repository.getMessages(peer, Number.MAX_SAFE_INTEGER)).some(m => m.id === message.id))
+        await this.repository.addMessage(message);
+    }
+    // A failed durable write must remain retryable rather than looking applied in memory.
+    if (this.#cloudHistory.get(peer)?.has(message.id)) this.#cloudHistory.get(peer)!.set(message.id, message);
+  }
+  async changeLocalMessage(target: LinkMessage, text: string | null, current: () => boolean, located = false): Promise<void> {
+    await this.#enqueuePeerMutation(target.peerNumber, async () => {
+      if (!current() || !this.presentation || target.direction !== "outgoing") throw new Error("This message is no longer available.");
+      const raw = (await this.#getMessagesUnlocked(target.peerNumber, Number.MAX_SAFE_INTEGER)).find(row =>
+        row.id === target.id && row.direction === "outgoing" && row.cloudGeneration === target.cloudGeneration);
+      const source = raw ?? (located ? target : undefined);
+      if (!source || !current() || this.presentation.project(source)?.content !== target.content)
+        throw new Error("This message changed. Reopen it before saving.");
+      this.presentation.change(source, text, this.settings.getSection("linkChat").saveHistory);
+    });
+  }
+
+  async setMessagePinned(target: LinkMessage, pinned: boolean, current: () => boolean): Promise<void> {
+    await this.#enqueuePeerMutation(target.peerNumber, async () => {
+      if (!current()) return;
+      const messages = await this.#getMessagesUnlocked(target.peerNumber, Number.MAX_SAFE_INTEGER);
+      const message = messages.find(item => item.id === target.id && item.cloudGeneration === target.cloudGeneration &&
+        item.sentAt === target.sentAt && item.direction === target.direction);
+      if (!message || !current()) throw new Error("This message is no longer available.");
+      if (Boolean(message.localPin) === pinned) return;
+      const replacement = { ...message };
+      if (pinned) replacement.localPin = true;
+      else delete replacement.localPin;
+      await this.#replaceRetainedMessage(replacement);
+    });
+  }
+
+  async updateDelivery(peer: number, id: string, metadata: Partial<Pick<LinkMessage, "cloudMentions" | "cloudId" | "cloudSequence" | "cloudGeneration" | "delivery" | "deliveryError">>): Promise<LinkMessage | undefined> {
     return this.#enqueuePeerMutation(peer, async () => {
-      const message = (await this.#getMessagesUnlocked(peer, this.settings.getSection("linkChat").maxMessagesPerConversation)).find(m => m.id === id);
+      const message = (await this.#getMessagesUnlocked(peer, Number.MAX_SAFE_INTEGER)).find(m => m.id === id);
       if (!message) return;
       const safeMetadata = message.delivery === "read" && metadata.delivery && metadata.delivery !== "read"
         ? { ...metadata, delivery: "read" as const, deliveryError: "" }
         : metadata;
       const updated = { ...message, ...safeMetadata };
-      const ephemeral = this.#ephemeralMessages.get(peer);
-      if (ephemeral?.some(m => m.id === id)) this.#ephemeralMessages.set(peer, ephemeral.map(m => m.id === id ? updated : m));
-      else await this.repository.addMessage(updated);
+      await this.#replaceRetainedMessage(updated);
       return structuredClone(updated);
     });
   }
   async reconcileCloudReceipt(peer: number, cloudId: string, delivery: "delivered" | "read"): Promise<LinkMessage | undefined> {
     return this.#enqueuePeerMutation(peer, async () => {
-      const message = (await this.#getMessagesUnlocked(peer, this.settings.getSection("linkChat").maxMessagesPerConversation))
+      const message = (await this.#getMessagesUnlocked(peer, Number.MAX_SAFE_INTEGER))
         .find(m => m.direction === "outgoing" && m.cloudId === cloudId);
       if (!message || message.delivery === "read" || message.delivery === delivery) return message ? structuredClone(message) : undefined;
       const updated: LinkMessage = { ...message, delivery, deliveryError: "" };
-      const ephemeral = this.#ephemeralMessages.get(peer);
-      if (ephemeral?.some(m => m.id === message.id)) this.#ephemeralMessages.set(peer, ephemeral.map(m => m.id === message.id ? updated : m));
-      else await this.repository.addMessage(updated);
+      await this.#replaceRetainedMessage(updated);
       return structuredClone(updated);
     });
   }
-  async reconcileCloudRead(peer: number, sequence: number): Promise<void> {
+  async reconcileCloudRead(peer: number, sequence: number, generation?: string): Promise<void> {
     await this.#enqueuePeerMutation(peer, async () => {
-      const messages = await this.#getMessagesUnlocked(peer, this.settings.getSection("linkChat").maxMessagesPerConversation);
-      const newlyRead = messages.filter(m => m.direction === "incoming" && !m.read && m.cloudSequence && m.cloudSequence <= sequence);
-      for (const message of newlyRead) if (!this.#ephemeralMessages.get(peer)?.some(m => m.id === message.id)) await this.repository.addMessage({ ...message, read: true });
-      const ephemeral = this.#ephemeralMessages.get(peer);
-      if (ephemeral) for (const message of ephemeral) if (message.cloudSequence && message.cloudSequence <= sequence) message.read = true;
+      const messages = await this.#getMessagesUnlocked(peer, Number.MAX_SAFE_INTEGER);
+      const newlyRead = messages.filter(m => m.direction === "incoming" && !m.read && (generation === undefined || m.cloudGeneration === generation) && m.cloudSequence && m.cloudSequence <= sequence);
+      for (const message of newlyRead) await this.#replaceRetainedMessage({ ...message, read: true });
       const conversation = await this.#getVisibleConversationUnlocked(peer);
       if (conversation && newlyRead.length) await this.#saveConversation({ ...conversation, unread: Math.max(0, conversation.unread - newlyRead.length) });
     });
@@ -190,7 +299,7 @@ export class ChatService {
   async getConversation(peerNumber: number): Promise<ConversationMeta | undefined> {
     return this.#enqueuePeerMutation(peerNumber, async () => {
       const conversation = await this.#getStoredConversationUnlocked(peerNumber);
-      return conversation?.hiddenAt === undefined ? conversation : undefined;
+      return conversation && conversation.hiddenAt === undefined ? this.#presentConversation(conversation) : undefined;
     });
   }
 
@@ -199,10 +308,10 @@ export class ChatService {
     if (ephemeral) {
       const canonical = canonicalizeConversationPreview(ephemeral);
       if (canonical !== ephemeral) this.#ephemeralConversations.set(peerNumber, canonical);
-      return this.#withoutReconnectPreview(structuredClone(canonical));
+      return this.#withoutHiddenSelfPreview(structuredClone(canonical));
     }
     const persisted = await this.repository.getConversation(peerNumber);
-    return persisted ? this.#withoutReconnectPreview(await this.#repairConversationPreviewUnlocked(persisted)) : undefined;
+    return persisted ? this.#withoutHiddenSelfPreview(await this.#repairConversationPreviewUnlocked(persisted)) : undefined;
   }
 
   async listConversations(): Promise<ConversationMeta[]> {
@@ -231,45 +340,62 @@ export class ChatService {
       }
       merged.set(canonical.peerNumber, structuredClone(canonical));
     }
-    return (await Promise.all([...merged.values()].map(conversation => this.#withoutReconnectPreview(conversation))))
+    return (await Promise.all([...merged.values()].map(async conversation => this.#presentConversation(await this.#withoutHiddenSelfPreview(conversation)))))
       .filter((conversation) => conversation.hiddenAt === undefined)
       .sort(sortConversations);
   }
 
   async getMessages(peerNumber: number, limit = 300): Promise<LinkMessage[]> {
-    return this.#enqueuePeerMutation(peerNumber, () =>
-      this.#getMessagesUnlocked(peerNumber, limit),
-    );
+    return this.#enqueuePeerMutation(peerNumber, async () => {
+      if (!this.presentation?.hasPeer(peerNumber)) return this.#getMessagesUnlocked(peerNumber, limit);
+      const messages = await this.#getMessagesUnlocked(peerNumber, Number.MAX_SAFE_INTEGER);
+      return this.presentMessages(messages).slice(-limit);
+    });
+  }
+  presentMessages(messages: LinkMessage[]): LinkMessage[] {
+    const presentation = this.presentation;
+    return presentation ? messages.flatMap(message => presentation.project(message) ?? []) : messages;
+  }
+  async #presentConversation(conversation: ConversationMeta): Promise<ConversationMeta> {
+    if (!this.presentation?.hasPeer(conversation.peerNumber)) return conversation;
+    const raw = await this.#getMessagesUnlocked(conversation.peerNumber, Number.MAX_SAFE_INTEGER);
+    if (raw.at(-1)?.sentAt !== conversation.lastMessageAt) return conversation;
+    const last = this.presentMessages(raw).at(-1);
+    return { ...conversation, lastMessage: last?.content || (last?.cloudAudioIds?.length ? "Audio" : last?.cloudMediaIds?.length ? "Image" : ""),
+      lastMessageAt: last?.sentAt ?? 0, lastDirection: last?.direction ?? "incoming" };
   }
 
   async #getMessagesUnlocked(peerNumber: number, limit = 300): Promise<LinkMessage[]> {
     const persisted = await this.repository.getMessages(peerNumber, peerNumber === this.ownMemberNumber
       ? Math.max(limit, this.settings.getSection("linkChat").maxMessagesPerConversation) : limit);
     const ephemeral = this.#ephemeralMessages.get(peerNumber) ?? [];
+    const echoes = peerNumber === this.ownMemberNumber ? legacySelfBeepEchoes([...persisted, ...ephemeral], this.ownMemberNumber) : undefined;
+    // Keep the envelope on a hidden legacy echo so later reads can still pair it to the send.
     const canonicalPersisted = await Promise.all(
-      persisted.map((message) => this.#repairStoredMessage(message)),
+      persisted.filter(message => !echoes?.has(message)).map((message) => this.#repairStoredMessage(message)),
     );
-    const canonicalEphemeral = ephemeral.map(canonicalizeStoredMessage);
+    const canonicalEphemeral = ephemeral.map(message => echoes?.has(message) ? message : canonicalizeStoredMessage(message));
     if (canonicalEphemeral.some((message, index) => message !== ephemeral[index])) {
       this.#ephemeralMessages.set(peerNumber, canonicalEphemeral);
     }
-    return [...canonicalPersisted, ...canonicalEphemeral]
+    const merged = new Map([...canonicalPersisted, ...canonicalEphemeral.filter(message => !echoes?.has(message)), ...(this.#cloudHistory.get(peerNumber)?.values() ?? [])].map(m => [m.id, m]));
+    return [...merged.values()]
       .filter(message => !isReconnectNotice(message, this.ownMemberNumber))
       .sort((left, right) => left.sentAt - right.sentAt)
       .slice(-limit);
   }
 
-  /** Hide legacy notices without deleting portable history or other self-messages. */
-  async #withoutReconnectPreview(conversation: ConversationMeta): Promise<ConversationMeta> {
+  /** Derive the visible self-chat preview without deleting raw history. */
+  async #withoutHiddenSelfPreview(conversation: ConversationMeta): Promise<ConversationMeta> {
     if (conversation.peerNumber !== this.ownMemberNumber) return conversation;
     const records = [
       ...await this.repository.getMessages(conversation.peerNumber, this.settings.getSection("linkChat").maxMessagesPerConversation),
       ...(this.#ephemeralMessages.get(conversation.peerNumber) ?? []),
     ];
-    const hidden = records.filter(message => isReconnectNotice(message, this.ownMemberNumber));
-    if (!hidden.length) return conversation;
-    const visible = records.filter(message => !isReconnectNotice(message, this.ownMemberNumber))
+    const echoes = legacySelfBeepEchoes(records, this.ownMemberNumber);
+    const visible = records.filter(message => !echoes.has(message) && !isReconnectNotice(message, this.ownMemberNumber))
       .sort((left, right) => left.sentAt - right.sentAt);
+    if (visible.length === records.length) return conversation;
     const newest = visible.at(-1);
     return { ...conversation,
       lastMessage: newest ? cleanBeepMessageContent(newest.content) : "",
@@ -315,6 +441,11 @@ export class ChatService {
       .slice(0, Math.max(1, Math.min(1_000, limit)));
   }
 
+  #notifyCloudRead(peer: number, sequence: number, generation?: string): void {
+    if (generation === undefined) this.onCloudRead?.(peer, sequence);
+    else this.onCloudRead?.(peer, sequence, generation);
+  }
+
   async markRead(peerNumber: number): Promise<void> {
     await this.#enqueuePeerMutation(peerNumber, () => this.#markReadUnlocked(peerNumber));
   }
@@ -326,12 +457,14 @@ export class ChatService {
     let sequence = 0;
     for (const message of messages) {
       if (message.direction !== "incoming") continue;
-      sequence = Math.max(sequence, message.cloudSequence ?? 0);
+      if (this.cloudReadGeneration === undefined || message.cloudGeneration === this.cloudReadGeneration)
+        sequence = Math.max(sequence, message.cloudSequence ?? 0);
       if (!message.read && this.settings.getSection("linkChat").saveHistory) await this.repository.addMessage({ ...message, read: true });
     }
     for (const message of this.#ephemeralMessages.get(peerNumber) ?? []) message.read = true;
+    for (const message of this.#cloudHistory.get(peerNumber)?.values() ?? []) if (message.direction === "incoming") message.read = true;
     if (conversation.unread) await this.#saveConversation({ ...conversation, unread: 0 });
-    if (sequence) this.onCloudRead?.(peerNumber, sequence);
+    if (sequence) this.#notifyCloudRead(peerNumber, sequence, this.cloudReadGeneration);
   }
 
   async markUnread(peerNumber: number): Promise<void> {
@@ -376,11 +509,14 @@ export class ChatService {
   }
 
   async removeConversation(peerNumber: number): Promise<void> {
+    this.#peerHistoryGeneration.set(peerNumber, (this.#peerHistoryGeneration.get(peerNumber) ?? 0) + 1);
     await this.#enqueuePeerMutation(peerNumber, async () => {
       const previous = await this.#getStoredConversationUnlocked(peerNumber);
       this.#ephemeralMessages.delete(peerNumber);
+      this.#cloudHistory.delete(peerNumber);
       this.#ephemeralConversations.delete(peerNumber);
       await this.repository.deleteConversation(peerNumber);
+      this.presentation?.forget(row => row.peer === peerNumber);
       if (!previous) return;
       await this.#saveConversation({
         peerNumber,
@@ -443,6 +579,8 @@ export class ChatService {
     const cutoff = Date.now() - config.retentionDays * DAY_MS;
     return this.#enqueueGlobalMutation(async () => {
       const removed = await this.repository.deleteMessagesOlderThan(cutoff);
+      // Dropped text obeys device retention. Content-free deletion records still hide the same Cloud archive rows.
+      this.presentation?.forget(row => row.at < cutoff && row.text !== null);
       for (const conversation of await this.repository.listConversations()) {
         if (conversation.lastMessageAt >= cutoff) continue;
         const messages = await this.repository.getMessages(
@@ -474,13 +612,17 @@ export class ChatService {
   }
 
   async clearHistory(): Promise<boolean> {
+    this.#historyGeneration++;
     return this.#enqueueGlobalMutation(async () => {
       try {
-        return this.repository.clearAllDurably
+        const durable = this.repository.clearAllDurably
           ? await this.repository.clearAllDurably()
           : await this.repository.clearAll().then(() => true);
+        if (durable) this.presentation?.clear();
+        return durable;
       } finally {
         this.#ephemeralMessages.clear();
+        this.#cloudHistory.clear();
         this.#ephemeralConversations.clear();
       }
     });

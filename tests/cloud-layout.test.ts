@@ -87,7 +87,7 @@ it.each([320,390,844,1440].flatMap(width=>['comfortable','compact','super-compac
       expect(css('.kl-cloud').overflow).toBe('hidden');expect(css('.kl-cloud').padding).toBe('0px');
       expect(parseFloat(css('.kl-group-thread').minHeight)).toBe(0);expect(css('.kl-group-history').overflow).toBe('auto');
       expect(css('.kl-group-composer').position).toBe('static');expect(css('.kl-group-composer').flexShrink).toBe('0');
-      expect(css('.kl-group-input').minHeight).toBe('44px');expect(css('.kl-group-message-text').overflowWrap).toBe('anywhere');
+      expect(css('.kl-group-input').minHeight).toBe('58px');expect(css('.kl-group-message-text').overflowWrap).toBe('anywhere');
       expect(css('[data-own="false"]').alignSelf).toBe('flex-start');expect(css('[data-own="true"]').alignSelf).toBe('flex-end');
       expect(css('.kl-group-management').display).toBe('none');
       if(width<=720){expect(css('.kl-group-settings-button').minHeight).toBe('44px');expect(css('.kl-group-avatar-stack').display).toBe('flex');}

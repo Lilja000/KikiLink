@@ -66,21 +66,44 @@ export class FeedPollView {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #snapshot = "";
   #destroyed = false;
-  constructor(readonly ui: SocialUI, poll: CloudPoll, readonly vote: (ids: number[]) => Promise<void>) {
+  constructor(readonly ui: SocialUI, poll: CloudPoll, readonly vote: (ids: number[]) => Promise<void>, private readonly platform = false,
+    private readonly closePoll?: (anchor: HTMLButtonElement) => void, private readOnly = false) {
     this.#poll = poll; this.#selected = new Set(poll.myVotes); this.#render();
   }
   destroy(): void { this.#destroyed = true; clearTimeout(this.#timer); }
-  update(poll: CloudPoll): void {
+  #voterSummary(poll: CloudPoll): string {
+    const count = `${poll.totalVoters} ${poll.totalVoters === 1 ? "voter" : "voters"}`;
+    const mode = poll.multiple ? "Multiple answers" : this.platform ? "Single answer" : "";
+    return mode ? `${count} · ${mode}` : count;
+  }
+  #deadline(closed: boolean): HTMLElement {
+    const at = this.#poll.closesAt;
+    return bindClockTitle(element("time", { dateTime: new Date(at).toISOString(),
+      text: closed ? "Closed" : "Ends " + new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) }), at);
+  }
+  #scheduleClose(): void {
+    clearTimeout(this.#timer);
+    this.#timer = setTimeout(() => { this.#snapshot = ""; this.#render(); },
+      Math.min(2_147_483_647, Math.max(1, this.#poll.closesAt - Date.now() + 1)));
+  }
+  update(poll: CloudPoll, readOnly = this.readOnly): void {
     if (this.#destroyed) return;
-    const changed = JSON.stringify(poll) !== JSON.stringify(this.#poll);
+    const changed = this.readOnly !== readOnly || JSON.stringify(poll) !== JSON.stringify(this.#poll);
+    this.readOnly = readOnly;
     if (!changed) return;
     const previousVotes = JSON.stringify(this.#poll.myVotes);
     const choicesUnchanged = JSON.stringify(this.#poll.options.map(({ id, text }) => [id, text])) === JSON.stringify(poll.options.map(({ id, text }) => [id, text]));
+    const sameForm = this.#poll.question === poll.question && this.#poll.multiple === poll.multiple && choicesUnchanged;
+    const deadlineChanged = this.#poll.closesAt !== poll.closesAt;
     this.#poll = poll;
     if (JSON.stringify(poll.myVotes) !== previousVotes) { this.#selected = new Set(poll.myVotes); this.#editing = false; }
-    if (!this.#busy && !poll.closed && poll.closesAt > Date.now() && !this.#results && (!poll.myVotes.length || this.#editing) && choicesUnchanged && JSON.stringify(poll.myVotes) === previousVotes && this.element.querySelector("input")) {
+    if (!this.#busy && !poll.closed && poll.closesAt > Date.now() && !this.#results && (!poll.myVotes.length || this.#editing) && sameForm && JSON.stringify(poll.myVotes) === previousVotes && this.element.querySelector("input")) {
       const meta = this.element.querySelector(".kl-feed-poll-meta > span");
-      if (meta) meta.textContent = `${poll.totalVoters} ${poll.totalVoters === 1 ? "voter" : "voters"}${poll.multiple ? " · Multiple answers" : ""}`;
+      if (meta) meta.textContent = this.#voterSummary(poll);
+      if (deadlineChanged) {
+        this.element.querySelector(".kl-feed-poll-meta > time")?.replaceWith(this.#deadline(false));
+        this.#scheduleClose();
+      }
       this.#snapshot = ""; return;
     }
     if (!this.#busy) this.#render();
@@ -89,14 +112,14 @@ export class FeedPollView {
     if (this.#destroyed) return;
     clearTimeout(this.#timer);
     const poll = this.#poll, closed = poll.closed || poll.closesAt <= Date.now();
-    const results = closed || this.#results || (poll.myVotes.length > 0 && !this.#editing);
-    const snapshot = JSON.stringify([poll, [...this.#selected], this.#busy, results, this.#editing, closed]);
+    const results = closed || this.readOnly || this.#results || (poll.myVotes.length > 0 && !this.#editing);
+    const snapshot = JSON.stringify([poll, [...this.#selected], this.#busy, results, this.#editing, closed, this.readOnly]);
     if (snapshot === this.#snapshot) return;
     this.#snapshot = snapshot;
     const active = (this.element.getRootNode() as Document | ShadowRoot).activeElement;
     const ownedFocus = active instanceof HTMLElement && this.element.contains(active);
     const activeLabel = ownedFocus ? active.getAttribute("aria-label") : undefined;
-    const question = element("h4", { text: poll.question });
+    const question = element(this.platform ? "h3" : "h4", { text: poll.question });
     const choices = element("div", { className: "kl-feed-poll-options", role: "group", ariaLabel: poll.multiple ? "Choose one or more answers" : "Choose one answer" });
     const vote = this.ui.button(poll.myVotes.length ? "Update vote" : "Vote", async () => {
       if (this.#busy || !this.#selected.size || this.#poll.closesAt <= Date.now()) return;
@@ -112,7 +135,8 @@ export class FeedPollView {
         row.dataset.mine = String(poll.myVotes.includes(option.id));
         const bar = element("span", { className: "kl-feed-poll-bar", ariaHidden: "true" });
         bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
-        row.append(bar, element("span", { className: "kl-feed-poll-option-text", text: `${poll.myVotes.includes(option.id) ? "✓ " : ""}${option.text}` }),
+        const text = !poll.myVotes.includes(option.id) ? option.text : this.platform ? `${option.text} · Your vote` : `✓ ${option.text}`;
+        row.append(bar, element("span", { className: "kl-feed-poll-option-text", text }),
           element("span", { className: "kl-feed-poll-percent", text: `${percent}%`, title: `${option.votes} votes` }));
         choices.append(row);
       } else {
@@ -128,7 +152,7 @@ export class FeedPollView {
       }
     }
     const actions = element("div", { className: "kl-feed-poll-actions" });
-    if (!closed) {
+    if (!closed && !this.readOnly) {
       if (!results) actions.append(vote);
       if (results && poll.myVotes.length) actions.append(this.ui.button("Change vote", () => { this.#editing = true; this.#results = false; this.#render(); }, "edit"));
       else actions.append(this.ui.button(results ? "Back to voting" : "View results", () => { this.#results = !results; this.#render(); }));
@@ -138,10 +162,15 @@ export class FeedPollView {
         try { await this.vote([]); this.#selected.clear(); this.#editing = false; }
         finally { this.#busy = false; this.#snapshot = ""; this.#render(); }
       }, undefined, "kl-social-button", false));
+      if (this.closePoll) {
+        const close = this.ui.button("Close poll…", () => this.closePoll?.(close), undefined, "kl-social-button", false);
+        actions.append(close);
+      }
       for (const button of actions.querySelectorAll("button")) if (this.#busy) button.disabled = true;
+    } else if (closed && this.platform) {
+      actions.append(element("span", { className: "kl-feed-poll-closed", text: "Voting closed" }));
     }
-    const end = bindClockTitle(element("time", { dateTime: new Date(poll.closesAt).toISOString(), text: closed ? "Closed" : "Ends " + new Date(poll.closesAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) }), poll.closesAt);
-    const meta = element("div", { className: "kl-feed-poll-meta" }, element("span", { text: `${poll.totalVoters} ${poll.totalVoters === 1 ? "voter" : "voters"}${poll.multiple ? " · Multiple answers" : ""}` }), end);
+    const meta = element("div", { className: "kl-feed-poll-meta" }, element("span", { text: this.#voterSummary(poll) }), this.#deadline(closed));
     this.element.replaceChildren(question, choices, meta, actions);
     if (ownedFocus) {
       const target = [...this.element.querySelectorAll<HTMLElement>("button,input")].find(control => control.getAttribute("aria-label") === activeLabel && !(control as HTMLButtonElement).disabled)
@@ -150,6 +179,6 @@ export class FeedPollView {
       else { question.tabIndex = -1; question.focus({ preventScroll: true }); }
     }
     this.element.setAttribute("aria-busy", String(this.#busy));
-    if (!closed) this.#timer = setTimeout(() => { this.#snapshot = ""; this.#render(); }, Math.min(2_147_483_647, Math.max(1, poll.closesAt - Date.now() + 1)));
+    if (!closed) this.#scheduleClose();
   }
 }

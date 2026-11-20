@@ -1,10 +1,11 @@
 import { KikiLinkApp } from "./core/kikilink";
-import { KIKILINK_DEV_TEST, KIKILINK_DISTRIBUTION } from "./core/distribution";
+import { KIKILINK_DEV_TEST, KIKILINK_DISTRIBUTION, KIKILINK_PLATFORM_PREVIEW } from "./core/distribution";
 import type { KikiLinkPublicApi } from "./core/types";
 import { compareKikiLinkVersions } from "./core/version-update-checker";
 
 async function bootstrap(): Promise<void> {
   let previous = window.KikiLink;
+  if (blockMixedPlatformRuntime(previous)) return;
   if ((existingRuntimePriority(previous) ?? 0) > 0) return;
   while (previous) {
     try {
@@ -18,9 +19,11 @@ async function bootstrap(): Promise<void> {
     // loader is strictly preferable (newer release, or equal standalone replacing FUSAM).
     // If replacing it, await its own teardown as well so no listeners/hooks survive the handoff.
     previous = window.KikiLink;
+    if (blockMixedPlatformRuntime(previous)) return;
     if ((existingRuntimePriority(previous) ?? 0) >= 0) return;
   }
 
+  document.getElementById("kikilink-installation-conflict")?.remove();
   document.documentElement.dataset.kikilinkPageRealm = __KIKILINK_VERSION__;
   const app = new KikiLinkApp(__KIKILINK_VERSION__);
   const api = app.publicApi();
@@ -31,6 +34,38 @@ async function bootstrap(): Promise<void> {
   } catch (error) {
     console.error("[KikiLink] Startup failed", error);
   }
+}
+
+/** A preview must never silently replace a user's active stable installation. */
+function blockMixedPlatformRuntime(previous: KikiLinkPublicApi | undefined): boolean {
+  if (!previous) return false;
+  let conflict = false;
+  try {
+    const runtime = previous.getRuntimeInfo?.();
+    conflict = runtime?.active !== false &&
+      Boolean(runtime?.platformPreview) !== KIKILINK_PLATFORM_PREVIEW;
+  } catch {
+    // An unknown old loader is not evidence that it is safe to replace account services.
+    conflict = KIKILINK_PLATFORM_PREVIEW;
+  }
+  if (!conflict) return false;
+  const message = "KikiLink test and stable installations cannot run together. Disable the other KikiLink installation and reload the game.";
+  console.warn(`[KikiLink] ${message}`);
+  if (!document.getElementById("kikilink-installation-conflict")) {
+    const notice = document.createElement("aside");
+    notice.id = "kikilink-installation-conflict";
+    notice.setAttribute("role", "alert");
+    notice.style.cssText = "position:fixed;right:12px;top:12px;z-index:2147483647;box-sizing:border-box;width:360px;max-width:calc(100vw - 24px);padding:14px;border:1px solid #d6a24b;border-radius:10px;background:#111113;color:#f5eee3;font:14px/1.5 system-ui,sans-serif;box-shadow:0 8px 28px #0008";
+    notice.append(document.createTextNode(message));
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss";
+    dismiss.style.cssText = "display:block;margin-top:8px;min-height:36px;padding:4px 12px;border:1px solid #746877;border-radius:6px;background:#222024;color:inherit;font:inherit;cursor:pointer";
+    dismiss.addEventListener("click", () => notice.remove());
+    notice.append(dismiss);
+    (document.body ?? document.documentElement).append(notice);
+  }
+  return true;
 }
 
 /** Positive retains the existing runtime, negative favors this loader, zero permits a reload. */

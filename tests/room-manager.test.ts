@@ -15,6 +15,20 @@ function change(root: HTMLElement, label: string, value: string, event = "change
 function click(root: HTMLElement, text: string): void { [...root.querySelectorAll("button")].find(button => button.textContent === text)!.click(); }
 
 describe("Room Manager drafts and permissions", () => {
+  it.each(["name", "space"])("ignores a late apply after changing room %s", async key => {
+    let finish!: () => void;
+    const apply = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const view = new RoomManager(apply, () => 101); document.body.append(view.root); view.update(snapshot());
+    change(view.root, "Description", "Old room draft", "input"); click(view.root, "Apply room settings");
+    const next = snapshot(); if (key === "name") next.roomName = next.settings.name = "Other"; else next.settings.space = "M";
+    view.update(next);
+    expect(view.root.querySelector<HTMLFieldSetElement>("fieldset")!.disabled).toBe(false);
+    change(view.root, "Description", "New room draft", "input"); finish(); await Promise.resolve(); await Promise.resolve();
+    view.update(next, true);
+    expect(control(view.root, "Description").value).toBe("New room draft");
+    expect(view.root.textContent).not.toContain("Room settings applied.");
+    view.destroy();
+  });
   it("loads saved map settings, allows editing / member selection, and applies one reviewed draft", async () => {
     const apply = vi.fn(async (_room: RoomPresetData) => {}), view = new RoomManager(apply, () => 101);
     document.body.append(view.root); document.body.append(view.root); view.update(snapshot());

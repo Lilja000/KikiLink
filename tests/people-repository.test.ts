@@ -19,6 +19,19 @@ function person(memberNumber: number, overrides: Partial<PersonRecord> = {}): Pe
 }
 
 describe("PeopleRepository", () => {
+  it("retains the prior notebook when a durable update cannot be read back", () => {
+    const storage = new MemoryKeyValueStorage();
+    const repository = new PeopleRepository(storage);
+    repository.put(person(22, { note: "Prior" }));
+    const write = storage.setItem.bind(storage);
+    storage.setItem = () => {};
+    expect(() => repository.put(person(22, { note: "Unsaved" }), true)).toThrow();
+    expect(repository.get(22)?.note).toBe("Prior");
+    storage.setItem = write;
+    repository.put(person(22, { note: "Saved" }), true);
+    expect(new PeopleRepository(storage).get(22)?.note).toBe("Saved");
+  });
+
   it("persists and sanitizes private player records", () => {
     const storage = new MemoryKeyValueStorage();
     const first = new PeopleRepository(storage);

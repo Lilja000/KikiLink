@@ -34,7 +34,7 @@ export class SocialUI {
   };
   readonly #menuKeyboard = () => { this.#pressedMenu = undefined; };
   readonly #menuPointerCancel = () => { this.#pressedMenu = undefined; };
-  readonly #states = new WeakMap<HTMLElement, { profile: Author; avatar: HTMLButtonElement; name: HTMLButtonElement; openMembers?: () => void }>();
+  readonly #states = new WeakMap<HTMLElement, { profile: Author; avatar: HTMLElement; avatarButton: HTMLElement; name: HTMLElement; openMembers?: () => void }>();
   readonly #unsubscribe: () => void;
   constructor(readonly options: SocialUIOptions) {
     document.addEventListener("pointerdown", this.#menuPointerDown, true);
@@ -68,19 +68,26 @@ export class SocialUI {
     button.addEventListener("click", () => void this.options.run(action, manageBusy ? button : undefined));
     return button;
   }
-  author(profile: Author, at?: number, openMembers?: () => void, feedAuthor = false): HTMLElement {
+  author(profile: Author, at?: number, interaction?: (() => void) | "label", feedAuthor = false, messageAvatar = false): HTMLElement {
+    const openMembers = typeof interaction === "function" ? interaction : undefined;
     const open = () => { if (openMembers) openMembers(); else if (!this.#blocked(profile.memberNumber)) this.options.openProfile(profile.memberNumber, this.#states.get(root)?.profile.displayName ?? profile.displayName); };
-    const avatar = this.button(openMembers ? "Show group members" : `Open ${profile.displayName}'s profile`, open, undefined, "kl-social-avatar kl-avatar");
-    const name = this.button(profile.displayName, open, undefined, "kl-social-name");
+    const avatarButton = interaction === "label" ? element("span", {className:"kl-social-avatar kl-avatar", ariaHidden:"true"}) :
+      this.button(openMembers ? "Show group members" : `Open ${profile.displayName}'s profile`, open, undefined, messageAvatar ? "kl-social-avatar-button" : "kl-social-avatar kl-avatar");
+    // Message hit areas can be larger than the portrait without stretching its
+    // frame or replacing the stable image node during profile refreshes.
+    const avatar = messageAvatar ? element("span", { className: "kl-social-avatar kl-avatar", ariaHidden: "true" }) : avatarButton;
+    if (messageAvatar) avatarButton.replaceChildren(avatar);
+    const name = interaction === "label" ? element("strong", {className:"kl-social-name"}, element("span")) :
+      this.button(profile.displayName, open, undefined, "kl-social-name");
     const nameRow = element("div", { className: "kl-social-author-name" }, name);
     if (feedAuthor && profile.memberNumber === 72385)
       nameRow.append(element("span", { className: "kl-feed-administrator", title: "Administrator", ariaLabel: "Administrator", role: "img" }, kikiIcon("shield")));
     const copy = element("div", { className: "kl-social-author-copy" }, nameRow,
       element("div", { className: "kl-social-meta" }, element("span", { text: `#${profile.memberNumber}` }), ...(at === undefined ? [] : [timeLabel(at)])));
-    const root = element("div", { className: "kl-social-author" }, avatar, copy);
+    const root = element("div", { className: "kl-social-author" }, avatarButton, copy);
     root.dataset.cloudMember = String(profile.memberNumber);
     if (at !== undefined) root.dataset.at = String(at);
-    this.#states.set(root, { profile, avatar, name, ...(openMembers ? { openMembers } : {}) });
+    this.#states.set(root, { profile, avatar, avatarButton, name, ...(openMembers ? { openMembers } : {}) });
     this.#authors.add(new WeakRef(root));
     while (this.#authors.size > 1000) this.#authors.delete(this.#authors.values().next().value!);
     this.updateAuthor(root, profile);
@@ -89,7 +96,7 @@ export class SocialUI {
   updateAuthor(root: HTMLElement, profile: Author, loading = false): void {
     const state = this.#states.get(root); if (!state) return;
     state.profile = profile;
-    const { avatar, name } = state;
+    const { avatar, avatarButton, name } = state;
     root.hidden = this.#blocked(profile.memberNumber);
     root.setAttribute("aria-busy", String(loading));
     name.querySelector("span")!.textContent = loading ? "\u00a0" : profile.displayName;
@@ -97,8 +104,10 @@ export class SocialUI {
     name.dataset.creator = String(profile.memberNumber === 72385);
     name.title = loading ? "Loading profile" : profile.displayName;
     name.setAttribute("aria-label", name.title);
-    avatar.title = state.openMembers ? "Show group members" : `Open ${profile.displayName}'s profile`;
-    avatar.setAttribute("aria-label", avatar.title);
+    if (avatarButton instanceof HTMLButtonElement) {
+      avatarButton.title = state.openMembers ? "Show group members" : `Open ${profile.displayName}'s profile`;
+      avatarButton.setAttribute("aria-label", avatarButton.title);
+    }
     applyAvatarAppearance(avatar, profile);
     const key = loading ? "loading" : profile.avatarId || `initials:${profile.displayName}`;
     if (avatar.dataset.content === key) return;
@@ -140,9 +149,9 @@ export class SocialUI {
       if (Number(root.dataset.cloudMember) === profile.memberNumber) this.updateAuthor(root, profile);
     }
   }
-  member(member: number, at?: number, openMembers?: () => void, feedAuthor = false): HTMLElement {
+  member(member: number, at?: number, interaction?: (() => void) | "label", feedAuthor = false, messageAvatar = false): HTMLElement {
     const cached = this.options.client.peekProfile?.(member);
-    const root = this.author(cached ?? this.#default(member), at, openMembers, feedAuthor);
+    const root = this.author(cached ?? this.#default(member), at, interaction, feedAuthor, messageAvatar);
     if (!cached) this.updateAuthor(root, this.#default(member), true);
     if (!this.#blocked(member)) void this.options.client.profile(member).then(p => {
       if (!this.options.client.connected || this.#blocked(member)) return;

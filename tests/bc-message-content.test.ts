@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanBeepMessageContent } from "../src/bc/message-content";
+import { cleanBeepMessageContent, parseBeepMessageContent } from "../src/bc/message-content";
 
 describe("cleanBeepMessageContent", () => {
   it("removes the trailing display metadata reported by compatible Beep senders", () => {
@@ -16,6 +16,14 @@ describe("cleanBeepMessageContent", () => {
         'Hello\uf124  {"messageColor":"#AaBbCc","messageType":"Message"}  ',
       ),
     ).toBe("Hello");
+  });
+
+  it("recognizes the WCE message ID without stripping an authored lookalike", () => {
+    const trailer = '\uf124{"messageColor":"#B72626","messageType":"Message","messageId":"ilr2gxtaqkh"}';
+    expect(parseBeepMessageContent(`Test\n\n${trailer}\u2063LikoMAT:en\u2063`))
+      .toEqual({ content: "Test", messageId: "ilr2gxtaqkh" });
+    const invalid = `Test${trailer.replace("ilr2gxtaqkh", "a file name")}`;
+    expect(cleanBeepMessageContent(invalid)).toBe(invalid);
   });
 
   it("removes composed WCE metadata and the exact trailing Liko-MAT language flag", () => {

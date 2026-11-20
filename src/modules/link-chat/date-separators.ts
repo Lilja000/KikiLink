@@ -4,7 +4,14 @@ export function localDay(timestamp: number): string {
   return Number.isFinite(d.getTime()) ? `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}` : "";
 }
 
-export function syncDateSeparators(container: HTMLElement, selector = "[data-message-time]"): void {
+const fullDate = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "long", day: "numeric" });
+const compactDate = new Intl.DateTimeFormat("en-GB", { month: "short", day: "numeric" });
+
+export function syncDateSeparators(
+  container: HTMLElement,
+  selector = "[data-message-time]",
+  display: "full" | "compact" = "full",
+): void {
   for (const separator of container.querySelectorAll(":scope > .kl-date-separator")) separator.remove();
   let previous = "";
   // Bounded to the displayed page; this never traverses the stored history.
@@ -16,8 +23,9 @@ export function syncDateSeparators(container: HTMLElement, selector = "[data-mes
     const separator = document.createElement("div");
     separator.className = "kl-date-separator"; separator.setAttribute("role", "separator");
     const date = document.createElement("time"); date.dateTime = new Date(timestamp).toISOString();
-    date.textContent = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "long", day: "numeric" }).format(timestamp);
-    separator.setAttribute("aria-label", date.textContent); separator.append(date);
+    date.title = fullDate.format(timestamp);
+    date.textContent = display === "compact" ? compactDate.format(timestamp) : date.title;
+    separator.setAttribute("aria-label", date.title); separator.append(date);
     row.before(separator);
   }
 }

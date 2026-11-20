@@ -12,6 +12,19 @@ export const PREFERENCE_LEVELS = [
 export type PreferenceLevel = (typeof PREFERENCE_LEVELS)[number];
 export type PreferenceMode = "private" | "score" | "friends" | "public";
 
+export const PREFERENCE_MODE_LABELS: Record<PreferenceMode, string> = {
+  private: "Private",
+  score: "Compatibility only",
+  friends: "Friends only",
+  public: "Public in KikiLink",
+};
+export const PREFERENCE_MODE_HELP: Record<PreferenceMode, string> = {
+  private: "Only you can read your ratings. Compatibility is turned off.",
+  score: "Share a compatibility summary with people who also opt in. Individual ratings stay private.",
+  friends: "Share ratings and compatibility with confirmed Cloud friends who have mutual permission. A native BC friend list alone does not grant access.",
+  public: "Signed-in KikiLink users can read your ratings. Compatibility still requires both people to opt in. Cloud blocks still apply.",
+};
+
 /** Only the quick Like/Dislike choices toggle off; other levels stay explicit. */
 export function preferenceLevelAfterTap(current: PreferenceLevel | undefined, selected: PreferenceLevel): PreferenceLevel | undefined {
   return current === selected && (selected === "like" || selected === "dislike") ? undefined : selected;

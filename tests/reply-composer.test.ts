@@ -31,6 +31,28 @@ describe.each([1000, 4000])("shared replies with %i-character transport", limit 
     input.disabled = false; composer.element.querySelector<HTMLButtonElement>("button")!.click();
     expect(composer.value).toBe(input.value); expect(composer.element.hidden).toBe(true); composer.destroy();
   });
+  it("keeps a read-only draft and quote intact until its source explicitly reloads it", () => {
+    const input = document.createElement("textarea"); input.value = "My saved answer";
+    const composer = new ReplyComposer(input, limit); document.body.append(composer.element, input);
+    composer.replyTo("Seraphine", "The original message");
+    const saved = composer.value, available = input.maxLength;
+    input.focus(); input.setSelectionRange(3, 7); input.readOnly = true;
+    const update = vi.fn(); input.addEventListener("input", update);
+
+    composer.replyTo("Another person", "A different message");
+    composer.cancel();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    composer.element.querySelector<HTMLButtonElement>("button")!.click();
+
+    expect(composer.value).toBe(saved); expect(input.value).toBe("My saved answer");
+    expect(input.maxLength).toBe(available); expect([input.selectionStart, input.selectionEnd]).toEqual([3, 7]);
+    expect(composer.element.hidden).toBe(false); expect(update).not.toHaveBeenCalled();
+    // Source changes and restoration use load(), rather than editable user actions.
+    composer.load("A draft restored by its source");
+    expect(composer.value).toBe("A draft restored by its source");
+    expect(input.readOnly).toBe(true); expect(composer.element.hidden).toBe(true);
+    composer.destroy();
+  });
 });
 it("renders text-only excerpts without source assumptions, warning labels or executable links", () => {
   const text = formatInlineReplyPrefix('<img src=x onerror="bad()">', "https://example.com/ <script>bad()</script>") + "Reply";

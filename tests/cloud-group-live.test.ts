@@ -47,7 +47,7 @@ it('updates availability once per minute and honors disabled presence',async()=>
  expect(client.request).toHaveBeenLastCalledWith('PUT','/v1/presence',{status:'offline'});
 });
 it('automatically publishes all existing public fields without opening an editor, then keeps returning-device Cloud changes',async()=>{
- const {client}=setup(async(method,_path,body)=>method==='GET'?{features:{fullProfile:true}}:{...body as object,memberNumber:101,revision:1});
+ const {client}=setup(async(method,_path,body)=>method==='GET'?{memberNumber:101,features:{fullProfile:true}}:{...body as object,memberNumber:101,revision:1});
  const storage=new MemoryKeyValueStorage(), settings=new SettingsStore(storage).get();
  settings.linkPresence={...settings.linkPresence,enabled:true,bio:'Writer',statusMessage:'Mapping',avatarFrame:'moon',profileStyle:'midnight',profileOutlineColor:'#112233'};
  const value=await syncInitialProfile(client,settings,'Kiki',undefined,storage,()=>true);
@@ -58,7 +58,7 @@ it('automatically publishes all existing public fields without opening an editor
  expect(client.request).toHaveBeenCalledTimes(calls);
 });
 it('never recreates a deleted profile, writes after account teardown, or overwrites a concurrent edit',async()=>{
- const {client}=setup(async(method)=>{if(method==='GET')return {features:{fullProfile:true}};throw new CloudError('revision_conflict',409);});
+ const {client}=setup(async(method)=>{if(method==='GET')return {memberNumber:101,features:{fullProfile:true}};throw new CloudError('revision_conflict',409);});
  const settings=new SettingsStore(new MemoryKeyValueStorage()).get();
  await syncInitialProfile(client,settings,'Kiki',{...profile(101),isDefault:true,autoPublishAllowed:false},undefined,()=>true);expect(client.request).not.toHaveBeenCalled();
  await syncInitialProfile(client,settings,'Kiki',undefined,undefined,()=>false);expect(vi.mocked(client.request).mock.calls.some(c=>c[0]==='PUT')).toBe(false);

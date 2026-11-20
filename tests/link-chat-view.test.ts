@@ -1506,6 +1506,43 @@ describe("LinkChatView", () => {
     expect(shadow.querySelector<HTMLElement>(".kl-panel")?.hidden).toBe(true);
     closeGetConversation.mockRestore();
 
+    const guardedLookup = deferred<ConversationMeta | undefined>();
+    const guardedGetConversation = vi.spyOn(directChats, "getConversation")
+      .mockImplementationOnce(() => guardedLookup.promise);
+    const ensureGuardedConversation = vi.spyOn(directChats, "ensureConversation");
+    let canOpen = true;
+    const pendingGuardedOpen = view.openChat(20, "Reina", true, undefined, {
+      canOpen: () => canOpen,
+      canSelect: () => true,
+    });
+    expect(guardedGetConversation).toHaveBeenCalledWith(20);
+    canOpen = false;
+    guardedLookup.resolve(undefined);
+    await pendingGuardedOpen;
+    expect(ensureGuardedConversation).not.toHaveBeenCalled();
+    expect(shadow.querySelector<HTMLElement>(".kl-panel")?.hidden).toBe(true);
+    guardedGetConversation.mockRestore();
+    ensureGuardedConversation.mockRestore();
+
+    await view.openChat(40, "Solitary Echo");
+    const guardedSelectionLookup = deferred<ConversationMeta>();
+    const ensureGuardedSelection = vi.spyOn(directChats, "ensureConversation")
+      .mockImplementationOnce(originalEnsureConversation)
+      .mockImplementationOnce(() => guardedSelectionLookup.promise);
+    let canSelect = true;
+    const pendingGuardedSelection = view.openChat(20, "Reina", true, undefined, {
+      canOpen: () => true,
+      canSelect: () => canSelect,
+    });
+    await vi.waitFor(() => expect(ensureGuardedSelection).toHaveBeenCalledTimes(2));
+    const guardedConversation = await directChats.getConversation(20);
+    if (!guardedConversation) throw new Error("Missing guarded direct conversation");
+    canSelect = false;
+    guardedSelectionLookup.resolve(guardedConversation);
+    await pendingGuardedSelection;
+    expect(shadow.querySelector(".kl-chat-name")?.textContent).toBe("Solitary Echo");
+    ensureGuardedSelection.mockRestore();
+
     view.destroy();
     presence.stop();
     await groups.destroy();
@@ -3426,10 +3463,9 @@ describe("LinkChatView", () => {
       expect(gradientCard?.style.getPropertyValue("--kl-profile-gradient-primary")).toBe("#8a1538");
       expect(gradientCard?.style.getPropertyValue("--kl-profile-gradient-secondary")).toBe("#2a9d8f");
       const styles = shadow?.querySelector("style")?.textContent ?? "";
-      expect(styles).toContain("--kl-profile-gradient-primary-safe: color-mix(");
-      expect(styles).toContain("var(--kl-profile-gradient-tone) 62%");
+      expect(styles).toContain("--kl-profile-gradient-shade: color-mix(");
       expect(styles).toContain(
-        "var(--kl-profile-gradient-primary-safe),\n    var(--kl-profile-gradient-secondary-safe)",
+        "var(--kl-profile-gradient-angle), var(--kl-profile-gradient-primary), var(--kl-profile-gradient-secondary)",
       );
     });
     explicitProfileRefresh.mockRestore();
