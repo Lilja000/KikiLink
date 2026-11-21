@@ -79,7 +79,6 @@ export const workshopEditorStyles=`
   background: color-mix(in srgb, var(--kl-accent) 10%, var(--kl-surface));
 }
 .kl-workshop-editor-steps li[data-complete] { color: var(--kl-success); }
-.kl-workshop-editor-intro { margin: 0 0 16px; color: var(--kl-muted); font-size: 12px; line-height: 1.6; }
 .kl-workshop-editor-notices:not(:has([role="status"]:not(:empty))) { display: none; }
 .kl-workshop-editor-notices p { margin: 0 0 12px; color: var(--kl-muted); font-size: 11px; line-height: 1.6; }
 .kl-workshop-editor .kl-workshop-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }

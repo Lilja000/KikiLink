@@ -23,7 +23,7 @@ export class PlatformShell {
 
   constructor(private readonly activate: (route: PlatformRoute) => void,
     options?: { openOptions: (anchor: HTMLButtonElement) => void; openConnection: () => void; openProfile?: (anchor: HTMLButtonElement) => void }) {
-    this.brand.addEventListener("click", () => this.activate(visiblePlatformDestinations(this.#state).some(route => route.id === "feed") ? "feed" : "home"));
+    this.brand.addEventListener("click", () => this.activate(visiblePlatformDestinations(this.#state).find(route => route.area === "home")?.id ?? "settings"));
     this.primary.append(this.brand);
     this.options.setAttribute("aria-haspopup", "menu"); this.options.setAttribute("aria-expanded", "false");
     this.options.addEventListener("click", () => options?.openOptions(this.options));

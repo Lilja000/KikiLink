@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../modules/link-chat/avatar-presence";
 import { applyAvatarAppearance } from "../modules/link-chat/appearance-renderer";
 import { element } from "./dom";
 import { kikiIcon, type KikiLinkIconName } from "../modules/link-chat/icons";
@@ -77,6 +78,7 @@ export class SocialUI {
     // frame or replacing the stable image node during profile refreshes.
     const avatar = messageAvatar ? element("span", { className: "kl-social-avatar kl-avatar", ariaHidden: "true" }) : avatarButton;
     if (messageAvatar) avatarButton.replaceChildren(avatar);
+    else markAvatarPresence(avatar, profile.memberNumber);
     const name = interaction === "label" ? element("strong", {className:"kl-social-name"}, element("span")) :
       this.button(profile.displayName, open, undefined, "kl-social-name");
     const nameRow = element("div", { className: "kl-social-author-name" }, name);

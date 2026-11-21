@@ -3,6 +3,8 @@ import { expect, it } from "vitest";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import { effectiveProfileStyle, normalizeAvatarDecoration, PROFILE_CARDS, AVATAR_PRESETS } from "../src/core/profile-appearance";
 import { applyAvatarAppearance, applyProfileAppearance } from "../src/modules/link-chat/appearance-renderer";
+import type { CloudProfileEditor } from "../src/cloud/profile-editor";
+import { ProfileAvatarPicker } from "../src/modules/platform-shell/profile-avatar-picker";
 import { AvatarAppearanceEditor } from "../src/modules/link-chat/avatar-appearance-editor";
 import { serializePresencePacket } from "../src/modules/link-presence/link-presence-service";
 
@@ -84,4 +86,28 @@ it("passes the custom gradient to the profile styles and clears it when switchin
   expect(card.style.getPropertyValue("--kl-profile-gradient-primary")).toBe("");
   expect(card.style.getPropertyValue("--kl-profile-gradient-secondary")).toBe("");
   expect(card.style.getPropertyValue("--kl-profile-gradient-angle")).toBe("");
+});
+
+it("frames each new file before saving and preserves an untouched stored avatar", () => {
+  const editor = { avatarSource: new File(["avatar"], "wide.png", {type:"image/png"}) as CloudProfileEditor["avatarSource"] };
+  const preview = document.createElement("div");
+  const photo = document.createElement("img");
+  photo.src = "blob:local-preview";
+  preview.append(photo);
+  const picker = new ProfileAvatarPicker(editor as CloudProfileEditor, () => picker.update("Me", preview));
+  picker.update("Me", preview);
+  expect(picker.edit).toEqual({kind:"framing", x:50, y:50, zoom:1});
+  expect(picker.framing.querySelector('input[type="range"]')).toBeNull();
+  expect(picker.framing.querySelector("img")?.src).toBe(photo.src);
+  picker.framing.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click();
+  picker.framing.querySelector<HTMLElement>(".kl-profile-avatar-crop")!.dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight"}));
+  expect(picker.edit).toEqual({kind:"framing", x:52, y:50, zoom:1.1});
+  picker.reset();
+  editor.avatarSource = "image";
+  picker.update("Me", preview);
+  expect(picker.edit).toBeUndefined();
+  editor.avatarSource = "link";
+  picker.update("Me", preview);
+  expect(picker.framing.hidden).toBe(true);
+  expect(picker.framing.querySelector("img")?.hasAttribute("src")).toBe(false);
 });

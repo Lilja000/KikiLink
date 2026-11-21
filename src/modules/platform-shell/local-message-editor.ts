@@ -29,7 +29,7 @@ export function openLocalMessageEditor(dialog: ContentDialog, panel: HTMLElement
   const form = element("div", { className: "kl-local-message-editor" }, content, footer, discard);
   let busy = false;
   function update() {
-    hint.textContent = field.value.length + "/2000 · Change the text to enable Save.";
+    hint.textContent = field.value.length + "/2000";
     save.disabled = busy || edit && (field.value.trim() === options.text.trim() || field.value.length > 2000 || !options.attachments && !field.value.trim());
   }
   function dismiss() {

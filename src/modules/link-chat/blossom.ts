@@ -7,7 +7,8 @@ import { blossomImageForMember, blossomPaletteForMember } from "./blossom-identi
 
 const CHARACTER_WIDTH = 500;
 const CHARACTER_HEIGHT = 1_000;
-const BADGE_SIZE = 35;
+// BC draws the overhead friend, ghost and admin icons at 40 × room zoom.
+const ROOM_STATUS_ICON_SIZE = 40;
 const BADGE_OPACITY = 0.78;
 const BADGE_DRAG_THRESHOLD = 5;
 const BLOSSOM_VIEWBOX_SIZE = 64;
@@ -59,7 +60,7 @@ interface BlossomVectorPaths {
 
 let blossomVectorPaths: BlossomVectorPaths | undefined;
 
-/** Stacked directly below Echo's clothing icon: CharX + 420×Zoom, CharY + 45×Zoom, 35×Zoom. */
+/** Stacked directly below Echo's clothing icon: CharX + 420×Zoom, CharY + 45×Zoom, 40×Zoom. */
 export const DEFAULT_ROOM_BADGE_POSITION: Readonly<NormalizedRoomBadgePosition> = Object.freeze({
   x: 0.84,
   y: 0.045,
@@ -88,7 +89,7 @@ export function resolveRoomBadgePosition(
   return {
     left: finiteNumber(frame.x) + normalizedX * CHARACTER_WIDTH * zoom,
     top: finiteNumber(frame.y) + normalizedY * CHARACTER_HEIGHT * zoom,
-    size: BADGE_SIZE * zoom,
+    size: ROOM_STATUS_ICON_SIZE * zoom,
   };
 }
 

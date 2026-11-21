@@ -98,14 +98,14 @@ export function checkedMatchCandidate(
     }) ||
     v.memberNumber === owner ||
     !text(v.note, 180) ||
-    !list(v.intents, MATCH_INTENTS, 1) ||
-    !list(v.languages, MATCH_LANGUAGES, 1, 5) ||
+    !list(v.intents, MATCH_INTENTS, v.signalRevision === 0 ? 0 : 1) ||
+    !list(v.languages, MATCH_LANGUAGES, v.signalRevision === 0 ? 0 : 1, 5) ||
     !list(
       v.interests,
       MATCH_INTERESTS.map((x) => x.id),
     ) ||
     !["One-to-one", "Small group", "Either"].includes(String(v.size)) ||
-    !int(v.signalRevision, 1) ||
+    !int(v.signalRevision) || (v.signalRevision === 0 && v.canRequest !== false) ||
     !nullableDate(v.expiresAt) ||
     !int(v.choiceRevision) ||
     !bool(v, ["saved", "hidden", "canRequest"]) ||

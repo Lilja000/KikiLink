@@ -5,9 +5,17 @@ connects to KikiLink Cloud for profiles, Feed and persistent groups using your s
 It can automatically synchronize the public profile fields you already configured, including supported
 avatar/banner images. Signing out of Cloud pauses automatic connection on this browser.
 
+New Cloud profiles are searchable by name and Member Number. Online status, the current public room,
+About, communities and recent activity are visible to eligible KikiLink users by default. Private rooms
+stay hidden, and community membership and content access rules still apply. You can change these
+settings in Edit profile. Existing selections, including hidden profiles and disabled sharing, are kept.
+
+People and Match can suggest members who have filled in public details, even if you have never met or
+have not filled in your own signal. A new account starts with its basic signal enabled. Interests,
+languages and availability appear only when entered. Blocking and visibility settings apply to discovery.
+
 KikiLink data is not secret from the hosting service or trusted page code. KikiLink runs inside
 Bondage Club, stores readable browser/account data, and uses external media hosts for selected features.
-The separate FUSAM-to-Catbox relay remains disabled pending the provider's written permission.
 See [Cloud data and retention](cloud/PRIVACY.md) for authentication, published data, deletion and limits.
 
 ## Data stored by KikiLink
@@ -40,8 +48,7 @@ feature paths:
 - Automatic BC identity verification and HTTPS Cloud connection, public-profile synchronization,
   Feed/group operations, current availability and active typing. Cloud uses bounded requests and
   authenticated event streams. Its operator and infrastructure providers can observe network metadata.
-  Cloud profile/feed uploads use private object storage and authorized reads, rather than public
-  Catbox links. The BC password is never sent to Cloud.
+  Cloud profile and Feed uploads use private object storage and authorized reads. The BC password is never sent to Cloud.
 - The standalone userscript performs one bounded, credential-free request to the official GitHub raw
   `package.json` when Home is opened on a production Bondage Club host. It sends no cookies or
   referrer, does not poll, and shows an update only after a valid newer version is found. The FUSAM
@@ -53,62 +60,24 @@ feature paths:
   host still learns the requester's network IP address and request time. Chat and profile image
   previews default to **Always show**, making automatic requests. **Ask before loading** requires a
   reveal first; **Links only** makes no preview request. Both preferences remain available in Settings.
-- Explicit upload actions send a prepared file to Catbox or Litterbox as described below. In released
-  builds, those providers receive the file, source IP address, request time, and normal transport
-  metadata. The disabled FUSAM relay would change the Catbox path as described below.
+- Selecting an external upload sends the file to the provider named in the upload dialog.
+  Anyone who obtains the resulting file link can open it.
 
-## Public Catbox and Litterbox uploads
+## Public shared files
 
-Catbox and Litterbox return public bearer URLs. Anyone who receives or discovers a URL can download
-the file. Expiration or inactivity cleanup is not access control, does not recall copies, and cannot
-be verified or accelerated by KikiLink.
+In Chat, Gallery, Room Tools and Music, temporary sharing sends files directly from the browser
+to WaifuVault. The sender chooses 1, 12, 24 or 72 hours. Long-lived sharing sends Gallery
+images, playlist tracks and compatibility banner or group images to AnonDrop. AnonDrop
+sets no fixed expiry for these links and can remove inactive files on its free service.
+Each host receives the file and network request. KikiLink omits account credentials and uses
+a generated filename. Images are re-encoded as WebP before sharing. Audio may contain
+identifying tags or other metadata. Removing an item from a playlist or Gallery removes the
+local reference. Someone who downloaded a copy can keep it after the link expires.
 
-- Images selected for upload are signature-checked, bounded, resized/re-encoded to WebP, given a
-  generic filename, and stripped of embedded image metadata before the final explicit upload action.
-  Visible information in the pixels is not removed.
-- Audio is validated and renamed but is not re-encoded. Embedded tags, artwork, author names, device
-  fields, or other metadata already in an MP3/MP4 may remain in the uploaded file.
-- Litterbox creates public links with a selected 1, 12, 24, or 72 hour lifetime. The standalone
-  userscript requests it through the userscript bridge in anonymous mode; the FUSAM build uses a
-  credential-omitting browser request.
-- Standalone Catbox uploads omit `userhash`, but the userscript manager may attach an existing Catbox
-  browser-session cookie. KikiLink neither reads nor supplies that cookie and cannot promise that the
-  provider will treat the request as unlinkable from a Catbox session.
-- FUSAM cannot perform Catbox uploads because Catbox's upload endpoint does not provide the required
-  cross-origin browser access. KikiLink disables those upload choices in FUSAM. Device storage,
-  direct HTTPS links, and supported temporary Litterbox uploads remain available.
-
-### Prepared FUSAM relay (not deployed or enabled)
-
-The prepared relay is limited to four explicit long-lived Catbox actions: profile-banner uploads,
-managed-group-avatar uploads, an explicitly selected Gallery Catbox destination, and playlist-music
-Catbox uploads. Choosing a file alone does not contact the relay. Temporary chat-image and room-media
-uploads keep their existing direct Litterbox path, and the standalone userscript keeps its existing
-direct Catbox userscript bridge.
-
-Before a FUSAM Catbox upload, a separate Cloudflare Turnstile page would verify an intentional action
-and return a short-lived bearer token kept only in page memory. The Cloudflare Worker would require an
-exact allowed Bondage Club origin, validate the token, file type, declared and actual size, and request
-and byte quotas, and stream an admitted file to Catbox without retaining it. It would construct the
-fixed Catbox multipart request itself and would not forward a Catbox `userhash`, Catbox account cookie,
-arbitrary destination, caller-supplied provider fields, or caller authorization headers.
-
-Cloudflare could transiently observe the uploader's network IP address, Bondage Club origin, request
-timing, and file bytes. Catbox would receive the file, request timing, and the Worker connection.
-Cloudflare may also add the uploader IP to an upstream `CF-Connecting-IP` header, as
-[its documentation explains](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests),
-so the relay does not promise IP anonymity. Turnstile and a short-lived token reduce automated misuse but do not hide
-the upload from Cloudflare or Catbox and do not make the resulting `files.catbox.moe` URL private. Image
-uploads are metadata-free WebP files prepared locally; playlist audio is not re-encoded and may retain
-embedded tags, artwork, author names, device fields, or other metadata.
-
-This path remains disabled because Catbox's [Terms](https://catbox.moe/legal.php) prohibit reselling
-or otherwise supplying its service to others and Catbox's
-[April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
-restricted anonymous uploads from datacenter/proxy networks. It will not be deployed or enabled
-without Catbox's explicit written permission and any required whitelisting. Even with permission,
-anonymous Catbox retention is not guaranteed: Catbox's [FAQ](https://catbox.moe/faq.php) says an
-anonymous file may be removed after two years without a download.
+Existing Catbox and Litterbox links keep their original URLs and retention rules.
+Cloud profile avatars, banners, Feed and authenticated Cloud attachments use the existing
+access-controlled KikiLink Cloud media service. See the providers’ policies for external
+uploads. [WaifuVault](https://waifuvault.moe/) · [AnonDrop](https://anondrop.net/faq)
 
 KikiLink persists each confirmed playlist URL before starting another file, saves confirmed profile
 banners to Gallery as a recovery copy, and saves a confirmed managed-group avatar URL there if the
@@ -125,9 +94,7 @@ More implementation detail is in [docs/LOCAL_IMAGE_UPLOADS.md](docs/LOCAL_IMAGE_
 ## Page-realm trust boundary
 
 KikiLink's application code runs in Bondage Club's page realm, both under FUSAM and when installed as
-a standalone userscript. The standalone wrapper keeps its cross-origin upload privilege in a userscript
-sandbox and applies request limits, but this is not a confidentiality boundary against hostile code in
-the page.
+a standalone userscript. Both distributions send external file uploads directly to their selected provider.
 
 Treat every co-installed page-realm addon as trusted. Another addon, the site, or a browser extension
 with suitable permissions may be able to inspect page state, DOM events, `Player.ExtensionSettings`,
@@ -174,7 +141,9 @@ eligible confirmed Cloud friends. Signing out pauses Cloud on that browser. Its 
 retry queue is distinct from Save message history and may briefly persist message text
 until delivery, expiry processing or explicit clearing. Remove chat and Clear history
 stop local retries; they cannot recall a message already stored by Cloud. Existing local
-history is never uploaded automatically. Optional preference ratings use their own
-private encrypted endpoint and are excluded from profile/presence/ExtensionSettings.
+history is never uploaded automatically. Optional preference ratings use separate authenticated endpoints and encrypted storage.
+New accounts start with **Public in KikiLink**, so eligible signed-in members can read any ratings you
+choose to enter. You can choose a different audience in Preferences. Ratings stay out of profile and
+presence packets and BC account sync.
 See [the controls and retention](cloud/PRIVACY.md#optional-social-delivery-and-preferences)
 for visibility modes, bilateral grants, server storage, score inference and deletion.

@@ -124,7 +124,7 @@ export const PEOPLE_STYLES = `
 .kl-panel[data-platform-preview="true"] .kl-roster-page[data-people-view="people"] .kl-roster-results { grid-area: 6 / 1 / auto / -1; }
 .kl-panel[data-platform-preview="true"] .kl-roster-page:is([data-people-view="people"],[data-people-view="requests"]) .kl-roster-scopes { gap: 4px; align-items: center; flex-wrap: wrap; }
 .kl-panel[data-platform-preview="true"] .kl-roster-page:is([data-people-view="people"],[data-people-view="requests"]) .kl-roster-scope {
-  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0;
   min-height: var(--kl-explore-small,32px); padding: 0 9px; border-color: transparent;
   border-radius: var(--kl-explore-radius,8px); font-size: var(--kl-type-sm,11px); font-weight: 400;
 }

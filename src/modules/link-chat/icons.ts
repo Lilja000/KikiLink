@@ -84,7 +84,7 @@ const ICONS: Record<KikiLinkIconName, readonly Shape[]> = {
   mail: [["rect", { x:"3", y:"5", width:"18", height:"14", rx:"2" }], ["path", { d:"m4 7 8 6 8-6" }]],
   archive: [["rect", { x: "3", y: "3", width: "18", height: "4", rx: "1" }], ["path", { d: "M5 7v14h14V7M10 11h4" }]],
   flag: [["path", { d: "M5 21V4c5-3 9 3 14 0v10c-5 3-9-3-14 0" }]],
-  game: [["path", { d: "M6 7h12l3 12-4-3H7l-4 3L6 7ZM7 11h4M9 9v4M16 10h.01M18 12h.01" }]],
+  game: [["path", { d: "M7 7h10c2 0 3 2 3.5 4l1 6c.4 2-1.8 3-3 1l-2-2h-9l-2 2c-1.2 2-3.4 1-3-1l1-6C4 9 5 7 7 7Z" }], ["path", { d: "M7 10v5M4.5 12.5h5M15.5 11h.1M18 13.5h.1" }]],
   history: [["path", { d: "M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v5l3 2" }]],
   globe: [["circle", { cx: "12", cy: "12", r: "9" }], ["path", { d: "M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18" }]],
   calendar: [["rect", { x: "4", y: "5.5", width: "16", height: "15", rx: "2.5" }], ["path", { d: "M8 3v5M16 3v5M4 10h16M8 14h.1M12 14h.1M16 14h.1M8 17h.1M12 17h.1" }]],

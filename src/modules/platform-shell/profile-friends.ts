@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { profileOptions } from './profile-controls';
 import { CloudError, type CloudClient } from '../../cloud/client';
 import { element } from '../../cloud/dom';
@@ -105,7 +106,7 @@ export class ProfileFriends {
       },'kl-profile-friend-row');
       row.dataset.memberNumber=String(item.memberNumber);
       row.setAttribute('aria-label',`Open profile of ${item.displayName}`);
-      row.replaceChildren(element('span',{className:'kl-profile-friend-avatar',ariaHidden:'true',text:Array.from(item.displayName.trim())[0]??'?'}),
+      row.replaceChildren(markAvatarPresence(element('span',{className:'kl-profile-friend-avatar',ariaHidden:'true',text:Array.from(item.displayName.trim())[0]??'?'}), item.memberNumber),
         element('span',{className:'kl-profile-row-copy'},element('strong',{text:item.displayName}),element('small',{text:item.username?`@${item.username}`:`#${item.memberNumber}`})),
         kikiIcon('arrow-right'));
       list.append(row);

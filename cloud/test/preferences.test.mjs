@@ -19,7 +19,7 @@ test("a person can fill the whole catalog while autosaving without an hour-long 
   }
   const saved = await f.ok("GET", "/v1/preferences/me");
   assert.equal(Object.keys(saved.ratings).length, catalog.items.length);
-  assert.equal(saved.mode, "private");
+  assert.equal(saved.mode, "public");
 });
 
 test("exhausted preference writes report the actual cooldown and leave saved ratings intact", async t => {
@@ -55,10 +55,10 @@ test("Compatibility is symmetric, distinguishes Not Set from Neutral, and report
   assert.deepEqual(comparePreferences(ratings("hard_limit"), ratings("dislike")), { status: "available", count: 8, score: 75 });
   assert.equal(comparePreferences({ ...ratings("like"), retired: "love" }, { ...ratings("like"), retired: "love" }).count, 8);
 });
-test("Private defaults, consent, encrypted isolation and score-only responses", async t => {
+test("Public defaults, consent, encrypted isolation and score-only responses", async t => {
   const f = await setup(t);
   assert.deepEqual((await f.ok("GET", "/v1/preferences/me")).ratings, {});
-  assert.equal((await f.ok("GET", "/v1/preferences/me")).mode, "private");
+  assert.equal((await f.ok("GET", "/v1/preferences/me")).mode, "public");
   assert.equal((await f.request("GET", "/v1/preferences/me", undefined)).statusCode, 401);
   await save(f, 101, "score"); await save(f, 202, "private");
   assert.deepEqual(await f.ok("GET", "/v1/compatibility/202"), { status: "private" });
@@ -66,7 +66,7 @@ test("Private defaults, consent, encrypted isolation and score-only responses", 
   assert.deepEqual(await f.ok("GET", "/v1/compatibility/202"), { status: "available", count: 8, score: 100 });
   assert.equal((await f.request("GET", "/v1/preferences/202", undefined, 101)).statusCode, 403);
   assert.equal((await f.request("GET", "/v1/compatibility/101", undefined, 101)).statusCode, 400);
-  assert.deepEqual(await f.ok("GET", "/v1/compatibility/202", undefined, 303), { status: "opt_in_required" });
+  assert.deepEqual(await f.ok("GET", "/v1/compatibility/202", undefined, 303), { status: "insufficient", count: 0 });
   const stored = f.db.get("SELECT ratings FROM interest_preferences WHERE owner=202").ratings;
   assert.ok(!stored.includes(ids[0]));
   const profile = await f.ok("GET", "/v1/profiles/202");

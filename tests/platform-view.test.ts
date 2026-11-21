@@ -22,6 +22,67 @@ afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
 describe("platform shell integration with real workspaces", () => {
 
+  it("keeps Feed between Home and Chat and opens Overview first", async () => {
+    const cloud = new CloudClient({ origin: "https://cloud.example.test", memberNumber: 72385, getMemberNumber: () => 72385, isBlocked: () => false, sendProof: vi.fn(), fetchImpl: vi.fn(async () => Response.json({}, { status: 503 })) });
+    const f = await setup(undefined, [], undefined, cloud);
+    try {
+      const areas = [...f.root.querySelectorAll<HTMLButtonElement>(".kl-platform-area")];
+      expect(areas.slice(0, 3).map(area => area.dataset.area)).toEqual(["home", "feed", "chat"]);
+      expect(areas.every(area => area.querySelector(".kl-roster-count"))).toBe(true);
+      f.area("feed").click();
+      expect(f.area("feed").getAttribute("aria-current")).toBe("page");
+      expect(f.root.querySelector(".kl-panel")?.getAttribute("data-workspace")).toBe("cloud");
+      f.area("home").click();
+      const sections = [...f.root.querySelectorAll<HTMLButtonElement>(".kl-platform-link[data-route]:not([hidden])")];
+      expect(sections.map(button => button.dataset.route)).toEqual(["home", "inbox", "saved", "news"]);
+      expect(f.route("home").getAttribute("aria-current")).toBe("page");
+      const gameBadge = f.area("game").querySelector<HTMLElement>(".kl-roster-count")!;
+      const join = { kind: "room-join" as const, memberNumber: 7, occurredAt: 1, message: "Joined the room", showToast: false };
+      f.view.onNotification(join);
+      expect(gameBadge.hidden).toBe(false);
+      f.area("game").click();
+      expect(gameBadge.hidden).toBe(true);
+      f.area("home").click();
+      f.settings.update(settings => { settings.ui.unreadBadges = false; });
+      f.view.onNotification(join);
+      expect(gameBadge.hidden).toBe(true);
+    } finally { f.view.destroy(); cloud.destroy(); }
+  });
+
+  it("restores old current-room links inside Rooms and remembers the selected mode", async () => {
+    const storage = new MemoryKeyValueStorage();
+    storage.setItem("kikilink:platform:last-route:v1", "current-room");
+    const f = await setup(storage);
+    try {
+      expect(f.route("rooms").getAttribute("aria-current")).toBe("page");
+      const current = f.root.querySelector<HTMLButtonElement>("#kl-rooms-current")!;
+      expect(current.getAttribute("aria-selected")).toBe("true");
+      expect(f.root.querySelector(".kl-room-current-panel")?.closest("[hidden]")).toBeNull();
+      expect(f.root.querySelector('[data-route="current-room"]')).toBeNull();
+      expect(storage.getItem("kikilink:platform:last-route:v1")).toBe("rooms");
+      expect(storage.getItem("kikilink:platform:rooms-mode:v1")).toBe("current");
+      f.root.querySelector<HTMLButtonElement>("#kl-rooms-lobbies")!.click();
+      current.click();
+      f.area("home").click();
+      f.route("rooms").click();
+      expect(current.getAttribute("aria-selected")).toBe("true");
+      const custom = { imageUrl: "", musicUrl: "", imageFilter: "", sizeMode: 2, musicSync: false };
+      vi.spyOn(f.adapter, "getRoomAdminSnapshot").mockReturnValue({
+        roomName: "Garden", isAdmin: true, customization: custom, players: [],
+        settings: { name: "Garden", description: "", background: "Boudoir", limit: 10, game: "", space: "X",
+          language: "EN", visibility: ["All"], access: ["All"], blockCategory: [], admins: [72385], whitelist: [], blacklist: [], custom },
+      });
+      current.click();
+      const manage = [...f.root.querySelectorAll<HTMLButtonElement>("#kl-rooms-panel-current button")]
+        .find(button => button.textContent === "Room settings")!;
+      expect(manage.closest("[hidden]")).toBeNull();
+      manage.click();
+      const dialog = f.root.querySelector<HTMLDialogElement>(".kl-room-settings-dialog")!;
+      expect(dialog.open).toBe(true);
+      expect([...dialog.querySelectorAll('[role="tab"]')].map(button => button.textContent)).toEqual(["Settings", "Media", "People & roles"]);
+    } finally { f.view.destroy(); }
+  });
+
   it("fades only on route changes and honors the two reduced-motion preferences", async () => {
     const f = await setup();
     const workspace = f.root.querySelector<HTMLElement>(".kl-workspace")!;
@@ -2052,10 +2113,10 @@ describe("platform shell integration with real workspaces", () => {
       f.root.querySelector<HTMLButtonElement>('[role="tab"][data-section="navigation"]')!.click();
       const panel = f.root.querySelector<HTMLElement>("#kikilink-settings-panel-navigation")!;
       const areas = [...panel.querySelectorAll<HTMLInputElement>("[data-navigation-area]")];
-      expect(areas.map(toggle => toggle.getAttribute("aria-label"))).toEqual(["Chat", "Explore", "Workshop", "Game", "You"]);
-      expect(areas[0]!.checked).toBe(false);
+      expect(areas.map(toggle => toggle.getAttribute("aria-label"))).toEqual(["Feed", "Chat", "Explore", "Workshop", "Game", "You"]);
+      expect(areas.find(control => control.dataset.navigationArea === "chat")!.checked).toBe(false);
       const change = (control: HTMLInputElement | HTMLSelectElement) => control.dispatchEvent(new Event("change"));
-      for (const toggle of areas.slice(1)) { toggle.checked = false; change(toggle); }
+      for (const toggle of areas) { toggle.checked = false; change(toggle); }
       expect(areas.every(toggle => f.area(toggle.dataset.navigationArea!).hidden)).toBe(true);
       expect(f.area("home").hidden).toBe(false);
       expect(f.area("settings").hidden).toBe(false);
@@ -2064,7 +2125,7 @@ describe("platform shell integration with real workspaces", () => {
       expect(start.querySelector<HTMLOptionElement>('option[value="explore"]')!.disabled).toBe(true);
       expect(panel.querySelector("details")?.open).toBe(false);
       expect(panel.querySelector<HTMLInputElement>('[data-navigation-tab="music"]')!.checked).toBe(false);
-      const explore = areas[1]!;
+      const explore = areas.find(control => control.dataset.navigationArea === "explore")!;
       explore.checked = true; change(explore);
       start.value = "explore"; change(start);
       expect(explore.disabled).toBe(true);
@@ -2662,7 +2723,7 @@ describe("platform shell integration with real workspaces", () => {
     } finally { f.view.destroy(); }
   });
 
-  it.each(['lobbies', 'spaces', 'history'] as const)('restores the selected Rooms mode %s without another sidebar destination', async mode => {
+  it.each(['lobbies', 'spaces', 'history', 'current'] as const)('restores the selected Rooms mode %s without another sidebar destination', async mode => {
     const storage = new MemoryKeyValueStorage(), first = await setup(storage);
     first.area('explore').click(); first.route('rooms').click();
     first.root.querySelector<HTMLButtonElement>(`#kl-rooms-${mode}`)!.click(); first.view.destroy();

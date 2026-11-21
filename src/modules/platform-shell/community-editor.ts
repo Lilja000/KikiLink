@@ -326,7 +326,6 @@ export class CommunityEditor {
     if(channels.length<8){const add=this.#button('add-initial-channel','Add channel',()=>{channels.push({name:'',description:''});this.#render();this.element.querySelector<HTMLInputElement>(`[data-initial-channel="${channels.length-1}-name"]`)?.focus();});add.disabled=frozen;root.append(add);}
   }
   #review(root:HTMLElement,d:Draft):void {
-    if(!this.#original)root.append(element('p',{className:'kl-cm-review-intro',text:'Here’s your new corner of KikiLink. Ready to make it yours?'}));
     const identity=element('div',{},element('h3',{text:d.name.trim()}),element('small',{className:'kl-cm-review-visibility'},kikiIcon(d.access==='public'?'globe':'lock'),accessLabel(d.access)));
     root.append(element('article',{className:'kl-cm-review'},element('div',{className:'kl-cm-card-top'},communityIcon({icon:d.icon,color:d.color}),identity,!this.#original?element('span',{className:'kl-cm-role kl-cm-role--gold',text:'Owner'}):null),element('p',{text:d.description||'A little place to call your own.'}),communityTags(tagsOf(d))));
     const details=element('dl',{className:'kl-cm-facts kl-cm-review-settings'});

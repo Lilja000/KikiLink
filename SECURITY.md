@@ -30,23 +30,11 @@ service, or publish working exploitation details before a fix is available.
 
 Reports about KikiLink's source, official build files, storage boundaries, network requests, or
 Bondage Club integration are in scope. Bondage Club, FUSAM, browser/userscript-manager behavior,
-GitHub, Catbox, and Litterbox have their own security policies, but an integration flaw caused by
+GitHub, Cloudflare and external media providers have their own security policies, but an integration flaw caused by
 KikiLink should still be reported here.
 
-The prepared FUSAM Catbox relay is also in scope, although it is not deployed or enabled. Relevant
-reports include bypasses of its exact Bondage Club origin checks, Cloudflare Turnstile verification,
-short-lived in-memory bearer token, file signature/type/size checks, request and byte quotas, fixed
-Catbox destination, or guarantees that it does not retain file content or forward a Catbox `userhash`,
-account cookie, or arbitrary caller headers. Remove bearer tokens, IP addresses, file contents, and
-other personal data from reports and logs.
-
-The relay is not an anonymity service: Cloudflare can transiently observe the uploader's IP, origin,
-timing, and file bytes, while Catbox receives the file and timing and may receive the uploader IP in
-Cloudflare-added forwarding headers as well as the Worker connection. Catbox URLs are public
-bearer links. The relay must remain disabled until Catbox grants explicit written permission and any
-required whitelisting; Catbox's [Terms](https://catbox.moe/legal.php) prohibit supplying its service
-to others, and its
-[April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
-restricts anonymous uploads from datacenter/proxy networks.
+The KikiLink upload integration is in scope, including destination and response validation,
+file size and type checks, expiration handling, and safe display of external links. Treat public shared
+links as bearer URLs. Remove links, access tokens, IP addresses, and uploaded content from reports.
 
 For the privacy and trust model that security reports should assume, see [PRIVACY.md](PRIVACY.md).

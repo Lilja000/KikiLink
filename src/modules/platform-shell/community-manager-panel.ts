@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { bindClockText } from '../../core/time-format';
 import { element } from '../../utils/dom';
 import { kikiIcon } from '../link-chat/icons';
@@ -119,7 +120,7 @@ function row(member: ManagerMember, section: Section, ownMember?: number): HTMLE
     const initials = member.displayName.trim().split(/\s+/u).slice(0, 2).map(word => [...word][0] ?? '').join('').toUpperCase();
     const avatar = element('span', { className: 'kl-cm-manager-avatar' }, member.avatar ?? initials);
     avatar.setAttribute('aria-hidden', 'true');
-    identity.append(avatar);
+    identity.append(markAvatarPresence(avatar, member.memberNumber, member.status ?? null));
   }
   const details = [`#${member.memberNumber}`, member.username ? `@${member.username}` : '', memberRow ? member.roleLabel : 'Pending', memberRow ? member.status ?? '' : ''].filter(Boolean);
   const copy = element('div', { className: 'kl-cm-manager-row-copy' },

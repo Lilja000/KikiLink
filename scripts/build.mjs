@@ -7,8 +7,6 @@ import { resolveBuildConfig } from "./build-config.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
-// Keep disabled until the relay has written Catbox approval and a verified production deployment.
-const catboxRelayUrl = "";
 const modSdkLicense = await readFile(
   resolve(root, "node_modules/bondage-club-mod-sdk/LICENSE"),
   "utf8",
@@ -71,9 +69,7 @@ const userscriptHeader = `// ==UserScript==
 // @noframes
 // @run-at       document-end
 // @sandbox      DOM
-// @grant        GM_xmlhttpRequest
-// @connect      catbox.moe
-// @connect      litterbox.catbox.moe
+// @grant        none
 // ==/UserScript==`;
 
 await rm(outDir, { recursive: true, force: true });
@@ -96,7 +92,6 @@ const buildOptions = {
     __KIKILINK_PLATFORM_PREVIEW__: JSON.stringify(platformPreview),
     __KIKILINK_PLATFORM_RELEASE__: JSON.stringify(platformRelease),
     __KIKILINK_BUILD_ID__: JSON.stringify(buildId),
-    __KIKILINK_CATBOX_RELAY_URL__: JSON.stringify(catboxRelayUrl),
     __KIKILINK_CLOUD_ORIGIN__: JSON.stringify(cloudOrigin),
     __KIKILINK_CLOUD_TEST_MEMBER__: JSON.stringify(cloudTestMember),
     __KIKILINK_CLOUD_TEST_MEMBERS__: JSON.stringify(cloudTestMembers),

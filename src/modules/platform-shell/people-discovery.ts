@@ -43,27 +43,27 @@ export class PeopleDiscovery {
     const form=element('form',{className:'kl-people-discovery-search'},this.#search,this.#submit);
     form.addEventListener('submit',e=>{e.preventDefault();if(!this.#busy)void this.#load();});
     this.#dialog.show('Discover people',element('div',{},
-      element('p',{className:'kl-setting-help',text:'Find people who have chosen to share their profile in Cloud search.'}),
       form,this.#results,this.#button('Edit profile discovery',()=>{this.close();this.options.privacy();})),()=>this.#hidden());
     void this.#load();
   }
   #hidden(): void { this.#visible=false;this.#clear();this.#results.replaceChildren();this.#search.value='';this.#release?.();this.#release=undefined; }
   close(): void { this.#hidden();this.#dialog.close(); }
   destroy(): void { this.close();this.#unsubscribe();this.#dialog.destroy(); }
+  #day = 0;
   async #load(cursor=0): Promise<void> {
     if (!this.#visible) return;
     if (!this.options.current()) {this.close();return;}
     const token=++this.#token, query=this.#search.value.trim();
     const current=()=>this.#active()&&token===this.#token;
-    if (!cursor) {this.#items=[];this.#next=null;}
+    if (!cursor) {this.#items=[];this.#next=null;this.#day=Math.floor(Date.now()/86400000); }
     this.#busy=true;this.#render('Loading shared profiles…');
     if (!this.client.connected) {this.#clear();this.#render('Connect to Cloud to discover shared profiles.');return;}
     try {
-      const me=await this.client.request<{memberNumber:number;features?:{profileDiscovery?:boolean}}>('GET','/v1/me');
+      const me=await this.client.request<{memberNumber:number;features?:{profileDiscovery?:boolean;peopleSuggestions?:boolean}}>('GET','/v1/me');
       if (!current()) return;
       if (me.memberNumber!==this.client.memberNumber) throw new Error('Account changed');
       if (me.features?.profileDiscovery!==true) {this.#clear();this.#render('Profile discovery is not available on this Cloud server yet.');return;}
-      const page=await readPeopleDirectory(this.client,me.memberNumber,query,20,cursor);
+      const page=await readPeopleDirectory(this.client,me.memberNumber,query,20,cursor,me.features.peopleSuggestions===true && !query ? this.#day : undefined);
       if (!current()) return;
       this.#items=[...this.#items,...page.items];this.#next=page.nextCursor;this.#busy=false;this.#render();
     } catch {

@@ -219,9 +219,10 @@ export function matchingOverlap(a, b) {
   return total;
 }
 /** Rank an already privacy-filtered projection; do not pass raw peer signals. */
-export function rankMatch(candidate, own, priority = "balanced") {
+export function rankMatch(candidate, own, priority = "balanced", sharedTags = []) {
   const c = structuredClone(candidate),
     common = c.interests.filter((x) => own.interests.includes(x)),
+    commonNames = [...new Set([...common.map(id => MATCH_INTERESTS.find(x => x.id === id).label), ...sharedTags])],
     intents = c.intents.filter((x) => own.intents.includes(x)),
     language = c.languages.some((x) => own.languages.includes(x));
   const max =
@@ -232,8 +233,8 @@ export function rankMatch(candidate, own, priority = "balanced") {
         : [35, 20, 15, 15, 10, 5];
   const available = [
     c.compatibility?.status === "available",
-    true,
-    true,
+    own.intents.length > 0 && c.intents.length > 0,
+    own.languages.length > 0 && c.languages.length > 0,
     own.use.interests && c.interestsShared,
     own.use.availability && c.overlapMinutes !== null,
     own.use.connections && c.connectionsShared,
@@ -242,7 +243,7 @@ export function rankMatch(candidate, own, priority = "balanced") {
     c.compatibility?.score / 100 || 0,
     intents.length ? 1 : 0,
     language ? 1 : 0,
-    Math.min(common.length, 3) / 3,
+    Math.min(commonNames.length, 3) / 3,
     Math.min(c.overlapMinutes ?? 0, 120) / 120,
     c.mutualCount > 0 || c.communities.length ? 1 : 0,
   ];
@@ -263,7 +264,7 @@ export function rankMatch(candidate, own, priority = "balanced") {
       : "No shared intent.",
     language ? "A language in common." : "No selected language in common.",
     available[3]
-      ? `${common.length} shared interests; up to 3 contribute.`
+      ? `${commonNames.length} shared interests; up to 3 contribute.`
       : "Shared interests are not used or available.",
     available[4]
       ? `${c.overlapMinutes} minutes of shared weekly time; up to 120 contribute.`
@@ -285,11 +286,8 @@ export function rankMatch(candidate, own, priority = "balanced") {
     intents.length
       ? `Looking for ${intents.slice(0, 2).join(" or ").toLowerCase()}`
       : "",
-    common.length
-      ? `Shared interests: ${common
-          .slice(0, 2)
-          .map((id) => MATCH_INTERESTS.find((x) => x.id === id).label)
-          .join(", ")}`
+    commonNames.length
+      ? `Shared interests: ${commonNames.slice(0, 2).join(", ")}`
       : "",
     c.overlapMinutes > 0
       ? `${c.overlapMinutes} minutes of shared weekly time`

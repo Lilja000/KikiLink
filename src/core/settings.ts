@@ -7,7 +7,7 @@ import {
   sanitizeCustomActivities,
 } from "../modules/link-activities/custom-activity-library";
 import { sanitizeReactionRules } from "../modules/link-reactions/reaction-rules";
-import { normalizeImageUrl } from "../modules/link-chat/media";
+import { mediaHost, normalizeImageUrl } from "../modules/link-chat/media";
 import { copyRoomMap } from "./room-map";
 import { SettingsPersistence, SETTINGS_SOURCE_LIMIT } from "./settings-persistence";
 import { importedSoundSettings, isNotificationSoundPreset, type SoundSettings } from './sound-settings-import';
@@ -122,11 +122,11 @@ export const DEFAULT_SETTINGS: KikiLinkSettings = {
       roomJoin: false,
     },
     sounds: {
-      enabled: false,
+      enabled: true,
       volume: 65,
       chat: "kiki",
-      friendOnline: "sparkle",
-      roomJoin: "pop",
+      friendOnline: "kiki",
+      roomJoin: "kiki",
     },
     enabled: false,
     rules: [],
@@ -480,7 +480,7 @@ export function sanitizeSettings(input: unknown): KikiLinkSettings {
       notificationsMutedUntil: integerInRange(ui.notificationsMutedUntil, -1, Number.MAX_SAFE_INTEGER, 0),
       unreadBadges: booleanOr(ui.unreadBadges, DEFAULT_SETTINGS.ui.unreadBadges),
       hiddenTabs: Array.isArray(ui.hiddenTabs) ? [...new Set(ui.hiddenTabs.filter((tab): tab is KikiLinkSettings["ui"]["hiddenTabs"][number] =>
-        ["home", "cloud", "chat", "roster", "room", "music", "activities", "explore", "create", "game", "you"].includes(tab)))] : [],
+        ["home", "cloud", "chat", "roster", "room", "music", "activities", "feed", "explore", "create", "game", "you"].includes(tab)))] : [],
       tabAlerts: sanitizeTabAlerts(ui.tabAlerts),
       launcherPosition: sanitizeLauncherPosition(ui.launcherPosition),
       panelPosition: sanitizeLauncherPosition(ui.panelPosition),
@@ -681,14 +681,10 @@ function sanitizeMusicSettings(
           if (trackBudget <= 0 || !isRecord(track)) break;
           const trackId = safeLocalId(track.id);
           const title = cleanBoundedText(track.title, 80);
-          const source = track.source === "local"
-            ? "local"
-            : track.source === "catbox" ||
-                track.source === "hosted" ||
-                (sourceSchema < 20 && typeof track.source === "string" && track.source !== "url")
-              ? "catbox"
-              : "url";
-          const locator = source === "local" ? safeLocalId(track.locator) : sanitizeAudioUrl(track.locator);
+          const locator = track.source === "local" ? safeLocalId(track.locator) : sanitizeAudioUrl(track.locator);
+          const source = track.source === "local" || track.source === "cloud" || track.source === "url" ? track.source
+            : mediaHost(locator ?? "") ?? (track.source === "catbox" || track.source === "hosted" ||
+              (sourceSchema < 20 && typeof track.source === "string" && track.source !== "url") ? "catbox" : "url");
           if (!trackId || !title || !locator || trackIds.has(trackId)) continue;
           tracks.push({
             id: trackId,

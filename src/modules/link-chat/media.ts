@@ -1,3 +1,29 @@
+export const MEDIA_HOST_LABELS = {
+  anondrop: "AnonDrop",
+  waifuvault: "WaifuVault",
+  catbox: "Catbox",
+  litterbox: "Litterbox",
+  cloud: "KikiLink Cloud",
+} as const;
+
+export type MediaHost = keyof typeof MEDIA_HOST_LABELS;
+
+/** Identify the actual host, including files shared before the uploader changed. */
+export function mediaHost(value: string, cloudOrigin?: string): MediaHost | undefined {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) return undefined;
+    if (cloudOrigin && url.origin === cloudOrigin && url.pathname.startsWith("/v1/public-files/content/")) return "cloud";
+    switch (url.hostname) {
+      case "anondrop.net": return "anondrop";
+      case "waifuvault.moe": return "waifuvault";
+      case "files.catbox.moe": return "catbox";
+      case "litter.catbox.moe": return "litterbox";
+    }
+  } catch { /* The caller handles relative device IDs and invalid links. */ }
+  return undefined;
+}
+
 export interface MessageLink {
   start: number;
   end: number;

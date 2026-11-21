@@ -78,7 +78,7 @@ export function applyProfileAppearance(target: HTMLElement, source: Pick<Presenc
 
 export const APPEARANCE_STYLES = `
 [data-avatar-mode]{isolation:isolate;overflow:visible!important;box-shadow:none!important}
-[data-avatar-mode]::before{content:none!important}
+[data-avatar-mode]:not([data-avatar-presence])::before{content:none!important}
 /* The bundled decoration owns its outline. Suppress the legacy border and
    match the preset's rounded-square silhouette in Feed as well as chat. */
 [data-avatar-mode]:not([data-avatar-mode="none"]){border-color:transparent!important}

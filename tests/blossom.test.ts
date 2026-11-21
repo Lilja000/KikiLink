@@ -135,7 +135,7 @@ describe("room Blossom character positioning", () => {
     h.badge.mount();
     const render = h.render;
     render(character, 100, 20, 0.5);
-    expect(draw).toHaveBeenCalledExactlyOnceWith(blossomImageForMember(ownMemberNumber, "room"), 310, 42.5, 17.5, 17.5);
+    expect(draw).toHaveBeenCalledExactlyOnceWith(blossomImageForMember(ownMemberNumber, "room"), 310, 42.5, 20, 20);
     const placement = document.querySelector<HTMLImageElement>(".kl-room-blossom")!;
     expect(h.badge.beginPlacement()).toBe(true);
     expect(placement.hidden).toBe(false);
@@ -187,7 +187,7 @@ describe("room Blossom character positioning", () => {
     h.render(character, 100, 20, 0.5);
     expect(images).toHaveLength(1);
     expect(images[0]?.src).toBe(blossomImageForMember(ownMemberNumber, "room"));
-    expect(h.context.drawImage).toHaveBeenLastCalledWith(images[0], 310, 42.5, 17.5, 17.5);
+    expect(h.context.drawImage).toHaveBeenLastCalledWith(images[0], 310, 42.5, 20, 20);
     h.render(character, 100, 20, 0.5);
     expect(images).toHaveLength(1);
 
@@ -197,7 +197,7 @@ describe("room Blossom character positioning", () => {
     expect(images).toHaveLength(2);
     expect(images[1]?.src).toBe(blossomImageForMember(peerNumber, "room"));
     expect(images[1]?.src).not.toBe(images[0]?.src);
-    expect(h.context.drawImage).toHaveBeenLastCalledWith(images[1], 810, 42.5, 17.5, 17.5);
+    expect(h.context.drawImage).toHaveBeenLastCalledWith(images[1], 810, 42.5, 20, 20);
   });
 
   it("uses the upright outlined cartoon artwork at every Blossom integration", () => {
@@ -212,12 +212,12 @@ describe("room Blossom character positioning", () => {
     expect(resolveRoomBadgePosition(null, frame)).toEqual({
       left: 435,
       top: 63.75,
-      size: 26.25,
+      size: 30,
     });
     expect(resolveRoomBadgePosition({ x: 0.25, y: 0.5 }, frame)).toEqual({
       left: 213.75,
       top: 405,
-      size: 26.25,
+      size: 30,
     });
     expect(normalizeRoomBadgePosition(213.75, 405, frame)).toEqual({ x: 0.25, y: 0.5 });
     expect(normalizeRoomBadgePosition(-10_000, 10_000, frame)).toEqual({ x: 0, y: 1 });
@@ -234,7 +234,7 @@ describe("room Blossom character positioning", () => {
 
     const blossom = resolveRoomBadgePosition(null, frame);
 
-    expect(blossom).toEqual({ left: 310, top: 42.5, size: 17.5 });
+    expect(blossom).toEqual({ left: 310, top: 42.5, size: 20 });
     expect(blossom.left).toBe(echo.left);
     expect(blossom.top).toBeGreaterThanOrEqual(echo.top + echo.size);
   });
@@ -250,7 +250,7 @@ describe("room Blossom character positioning", () => {
     expect(own?.src).toBe(BLOSSOM_ICON_DATA_URL);
     expect(own?.hidden).toBe(true);
     expect(own?.style.display).toBe("none");
-    expect(draw).toHaveBeenCalledWith(BLOSSOM_ICON_DATA_URL, 310, 42.5, 17.5, 17.5);
+    expect(draw).toHaveBeenCalledWith(BLOSSOM_ICON_DATA_URL, 310, 42.5, 20, 20);
     expect(globalThis.ChatRoomCharacterViewLoopCharacters).not.toHaveBeenCalled();
 
     render({ MemberNumber: 123, Name: "Unknown addon" }, 600, 20, 0.5);

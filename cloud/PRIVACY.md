@@ -13,7 +13,13 @@ On first connection, KikiLink synchronizes the public profile fields you already
 configured: name, bio, custom status, decorations, style, colors and supported avatar/
 banner images. Existing Cloud revisions take precedence over an older local copy.
 Deleting a Cloud profile prevents automatic republishing of that deleted profile.
-Visible profiles can be found by Member Number without previously meeting in a room.
+New profiles are visible and searchable by name or Member Number. Their default audiences for About,
+community membership and recent activity are Everyone. Each community and piece of content keeps its
+own access rules. Edit profile lets you hide your profile, disable search or choose a narrower audience.
+People and Match draw their daily suggestions from eligible unfamiliar members who have shared at
+least one profile detail, interest or signal setting. Viewing suggestions does not require entering
+your own signal. New accounts start with a basic signal enabled, and previously saved choices remain
+in effect.
 Feed posts, images, comments and reactions are visible to connected users, subject to
 blocking and moderation.
 
@@ -29,8 +35,9 @@ object storage, with size limits, metadata removal and image re-encoding. Import
 supported existing profile image can read its original host; that host can observe the
 request. Other existing media stays at its chosen host or in device storage.
 
-Availability stores only current Online/Idle/DND/Offline state with a three-minute
-expiry and no room location. Group typing is temporary and expires without a stop
+Availability keeps the current Online/Idle/DND/Offline state for up to three minutes.
+New accounts share their online status and current public room by default. Edit profile has separate
+controls for these fields. Private rooms stay hidden. Group typing is temporary and expires without a stop
 packet. Connected clients receive bounded events to refresh relevant content.
 
 ## Storage and retention
@@ -142,13 +149,12 @@ are aggregated. Reading a notification does not accept or decline its friend req
 Reports remain visible only through existing server-authorized moderation routes; SSE
 contains addressed invalidations, not private report reasons or preference ratings.
 
-Preferences are optional self-entered interests between consenting adults. They are not
-inferred from messages, activity or equipment and never change BC permissions. Default
-**Private** shares neither ratings nor a score. **Compatibility only** returns a server
-calculated score and count without the hidden ratings. Even a score can reveal clues;
-Private is the choice for avoiding that disclosure. **Friends only** requires bilateral
-Cloud grants. **Public in KikiLink** means eligible authenticated KikiLink accounts, not
-an unauthenticated web page. Both sides must enable an appropriate sharing mode.
+Preferences are optional interests that members enter themselves. New accounts start with
+**Public in KikiLink**. Eligible signed-in members can read the ratings you choose to enter.
+**Friends only** limits sharing to confirmed Cloud friends. **Compatibility only** shares a
+calculated score and the count of shared ratings. These values can reveal clues about your
+preferences. **Private** hides both ratings and score. Both members’ settings govern comparisons,
+and changing your sharing mode leaves your BC permissions intact.
 
 Ratings are excluded from public profile payloads, BC presence, ExtensionSettings,
 shared events, analytics and request logs. The editor holds them in memory and accesses

@@ -15,11 +15,11 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, props: NonNullab
   return node;
 }
 
-export type RoomsMode = 'lobbies' | 'spaces' | 'history';
+export type RoomsMode = 'current' | 'lobbies' | 'spaces' | 'history';
 export const ROOMS_MODE_KEY = 'kikilink:platform:rooms-mode:v1';
-const MODES: Array<[RoomsMode, string]> = [['lobbies', 'Lobbies'], ['spaces', 'Spaces'], ['history', 'History']];
+const MODES: Array<[RoomsMode, string]> = [['lobbies', 'Lobbies'], ['spaces', 'Spaces'], ['current', 'Current room'], ['history', 'History']];
 interface Options {
-  lobbies: HTMLElement; spaces?: HTMLElement; history: RoomHistory; client?: CloudClient;
+  lobbies: HTMLElement; currentRoom: HTMLElement; spaces?: HTMLElement; history: RoomHistory; client?: CloudClient;
   current(): boolean; activate(mode: RoomsMode): void; create(): void;
   openLobby(visit: Extract<RoomVisit, { kind: 'lobby' }>): void; openSpace(id: string): void;
   openContext?(): void; closeContext?(): void;
@@ -62,7 +62,8 @@ export class RoomsDirectory {
       this.#panels.set(mode, panel); this.element.append(panel);
     }
     this.#panels.get('lobbies')!.append(options.lobbies);
-    this.#panels.get('spaces')!.append(options.spaces ?? element('div', { className: 'kl-room-history-empty' }, element('h2', { text: 'Connect to Cloud' }), element('p', { text: 'Your spaces will appear here when Cloud is available.' })));
+    this.#panels.get('current')!.append(options.currentRoom);
+    this.#panels.get('spaces')!.append(options.spaces ?? element('div', { className: 'kl-room-history-empty' }, element('h2', { text: 'Connect to Cloud to view Spaces' })));
     const historyTab=this.#buttons.get('history')!;
     historyTab.title='Right-click or hold for history actions';historyTab.setAttribute('aria-haspopup','menu');
     this.#menu.element.id='kl-room-history-options';
@@ -91,7 +92,7 @@ export class RoomsDirectory {
       const index = MODES.findIndex(([mode]) => this.#buttons.get(mode) === event.target);
       if (index < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
       event.preventDefault(); event.stopPropagation();
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : 2)) % 3;
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? MODES.length - 1 : (index + MODES.length + (event.key === 'ArrowRight' ? 1 : -1)) % MODES.length;
       const mode = MODES[next]![0]; options.activate(mode); this.#buttons.get(mode)!.focus();
     });
     this.#unsubscribe = options.client?.subscribe(kind => {

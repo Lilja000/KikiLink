@@ -571,6 +571,7 @@ export class CloudClient {
   async upload<T>(path: string, body: Blob, options: {
     onProgress?: (percent: number) => void;
     signal?: AbortSignal;
+    timeoutMs?: number;
   } = {}): Promise<T> {
     this.#check();
     if (!path.startsWith("/v1/") || path.includes("\\") || path.includes("#") ||
@@ -664,7 +665,7 @@ export class CloudClient {
         try {
           xhr.open("POST", url, true);
           xhr.withCredentials = false;
-          xhr.timeout = 180000;
+          xhr.timeout = options.timeoutMs ?? 180000;
           xhr.setRequestHeader("Authorization", `Bearer ${session.token}`);
           xhr.setRequestHeader("Content-Type", body.type || "application/octet-stream");
           progress(0);

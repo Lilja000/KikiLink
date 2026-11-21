@@ -3258,11 +3258,12 @@ select:focus-visible {
   background: #6e6a66;
   box-shadow: 0 0 0 1px color-mix(in srgb, currentColor, transparent 62%);
 }
-.kl-presence-dot[data-status="online"] { background: #39c884; color: #39c884; }
-.kl-presence-dot[data-status="idle"] { background: #e6ad45; color: #e6ad45; }
-.kl-presence-dot[data-status="dnd"] { background: #e55365; color: #e55365; }
-.kl-presence-dot[data-status="offline"] { background: #77716c; color: #77716c; }
-.kl-presence-dot[data-status="unknown"] {
+.kl-presence-dot[data-status="online"], [data-avatar-presence="online"]::before { background:#39c884;color:#39c884; }
+.kl-presence-dot[data-status="idle"], [data-avatar-presence="idle"]::before { background:#e6ad45;color:#e6ad45; }
+.kl-presence-dot[data-status="dnd"], [data-avatar-presence="dnd"]::before { background:#e55365;color:#e55365; }
+.kl-presence-dot[data-status="offline"], [data-avatar-presence="offline"]::before { background:#77716c;color:#77716c; }
+.kl-presence-dot[data-status="unknown"], [data-avatar-presence="unknown"]::before,
+.kl-cm-member-avatar > .kl-cm-presence--unavailable {
   /* The ring is part of the glyph, not the container shadow. Larger profile
      badges override that shadow; an opaque centre also masks the frame below. */
   background: radial-gradient(circle, var(--kl-panel-bg) 0 27%, #8b8580 30% 62%, var(--kl-panel-bg) 65%);
@@ -5738,4 +5739,17 @@ ${APPEARANCE_STYLES}
 .kl-workshop-dependency-search{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px;min-width:0}.kl-workshop-dependency-search>input{flex:1;min-width:150px}.kl-workshop-dependency-search>[role=status]{width:100%}.kl-workshop-import{display:block;margin:16px 0}
 ${workshopStyles}
 ${workshopEditorStyles}
+:host input[type="checkbox"]:not(.kl-switch input) {
+  box-sizing:border-box; width:16px!important; min-width:16px!important; max-width:16px!important;
+  height:16px!important; min-height:16px!important; max-height:16px!important; flex:0 0 16px!important; padding:0!important;
+}
+
+[data-avatar-presence] { position:relative; }
+[data-avatar-presence]::before {
+  content:"";position:absolute;z-index:5;right:0;bottom:0;width:clamp(7px,27%,13px);aspect-ratio:1;
+  box-sizing:border-box;border:2px solid var(--kl-panel-bg);border-radius:50%;pointer-events:none;
+}
+:is(.kl-message-row,.kl-group-message,.kl-chat-message-avatar-button,.kl-profile-appearance-preview) [data-avatar-presence]::before,
+.kl-addon-profile-avatar-shell > [data-avatar-presence]::before { display:none; }
+.kl-avatar-wrap:has([data-avatar-presence]) > .kl-presence-dot { display:none; }
 `;
