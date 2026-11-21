@@ -2195,8 +2195,7 @@ export class SpacesPage {
       additional.append(extra);
       form.append(additional);
     } else {
-      const review = element('div', { className: 'wide kl-sp-review' },
-        element('p', { className: 'kl-sp-editor-intro', text: `One last look before ${editor.space ? 'saving your changes' : 'making this place yours'}.` }));
+      const review = element('div', { className: 'wide kl-sp-review' });
       const cover = element('div', { className: 'kl-sp-cover', ariaHidden: 'true' }, kikiIcon('location'));
       cover.dataset.tone = roomIllustrations.get(d.background.trim().toLowerCase()) ?? '0';
       if (d.roomPalette && workshopColor(d.roomPalette.primary) && workshopColor(d.roomPalette.secondary)) {
@@ -2210,7 +2209,7 @@ export class SpacesPage {
       review.append(element('article', { className: 'kl-sp-review-card' }, cover,
         element('div', { className: 'kl-sp-review-body' },
           element('div', { className: 'kl-sp-review-heading' }, element('h3', { text: d.name.trim() }), element('span', { className: 'kl-sp-badge', text: accessLabel(d.access) })),
-          element('small', { text: host }), element('p', { text: d.description.trim() || 'A familiar place, ready for a little good company.' }), tags)));
+          element('small', { text: host }), d.description.trim() ? element('p', { text: d.description.trim() }) : undefined, tags)));
       const facts = element('dl', { className: 'kl-sp-review-details' });
       const fact = (label: string, value: string) => facts.append(element('dt', { text: label }), element('dd', { text: value }));
       fact('Room', d.roomName.trim() || 'No room linked yet');
@@ -2275,7 +2274,6 @@ export class SpacesPage {
         return item;
       }));
     const body = element('div', { className: 'kl-room-dialog-body kl-sp-editor' }, steps,
-      editor.step === 1 ? element('p', { className: 'kl-sp-editor-intro', text: 'A familiar place to return to, even when its room is closed.' }) : undefined,
       form, element('p', { className: 'kl-sp-error', role: 'alert', text: editor.error }));
     const keepEditing = editor.discard ? this.#button('Keep editing', () => {
       editor.discard = false;

@@ -8,15 +8,16 @@ import type { ChatImportRules } from '../../storage/chat-import-model';
 import { sortConversations } from "../../storage/memory-chat-repository";
 import { createId } from "../../utils/id";
 import { remainingDraftAfterSend } from "../../utils/sent-draft";
-import { parseMessageLinks } from "./media";
+import { mediaHost, parseMessageLinks, type MediaHost } from "./media";
 import { DirectPresentation } from "./direct-presentation";
 import { conversationMuted } from "./conversation-mute";
+import { KIKILINK_CLOUD_ORIGIN } from "../../cloud/client";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface ChatMediaItem {
   url: string;
-  provider: "catbox" | "litterbox" | "other";
+  provider: MediaHost | "other";
   peerNumber: number;
   peerName: string;
   direction: LinkMessage["direction"];
@@ -749,12 +750,5 @@ function canonicalizeStoredMessage(message: LinkMessage): LinkMessage {
 }
 
 export function galleryMediaProvider(value: string): ChatMediaItem["provider"] {
-  try {
-    const host = new URL(value).hostname.toLocaleLowerCase();
-    if (host === "files.catbox.moe") return "catbox";
-    if (host === "litter.catbox.moe") return "litterbox";
-  } catch {
-    // parseMessageLinks already validates URLs; keep a harmless fallback for hostile globals.
-  }
-  return "other";
+  return mediaHost(value, KIKILINK_CLOUD_ORIGIN) ?? "other";
 }

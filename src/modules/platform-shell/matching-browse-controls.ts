@@ -156,7 +156,7 @@ function matchSearch(input: HTMLInputElement, apply: () => void): HTMLElement {
 
 export function matchSuggestionCount(count: number, hasMore: boolean): HTMLElement {
   const unit = count === 1 ? 'suggestion' : 'suggestions';
-  const text = `${count} ${hasMore ? 'loaded ' : ''}${unit} · Ranked by shared information.`;
+  const text = `${count} ${hasMore ? 'loaded ' : ''}${unit}.`;
   return element('p', { className: 'kl-match-results', role: 'status', text });
 }
 
@@ -165,7 +165,7 @@ export function matchEmptySuggestions(reset: HTMLButtonElement, hidden: HTMLButt
     element('h2', { text: 'No suggestions fit these filters' }),
     element('p', {
       className: 'kl-match-meta',
-      text: 'Try a wider language, intent or shared-time filter. Hidden and private information is never used to fill the gaps.',
+      text: 'Try a different language, intent or time filter.',
     }),
     element('div', { className: 'kl-match-actions' }, reset, hidden));
 }
@@ -181,7 +181,9 @@ export function matchSignalBar(own: MatchOwn, status: ReturnType<typeof matchSig
   preferences?: HTMLButtonElement): HTMLElement {
   const expiry = own.signal.expiresAt;
   const detail = element('p', { className: 'kl-match-meta' });
-  if (status === 'Available') {
+  if (status === 'Available' && own.revision === 0) {
+    detail.textContent = 'Your public profile is used for suggestions.';
+  } else if (status === 'Available') {
     detail.append(own.signal.intents.join(' · '), ' · Until ',
       expiry === null ? 'you pause it' : bindClockText(element('time'), expiry, 'medium-date-time'));
   } else {

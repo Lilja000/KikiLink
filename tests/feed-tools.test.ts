@@ -21,7 +21,7 @@ function input(root: ParentNode, label: string, value: string): HTMLInputElement
   const field = root.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)!;
   field.value = value; field.dispatchEvent(new Event("input")); return field;
 }
-function setup(handler: (method: string, path: string, body: any) => Promise<unknown>, platformPreview = false) {
+function setup(handler: (method: string, path: string, body: any) => Promise<unknown>, platformPreview = false, canPin = false) {
   const request = vi.fn(handler), errors: unknown[] = [], image = vi.fn((id: string) => {
     const node = document.createElement("span"); node.dataset.image = id; return node;
   });
@@ -31,7 +31,7 @@ function setup(handler: (method: string, path: string, body: any) => Promise<unk
     if (button) button.disabled = true;
     try { await action(); } catch (error) { errors.push(error); } finally { if (button) button.disabled = false; }
   } });
-  const view = new CloudFeedView(ui, { platformPreview, openOwnProfile: () => {}, openGroups: () => {}, report: () => {} });
+  const view = new CloudFeedView(ui, { platformPreview, canPin: () => canPin, openOwnProfile: () => {}, openGroups: () => {}, report: () => {} });
   document.body.append(view.element); cleanup.push(() => { view.destroy(); ui.destroy(); });
   return { view, ui, request, image, errors, blocked, client };
 }
@@ -121,8 +121,8 @@ describe("Feed community tools", () => {
     const card = (id: number) => view.element.querySelector<HTMLElement>(`[data-post-id="${id}"]`)!;
     const menu = (id: number) => card(id).querySelector('[aria-label="Post options"]')!.parentElement!;
     const labels = (node: Element) => [...node.querySelectorAll("button")].map(b => b.textContent);
-    expect(labels(menu(7))).toEqual(["Open conversation", "Who reacted", "Save post", "Report post…"]);
-    expect(labels(menu(5))).toEqual(["Open conversation", "Who reacted", "Save post", "Edit post", "Pin your post", "Delete post…"]);
+    expect(labels(menu(7))).toEqual(["Open conversation", "Who reacted", "Save post", "Report post…", "Copy text", "Follow comments", "Hide post", "Block author"]);
+    expect(labels(menu(5))).toEqual(["Open conversation", "Who reacted", "Save post", "Edit post", "Pin your post", "Delete post…", "Copy text", "Follow comments", "Hide post"]);
     button(menu(5), "Pin your post").click();
     await vi.waitFor(() => expect(labels(menu(5))).toContain("Unpin your post"));
     expect(view.element.querySelector(".kl-feed-posts > article")?.getAttribute("data-post-id")).toBe("5");
@@ -131,9 +131,62 @@ describe("Feed community tools", () => {
     button(menu(5), "Unpin your post").click();
     await vi.waitFor(() => expect(card(5).dataset.pinned).toBe("false"));
     expect(request.mock.calls.some(([method]) => method === "PUT")).toBe(false);
-    menu(7).querySelector("summary")!.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true }));
-    expect(card(7).querySelector<HTMLDetailsElement>(".kl-feed-additional-menu")!.open).toBe(true);
-    expect(labels(card(7).querySelector(".kl-feed-additional-menu")!)).toContain("Hide post");
+    const options = menu(7) as HTMLDetailsElement;
+    expect(card(7).querySelectorAll(":scope > header > details")).toHaveLength(1);
+    options.querySelector("summary")!.click();
+    expect(options.open).toBe(true);
+    options.querySelector("summary")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(options.open).toBe(false);
+    for (const key of ["F10", "ContextMenu"]) {
+      options.querySelector("summary")!.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey: key === "F10", bubbles: true }));
+      expect(options.open).toBe(true);
+      expect(document.activeElement).toBe(button(options, "Open conversation"));
+      options.open = false;
+    }
+    vi.useFakeTimers();
+    try {
+      const body = card(7).querySelector(".kl-feed-post-text")!;
+      const touch = { bubbles: true, pointerType: "touch", isPrimary: true, pointerId: 1, clientX: 10, clientY: 10 };
+      body.dispatchEvent(new PointerEvent("pointerdown", touch));
+      body.dispatchEvent(new PointerEvent("pointermove", { ...touch, clientY: 80 }));
+      vi.advanceTimersByTime(600);
+      expect(options.open).toBe(false);
+      body.dispatchEvent(new PointerEvent("pointerdown", touch));
+      vi.advanceTimersByTime(600);
+      expect(options.open).toBe(true);
+      body.dispatchEvent(new PointerEvent("contextmenu", { ...touch, cancelable: true }));
+      expect(options.open).toBe(true);
+      expect(card(7).querySelectorAll("details[open]")).toHaveLength(1);
+      card(5).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      expect((menu(5) as HTMLDetailsElement).open).toBe(true);
+      expect(options.open).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("gives moderators one authoritative pin on their own post even with a saved private pin", async () => {
+    const entry = post({ author: 101, profile: profile(101), createdAt: 5 });
+    localStorage.setItem("kikilink:feed:personal-pin:v1::101:legacy:7:5", "1");
+    const { view, request, errors } = setup(async (method, path, body) => {
+      if (method === "PUT" && path === "/v1/feed/7/pin") {
+        entry.pinnedAt = body.pinned ? 123 : null;
+        return structuredClone(entry);
+      }
+      return { items: [structuredClone(entry)], nextCursor: null };
+    }, true, true);
+    await view.render({ ...features, feedPins: true });
+    const card = view.element.querySelector<HTMLElement>("[data-post-id]")!;
+    const header = card.querySelector("header")!;
+    expect(header.querySelectorAll("details")).toHaveLength(1);
+    expect(header.querySelector(".kl-post-personal-pin")).toBeNull();
+    expect(card.dataset.pinned).toBe("false");
+    card.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    button(header, "Pin post").click();
+    await vi.waitFor(() => expect(card.dataset.pinned).toBe("true"));
+    expect(card.querySelectorAll(".kl-feed-highlights > span")).toHaveLength(1);
+    button(header, "Unpin post").click();
+    await vi.waitFor(() => expect(card.dataset.pinned).toBe("false"));
+    expect(request.mock.calls.filter(([method]) => method === "PUT").map(([, , body]) => body)).toEqual([{ pinned: true }, { pinned: false }]);
+    expect(errors).toEqual([]);
   });
 
   it("clears a submitted platform search, restores focus and keeps compact post labels accessible", async () => {

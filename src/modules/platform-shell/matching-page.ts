@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { ShellActionMenu } from './action-menu';
 import { MatchingSearch, matchConnectionsButton, matchEmptySuggestions, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSignalBar, matchSignalStatus, matchSuggestionCount, setMatchConnectionsCount, type MatchingBrowseSelection } from './matching-browse-controls';
 import { matchingBreakdown } from './matching-breakdown';
@@ -70,6 +71,7 @@ interface ConnectionDraft {
 interface Options {
   current(): boolean;
   blocked(member: number): boolean;
+  known?(member: number): boolean;
   profile(member: number, name: string): void;
   canMessage?(member: number): boolean;
   message?(member: number, name: string, current: () => boolean): void | Promise<void>;
@@ -128,7 +130,6 @@ export class MatchingPage {
   #items: MatchCandidate[] = [];
   #requests: MatchRequest[] = [];
   #next: string | number | null = null;
-  #poolLimited = false;
   #pending: MatchingPending | null = null;
   #page: "people" | "connections" = "people";
   #connectionsOrigin: Exclude<MatchingType, "people"> | undefined;
@@ -634,7 +635,7 @@ export class MatchingPage {
     }
     this.#draw();
     try {
-      const { source, activeRequests } = await this.recovery.peopleCapabilities(valid);
+      const { source, activeRequests, suggestions } = await this.recovery.peopleCapabilities(valid);
       if (!valid() || token !== this.#token) return;
       if(more&&!sameMatchingSource(source,this.#source))throw new MatchingGenerationError();
       if (!sameMatchingSource(source, this.#source)) {
@@ -661,6 +662,7 @@ export class MatchingPage {
           limit: "20",
           cursor: more ? String(prior ?? "") : "",
         });
+        if (suggestions) q.set("suggestions", "1");
         if (activeRequests) q.set("includeConnection", "1");
         readingCatalog = catalog;
         const result = checkedMatchPage(
@@ -669,7 +671,7 @@ export class MatchingPage {
         );
         readingCatalog = false;
         if (!valid() || token !== this.#token || !currentSearch()) return;
-        const rows = result.items.filter((c) => this.#allowed(c.memberNumber)).map(c=>this.#bind(c));
+        const rows = result.items.filter((c) => this.#allowed(c.memberNumber) && (this.#filters.scope !== "all" || !this.options.known?.(c.memberNumber))).map(c=>this.#bind(c));
         if (
           more &&
           rows.some((c) =>
@@ -679,7 +681,6 @@ export class MatchingPage {
           throw new Error("Suggestions changed. Refresh before continuing.");
         this.#items = [...(more ? this.#items : []), ...rows];
         this.#next = result.nextCursor;
-        this.#poolLimited = result.poolLimited;
         serverNow = result.serverNow;
       } else {
         readingCatalog = catalog;
@@ -1030,12 +1031,6 @@ export class MatchingPage {
       }
       if (this.#search.pending) { this.#results.append(matchingCatalogLoading()); return; }
       if (this.#drawCatalogState(search)) return;
-      if (this.#poolLimited)
-        this.#results.append(
-          note(
-            "Suggestions are ranked within the 500 most recently updated signals available to you.",
-          ),
-        );
       const visible = this.#items.filter(c => this.#allowed(c.memberNumber));
       if (!this.#busy && !this.#message)
         this.#results.append(matchSuggestionCount(visible.length, this.#next !== null));
@@ -1095,7 +1090,7 @@ export class MatchingPage {
           "article",
           { className: "kl-match-card kl-match-connection-card" },
           element("div", { className: "kl-match-person" },
-            current.peer ? this.#avatar(current.peer.name) : element("span", { className: "kl-match-avatar kl-match-avatar--resource", ariaHidden: "true" }, kikiIcon("lock")),
+            current.peer ? this.#avatar(current.peer.name, current.peer.memberNumber) : element("span", { className: "kl-match-avatar kl-match-avatar--resource", ariaHidden: "true" }, kikiIcon("lock")),
             element("div", {}, element("strong", { text: current.peer?.name ?? "Unavailable connection" }),
               element("p", { className: "kl-match-meta" },
                 element("span", { className: "kl-match-connection-direction", text: current.direction }), " · ",
@@ -1203,7 +1198,7 @@ export class MatchingPage {
           return [{
             title: peer.name,
             icon: "profile" as const,
-            avatar: this.#avatar(peer.name),
+            avatar: this.#avatar(peer.name, peer.memberNumber),
             reason: candidate?.reasons[0],
             open: () => void this.#why(target, source, ".kl-match-information-toggle"),
           }];
@@ -1217,8 +1212,8 @@ export class MatchingPage {
     button.prepend(kikiIcon("filter"));
     return button;
   }
-  #avatar(name: string) {
-    return element("span", { className: "kl-match-avatar", ariaHidden: "true", text: Array.from(name.trim()).slice(0, 2).join("").toUpperCase() });
+  #avatar(name: string, member: number, status?: string | null) {
+    return markAvatarPresence(element("span", { className: "kl-match-avatar", ariaHidden: "true", text: Array.from(name.trim()).slice(0, 2).join("").toUpperCase() }), member, status);
   }
   #card(c: MatchCandidate) {
     const openProfile = () => void this.#openProfile(c);
@@ -1269,7 +1264,7 @@ export class MatchingPage {
       element(
         "div",
         { className: "kl-match-person" },
-        this.#avatar(c.name),
+        this.#avatar(c.name, c.memberNumber, c.status),
         element(
           "div",
           {},
@@ -1282,7 +1277,7 @@ export class MatchingPage {
         ),
         more,
       ),
-      element("p", { text: c.note || "Open to shared company." }),
+      ...(c.note ? [element("p", { text: c.note })] : []),
       element("div", { className: "kl-match-metrics" },
         score != null ? element("span", {}, element("strong", { text: `${score}%` }), " compatibility")
           : element("span", { text: "Compatibility unavailable" }),
@@ -1297,7 +1292,7 @@ export class MatchingPage {
       element(
         "div",
         { className: "kl-match-actions" },
-        request,
+        ...(c.signalRevision > 0 ? [request] : []),
         why,
         profile,
       ),
@@ -1314,6 +1309,7 @@ export class MatchingPage {
     const capabilities = await this.recovery.peopleCapabilities(valid);
     if (!sameMatchingSource(source, capabilities.source)) throw new MatchingGenerationError();
     const query = new URLSearchParams({ priority: this.#filters.priority });
+    if (capabilities.suggestions) query.set("suggestions", "1");
     if (capabilities.activeRequests) query.set("includeConnection", "1");
     const c = checkedMatchCandidate(
       await this.#read(
@@ -1370,7 +1366,7 @@ export class MatchingPage {
       const c = await this.#readCandidate(target, valid, source, fromRecommendation);
       if (!valid() || this.#refreshAfter) return;
       const body = element("div", {},
-        element("div", { className: "kl-match-why-summary" }, this.#avatar(c.name),
+        element("div", { className: "kl-match-why-summary" }, this.#avatar(c.name, c.memberNumber, c.status),
           element("div", {}, element("h3", { text: c.name }),
             element("p", {}, element("strong", { text: `${c.score}/100 suggestion score` }), ` · ${c.coverage}% information coverage`),
             c.compatibility?.status === "available"
@@ -1857,7 +1853,7 @@ export class MatchingPage {
         const own = this.#bind(checkedMatchOwn(await this.#read("/v1/matching/me", source), this.recovery.owner), source);
         if (!valid() || this.#refreshAfter || !this.#allowed(target) || fromRecommendation && this.#recommendationActionMember !== target) return;
         if (!candidate.canRequest) throw new Error("This person is not available for connection requests.");
-        if (!own.active) {
+        if (!own.active || own.revision === 0) {
           const keep = this.#button("Keep browsing", () => this.#dialog.close());
           const setup = this.#button("Set up my signal", () => {
             if (this.#dialog.open) this.#openEditor(own, returnFocus);
@@ -1961,7 +1957,7 @@ export class MatchingPage {
       returnFocus);
   }
   #requestRecipient(candidate: MatchCandidate): HTMLElement {
-    return element("div", { className: "kl-match-request-target" }, this.#avatar(candidate.name),
+    return element("div", { className: "kl-match-request-target" }, this.#avatar(candidate.name, candidate.memberNumber, candidate.status),
       element("div", {}, element("strong", { text: candidate.name }), note("People")));
   }
   #showConnectionReview(original: ConnectionDraft, recipient: MatchCandidate, active: () => boolean, returnFocus: string): void {
@@ -2078,7 +2074,7 @@ export class MatchingPage {
     this.#showDetails("Connection details", "connection-detail",
       element("div", { className: "kl-match-request-body kl-match-connection-details" },
         element("div", { className: "kl-match-request-target" },
-          r.peer ? this.#avatar(r.peer.name) :
+          r.peer ? this.#avatar(r.peer.name, r.peer.memberNumber) :
             element("span", { className: "kl-match-avatar kl-match-avatar--resource", ariaHidden: "true" }, kikiIcon("lock")),
           element("div", {}, element("strong", { text: r.peer?.name ?? "Unavailable connection" }), note(`${r.direction} · ${r.state}`))),
         element("p", { className: "kl-match-meta kl-match-connection-dates" },

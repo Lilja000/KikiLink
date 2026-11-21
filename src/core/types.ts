@@ -59,7 +59,7 @@ export type ReactionAction = "notice" | "room-emote";
 export type NotificationSoundPreset = "kiki" | "chime" | "sparkle" | "pop";
 export type NotificationSoundChoice = NotificationSoundPreset | `custom:${string}`;
 export type LinkNotificationKind = "chat" | "friend-online" | "room-join";
-export type MusicTrackSource = "url" | "catbox" | "local";
+export type MusicTrackSource = "url" | "catbox" | "litterbox" | "cloud" | "anondrop" | "waifuvault" | "local";
 export type MusicRepeatMode = "off" | "all" | "one";
 
 export interface RoomPresetData {
@@ -351,7 +351,7 @@ export interface KikiLinkEvents {
 }
 
 export type NavigationTab = "home" | "cloud" | "chat" | "roster" | "room" | "music" | "activities";
-export type OptionalPlatformArea = "chat" | "explore" | "create" | "game" | "you";
+export type OptionalPlatformArea = "feed" | "chat" | "explore" | "create" | "game" | "you";
 export type NavigationVisibilityKey = NavigationTab | OptionalPlatformArea;
 export interface TabAlerts {
   mode: "all" | "personal" | "off";

@@ -89,6 +89,7 @@ export class WorkshopPage {
       this.navigation.append(button);
     }
     this.#unsubscribe=client.subscribe(kind=>{
+      if (kind === 'session' || kind === 'workshop-moderation' || kind === 'profiles-cleared') this.#installation?.clearUpdateNotices();
       if(kind==='session'||kind==='connection'){if(client.connected)this.#automaticSync?.schedule();else this.#automaticSync?.cancel();}
       if(!options.current()||client.memberNumber!==this.#member||client.origin!==this.#origin){this.#reset();return;}
       if((kind==='session'||kind==='connection')&&this.#editor&&(!this.#retry||this.#preparing)&&this.#autosave){

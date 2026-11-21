@@ -10,7 +10,7 @@ import { SocialUI, REACTIONS, type Reaction } from "./social-ui";
 import { kikiIcon } from "../modules/link-chat/icons";
 import { FeedCommentsDialog } from "./feed-comments-dialog";
 import { ContentDialog } from "../modules/link-chat/content-dialog";
-import { TEXT_FORMAT_HINT } from "../modules/link-chat/text-format";
+import { bindContextMenuGesture } from "../utils/context-menu-gesture";
 import { appendFeedFormattedText } from "./feed-spoilers";
 import { FeedPollView, pollEditor, validPollDraft } from "./feed-poll";
 import { parseMetadata } from "./feed-draft-metadata";
@@ -149,6 +149,7 @@ export class CloudFeedView {
   #syncTask: Promise<boolean> | undefined;
   #contentVersion = 0;
   #discussionSignature: string | undefined;
+  readonly #menuGestures = new AbortController();
   readonly #postDialog = new ContentDialog();
   readonly #mentions: MentionPicker;
   readonly #reactionDialog = new ContentDialog();
@@ -165,12 +166,26 @@ export class CloudFeedView {
     this.#mentions = new MentionPicker(ui.options.client, member => ui.options.isBlocked(member));
     this.#filter = options.savedOnly ? "saved" : "all";
     if (options.platformPreview) this.element.classList.add("kl-platform-feed");
+    bindContextMenuGesture(this.element, event => {
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest("dialog, .kl-cloud-comments, input, textarea, select, [contenteditable=true]")) return null;
+      if (event.type === "pointerdown" && target.closest("button, a, summary, [role=button]")) return null;
+      return target.closest<HTMLElement>(".kl-feed-post");
+    }, card => {
+      const menu = card.querySelector<HTMLDetailsElement>(":scope > .kl-feed-post-header > details");
+      if (!menu || !card.isConnected || card.closest("[hidden]") || this.#commentsDialog?.card === card) return;
+      for (const previous of this.element.querySelectorAll<HTMLDetailsElement>(".kl-feed-post-header > details[open]")) {
+        if (previous !== menu) previous.open = false;
+      }
+      menu.open = true;
+      menu.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden]):not([inert])")?.focus({ preventScroll: true });
+    }, this.#menuGestures.signal);
     if (options.savedOnly) this.element.dataset.saved = "true";
     document.addEventListener("visibilitychange", this.#onVisible);
     window.addEventListener("online", this.#onOnline);
   }
   destroy(): void {
-    this.#mentions.destroy(); document.removeEventListener("visibilitychange", this.#onVisible); window.removeEventListener("online", this.#onOnline);
+    this.#menuGestures.abort(); this.#mentions.destroy(); document.removeEventListener("visibilitychange", this.#onVisible); window.removeEventListener("online", this.#onOnline);
     this.clear(); this.#postDialog.destroy(); this.#reactionDialog.destroy();
     if (this.#draftHost.#draftGuest === this) this.#draftHost.#draftGuest = undefined;
   }
@@ -534,11 +549,8 @@ export class CloudFeedView {
     const sidebar = saved || preview ? undefined : element("aside", { className: "kl-feed-aside", ariaLabel: "Your KikiLink", tabIndex: 0 },
       element("div", { className: "kl-cloud-card kl-feed-self" },
         this.ui.member(this.ui.options.client.memberNumber, undefined, undefined, true),
-        element("p", { className: "kl-cloud-note", text: "Your profile, wherever you are." }),
         this.ui.button("Edit profile", () => this.options.openOwnProfile(), "edit")),
       element("div", { className: "kl-cloud-card kl-feed-group-link" },
-        element("h3", { text: "Keep the conversation going" }),
-        element("p", { className: "kl-cloud-note", text: "Your group chats stay together across rooms." }),
         this.ui.button("Open groups", () => this.options.openGroups(), "users")), this.#discussion);
     this.#renderDiscussions();
     const list = element("div", { className: "kl-feed-posts", ariaLabel: "Posts" });
@@ -622,8 +634,7 @@ export class CloudFeedView {
       }
       introduction = element("header", { className: "kl-feed-heading" }, element("h1", { text: saved ? "Saved" : "Feed" }), actions);
     } else introduction = saved ? element("div", { className: "kl-cloud-card kl-saved-intro" },
-      kikiIcon("bookmark"), element("div", {}, element("h3", { text: "Keep something worth returning to" }),
-        element("p", { className: "kl-cloud-note", text: "Posts you save in the Feed appear here. Your bookmarks sync with your Cloud account." }))) : this.#composer();
+      kikiIcon("bookmark"), element("h3", { text: "Saved posts" })) : this.#composer();
     if (preview) main.prepend(introduction); else main.append(introduction);
     main.append(toolbar, status, list, loading);
     this.element.replaceChildren(main, ...(sidebar ? [sidebar] : []));
@@ -650,13 +661,13 @@ export class CloudFeedView {
       if (preview) {
         list.append(element("div", { className: "kl-feed-empty" }, kikiIcon("feed"),
           element("h2", { text: saved ? "No saved posts" : "No posts found" }),
-          element("p", { text: hasMore ? "Load more to look through older posts." : saved && !this.#query ? "Save a post to find it here later." : "Try a different search or filter." }),
+          saved && !this.#query ? element("p", { text: "Save a post from its menu to keep it here." }) : undefined,
           element("div", { className: "kl-feed-empty-actions" }, this.ui.button("Clear filters", resetFilters), browseFeed)));
         return;
       }
       list.append(element("div", { className: "kl-feed-empty" },
-        element("h3", { text: this.#filter === "saved" ? "Your saved posts" : this.#filter === "hidden" ? "Nothing hidden" : this.#filter === "friends" ? "Your friends’ posts" : this.#query || this.#filter === "mine" ? "No matches here yet" : "A little quiet here" }),
-        element("p", { text: hasMore ? "Load more to look through older posts." : this.#query ? "Try another phrase or a member number." : this.#filter === "saved" ? "Save a post from its menu to keep it here." : this.#filter === "hidden" ? "Posts you hide appear here. You can restore them anytime." : this.#filter === "friends" ? "Posts from your KikiLink friends will appear here." : "Share a thought or a photo to start the conversation." }), browseFeed));
+        element("h3", { text: this.#filter === "saved" ? "Your saved posts" : this.#filter === "hidden" ? "Nothing hidden" : this.#filter === "friends" ? "Your friends’ posts" : this.#query || this.#filter === "mine" ? "No matches here yet" : "No posts yet" }),
+        this.#query ? element("p", { text: "Search by text or member number." }) : this.#filter === "saved" ? element("p", { text: "Save a post from its menu to keep it here." }) : undefined, browseFeed));
     };
     this.#postDeleted = id => {
       if (!seen.delete(id)) return;
@@ -816,7 +827,7 @@ export class CloudFeedView {
   }
   #personalPinKey(post: CloudPost): string | undefined {
     const { client } = this.ui.options;
-    if (!this.options.platformPreview || !client.connected || post.author !== client.memberNumber) return;
+    if (!this.options.platformPreview || !client.connected || post.author !== client.memberNumber || post.pinnedAt || (this.#features.feedPins && this.options.canPin?.())) return;
     const source = this.#contentSource;
     if (source.required && !source.generation) return;
     return ["kikilink:feed:personal-pin:v1", client.origin, client.memberNumber, source.generation ?? "legacy", post.id, post.createdAt].join(":");
@@ -861,7 +872,8 @@ export class CloudFeedView {
     const personal = card.querySelector<HTMLButtonElement>(".kl-post-personal-pin");
     if (personal) {
       const label = this.#personallyPinned(post) ? "Unpin your post" : "Pin your post";
-      personal.setAttribute("aria-label", label); personal.querySelector("span")!.textContent = label;
+      personal.hidden = !!post.pinnedAt || !!post.community?.archived;
+      personal.setAttribute("aria-label", label); personal.title = label; personal.querySelector("span")!.textContent = label;
     }
     const pin = card.querySelector<HTMLButtonElement>(".kl-post-pin-action");
     if (pin) {
@@ -953,7 +965,7 @@ export class CloudFeedView {
     const client = this.ui.options.client, origin = client.origin, epoch = this.#accountEpoch;
     const surfaceCurrent = surface.#contentCurrent(card);
     const current = () => surfaceCurrent() && client.connected && client.origin === origin && this.#accountEpoch === epoch;
-    const text = element("textarea", { placeholder: "What's on your mind?", ariaLabel: "Share a post", maxLength: close ? Math.max(2000, this.#draft.length) : 4000, value: this.#draft, ...(close ? {} : { title: TEXT_FORMAT_HINT }) });
+    const text = element("textarea", { placeholder: "What's on your mind?", ariaLabel: "Share a post", maxLength: close ? Math.max(2000, this.#draft.length) : 4000, value: this.#draft });
     surface.#bindMentions(text);
     const remaining = element("span", { className: "kl-composer-count" });
     const files = element("input", { type: "file", accept: "image/png,image/jpeg,image/webp", multiple: true, hidden: true, ariaLabel: "Attach up to 4 images" });
@@ -1125,8 +1137,7 @@ export class CloudFeedView {
       element("div", { className: "kl-feed-compose-actions" }, tools, remaining)), errorStatus, previews, pollSlot, draftRow,
       element("footer", { className: "kl-feed-compose-footer" }, this.ui.button("Cancel", close), post));
     else card.append(author, text, previews, pollSlot, element("div", { className: "kl-feed-compose-actions" }, tools,
-      element("div", { className: "kl-feed-compose-submit" }, remaining, post)), draftRow,
-      element("small", { className: "kl-feed-compose-hint", text: "Up to 4 images · 5 MiB each · Ctrl + Enter to post" }));
+      element("div", { className: "kl-feed-compose-submit" }, remaining, post)), draftRow);
     if ((!features.feedPolls && this.#pollDraft) || (!features.feedSpoilers && this.#spoilerFiles.size))
       card.append(element("p", { className: "kl-cloud-note", text: "This saved draft uses features not available on this Cloud yet. You can remove its poll or spoiler markings to post." }));
     renderFiles(); renderPoll(); return card;
@@ -1193,8 +1204,9 @@ export class CloudFeedView {
     if (this.#features.feedBookmarks) preference("bookmark", "bookmarked", "bookmark", "Unsave post", "Save post");
     if (this.#features.feedWatch) preference("watch", "watching", "notifications", "Unfollow comments", "Follow comments");
     if (this.#features.feedHide) preference("hide", "hidden", "eye-off", "Restore post", "Hide post");
-    if (this.#features.reactionDetails) actions.push(this.ui.button("Reactions", () => this.#showReactions(card, "post", post.id), "reactions"));
-    if (this.#features.feedPins && this.options.canPin?.()) {
+    if (!this.options.platformPreview && this.#features.reactionDetails) actions.push(this.ui.button("Reactions", () => this.#showReactions(card, "post", post.id), "reactions"));
+    const canPin = this.#features.feedPins && this.options.canPin?.();
+    if (canPin) {
       const pin = this.ui.button(post.pinnedAt ? "Unpin post" : "Pin post", async () => {
         const next = await this.#interact<CloudPost>(card,source,{action:"pin",type:"post",id:post.id,label:`${post.pinnedAt?"Unpin":"Pin"} post #${post.id}`},{pinned:!post.pinnedAt});
         if(!next)return;
@@ -1229,11 +1241,11 @@ export class CloudFeedView {
       };
       if (post.author === this.ui.options.client.memberNumber) {
         use("Edit post", "Edit post");
-        if (!post.community?.archived) {
-          const key = this.#personalPinKey(post);
+        if (!canPin) {
           const current = this.#contentCurrent(card);
           primary.push(this.ui.button("Pin your post", () => {
-            if (!key || key !== this.#personalPinKey(post) || !current() || post.community?.archived) return;
+            const key = this.#personalPinKey(post);
+            if (!key || !current() || post.community?.archived) return;
             if (this.#personallyPinned(post)) localStorage.removeItem(key); else localStorage.setItem(key, "1");
             this.#highlightPost(card, post);
             const list = card.closest<HTMLElement>(".kl-feed-posts"); if (list) this.#orderPosts(list);
@@ -1241,21 +1253,8 @@ export class CloudFeedView {
         }
         use("Delete post", "Delete post…");
       } else use("Report post", "Report post…");
-      const header = card.firstElementChild!;
-      const primaryMenu = this.#feedMenu("Post options", primary);
-      const extras = this.ui.menu("Additional post actions", actions.filter(node => node.getAttribute("aria-label") !== "Reactions")) as HTMLDetailsElement;
-      extras.classList.add("kl-feed-additional-menu");
-      header.append(primaryMenu, extras);
-      const showExtras = (event: Event) => {
-        if (this.#commentsDialog?.card === card || !card.isConnected) return;
-        event.preventDefault(); (primaryMenu as HTMLDetailsElement).open = false;
-        extras.open = true; extras.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
-      };
-      card.addEventListener("contextmenu", showExtras);
-      primaryMenu.addEventListener("keydown", event => {
-        if ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu") showExtras(event);
-      });
-    } else card.firstElementChild!.append(this.ui.menu("Post options", actions));
+      card.firstElementChild!.append(this.#feedMenu("Post options", [...primary, ...actions]));
+    } else card.firstElementChild!.append(this.#feedMenu("Post options", actions));
     this.#postMedia(card, post.mediaIds, post.spoilerMediaIds);
     this.#postPoll(card, post);
     const comments = this.ui.button(`Comments${post.commentCount !== undefined ? ` · ${post.commentCount}` : ""}`, async () => {
@@ -1599,7 +1598,7 @@ export class CloudFeedView {
       this.#commentCount(card, postId, 0, false);
     } else card.append(box);
     const list = element("div", { className: "kl-comment-list" });
-    const draft = element("textarea", { placeholder: presentation ? "" : "Write a comment…", ariaLabel: "Comment", maxLength: presentation ? Math.max(500, (drafts.get(postId) ?? "").length) : 1000, value: drafts.get(postId) ?? "", ...(presentation ? {} : { title: TEXT_FORMAT_HINT }) });
+    const draft = element("textarea", { placeholder: presentation ? "" : "Write a comment…", ariaLabel: "Comment", maxLength: presentation ? Math.max(500, (drafts.get(postId) ?? "").length) : 1000, value: drafts.get(postId) ?? "" });
     draft.disabled = readOnly();
     const replyBar = element("div", { className: "kl-comment-reply-bar" });
     let replyTo = this.#features.feedReplies ? replies.get(postId) : undefined;

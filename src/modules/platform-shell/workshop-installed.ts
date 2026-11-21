@@ -15,7 +15,7 @@ import {workshopPermissionList} from './workshop-overview';
 import {fitPanelDialog} from './panel-dialog-layout';
 import {ShellActionMenu,type ShellAction} from './action-menu';
 import type {WorkshopBookmarks} from './workshop-discovery';
-export interface WorkshopInstallationOptions {storage:KeyValueStorage;settings:SettingsStore;profile(patch:WorkshopProfilePatch,current:()=>boolean):Promise<void>;openSpace?(id:string):void;communityTemplate?(item:InstalledWorkshopPackage,current:()=>boolean):Promise<void>;}
+export interface WorkshopInstallationOptions {storage:KeyValueStorage;settings:SettingsStore;updatesChanged?(count:number):void;profile(patch:WorkshopProfilePatch,current:()=>boolean):Promise<void>;openSpace?(id:string):void;communityTemplate?(item:InstalledWorkshopPackage,current:()=>boolean):Promise<void>;}
 interface CatalogActions {
   primary: HTMLElement;
   versions: ReadonlyMap<WorkshopRelease, HTMLElement>;
@@ -60,7 +60,7 @@ export class WorkshopInstalled {
     const controls=[...(this.#dialog??this.element).querySelectorAll<HTMLButtonElement|HTMLInputElement|HTMLSelectElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled)')];
     for(const control of controls)control.disabled=true;
     const unlock=()=>{this.#busy=false;for(const control of controls)control.disabled=false;};
-    void action().then(()=>{if(this.active()&&token===this.#token){unlock();this.#review=false;done();}}).catch(error=>{
+    void action().then(()=>{if(this.active()&&token===this.#token){unlock();this.#review=false;this.#notifyUpdates();done();}}).catch(error=>{
       if(!this.active()||token!==this.#token)return;
       unlock();
       if(this.#dialog?.open){
@@ -72,6 +72,24 @@ export class WorkshopInstalled {
         this.#review=false;this.element.replaceChildren(this.#button('Back to Installed',()=>this.list()));this.#error(error);
       }
     });
+  }
+  clearUpdateNotices():void {
+    this.#availableUpdates.clear();
+    this.#updates.clear();
+    this.options.updatesChanged?.(0);
+  }
+  #notifyUpdates():void {
+    if (!this.options.updatesChanged || !this.#availableUpdates.size) {
+      this.options.updatesChanged?.(0);
+      return;
+    }
+    try {
+      const count = this.library.list().filter(item => {
+        const update = this.#availableUpdates.get(item.id);
+        return update && compareWorkshopVersions(update.release.version, item.release.version) > 0;
+      }).length;
+      this.options.updatesChanged(count);
+    } catch { this.options.updatesChanged(0); }
   }
   list():void {
     this.cancel();this.#sharingSource=undefined;this.#back=()=>this.list();

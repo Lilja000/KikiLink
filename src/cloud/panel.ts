@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../modules/link-chat/avatar-presence";
 import {confirmCloudBlock} from './account-control-ui';
 import {AccountControlIntent, AccountControlGenerationError, AccountControlUnconfirmedError, reviewAccountControl, accountControlRead, accountControlPath} from './account-control-generation';
 import {FeedContentError} from './feed-content-intent';
@@ -865,6 +866,7 @@ export class CloudPanel {
     const avatar = element("div", {
       className: "kl-avatar kl-addon-profile-avatar",
     });
+    markAvatarPresence(avatar, p.memberNumber);
     avatar.dataset.avatarFrame = p.avatarFrame;
     if (p.avatarId)
       avatar.append(

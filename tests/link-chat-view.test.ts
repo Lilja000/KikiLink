@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BCAdapter } from "../src/bc/adapter";
 import { EventBus } from "../src/core/event-bus";
-import * as distribution from "../src/core/distribution";
+import * as sharedFiles from "../src/cloud/public-files";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
 import { setTimeFormatPreference } from "../src/core/time-format";
 import type { ConversationMeta, KikiLinkEvents } from "../src/core/types";
@@ -628,7 +628,6 @@ describe("LinkChatView", () => {
   });
 
   it("keeps mixed chat rows keyed and exposes unclipped, contextual managed-group actions", async () => {
-    vi.spyOn(distribution, "usesCatboxUploadRelay").mockReturnValue(true);
     const names = new Map<number, string>([
       [10, "Kiki"],
       [20, "Reina"],
@@ -844,12 +843,7 @@ describe("LinkChatView", () => {
       value: [firstAvatarFile],
     });
     avatarFileInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await vi.waitFor(() => {
-      expect(chooseAvatar.textContent).toBe("Verify & upload avatar");
-      expect(avatarUploads).toHaveLength(0);
-    });
-    chooseAvatar.click();
-    expect(avatarUploads).toHaveLength(1);
+    await vi.waitFor(() => expect(avatarUploads).toHaveLength(1));
     expect(avatarUploads[0]?.signal?.aborted).toBe(false);
     await groups.setGroupAvatar(
       created.group.groupId,
@@ -950,12 +944,7 @@ describe("LinkChatView", () => {
       value: [secondAvatarFile],
     });
     avatarFileInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await vi.waitFor(() => {
-      expect(secondChooseAvatar.textContent).toBe("Verify & upload avatar");
-      expect(avatarUploads).toHaveLength(1);
-    });
-    secondChooseAvatar.click();
-    expect(avatarUploads).toHaveLength(2);
+    await vi.waitFor(() => expect(avatarUploads).toHaveLength(2));
 
     view.close();
 
@@ -992,9 +981,7 @@ describe("LinkChatView", () => {
       value: [recoveredAvatarFile],
     });
     avatarFileInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await vi.waitFor(() => {
-      expect(recoveredChooseAvatar.textContent).toBe("Verify & upload avatar");
-    });
+    await vi.waitFor(() => expect(avatarUploads).toHaveLength(3));
 
     avatarUploads[1]?.resolve("https://files.catbox.moe/late-cancelled-avatar.webp");
     await vi.waitFor(() => {
@@ -1003,11 +990,8 @@ describe("LinkChatView", () => {
           url: "https://files.catbox.moe/late-cancelled-avatar.webp",
         }),
       );
-      expect(recoveredChooseAvatar.textContent).toBe("Verify & upload avatar");
     });
 
-    recoveredChooseAvatar.click();
-    expect(avatarUploads).toHaveLength(3);
     avatarUploads[2]?.resolve("https://files.catbox.moe/recovered-avatar.webp");
     await vi.waitFor(() => {
       expect(groups.getGroup(created.group.groupId)?.avatarUrl).toBe(
@@ -1021,8 +1005,7 @@ describe("LinkChatView", () => {
     await groups.destroy();
   });
 
-  it("uploads a userscript group avatar in one step without the FUSAM relay", async () => {
-    vi.spyOn(distribution, "usesCatboxUploadRelay").mockReturnValue(false);
+  it("uploads a compatibility group avatar with one file selection", async () => {
     const names = new Map<number, string>([
       [10, "Kiki"],
       [20, "Reina"],
@@ -1134,7 +1117,7 @@ describe("LinkChatView", () => {
       expect.any(Function),
       expect.any(AbortSignal),
     );
-    expect(chooseAvatar.textContent).toBe("Choose & upload to Catbox");
+    expect(chooseAvatar.textContent).toBe("Choose & upload avatar");
 
     view.destroy();
     await groups.destroy();
@@ -2415,8 +2398,8 @@ describe("LinkChatView", () => {
     const musicFileMode = shadow?.querySelector<HTMLSelectElement>(".kl-music-file-mode");
     if (!musicFileMode) throw new Error("Missing Music sharing controls");
     expect([...musicFileMode.options].map((option) => [option.value, option.text])).toContainEqual([
-      "catbox",
-      "Upload to long-lived Catbox",
+      "anondrop",
+      "Share through AnonDrop",
     ]);
     expect(shadow?.querySelector(".kl-music-upload-retention")).toBeNull();
     expect(settings.get().linkChat.imageUploads.retention).toBe("24h");
@@ -3079,7 +3062,6 @@ describe("LinkChatView", () => {
   });
 
   it("keeps the profile dialog open until a banner upload reaches a final status", async () => {
-    vi.spyOn(distribution, "usesCatboxUploadRelay").mockReturnValue(true);
     const adapter = {
       getMemberName: (memberNumber: number) => `Member ${memberNumber}`,
       getMemberNickname: () => undefined,
@@ -3168,18 +3150,10 @@ describe("LinkChatView", () => {
     const banner = new File([bannerHeader], "banner.png", { type: "image/png" });
     Object.defineProperty(fileInput, "files", { configurable: true, value: [banner] });
     fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await vi.waitFor(() => {
-      expect(catboxImageUpload).not.toHaveBeenCalled();
-      expect(
-        dialog.querySelector<HTMLButtonElement>(".kl-profile-banner-actions .kl-text-button")
-          ?.textContent,
-      ).toBe("Verify & upload");
-    });
-    dialog.querySelector<HTMLButtonElement>(".kl-profile-banner-actions .kl-text-button")?.click();
-    expect(catboxImageUpload).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(catboxImageUpload).toHaveBeenCalledOnce());
     await vi.waitFor(() => {
       expect(dialog.querySelector(".kl-profile-banner-status")?.textContent).toContain(
-        "Authorizing and uploading to public Catbox",
+        "Uploading to AnonDrop",
       );
     });
 
@@ -3208,8 +3182,8 @@ describe("LinkChatView", () => {
       );
     });
 
-    dialog.querySelector<HTMLButtonElement>(".kl-profile-banner-actions .kl-text-button")?.click();
-    expect(catboxImageUpload).toHaveBeenCalledTimes(2);
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(catboxImageUpload).toHaveBeenCalledTimes(2));
     pendingUploads[1]?.resolve("https://files.catbox.moe/reopened-banner.webp");
     await vi.waitFor(() => {
       expect(dialog.querySelector(".kl-profile-banner-status")?.textContent).toContain(
@@ -4490,7 +4464,7 @@ describe("LinkChatView", () => {
       close: vi.fn(),
     };
     const catboxImageUpload = vi.fn(async () =>
-      "https://files.catbox.moe/permanent-gallery.webp");
+      "https://anondrop.net/Gallery123/kikilink-media.webp");
     const view = new LinkChatView(
       adapter,
       service,
@@ -4603,16 +4577,16 @@ describe("LinkChatView", () => {
     catboxFileInput.dispatchEvent(new Event("change", { bubbles: true }));
     await vi.waitFor(() => expect(imageUploader.prepare).toHaveBeenCalledWith(catboxFile));
     const catboxStorage = shadow?.querySelector<HTMLInputElement>(
-      'input[name="kikilink-gallery-storage"][value="catbox"]',
+      'input[name="kikilink-gallery-storage"][value="durable"]',
     );
     if (!catboxStorage) throw new Error("Missing Catbox Gallery choice");
     catboxStorage.checked = true;
     catboxStorage.dispatchEvent(new Event("change", { bubbles: true }));
     expect(shadow?.querySelector(".kl-image-dialog .kl-text-button--primary")?.textContent).toBe(
-      "Upload to Catbox",
+      "Upload to AnonDrop",
     );
     expect(shadow?.querySelector(".kl-local-image-status")?.textContent).toContain(
-      "long-lived Catbox storage",
+      "Ready to upload to AnonDrop",
     );
     expect(shadow?.querySelector<HTMLElement>(".kl-gallery-retention-field")?.hidden).toBe(true);
     shadow?.querySelector<HTMLButtonElement>(".kl-image-dialog .kl-text-button--primary")?.click();
@@ -4623,9 +4597,9 @@ describe("LinkChatView", () => {
         expect.any(AbortSignal),
       );
       expect(settings.get().linkChat.gallery.saved[0]?.url).toBe(
-        "https://files.catbox.moe/permanent-gallery.webp",
+        "https://anondrop.net/Gallery123/kikilink-media.webp",
       );
-      expect(shadow?.querySelector(".kl-gallery-grid")?.textContent).toContain("Catbox");
+      expect(shadow?.querySelector(".kl-gallery-grid")?.textContent).toContain("AnonDrop");
     });
 
     vi.mocked(imageUploader.prepare).mockClear();
@@ -4648,7 +4622,7 @@ describe("LinkChatView", () => {
     litterboxFileInput.dispatchEvent(new Event("change", { bubbles: true }));
     await vi.waitFor(() => expect(imageUploader.prepare).toHaveBeenCalledWith(litterboxFile));
     const litterboxStorage = shadow?.querySelector<HTMLInputElement>(
-      'input[name="kikilink-gallery-storage"][value="litterbox"]',
+      'input[name="kikilink-gallery-storage"][value="temporary"]',
     );
     const galleryRetention = shadow?.querySelector<HTMLSelectElement>(".kl-gallery-retention");
     if (!litterboxStorage || !galleryRetention) throw new Error("Missing Litterbox Gallery controls");
@@ -4679,10 +4653,10 @@ describe("LinkChatView", () => {
       ) ?? [])].every((input) => input.disabled),
     ).toBe(true);
     galleryRetention.value = "1h";
-    resolveLitterboxUpload?.("https://litter.catbox.moe/gallery-temporary.webp");
+    resolveLitterboxUpload?.("https://waifuvault.moe/f/4ad47e6d-daf0-4a63-a002-4398ed163210/kikilink-media.webp");
     await vi.waitFor(() => {
       const saved = settings.get().linkChat.gallery.saved.find(
-        ({ url }) => url === "https://litter.catbox.moe/gallery-temporary.webp",
+        ({ url }) => url === "https://waifuvault.moe/f/4ad47e6d-daf0-4a63-a002-4398ed163210/kikilink-media.webp",
       );
       expect(saved?.expiresAt).toBeGreaterThanOrEqual(uploadStartedAt + 72 * 60 * 60 * 1_000);
       expect(saved?.expiresAt).toBeLessThanOrEqual(Date.now() + 72 * 60 * 60 * 1_000);
@@ -4691,7 +4665,7 @@ describe("LinkChatView", () => {
     });
     settings.update((draft) => {
       const saved = draft.linkChat.gallery.saved.find(
-        ({ url }) => url === "https://litter.catbox.moe/gallery-temporary.webp",
+        ({ url }) => url === "https://waifuvault.moe/f/4ad47e6d-daf0-4a63-a002-4398ed163210/kikilink-media.webp",
       );
       if (!saved) throw new Error("Missing temporary Gallery entry");
       saved.addedAt = Date.now() - 2_000;
@@ -4702,17 +4676,17 @@ describe("LinkChatView", () => {
       ?.click();
     await vi.waitFor(() => {
       expect(settings.get().linkChat.gallery.saved).not.toContainEqual(
-        expect.objectContaining({ url: "https://litter.catbox.moe/gallery-temporary.webp" }),
+        expect.objectContaining({ url: "https://waifuvault.moe/f/4ad47e6d-daf0-4a63-a002-4398ed163210/kikilink-media.webp" }),
       );
       expect(settings.get().linkChat.gallery.hiddenUrls).toContain(
-        "https://litter.catbox.moe/gallery-temporary.webp",
+        "https://waifuvault.moe/f/4ad47e6d-daf0-4a63-a002-4398ed163210/kikilink-media.webp",
       );
     });
     expect(sendBeep).not.toHaveBeenCalled();
     view.destroy();
   });
 
-  it("aborts and clears a pending Litterbox image operation when the Link Deck closes", async () => {
+  it("aborts and clears a pending public image operation when the Link Deck closes", async () => {
     const adapter = {
       getMemberName: () => "Reina",
       getMemberNickname: () => undefined,
@@ -4852,15 +4826,15 @@ describe("LinkChatView", () => {
       delete: vi.fn(async () => undefined),
       close: vi.fn(),
     };
-    const privilegedUploads: Array<{
-      details: KikiLinkGmXhrDetails;
-      abort: ReturnType<typeof vi.fn>;
-    }> = [];
-    vi.stubGlobal("GM_xmlhttpRequest", vi.fn((details: KikiLinkGmXhrDetails) => {
-      const abort = vi.fn();
-      privilegedUploads.push({ details, abort });
-      return { abort };
-    }));
+    const sharedUploads: Array<{ request: ReturnType<typeof deferred<string>>; signal: AbortSignal }> = [];
+    vi.spyOn(sharedFiles, "uploadSharedAudio").mockImplementation((_file, _retention, _progress, signal) => {
+      if (!signal) throw new Error("Missing public audio lifecycle signal");
+      const request = deferred<string>();
+      sharedUploads.push({ request, signal });
+      return Promise.race([request.promise, new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("The upload was cancelled")), { once: true });
+      })]);
+    });
     const view = new LinkChatView(
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
@@ -4923,16 +4897,16 @@ describe("LinkChatView", () => {
       value: [new File([Uint8Array.of(4, 5, 6)], "room.mp3", { type: "audio/mpeg" })],
     });
     roomMusicInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await vi.waitFor(() => expect(privilegedUploads).toHaveLength(1));
+    await vi.waitFor(() => expect(sharedUploads).toHaveLength(1));
     Object.defineProperty(roomMusicInput, "files", {
       configurable: true,
       value: [new File([Uint8Array.of(6, 5, 4)], "newer-room.mp3", { type: "audio/mpeg" })],
     });
     roomMusicInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await vi.waitFor(() => expect(privilegedUploads).toHaveLength(2));
-    expect(privilegedUploads[0]?.abort).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(sharedUploads).toHaveLength(2));
+    expect(sharedUploads[0]?.signal.aborted).toBe(true);
     view.close();
-    expect(privilegedUploads[1]?.abort).toHaveBeenCalledOnce();
+    expect(sharedUploads[1]?.signal.aborted).toBe(true);
 
     await view.open();
     shadow?.querySelector<HTMLButtonElement>('[data-target="music"]')?.click();
@@ -4969,11 +4943,11 @@ describe("LinkChatView", () => {
         new File([Uint8Array.of(9, 8, 7)], "second-playlist.mp3", { type: "audio/mpeg" }),
       ],
     });
-    playlistMode.value = "catbox";
+    playlistMode.value = "anondrop";
     playlistTitle.value = "Initial title";
     playlistUrl.value = "https://cdn.example/initial.mp3";
     playlistAdd.click();
-    await vi.waitFor(() => expect(privilegedUploads).toHaveLength(3));
+    await vi.waitFor(() => expect(sharedUploads).toHaveLength(3));
 
     expect(playlistAdd.disabled).toBe(true);
     expect(playlistTitle.disabled).toBe(true);
@@ -4987,11 +4961,8 @@ describe("LinkChatView", () => {
     playlistUrl.value = "https://cdn.example/changed.mp3";
     playlistSelect.value = "later-playlist";
     playlistSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    privilegedUploads[2]?.details.onload({
-      status: 200,
-      responseText: "https://files.catbox.moe/first-playlist.mp3\n",
-    });
-    await vi.waitFor(() => expect(privilegedUploads).toHaveLength(4));
+    sharedUploads[2]?.request.resolve("https://anondrop.net/Ab123/kikilink-media.mp3");
+    await vi.waitFor(() => expect(sharedUploads).toHaveLength(4));
     expect(musicStore.add).not.toHaveBeenCalled();
     expect(playlistAdd.disabled).toBe(true);
     expect(playlistTitle.disabled).toBe(true);
@@ -5000,13 +4971,13 @@ describe("LinkChatView", () => {
     expect(playlistMode.disabled).toBe(true);
 
     view.close();
-    expect(privilegedUploads[3]?.abort).toHaveBeenCalledOnce();
+    expect(sharedUploads[3]?.signal.aborted).toBe(true);
     await vi.waitFor(() => {
       expect(settings.get().linkMusic.playlists[0]?.tracks).toEqual([
         expect.objectContaining({
           title: "first-playlist",
-          source: "catbox",
-          locator: "https://files.catbox.moe/first-playlist.mp3",
+          source: "anondrop",
+          locator: "https://anondrop.net/Ab123/kikilink-media.mp3",
         }),
       ]);
       expect(settings.get().linkMusic.playlists[1]?.tracks).toEqual([]);
@@ -5081,11 +5052,8 @@ describe("LinkChatView", () => {
       })),
       upload: vi.fn(() => backgroundUpload.promise),
     };
-    let roomMusicRequest: KikiLinkGmXhrDetails | undefined;
-    vi.stubGlobal("GM_xmlhttpRequest", vi.fn((details: KikiLinkGmXhrDetails) => {
-      roomMusicRequest = details;
-      return { abort: vi.fn() };
-    }));
+    const roomMusicUpload = deferred<string>();
+    const uploadRoomMusic = vi.spyOn(sharedFiles, "uploadSharedAudio").mockReturnValue(roomMusicUpload.promise);
     const view = new LinkChatView(
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
@@ -5137,12 +5105,9 @@ describe("LinkChatView", () => {
       value: [new File([Uint8Array.of(2)], "late-room.mp3", { type: "audio/mpeg" })],
     });
     roomMusicInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await vi.waitFor(() => expect(roomMusicRequest).toBeDefined());
+    await vi.waitFor(() => expect(uploadRoomMusic).toHaveBeenCalledOnce());
     roomName = "Star Garden";
-    roomMusicRequest?.onload({
-      status: 200,
-      responseText: "https://litter.catbox.moe/wrong-room.mp3\n",
-    });
+    roomMusicUpload.resolve("https://waifuvault.moe/f/fcaaf5f3-2411-41ba-897f-e044491829a7/kikilink-media.mp3");
     await Promise.resolve();
     await Promise.resolve();
     expect(roomUrls[1].value).toBe("https://cdn.example/original.mp3");
@@ -5221,11 +5186,8 @@ describe("LinkChatView", () => {
       delete: vi.fn(async () => undefined),
       close: vi.fn(),
     };
-    let uploadRequest: KikiLinkGmXhrDetails | undefined;
-    vi.stubGlobal("GM_xmlhttpRequest", vi.fn((details: KikiLinkGmXhrDetails) => {
-      uploadRequest = details;
-      return { abort: vi.fn() };
-    }));
+    const trackUpload = deferred<string>();
+    const uploadRequest = vi.spyOn(sharedFiles, "uploadSharedAudio").mockReturnValue(trackUpload.promise);
     const view = new LinkChatView(
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
@@ -5262,12 +5224,9 @@ describe("LinkChatView", () => {
       return button!;
     });
     play.click();
-    await vi.waitFor(() => expect(uploadRequest).toBeDefined());
+    await vi.waitFor(() => expect(uploadRequest).toHaveBeenCalledOnce());
     roomName = "Sun Garden";
-    uploadRequest?.onload({
-      status: 200,
-      responseText: "https://litter.catbox.moe/old-room-track.mp3\n",
-    });
+    trackUpload.resolve("https://waifuvault.moe/f/081fbd02-42d1-43aa-8040-771a58e21d03/kikilink-media.mp3");
     await Promise.resolve();
     await Promise.resolve();
     expect(updateRoomCustomization).not.toHaveBeenCalled();
@@ -5328,16 +5287,8 @@ describe("LinkChatView", () => {
       delete: vi.fn(async () => undefined),
       close: vi.fn(),
     };
-    let uploadDetails: KikiLinkGmXhrDetails | undefined;
-    const uploadRequest = vi.fn((details: KikiLinkGmXhrDetails) => {
-      uploadDetails = details;
-      queueMicrotask(() => details.onload({
-        status: 200,
-        responseText: "https://litter.catbox.moe/device_room_song.mp3\n",
-      }));
-      return { abort: vi.fn() };
-    });
-    vi.stubGlobal("GM_xmlhttpRequest", uploadRequest);
+    const sharedTrackUrl = "https://waifuvault.moe/f/68e30326-2719-40dd-84e1-47047039bc44/kikilink-media.mp3";
+    const uploadRequest = vi.spyOn(sharedFiles, "uploadSharedAudio").mockResolvedValue(sharedTrackUrl);
     const view = new LinkChatView(
       adapter,
       new ChatService(new MemoryChatRepository(), settings),
@@ -5369,20 +5320,15 @@ describe("LinkChatView", () => {
       const roomUrls = shadow?.querySelectorAll<HTMLInputElement>(
         ".kl-room-media input[type=url]",
       );
-      expect(roomUrls?.[1]?.value).toBe("https://litter.catbox.moe/device_room_song.mp3");
+      expect(roomUrls?.[1]?.value).toBe(sharedTrackUrl);
     });
     expect(uploadRequest).toHaveBeenCalledOnce();
-    expect(uploadDetails?.url).toBe(
-      "https://litterbox.catbox.moe/resources/internals/api.php",
-    );
-    const uploadForm = uploadDetails?.data as FormData;
-    expect(uploadForm.get("time")).toBe("24h");
-    expect((uploadForm.get("fileToUpload") as File).name).toBe("kikilink-room-music.mp3");
+    expect(uploadRequest).toHaveBeenCalledWith(expect.any(File), "24h", undefined, expect.any(AbortSignal));
     expect(updateRoomCustomization).not.toHaveBeenCalled();
 
     shadow?.querySelector<HTMLButtonElement>(".kl-room-media .kl-text-button--primary")?.click();
     expect(updateRoomCustomization).toHaveBeenCalledWith(expect.objectContaining({
-      musicUrl: "https://litter.catbox.moe/device_room_song.mp3",
+      musicUrl: sharedTrackUrl,
     }));
 
     shadow?.querySelector<HTMLButtonElement>('[data-target="music"]')?.click();
@@ -5416,7 +5362,7 @@ describe("LinkChatView", () => {
     await vi.waitFor(() => {
       expect(updateRoomCustomization).toHaveBeenCalledTimes(2);
       expect(updateRoomCustomization).toHaveBeenLastCalledWith(expect.objectContaining({
-        musicUrl: "https://litter.catbox.moe/device_room_song.mp3",
+        musicUrl: sharedTrackUrl,
         musicSync: true,
       }));
     });

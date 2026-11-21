@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../link-chat/avatar-presence";
 import type { ChannelMuteScope } from '../../cloud/channel-timed-mutes';
 import { CommunityNotificationDialog } from './community-notification-dialog';
 import { openCommunityInvitations } from './community-invitations-dialog';
@@ -822,7 +823,7 @@ export class CommunitiesPage {
       });
       refresh.classList.add('kl-cm-context-link');
       refresh.prepend(kikiIcon('refresh'));
-      if (friends.length) this.#contextFaces(roster, friends.map(friend => ({ name: friend.memberName })), friends.length);
+      if (friends.length) this.#contextFaces(roster, friends.map(friend => ({ member:friend.memberNumber, name: friend.memberName })), friends.length);
       body.append(
         element('section', {}, heading('On the horizon', kikiIcon('calendar')), preview),
         element('section', { className: 'kl-cm-context-members-section' }, heading('Familiar faces',
@@ -856,11 +857,11 @@ export class CommunitiesPage {
     if (this.#eventsEnabled) void this.#loadContextEvent(preview, current, close, community);
     if (community && this.#directoryEnabled) void this.#loadContextMembers(community, roster, current);
   }
-  #contextFaces(root: HTMLElement, people: readonly { name: string; avatar?: HTMLElement | undefined }[], count?: number): void {
+  #contextFaces(root: HTMLElement, people: readonly { member:number; name: string; status?:string | undefined; avatar?: HTMLElement | undefined }[], count?: number): void {
     const faces = people.slice(0, 4).map(person => {
       const initials = person.name.trim().split(/\s+/u).slice(0, 2).map(name => Array.from(name)[0]).join('');
-      return element('span', { className: 'kl-cm-context-avatar', title: person.name, ariaLabel: person.name },
-        person.avatar ?? (initials || '?'), element('i'));
+      return markAvatarPresence(element('span', { className: 'kl-cm-context-avatar', title: person.name, ariaLabel: person.name },
+        person.avatar ?? (initials || '?')), person.member, person.status);
     });
     if (typeof count === 'number' && count > faces.length && faces.length) {
       faces.push(element('span', { className: 'kl-cm-context-avatar kl-cm-context-avatar-more', text: `+${count - faces.length}` }));
@@ -877,7 +878,7 @@ export class CommunitiesPage {
       const members = result.items.filter(member => member.state === 'active' && member.profileVisible && member.displayName &&
         member.status && member.status !== 'unavailable' && !this.options.blocked?.(member.memberNumber) &&
         !this.client.isProfileBlocked?.(member.memberNumber)).slice(0, 4);
-      this.#contextFaces(roster, members.map(member => ({ name: member.displayName!,
+      this.#contextFaces(roster, members.map(member => ({ member:member.memberNumber, status:member.status, name: member.displayName!,
         avatar: member.avatarId ? this.options.avatar?.(member.avatarId, member.memberNumber === this.#channelOwner) : undefined })),
         community.onlineCount ?? undefined);
     } catch {
@@ -1577,7 +1578,10 @@ export class CommunitiesPage {
           const avatar = element('span', { className: 'kl-cm-member-avatar', text: (displayName ?? 'M').trim().split(/\s+/u).slice(0, 2)
             .map(word => [...word][0] ?? '').join('').toUpperCase() });
           const showProfileFields = !directoryMembers || profileVisible;
-          if (showProfileFields && m.avatarId && this.options.image) avatar.replaceChildren(this.options.image(m.avatarId));
+          if (showProfileFields && m.avatarId) {
+            const photo = this.options.avatar?.(m.avatarId, m.memberNumber === this.client.memberNumber);
+            if (photo) avatar.append(photo);
+          }
           const status = (showProfileFields ? m.status : undefined) ?? 'unavailable';
           avatar.append(element('span', { className: `kl-cm-presence kl-cm-presence--${status}`, ariaLabel: status === 'unavailable' ? 'Presence not shared' : status }));
           identity.append(avatar);
@@ -2275,10 +2279,11 @@ export class CommunitiesPage {
     const members=roster.items.map(m=>{
       const controls=element('div',{className:'kl-cm-actions'});
       this.#appendMemberActions(controls,c,m,managerMemberState[section],current,false);
+      const avatar = m.avatarId ? this.options.avatar?.(m.avatarId, m.memberNumber === this.client.memberNumber) : undefined;
       return {memberNumber:m.memberNumber,displayName:this.#managerMemberName(m),
         username:m.username??null,roleLabel:roles[m.role],...(m.status?{status:m.status}:{}),
         ...(typeof m.updatedAt==='number'?{updatedAt:m.updatedAt}:{}),
-        ...(m.avatarId&&this.options.image?{avatar:this.options.image(m.avatarId)}:{}),
+        ...(avatar ? {avatar} : {}),
         ...(m.profileVisible&&this.options.openProfile?{openProfile:()=>{if(current())this.#communityEditor.leaveManager(()=>this.options.openProfile?.(m.memberNumber));}}:{}),
         protectedRole:section==='members'&&(m.memberNumber===this.client.memberNumber||m.role==='owner'),
         ...(controls.childElementCount?{controls}:{}),

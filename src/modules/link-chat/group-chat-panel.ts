@@ -1070,11 +1070,11 @@ export class GroupChatPanel {
       const uploadHelp = node(
         "p",
         "kl-group-dialog-help kl-group-manage-upload-help",
-        "Local files are metadata-stripped, prepared as WebP, then uploaded to a public long-lived Catbox link.",
+        "Local images are shared as public WebP files through AnonDrop.",
       );
-      const pickAvatar = button("kl-group-manage-save", "Choose & upload to Catbox");
+      const pickAvatar = button("kl-group-manage-save", "Choose & upload avatar");
       pickAvatar.dataset.groupDetailsAction = "pick-avatar";
-      pickAvatar.title = "Prepare this image and upload it publicly to Catbox";
+      pickAvatar.title = "Prepare this image and upload it to AnonDrop";
       pickAvatar.addEventListener("click", () =>
         void this.#pickGroupAvatar(group.groupId, pickAvatar));
       avatarField.append(uploadHelp, pickAvatar);

@@ -84,7 +84,7 @@ export const PLATFORM_SHELL_STYLES = `
 .kl-platform-link > span:not(.kl-roster-count) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kl-platform-link[aria-current="page"] { color: var(--kl-text); border-color: var(--kl-border); background: var(--kl-surface-2); }
 .kl-platform-link > .kl-roster-count { position: static; margin-left: auto; flex: 0 0 auto; }
-.kl-platform-area > .kl-roster-count { position: absolute; top: 2px; right: 2px; }
+.kl-platform-area > .kl-roster-count { position:absolute; top:4px; right:6px; inline-size:8px; min-inline-size:8px; block-size:8px; min-block-size:8px; padding:0; border-radius:50%; font-size:0; line-height:0; }
 .kl-panel[data-platform-preview="true"] .kl-layout { grid-template-columns: 234px minmax(0, 1fr); }
 .kl-panel[data-platform-preview="true"] .kl-sidebar { width: auto; }
 .kl-panel[data-platform-preview="true"] .kl-chat-filters { gap: 4px; }
@@ -196,10 +196,9 @@ export const PLATFORM_SHELL_STYLES = `
   .kl-platform-links { width: max-content; min-width: 100%; flex-direction: row; gap: 4px; }
   .kl-platform-link { width: auto; min-height: 36px; font-size: 12px; flex: 0 0 auto; padding: 6px 10px; }
   .kl-panel[data-platform-preview="true"] .kl-workspace { grid-row: 2; }
-  .kl-platform-rail { grid-row: 3; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; padding: 3px 6px; padding-bottom: max(3px, env(safe-area-inset-bottom)); overflow: hidden; border-top: 1px solid var(--kl-border); border-right: 0; }
+  .kl-platform-rail { grid-row: 3; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; padding: 3px 6px; padding-bottom: max(3px, env(safe-area-inset-bottom)); overflow-x: auto; overflow-y: hidden; border-top: 1px solid var(--kl-border); border-right: 0; }
   .kl-platform-area { min-height: 46px; padding: 4px 2px; gap: 2px; }
   .kl-platform-area[aria-current="page"]::before { width: 18px; height: 2px; top: auto; bottom: -3px; left: calc(50% - 9px); border-radius: 2px 2px 0 0; }
-  .kl-platform-area[data-area="settings"] { display: none; }
   .kl-panel[data-platform-preview="true"] .kl-topbar-settings { display: grid; }
   .kl-panel[data-platform-preview="true"] .kl-layout { grid-template-columns: 234px minmax(0, 1fr); }
   .kl-panel[data-platform-preview="true"] .kl-brand-title { font-size: 12px; }
@@ -328,7 +327,7 @@ export const PLATFORM_SHELL_STYLES = `
 .kl-platform-link { min-height: 38px; padding: 7px 12px; gap: 10px; font-size: 12px; }
 .kl-platform-area[aria-current="page"], .kl-platform-link[aria-current="page"] { border-color: color-mix(in srgb, var(--kl-accent), var(--kl-gold) 22%); background: color-mix(in srgb, var(--kl-accent) 12%, var(--kl-surface-2)); }
 .kl-platform-link[aria-current="page"] { box-shadow: inset 2px 0 var(--kl-accent); }
-.kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) {
+.kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) {
   --kl-nav-selection-bg: color-mix(in srgb, var(--kl-accent) 12%, transparent);
   --kl-nav-selection-border: color-mix(in srgb, var(--kl-accent) 58%, var(--kl-muted));
 }
@@ -375,10 +374,10 @@ export const PLATFORM_SHELL_STYLES = `
   .kl-panel .kl-explore-catalog-empty > .kl-text-button { justify-self: end; }
 }
 @media (pointer: coarse) { .kl-panel .kl-explore-empty > .kl-text-button--primary { min-height: 44px; } }
-.kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) .kl-platform-link[aria-current="page"] {
+.kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) .kl-platform-link[aria-current="page"] {
   border-color: var(--kl-nav-selection-border); background: var(--kl-nav-selection-bg);
 }
-.kl-panel[data-platform-preview="true"] .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) {
+.kl-panel[data-platform-preview="true"] .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) {
   scrollbar-color: var(--kl-border-strong) transparent;
 }
 .kl-platform-area > .kl-roster-count, .kl-platform-link:not([data-route="players"]) > .kl-roster-count,
@@ -546,7 +545,7 @@ export const PLATFORM_SHELL_STYLES = `
   .kl-platform-link { padding: 6px 10px; min-height: 36px; gap: 6px; font-size: 11px; }
   .kl-platform-link > .kl-icon { flex-basis: 14px; width: 14px; height: 14px; }
   .kl-panel[data-platform-preview="true"] .kl-shell > .kl-workspace { grid-column: 1; grid-row: 3; }
-  .kl-panel[data-platform-preview="true"] .kl-platform-rail { grid-column: 1; grid-row: 4; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0; padding: 5px 6px; padding-bottom: max(5px, env(safe-area-inset-bottom)); background: var(--kl-bg); }
+  .kl-panel[data-platform-preview="true"] .kl-platform-rail { grid-column: 1; grid-row: 4; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(42px, 1fr); gap: 0; padding: 5px 6px; padding-bottom: max(5px, env(safe-area-inset-bottom)); background: var(--kl-bg); }
   .kl-platform-area { min-height: 50px; gap: 5px; }
   .kl-platform-area[aria-current="page"]::before { inset: -5px 25% auto; width: auto; border-radius: 0 0 2px 2px; }
   .kl-platform-area-label { font-size: 9px; letter-spacing: -.15px; }
@@ -587,41 +586,41 @@ export const PLATFORM_SHELL_STYLES = `
   .kl-shell:has(> .kl-platform-context[data-area="explore"]) { --kl-explore-inset: 16px; }
 }
 @container kl-panel (width > 900px) or ((width > 700px) and (height > 500px)) {
-  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) > .kl-platform-context-heading {
+  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) > .kl-platform-context-heading {
     min-height: 30px; margin-bottom: 8px; padding-inline: 8px;
   }
-  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) .kl-platform-context-title {
+  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) .kl-platform-context-title {
     margin-inline: 0; font-weight: 650; letter-spacing: .04em;
   }
-  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) .kl-platform-options {
+  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) .kl-platform-options {
     position: static; width: 30px; height: 30px;
   }
-  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) .kl-platform-link {
+  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) .kl-platform-link {
     min-height: 36px; padding: 0 10px;
   }
-  .kl-panel[data-platform-preview="true"] .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-finder-trigger {
+  .kl-panel[data-platform-preview="true"] .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-finder-trigger {
     gap: 6px; border-radius: 8px; color: var(--kl-muted);
   }
-  .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-finder-trigger-icon {
+  .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-finder-trigger-icon {
     flex: none; width: 14px; height: 14px; color: inherit;
   }
-  .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-finder-trigger-label { font-weight: 400; }
-  .kl-panel[data-platform-preview="true"] .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-topbar-actions > .kl-icon-button {
+  .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-finder-trigger-label { font-weight: 400; }
+  .kl-panel[data-platform-preview="true"] .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-topbar-actions > .kl-icon-button {
     width: 32px; min-width: 32px; height: 32px; min-height: 32px;
   }
-  .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-identity-menu { width: 50px; height: 32px; }
+  .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) .kl-identity-menu { width: 50px; height: 32px; }
 }
 @container kl-panel (width > 1100px) {
-  .kl-panel[data-platform-preview="true"] .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) { padding-inline: 12px; }
-  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) > .kl-platform-wordmark { margin-inline: -12px; padding-inline: 20px; }
+  .kl-panel[data-platform-preview="true"] .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) { padding-inline: 12px; }
+  .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"]) > .kl-platform-wordmark { margin-inline: -12px; padding-inline: 20px; }
 }
 @container kl-panel (width > 900px) and (width <= 1100px) {
-  .kl-panel[data-platform-preview="true"] .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) {
+  .kl-panel[data-platform-preview="true"] .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) {
     grid-template-columns: 68px 180px minmax(0, 1fr);
   }
 }
 @container kl-panel (width > 700px) and (width <= 900px) and (height > 500px) {
-  .kl-panel[data-platform-preview="true"] .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) {
+  .kl-panel[data-platform-preview="true"] .kl-shell:has(> .kl-platform-context:is([data-area="explore"],[data-area="home"],[data-area="feed"],[data-area="chat"],[data-area="create"],[data-area="game"],[data-area="settings"])) {
     grid-template-columns: 60px 180px minmax(0, 1fr);
   }
 }

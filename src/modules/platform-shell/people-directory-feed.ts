@@ -12,6 +12,7 @@ export class PeopleDirectoryFeed {
   #query: string | undefined;
   #rows: PeopleDirectoryPerson[] = [];
   #next: number | null = null;
+  #suggestions: number | undefined;
   #generation = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -29,7 +30,7 @@ export class PeopleDirectoryFeed {
     });
     this.#unsubscribe = client.subscribe(kind => {
       if (this.#query === undefined) return;
-      if (!["profiles-cleared", "profile-discovery", "privacy", "session", "connection", "ready"].includes(kind)) return;
+      if (!["profiles-cleared", "profile-discovery", "privacy", "matching", "relationships", "session", "connection", "ready"].includes(kind)) return;
       if (!this.options.current()) { this.hide(); return; }
       this.#restart(0);
       this.options.changed();
@@ -76,17 +77,20 @@ export class PeopleDirectoryFeed {
     this.#display("Loading shared profiles…");
     try {
       if (!cursor) {
-        const me = await this.client.request<{ memberNumber: number; features?: { profileDiscovery?: boolean } }>("GET", "/v1/me");
+        const me = await this.client.request<{ memberNumber: number; features?: { profileDiscovery?: boolean; peopleSuggestions?: boolean } }>("GET", "/v1/me");
         if (!current()) return;
         if (me.memberNumber !== owner) throw new Error("Account changed");
+        this.#suggestions = me.features?.peopleSuggestions === true && !query ? Math.floor(Date.now() / 86400000) : undefined;
         if (me.features?.profileDiscovery !== true) {
           this.#display("");
           this.options.changed();
           return;
         }
       }
-      const page = await readPeopleDirectory(this.client, owner, query, 20, cursor);
+      const page = await readPeopleDirectory(this.client, owner, query, 20, cursor, this.#suggestions);
       if (!current()) return;
+      const prior = new Set(this.#rows.map(row => row.memberNumber));
+      if (cursor && page.items.some(row => prior.has(row.memberNumber))) throw new Error("Directory changed");
       this.#rows = cursor ? this.#rows.concat(page.items) : page.items;
       this.#next = page.nextCursor;
       this.#display("", this.#next === null ? "" : "More profiles");

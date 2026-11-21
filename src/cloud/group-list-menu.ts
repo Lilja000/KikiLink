@@ -1,3 +1,4 @@
+import { bindContextMenuGesture } from "../utils/context-menu-gesture";
 import { element } from "./dom";
 import { anchorSurface } from "../utils/anchored-surface";
 
@@ -5,9 +6,8 @@ import { anchorSurface } from "../utils/anchored-surface";
 export class GroupListMenu {
   readonly element = element("dialog", { className: "kl-cloud-group-menu", ariaLabel: "Group actions" });
   readonly #lifetime = new AbortController();
-  #hold: ReturnType<typeof setTimeout> | undefined;
+  readonly #cancelHold: () => void;
   #anchor: HTMLElement | undefined;
-  #suppressUntil = 0;
   constructor(root: HTMLElement, private readonly actions: (id: string, anchor: HTMLElement) => HTMLElement[], private readonly compact = false) {
     if (compact) {
       this.element.classList.add("kl-chat-options-menu");
@@ -15,22 +15,7 @@ export class GroupListMenu {
     }
     const signal = this.#lifetime.signal;
     const rowAt = (event: Event): HTMLElement | null => event.target instanceof Element ? event.target.closest<HTMLElement>("[data-group-id]") : null;
-    root.addEventListener("contextmenu", event => { const row = rowAt(event); if (!row) return;
-      event.preventDefault(); event.stopPropagation(); this.#cancelHold(); this.open(row); }, { signal });
-    root.addEventListener("click", event => { if (rowAt(event) && Date.now() < this.#suppressUntil) {
-      event.preventDefault(); event.stopImmediatePropagation(); } }, { signal, capture: true });
-    let x = 0, y = 0;
-    root.addEventListener("pointerdown", event => {
-      this.#cancelHold(); const row = rowAt(event);
-      if (!row || event.pointerType === "mouse" || event.button !== 0) return;
-      x = event.clientX; y = event.clientY;
-      this.#hold = setTimeout(() => { this.#hold = undefined; if (!root.contains(row) || !row.isConnected) return;
-        this.#suppressUntil = Date.now() + 700; this.open(row); }, 550);
-    }, { signal, passive: true });
-    root.addEventListener("pointermove", event => { if (Math.hypot(event.clientX - x, event.clientY - y) > 10) this.#cancelHold(); }, { signal, passive: true });
-    for (const name of ["pointerup", "pointercancel", "pointerleave", "scroll"]) root.addEventListener(name, () => this.#cancelHold(), { signal, passive: true });
-    root.addEventListener("keydown", event => { const row = rowAt(event); if (row && (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))) {
-      event.preventDefault(); event.stopPropagation(); this.open(row); } }, { signal });
+    this.#cancelHold = bindContextMenuGesture(root, rowAt, row => this.open(row), signal);
     this.element.addEventListener("cancel", event => { event.preventDefault(); this.close(); }, { signal });
     this.element.addEventListener("click", event => {
       if (event.target !== this.element) return;
@@ -77,5 +62,4 @@ export class GroupListMenu {
     this.#anchor = undefined;
   }
   destroy(): void { this.close(false); this.#lifetime.abort(); this.element.remove(); }
-  #cancelHold(): void { clearTimeout(this.#hold); this.#hold = undefined; }
 }

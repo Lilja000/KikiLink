@@ -107,8 +107,7 @@ ${FEED_IDENTITY_STYLES}
 .kl-feed-layout[data-saved="true"] { grid-template-columns:minmax(0,1fr); width:100%; max-width:1000px; margin-inline:auto; }
 .kl-saved-intro { display:flex; align-items:center; gap:16px; }
 .kl-saved-intro > svg { width:28px; height:28px; flex:none; color:var(--kl-accent); }
-.kl-saved-intro h3 { margin:0 0 6px; }
-.kl-saved-intro p { margin:0; }
+.kl-saved-intro h3 { margin:0; }
 .kl-feed-post[data-featured="true"] { border-color:var(--kl-gold); }
 .kl-feed-highlights { display:flex; flex-wrap:wrap; gap:8px; color:var(--kl-gold); font-size:var(--kl-type-xs); font-weight:650; }
 .kl-feed-highlights>span { display:inline-flex; align-items:center; gap:5px; }
@@ -138,7 +137,6 @@ ${FEED_IDENTITY_STYLES}
 .kl-feed-compose-tools>.kl-social-button:hover,.kl-feed-compose-tools>.kl-social-button[aria-pressed="true"] { border-color:var(--kl-border); background:var(--kl-input-bg); }
 .kl-feed-compose-submit { margin-inline-start:auto; flex:none; gap:10px; }
 .kl-composer-count { color:var(--kl-muted); font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
-.kl-feed-compose-hint { font-size:10px !important; line-height:1.5; }
 .kl-feed-attachments { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
 .kl-feed-attachments:empty { display:none; }
 .kl-feed-attachment { position:relative; aspect-ratio:1; min-width:0; }
@@ -698,6 +696,7 @@ ${APPEARANCE_STYLES}
 
 .kl-platform-feed :is(.kl-feed-post-header,.kl-comment-header) > .kl-social-menu > .kl-social-menu-items {
   box-sizing:border-box; width:230px; max-width:calc(100vw - 16px); top:calc(100% + 6px);
+  max-height:min(60dvh, 360px); overflow-y:auto; overscroll-behavior:contain;
   gap:0; padding:4px; border-radius:10px; background:var(--kl-surface-2); box-shadow:0 8px 24px #0005;
 }
 .kl-cloud .kl-platform-feed :is(.kl-feed-post-header,.kl-comment-header) > .kl-social-menu .kl-social-menu-items > button {
@@ -712,9 +711,6 @@ ${APPEARANCE_STYLES}
 @container kl-panel (width <= 700px) or ((width <= 900px) and (height <= 500px)) {
   .kl-cloud .kl-platform-feed :is(.kl-feed-post-header,.kl-comment-header) > .kl-social-menu .kl-social-menu-items > button { min-height:40px; }
 }
-.kl-platform-feed .kl-feed-post-header { position:relative; }
-.kl-platform-feed .kl-feed-additional-menu { position:absolute; inset-inline-end:40px; top:0; }
-.kl-platform-feed .kl-feed-additional-menu:not([open]):not(:focus-within) > summary { width:1px; min-width:0; height:1px; min-height:0; padding:0; border:0; opacity:0; }
 /* Comments keep the live parent post and a separate, fixed action footer. */
 .kl-platform-feed .kl-feed-comments-dialog { width:540px; margin:auto; padding:0; overflow:hidden; border-radius:12px; background:var(--kl-surface); }
 .kl-platform-feed .kl-feed-comments-dialog[open] { display:flex; flex-direction:column; }

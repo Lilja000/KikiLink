@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../link-chat/avatar-presence";
 import {engagementReview,engagementWrite,engagementReceipt,workshopAccessAt,type WorkshopSource} from './workshop-engagement';
 import {element} from '../../cloud/dom';
 import {CloudError,type CloudClient} from '../../cloud/client';
@@ -55,7 +56,7 @@ export class WorkshopReviews {
     review.comment?note(review.comment):undefined,element('small',{text:`v${review.version} · ${new Date(review.updatedAt).toLocaleDateString()}${own?' · You':''}`}));
    if(this.report&&!own)copy.append(this.#button('Report review',()=>this.report!(review)));
    this.element.append(element('article',{className:'kl-workshop-card kl-workshop-review-row'},
-    element('span',{className:'kl-workshop-review-avatar',ariaHidden:'true'},kikiIcon('profile')),copy));
+    markAvatarPresence(element('span',{className:'kl-workshop-review-avatar',ariaHidden:'true'},kikiIcon('profile')),review.reviewer),copy));
   }
   if(data.nextCursor)this.element.append(this.#button('More reviews',()=>void this.refresh(true)));
  }

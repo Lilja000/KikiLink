@@ -145,10 +145,11 @@ export class MatchingRecovery {
     const me = await this.#capabilities(valid, resources);
     return resources ? matchingGroupSource(me) : matchingPeopleSource(me);
   }
-  async peopleCapabilities(valid: () => boolean): Promise<{ source: MatchingSource; activeRequests: boolean; requestSummary: boolean }> {
+  async peopleCapabilities(valid: () => boolean): Promise<{ source: MatchingSource; activeRequests: boolean; requestSummary: boolean; suggestions: boolean }> {
     const me = await this.#capabilities(valid, false);
     return {
       source: matchingPeopleSource(me),
+      suggestions: me.features?.peopleSuggestions === true,
       activeRequests: me.features?.matchingPeopleActiveRequests === true,
       requestSummary: me.features?.matchingPeopleRequestSummary === true,
     };
@@ -177,7 +178,7 @@ export class MatchingRecovery {
     if (!this.client.connected) throw new Error("Reconnect to use Matching.");
     const me = await this.client.request<{
       memberNumber: number;
-      features?: { matchingPeople?: boolean; matchingResources?: boolean; matchingPeopleActiveRequests?: boolean; matchingPeopleRequestSummary?: boolean };
+      features?: { matchingPeople?: boolean; matchingResources?: boolean; matchingPeopleActiveRequests?: boolean; peopleSuggestions?: boolean; matchingPeopleRequestSummary?: boolean };
     }>("GET", "/v1/me");
     this.#guard(valid);
     if (me.memberNumber !== this.owner || me.features?.matchingPeople !== true || resources && me.features?.matchingResources !== true)

@@ -639,6 +639,18 @@ describe("ChatService", () => {
     expect(await service.getConversation(77)).toMatchObject({ peerName: "Nickname" });
   });
 
+  it("keeps the original source of public images received by Beep", async () => {
+    const { service } = setup();
+    const links = [
+      ["catbox", "https://files.catbox.moe/original.png"],
+      ["waifuvault", "https://waifuvault.moe/f/155dad29-71bf-49f3-b37d-ee7e96eb061a/kikilink-media.webp"],
+      ["anondrop", "https://anondrop.net/Pic321/kikilink-media.webp"],
+    ] as const;
+    await service.capture({ direction: "incoming", peerNumber: 11, peerName: "Friend", sentAt: 100,
+      includeRoom: false, content: links.map(([, url]) => url).join(" ") }, false);
+    expect((await service.listMedia()).map(({ provider, url }) => [provider, url])).toEqual(links);
+  });
+
   it("builds a newest-first, deduplicated media gallery across all chats", async () => {
     const { service } = setup();
     await service.capture(

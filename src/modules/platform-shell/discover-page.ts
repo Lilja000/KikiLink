@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { spaceAppearance, type SpaceColor, type SpaceIcon } from '../../../cloud/shared/space-appearance.mjs';
 import { bindClockText } from '../../core/time-format';
 import { element, focusedElement } from '../../utils/dom';
@@ -23,6 +24,8 @@ interface UpcomingRow {
 }
 
 interface DiscoverMatch {
+  memberNumber?: number;
+  status?: string | null;
   name: string;
   reason?: string | undefined;
   open(): void;
@@ -293,6 +296,7 @@ export class DiscoverPage {
       const initial = (Array.from(name.trim())[0] ?? '?').toLocaleUpperCase();
       const avatar = element('span', { className: 'kl-discover-person-avatar' },
         element('span', { className: 'kl-discover-person-initial', text: initial }), person.avatar);
+      markAvatarPresence(avatar, memberNumber);
       avatar.setAttribute('aria-hidden', 'true');
       const row = element('button', { type: 'button', className: 'kl-discover-person kl-discover-row' },
         avatar, element('span', { className: 'kl-discover-row-copy' },
@@ -340,7 +344,7 @@ export class DiscoverPage {
     for (const match of matches.slice(0, 3)) {
       const reason = match.reason || 'A shared suggestion';
       const initials = Array.from(match.name.trim()).slice(0, 2).join('').toUpperCase();
-      const avatar = element('span', { className: 'kl-match-avatar', text: initials });
+      const avatar = markAvatarPresence(element('span', { className: 'kl-match-avatar', text: initials }), match.memberNumber ?? 0, match.status ?? null);
       avatar.setAttribute('aria-hidden', 'true');
       const row = element('button', {
         type: 'button', className: 'kl-discover-match kl-discover-row', ariaLabel: `Why this match? ${match.name}`,

@@ -1791,7 +1791,7 @@ describe("BCAdapter", () => {
       MemberName: "AccountReina",
       BeepType: null,
       Message:
-        'Only once\n\n\uf124{"messageType":"Message","messageColor":"#ffffff"}\u2063LikoMAT:en\u2063',
+        'Only once\n\n\uf124{"messageColor":"#ff59c0","messageType":"Message","messageId":"i132q2wzckm"}\u2063LikoMAT:en\u2063',
     };
     globalThis.ServerAccountBeep?.(duplicatePayload);
     globalThis.FriendListBeepLog.push({
@@ -1799,7 +1799,7 @@ describe("BCAdapter", () => {
       MemberName: "AccountReina",
       Sent: false,
       Time: new Date(),
-      Message: 'Only once\n\n\uf124{"messageType":"Message","messageColor":"#ffffff"}',
+      Message: 'Only once\n\n\uf124{"messageColor":"#ff59c0","messageType":"Message","messageId":"i132q2wzckm"}',
     });
     vi.advanceTimersByTime(1_001);
     expect(incoming).toHaveBeenCalledTimes(2);

@@ -408,7 +408,6 @@ export const COMMUNITIES_STYLES = `
 .kl-cm-design-create .kl-cm-additional-settings { min-width: 0; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--kl-border); color: var(--kl-muted); font-size: 11px; }
 .kl-cm-design-create .kl-cm-additional-settings > summary { cursor: pointer; }
 .kl-cm-design-create .kl-cm-extra-fields { display: grid; gap: 14px; margin-top: 14px; color: var(--kl-text); }
-.kl-cm-design-create .kl-cm-review-intro { margin: 0 0 16px; color: var(--kl-muted); font-size: 12px; line-height: 1.6; }
 .kl-cm-design-create .kl-cm-review { margin: 16px 0; padding: 16px; border-radius: 10px; background: var(--kl-surface-2); }
 .kl-cm-design-create .kl-cm-review > .kl-cm-card-top { margin-bottom: 12px; }
 .kl-cm-design-create .kl-cm-review .kl-cm-emblem, .kl-cm-design-create .kl-cm-choices:not(.kl-cm-colors) > button > .kl-cm-emblem { width: 44px; height: 44px; }
@@ -888,6 +887,10 @@ export const COMMUNITIES_STYLES = `
 .kl-communities-page .kl-cm-members--directory > article { flex-wrap: nowrap; gap: 9px; padding: 10px 0 !important; }
 .kl-cm-members--directory .kl-cm-member-identity { gap: 9px; font-size: 12px; line-height: 1.5; }
 .kl-cm-members--directory .kl-cm-member-avatar { width: 30px; height: 30px; border: 1px solid var(--kl-border); border-radius: 50%; background: #332c25; color: #dac7a8; font-size: 10px; font-weight: 600; }
+.kl-cm-member-avatar > .kl-social-avatar-media { position:absolute;inset:0;display:block;overflow:hidden;border-radius:inherit; }
+.kl-cm-member-avatar > .kl-social-avatar-media > img { display:block;width:100%;height:100%;max-height:none;object-fit:cover; }
+.kl-cm-member-avatar > .kl-social-avatar-media:not([data-state="ready"]) { visibility:hidden; }
+.kl-cm-member-avatar > .kl-cm-presence--unavailable { display:block; }
 .kl-cm-members--directory .kl-cm-presence { width: 7px; height: 7px; right: -1px; bottom: 0; }
 .kl-communities-page .kl-cm-members--directory .kl-cm-member-name { display: block; min-height: 0; font-size: 11px; line-height: 1.5; font-weight: 550; }
 .kl-cm-members--directory .kl-cm-member-name:hover:is(button) { text-decoration: underline; }

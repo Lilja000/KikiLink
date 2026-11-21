@@ -30,7 +30,6 @@ const TEMPLATE_TOKENS = [
   { token: "{target's gender}", label: "Their" },
 ] as const;
 const ACTIVITY_SCOPES = [["all", "All"], ["mine", "My activities"], ["workshop", "Workshop"]] as const;
-const ACTIVITY_EDITOR_PICTURES = ["Nod", "BrothersHandshake", "Cuddle", "Caress", "MassageHands"] as const;
 type ActivityScope = typeof ACTIVITY_SCOPES[number][0];
 
 // Workshop copies already have stable IDs. Use them without adding persisted fields.
@@ -661,7 +660,6 @@ export class CustomActivitiesView {
       ariaLabel: "Vanilla activity pictures",
     });
     const imageButtons = new Map<string, HTMLButtonElement>();
-    const quickPictures = new Map<string, HTMLButtonElement>();
     const previewIcon = this.platform ? element("img", { className: "kl-activity-preview-icon", src: activityImageUrl(draft.image), alt: "" }) : undefined;
     const noImageMatches = element("div", {
       className: "kl-contact-empty",
@@ -673,16 +671,16 @@ export class CustomActivitiesView {
       if (image === draft.image) return;
       const canonical = canonicalVanillaActivityImage(image);
       if (canonical === draft.image) return;
-      for (const button of [imageButtons.get(draft.image), quickPictures.get(draft.image)]) {
-        if (!button) continue;
-        button.setAttribute("aria-pressed", "false");
-        button.dataset.selected = "false";
+      const previous = imageButtons.get(draft.image);
+      if (previous) {
+        previous.setAttribute("aria-pressed", "false");
+        previous.dataset.selected = "false";
       }
       draft.image = canonical;
-      for (const button of [imageButtons.get(canonical), quickPictures.get(canonical)]) {
-        if (!button) continue;
-        button.setAttribute("aria-pressed", "true");
-        button.dataset.selected = "true";
+      const selected = imageButtons.get(canonical);
+      if (selected) {
+        selected.setAttribute("aria-pressed", "true");
+        selected.dataset.selected = "true";
       }
       if (previewIcon) previewIcon.src = activityImageUrl(canonical);
     };
@@ -778,7 +776,7 @@ export class CustomActivitiesView {
     );
     targetMode.value = draft.targetMode;
     targetMode.addEventListener("change", () => { previewTarget = targetMode.value as CustomActivityTargetMode; updatePreview(); });
-    const effectsEditor = activityEffectsEditor(draft, () => this.service.getEffectCapabilities(), { preserveUnavailable: Boolean(this.platform) });
+    const effectsEditor = activityEffectsEditor(draft, () => this.service.getEffectCapabilities(), { preserveUnavailable: Boolean(this.platform), standalone: Boolean(this.platform) });
     const nameField = this.#field("Activity name", "", name);
     const textField = this.platform
       ? this.#field("Action text", "", element("div", { className: "kl-activity-action-input" }, template, tokenRow))
@@ -813,14 +811,14 @@ export class CustomActivitiesView {
       "aside",
       { className: "kl-custom-character-pane" },
       element("div", { className: "kl-custom-field-label", text: "Body slot" }),
-      element("div", {
+      !this.platform && element("div", {
         className: "kl-custom-field-help",
-        text: this.platform ? "Tap a body slot on your character to change it." : "Tap your character or open the compact picker to change it.",
+        text: "Tap your character or open the compact picker to change it.",
       }),
       slotPicker,
       characterStage,
       slotSelect,
-      element("div", {
+      !this.platform && element("div", {
         className: "kl-custom-slot-note",
         text: "The activity will appear next to vanilla actions on this slot.",
       }),
@@ -872,19 +870,19 @@ export class CustomActivitiesView {
         const activityName = name.value.trim();
         const activityTemplate = template.value.trim();
         if (!activityName || !activityTemplate || !slotSelect.value) {
-          reportError("Add a name, action text, and body slot before saving.", !activityName ? name : !activityTemplate ? template : this.platform ? slotGrid : slotSummary);
+          reportError("Add a name, action text, and body slot before saving.", !activityName ? name : !activityTemplate ? template : slotSummary);
           return;
         }
         if (activityName.length > 40 || activityTemplate.length > 500) {
           reportError("Keep the name within 40 characters and the action text within 500.", activityName.length > 40 ? name : template); return;
         }
         if ((draft.effects?.steps.reduce((sum, step) => sum + step.delayMs + step.durationMs, 0) ?? 0) > MAX_SEQUENCE_TIME_MS) {
-          reportError("Keep the sequence within 120 seconds before saving.", effectsEditor.querySelector<HTMLElement>("summary")!);
+          reportError("Keep the sequence within 120 seconds before saving.", effectsEditor.querySelector<HTMLElement>(".kl-sequence-add,summary") ?? effectsEditor);
           return;
         }
         const effects = sanitizeActivityEffects(draft.effects);
         if (this.platform && draft.effects?.steps.length && !effects) {
-          reportError("Choose an expression, pose or clothing action in at least one step.", effectsEditor.querySelector<HTMLElement>("summary")!); return;
+          reportError("Choose an expression, pose or clothing action in at least one step.", effectsEditor.querySelector<HTMLElement>(".kl-sequence-add,summary") ?? effectsEditor); return;
         }
         const saved: CustomActivityDefinition = {
           id: draft.id,
@@ -968,24 +966,12 @@ export class CustomActivitiesView {
       updateTargetChoices();
       targetMode.hidden = true;
       targetField.append(targetChoices);
-      buildSlotButtons();
-      slotGrid.tabIndex = -1;
-      const pictureChoices = element("div", { className: "kl-activity-picture-choices", ariaLabel: "Suggested vanilla pictures" });
-      pictureChoices.setAttribute("role", "group");
-      for (const image of new Set([...ACTIVITY_EDITOR_PICTURES.filter(value => images.includes(value)), draft.image])) {
-        const choice = element("button", { className: "kl-text-button", type: "button", title: image, onClick: () => selectImage(image) },
-          element("img", { src: activityImageUrl(image), alt: "" }), element("span", { text: humanizeActivityName(image) }));
-        choice.setAttribute("aria-pressed", String(image === draft.image));
-        quickPictures.set(image, choice);
-        pictureChoices.append(choice);
-      }
-      const browsePictures = element("button", { className: "kl-text-button kl-activity-browse-pictures", type: "button", text: "Browse vanilla pictures", onClick: () => this.#editorDialog?.reveal(imageSearch) });
       const visuals = element("div", { className: "kl-activity-visuals" }, characterPane, pictureField);
       const triggers = element("div", { className: "kl-activity-trigger-panel" }, effectsEditor);
       form.classList.add("kl-activity-details");
       form.replaceChildren(nameField, element("div", { className: "kl-activity-editor-content" },
-        element("div", { className: "kl-activity-editor-writing" }, textField, previewField, this.#field("Picture", "", pictureChoices, browsePictures)),
-        element("div", { className: "kl-activity-editor-settings" }, targetField, this.#field("Body slot", "", slotGrid), arousalField)));
+        element("div", { className: "kl-activity-editor-writing" }, textField, previewField),
+        element("div", { className: "kl-activity-editor-settings" }, targetField, arousalField)));
       footer.prepend(error);
       this.#editorDialog = new ActivityEditorDialog(isExisting ? "Edit activity" : "New activity", [
         { name: "Activity", content: form }, { name: "Body & picture", content: visuals }, { name: "Triggers", content: triggers },
