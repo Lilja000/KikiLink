@@ -247,7 +247,9 @@
         const version = document.getElementById("kikilink-version");
         const custom = runtimePageRealm.DialogActivity.find((item) => item.Activity.Name.startsWith("KikiLinkCustom_"));
         const activityMark = document.querySelector("[data-kikilink-activity-mark]");
-        const flowerPixels = runtimePageRealm.MainCanvas.getImageData(520, 45, 35, 35).data;
+        const markStyle = activityMark && getComputedStyle(activityMark);
+        const markSize = innerWidth <= 720 ? "12px" : "18px";
+        const flowerPixels = runtimePageRealm.MainCanvas.getImageData(520, 45, 40, 40).data;
         const echoPixels = runtimePageRealm.MainCanvas.getImageData(520, 5, 35, 35).data;
         const wcePixels = runtimePageRealm.MainCanvas.getImageData(390, 5, 60, 35).data;
         const bcxPixels = runtimePageRealm.MainCanvas.getImageData(475, 5, 30, 30).data;
@@ -292,7 +294,7 @@
           customActivityInRegistry: runtimePageRealm.ActivityFemale3DCG.some((activity) => activity.Name.startsWith("KikiLinkCustom_")),
           customActivityInDialog: !!custom,
           customActivityButton: !!document.querySelector("#activity-grid [data-activity^='KikiLinkCustom_']"),
-          customActivityMark: activityMark?.style.width === "12px" && activityMark?.style.left === "0px",
+          customActivityMark: markStyle?.width === markSize && markStyle.height === markSize && markStyle.left === "0px" && markStyle.top === "0px",
         };
         window.__KIKILINK_HARNESS_RESULT__ = result;
         const passed = Object.values(result).every(Boolean);

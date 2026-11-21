@@ -500,7 +500,6 @@ export const EVENTS_STYLES = `
 .kl-ev-editor-content { display: flow-root; min-width: 0; margin: 0; padding: 0; border: 0; }
 .kl-ev-editor-content > p { margin: 0; }
 .kl-ev-editor-content > p:empty { display: none; }
-.kl-ev-editor-content > .kl-ev-editor-intro { margin: 6px 0 0; color: var(--kl-muted); font-size: 12px; line-height: 1.6; }
 .kl-ev-editor-dialog .kl-ev-form > label { gap: 6px; line-height: 1.5; }
 .kl-ev-editor-dialog .kl-ev-form > label > span { font-weight: 550; }
 .kl-ev-editor-dialog .kl-ev-form > label > .kl-ev-meta { font-size: 10px; line-height: 1.5; }

@@ -157,6 +157,7 @@ export function rankMatch(
   > & { interestsShared: boolean; connectionsShared: boolean },
   own: MatchSignal,
   priority?: MatchFilters["priority"],
+  sharedTags?: string[],
 ): MatchCandidate;
 export function filterMatch(
   c: MatchCandidate,

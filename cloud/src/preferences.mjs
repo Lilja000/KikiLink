@@ -73,7 +73,7 @@ export function preferencesApi({ app, social, auth, relationships, changed }) {
       ratings: normalizePreferenceRatings(keys.open(saved.ratings, `preferences:${owner}`)),
       revision: saved.revision,
       catalogVersion: saved.catalog_version,
-    } : { mode: "private", ratings: {}, revision: 0, catalogVersion: catalog.version };
+    } : { mode: "public", ratings: {}, revision: 0, catalogVersion: catalog.version };
   };
   const invalidate = owner => {
     for (const [key, entry] of cache) if (entry.members.includes(owner)) cache.delete(key);

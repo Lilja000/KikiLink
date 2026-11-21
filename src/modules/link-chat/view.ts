@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "./avatar-presence";
 import { openLocalMessageEditor } from "../platform-shell/local-message-editor";
 import { DirectPresentation } from "./direct-presentation";
 import { LocalProfileRestrictions } from "../../core/local-profile-restrictions";
@@ -128,7 +129,6 @@ import {
   KIKILINK_PLATFORM_RELEASE,
   KIKILINK_BUILD_ID,
   KIKILINK_DISTRIBUTION,
-  usesCatboxUploadRelay,
 } from "../../core/distribution";
 import { element, focusedElement, reconcileChildren } from "../../utils/dom";
 import { InteractiveList } from "../../utils/interactive-list";
@@ -211,7 +211,7 @@ import { profileOptions } from "../platform-shell/profile-controls";
 import { ProfileCommunities } from "../platform-shell/profile-communities";
 import { ProfilePreferences } from "../platform-shell/profile-preferences";
 import { INBOX_STYLES } from "../platform-shell/inbox-styles";
-import { normalizeImageUrl, parseMessageLinks } from "./media";
+import { MEDIA_HOST_LABELS, normalizeImageUrl, parseMessageLinks } from "./media";
 import { parseInlineReplyContext } from "./message-reply";
 import { messageActions, copyMessageText as copyText, shouldSendMessage } from "./message-controls";
 import { ReplyComposer, replyPreview } from "./reply-composer";
@@ -232,14 +232,9 @@ import {
   type RemoteImageLease,
 } from "./remote-image-loader";
 import {
-  LitterboxImageUploader,
   MAX_PROFILE_BANNER_BYTES,
   normalizeLitterboxUploadConfig,
-  supportsLongLivedCatboxUploads,
-  uploadPreparedImageToCatbox,
   prepareProfileBanner,
-  uploadLocalRoomAudio,
-  uploadMusicToCatbox,
   type LitterboxUploadConfig,
   type LocalImageUploader,
   type PreparedLocalImage,
@@ -292,6 +287,7 @@ import { ContentDialog } from "./content-dialog";
 import type { PeoplePickerRequest } from "./people-picker";
 import { SafetyPanel } from "../../cloud/safety-panel";
 import { CloudPanel, type CloudDestination } from "../../cloud/panel";
+import { prepareSharedImage, uploadSharedAudio, uploadSharedImage } from "../../cloud/public-files";
 type SettingsPage = SettingsSection | AccountSettingsPage | "moderation" | "my-reports";
 import { CloudProfileEditor } from "../../cloud/profile-editor";
 import type { CloudProfile } from "../../cloud/types";
@@ -311,7 +307,7 @@ const NAVIGATION_TABS: ReadonlyArray<readonly [NavigationTab, string]> = [
   ["room", "Rooms"], ["music", "Music"], ["activities", "Custom"],
 ];
 type RoomSubView = "current" | "lobbies" | "presets" | "history";
-type GalleryFileStorage = "device" | "catbox" | "litterbox";
+type GalleryFileStorage = "device" | "durable" | "temporary";
 type KnownContact = ReturnType<BCAdapter["getKnownContacts"]>[number];
 type DirectoryScope = "all" | "friends" | "online" | "saved" | "hidden";
 function peopleLanguageOption(value: string, label = value): HTMLOptionElement {
@@ -555,7 +551,9 @@ export class LinkChatView {
   #showGroupBadges = true;
   readonly #requestsCount = countBadge();
   readonly #requestsScopeCount = countBadge();
-  readonly #exploreCount = countBadge();
+  readonly #areaBadges = new Map<PlatformArea, HTMLElement>();
+  readonly #roomJoinNotices = new Set<number>();
+  #workshopUpdates = 0;
   #peopleBusy = false;
   #peopleRefreshId = 0;
   #peopleFeedback = "";
@@ -649,6 +647,7 @@ export class LinkChatView {
         profile:(member,name)=>{void this.#openAddonProfile(member,name);},privacy:()=>this.#openSettings("privacy")});
       this.#shadow.append(this.#peopleDiscovery.element);
       this.#matching=new MatchingPage(client,storage,{current:options.current,
+        known: member => this.#knownDiscoveryMember(member),
         blocked:member=>{try{return client.isProfileBlocked(member)||this.adapter.getPlayerRelationships(member).some(kind=>kind==='blacklist'||kind==='ghosted');}catch{return true;}},
         canMessage: member => this.#canMessageMatchingPeer(client, member),
         message: (member, name, current) => this.#openMatchingChat(client, member, name, current),
@@ -691,7 +690,9 @@ export class LinkChatView {
           else { this.#addonProfileDialog.close(); if(item.kind==='event'){this.#showWorkspace('events');this.#calendar?.open(item.id);}
             else {this.#showWorkspace('cloud',true,'feed');void this.#cloud?.openPost(Number(item.id),undefined,item.recoveryGeneration);} }
         }});
-      this.#workshop=new WorkshopPage(client,{current:options.current,activities:()=>this.#openActivities(),installation:{storage,settings:this.settings,communityTemplate:async(item,current)=>{
+      this.#workshop=new WorkshopPage(client,{current:options.current,activities:()=>this.#openActivities(),installation:{storage,settings:this.settings,
+        updatesChanged: count => { this.#workshopUpdates = count; this.#renderAreaBadges(); },
+        communityTemplate:async(item,current)=>{
         if(!options.current()||!current()||!this.#communities)throw new Error('Your account or community editor changed.');
         const open=await this.#communities.prepareTemplate(item.release.payload,item.release.title,current);
         if(!options.current()||!current())throw new Error('The template review changed.');
@@ -1778,6 +1779,7 @@ export class LinkChatView {
   }) as HTMLTextAreaElement;
   readonly #afkAutoReplyOptions = element("div", { className: "kl-afk-reply-options" });
   #presenceLocalBaseline: string | undefined;
+  #draftAvailability: PresenceStatus = "online";
   #presenceStandaloneBaseline: string | undefined;
   readonly #imageDialog = element("dialog", { className: "kl-dialog kl-image-dialog" });
   readonly #imageDialogTitle = element("div", { className: "kl-dialog-title" });
@@ -1810,7 +1812,7 @@ export class LinkChatView {
   });
   readonly #galleryRetentionSelect = element("select", {
     className: "kl-select kl-gallery-retention",
-    ariaLabel: "Litterbox image lifetime",
+    ariaLabel: "Temporary image lifetime",
   }) as HTMLSelectElement;
   readonly #galleryRetentionField = element("label", {
     className: "kl-gallery-retention-field",
@@ -2011,9 +2013,14 @@ export class LinkChatView {
   #remoteImageAutoLoadsActive = 0;
   #remoteImageAutoDrainScheduled = false;
   #remoteImageRemovalFrame: number | undefined;
-  readonly #remoteImageRemovalObserver = new MutationObserver((records) =>
-    this.#scheduleDetachedRemoteImageCleanup(records),
-  );
+  readonly #remoteImageRemovalObserver = new MutationObserver(records => {
+    this.#scheduleDetachedRemoteImageCleanup(records);
+    for (const record of records) for (const node of record.addedNodes) {
+      if (!(node instanceof HTMLElement) || !node.isConnected) continue;
+      if (node.hasAttribute("data-presence-peer")) this.#updateAvatarPresence(node);
+      for (const avatar of node.querySelectorAll<HTMLElement>("[data-presence-peer]")) this.#updateAvatarPresence(avatar);
+    }
+  });
   readonly #suppressProfileClickUntil = new WeakMap<HTMLElement, number>();
   readonly #profileMenuLongPressTimers = new Set<ReturnType<typeof setTimeout>>();
   readonly #revealedAvatarUrls = new Set<string>();
@@ -2053,10 +2060,8 @@ export class LinkChatView {
   #groupAvatarUploadTarget:
     | { groupId: string; returnFocus: HTMLElement }
     | undefined;
-  #preparedGroupAvatar: PreparedGroupAvatarUpload | undefined;
   #groupAvatarUploadController: AbortController | undefined;
   #profileBannerUploadBusy = false;
-  #preparedProfileBanner: PreparedLocalImage | undefined;
   #profileBannerUploadToken = 0;
   #profileBannerUploadController: AbortController | undefined;
   #profileBannerUploadStartedAt = 0;
@@ -2127,7 +2132,10 @@ export class LinkChatView {
       settings,
     ),
     presence?: LinkPresenceService,
-    private readonly imageUploader: LocalImageUploader<LitterboxUploadConfig> = new LitterboxImageUploader(),
+    private readonly imageUploader: LocalImageUploader<LitterboxUploadConfig> = {
+      prepare: prepareSharedImage,
+      upload: (image, config, signal) => uploadSharedImage(image, config.retention, undefined, signal),
+    },
     private readonly soundStore: NotificationSoundStore = new DeviceNotificationSoundStore(
       adapter.getOwnMemberNumber(),
     ),
@@ -2137,12 +2145,12 @@ export class LinkChatView {
     private readonly galleryStore: GalleryStore = new DeviceGalleryStore(
       adapter.getOwnMemberNumber(),
     ),
-    private readonly catboxImageUpload: (
+    private readonly durableImageUpload: (
       image: PreparedLocalImage,
       onProgress?: (progress: UploadProgress) => void,
       signal?: AbortSignal,
     ) => Promise<string> = (image, onProgress, signal) =>
-      uploadPreparedImageToCatbox(image, undefined, onProgress, signal),
+      uploadSharedImage(image, "durable", onProgress, signal),
     private readonly remoteImageLoader: RemoteImageLoaderLike = new RemoteImageLoader(),
   ) {
     const ui = this.settings.getSection("ui");
@@ -2232,10 +2240,16 @@ export class LinkChatView {
         const lastSettings = storage.getItem(LAST_SETTINGS_PAGE_KEY);
         if (PLATFORM_SETTINGS_PAGES.includes(lastSettings as SettingsPage)) this.#lastSettingsPage = lastSettings as SettingsPage;
         const savedMode = storage.getItem(ROOMS_MODE_KEY);
-        if (savedMode === "lobbies" || savedMode === "spaces" || savedMode === "history") this.#lastRoomsMode = savedMode;
-        let savedRoute = storage.getItem(LAST_PLATFORM_ROUTE_KEY);
-        if (savedRoute === "spaces" || savedRoute === "lobbies") { this.#lastRoomsMode = savedRoute; savedRoute = "rooms"; }
-        this.#lastPlatformRoute = PLATFORM_DESTINATIONS.find(item => item.id === savedRoute && !item.action)?.id;
+        if (savedMode === "lobbies" || savedMode === "spaces" || savedMode === "history" || savedMode === "current") this.#lastRoomsMode = savedMode;
+        const savedRoute = storage.getItem(LAST_PLATFORM_ROUTE_KEY);
+        if (savedRoute === "spaces" || savedRoute === "lobbies" || savedRoute === "current-room") {
+          this.#lastRoomsMode = savedRoute === "current-room" ? "current" : savedRoute;
+          this.#lastPlatformRoute = "rooms";
+          storage.setItem(ROOMS_MODE_KEY, this.#lastRoomsMode);
+          storage.setItem(LAST_PLATFORM_ROUTE_KEY, "rooms");
+        } else {
+          this.#lastPlatformRoute = PLATFORM_DESTINATIONS.find(item => item.id === savedRoute && !item.action)?.id;
+        }
       }
     } catch { /* Keep navigation usable when browser storage is unavailable. */ }
   }
@@ -2302,12 +2316,7 @@ export class LinkChatView {
       onAddGroupMember: (groupId, memberNumber) => service.addMember(groupId, memberNumber),
       onKickGroupMember: (groupId, memberNumber) => service.kickMember(groupId, memberNumber),
       onConvertLegacyGroup: (groupId) => service.convertLegacyGroup(groupId),
-      ...(supportsLongLivedCatboxUploads()
-        ? {
-            onPickGroupAvatar: (groupId: string, returnFocus: HTMLElement) =>
-              this.#pickGroupAvatar(groupId, returnFocus),
-          }
-        : {}),
+      onPickGroupAvatar: (groupId, returnFocus) => this.#pickGroupAvatar(groupId, returnFocus),
       onAttachImage: (groupId) => this.#openImageDialog("group", groupId),
       renderMessageBody: (message) =>
         this.#renderRichMessageBody(
@@ -2803,6 +2812,11 @@ export class LinkChatView {
       }).catch(() => {});
       return;
     }
+    if (notification.kind === "room-join" && this.#platformUi &&
+        (this.#panel.hidden || this.#platformShell?.secondary.dataset.area !== "game")) {
+      this.#roomJoinNotices.add(notification.memberNumber);
+      this.#renderAreaBadges();
+    }
     this.#deliverNotification(notification, group);
   }
 
@@ -2987,7 +3001,7 @@ export class LinkChatView {
   ): WorkspaceView {
     const available = (candidate: WorkspaceView) => !settings.ui.hiddenTabs.includes(candidate as NavigationTab) &&
       (candidate !== "roster" || settings.linkRoster.enabled) &&
-      (candidate !== "activities" || settings.linkActivities.enabled) && (candidate !== "cloud" || Boolean(this.#cloud)) &&
+      (candidate !== "activities" || settings.linkActivities.enabled) && (candidate !== "cloud" || Boolean(this.#cloud) && (!this.#platformUi || !settings.ui.hiddenTabs.includes("feed"))) &&
       (candidate !== "inbox" || (this.#platformUi && Boolean(this.#mailbox))) &&
       (candidate !== "saved" || (this.#platformUi && Boolean(this.#cloud) && !settings.ui.hiddenTabs.includes("cloud"))) &&
       (candidate !== "workshop" || this.#platformUi) &&
@@ -3172,7 +3186,7 @@ export class LinkChatView {
       this.#presenceTriggerLabel,
       this.#presenceTriggerDot,
     );
-    this.#presenceTrigger.addEventListener("click", () => this.#openPresenceDialog());
+    this.#presenceTrigger.addEventListener("click", () => this.#openPresenceDialog(this.#platformUi ? "quick-status" : "about"));
     this.#renderOwnPresence();
     this.#scheduleClockUpdate();
     this.#contextTitle.dataset.noPanelDrag = "true";
@@ -3443,14 +3457,12 @@ export class LinkChatView {
         openOptions: anchor => {
           const shell = this.#platformShell!;
           const area = shell.secondary.dataset.area as PlatformArea;
-          const feed = area === "home" && !!shell.secondary.querySelector('[data-route="feed"][aria-current="page"]');
-          this.#openAreaContext(anchor, feed ? "feed" : area);
+          this.#openAreaContext(anchor, area);
         }, openConnection: () => this.#openCloudSettings(),
         openProfile: anchor => this.#openOwnProfile(anchor),
       });
       if (this.#communityShortcuts) this.#platformShell.attachCommunities(this.#communityShortcuts.element);
       if (this.#workshop) this.#platformShell.attachWorkshop(this.#workshop.navigation);
-      this.#platformShell.attachAreaBadge("chat", this.#chatCount);
       this.#platformShell.attachBadge("direct", this.#directCount);
       this.#platformShell.attachBadge("groups", this.#groupsCount);
       this.#platformShell.attachBadge("inbox", this.#inboxCount);
@@ -3459,13 +3471,15 @@ export class LinkChatView {
       this.#platformShell.attachBadge("feed", this.#feedCount);
       this.#platformShell.attachBadge("players", this.#rosterCount);
       this.#platformShell.attachBadge("people", this.#requestsCount);
-      this.#platformShell.attachAreaBadge("explore", this.#exploreCount);
-      this.#updatePeopleBadges();
       for (const { id } of PLATFORM_AREAS) {
+        const badge = id === "chat" ? this.#chatCount : countBadge();
+        this.#areaBadges.set(id, badge);
+        this.#platformShell.attachAreaBadge(id, badge);
         const anchor = this.#platformShell.primary.querySelector<HTMLButtonElement>(`[data-area="${id}"]`)!;
         this.#bindActionMenu(anchor, () => this.#openAreaContext(anchor, id), false);
         if (id === "you") anchor.setAttribute("aria-haspopup", "dialog");
       }
+      this.#updatePeopleBadges();
       const options = this.#platformShell.options;
       this.#bindActionMenu(options, () => this.#openShellOptions(options), false);
       const bell = this.#mailbox?.button;
@@ -3522,7 +3536,7 @@ export class LinkChatView {
     if (this.#cloud && !this.settings.getSection("ui").hiddenTabs.includes("roster"))
       actions.push({ label: "Friend requests", icon: "users", run: () => this.#activatePlatformRoute("requests") });
     actions.push(
-      { label: "Change status", icon: "check", run: () => this.#openPresenceDialog("presence") },
+      { label: "Change status", icon: "check", run: () => this.#openPresenceDialog("quick-status") },
       { label: "Settings", icon: "settings", run: () => this.#openSettings() },
       { label: "Navigation options", icon: "navigation", run: () => this.#openSettings("navigation") },
     );
@@ -3550,14 +3564,14 @@ export class LinkChatView {
     ], undefined, true, true);
   }
 
-  #openAreaContext(anchor: HTMLButtonElement, area: PlatformArea | "feed"): void {
+  #openAreaContext(anchor: HTMLButtonElement, area: PlatformArea): void {
     const shell = this.#platformShell;
     if (!shell || !this.#mounted || this.#panel.hidden) return;
-    const label = area === "feed" ? "Feed" : PLATFORM_AREAS.find(item => item.id === area)!.label;
+    const label = PLATFORM_AREAS.find(item => item.id === area)!.label;
     const actions: ShellAction[] = [];
-    const active = shell.secondary.dataset.area === (area === "feed" ? "home" : area);
+    const active = shell.secondary.dataset.area === area;
     if (active) actions.push({ label: "Browse all sections", icon: "navigation", run: () => this.#browseShellSections(anchor) });
-    if (area === "home" || area === "feed" || area === "chat") {
+    if (area === "feed" || area === "chat") {
       const tab = area === "chat" ? "chat" : "feed";
       const muted = conversationMuted(this.settings.getSection("ui").tabAlerts[tab].mutedUntil);
       actions.push(
@@ -3566,12 +3580,12 @@ export class LinkChatView {
         { label: "Notification preferences", icon: "notifications", run: () => this.#openSettings("reactions") },
       );
     }
-    if (area !== "feed" && hideablePlatformArea(area)) actions.push({ label: "Hide from navigation", icon: "eye-off", run: () => {
+    if (hideablePlatformArea(area)) actions.push({ label: "Hide from navigation", icon: "eye-off", run: () => {
       this.settings.update(draft => {
         if (!draft.ui.hiddenTabs.includes(area)) draft.ui.hiddenTabs.push(area);
         if (draft.ui.launcherOpen === area) draft.ui.launcherOpen = "home";
       });
-      if (active) this.#activatePlatformRoute(this.#cloud ? "feed" : "home");
+      if (active) this.#activatePlatformRoute("home");
       this.#toast(`${label} hidden. Restore it in Settings → Navigation.`);
     } });
     actions.push({ label: "Navigation settings", icon: "settings", run: () => this.#openSettings("navigation") });
@@ -3616,7 +3630,6 @@ export class LinkChatView {
     const title = shell.sectionTitle + " sections";
     const list = element("nav", { className: "kl-shell-section-list", ariaLabel: title });
     for (const original of source.querySelectorAll<HTMLButtonElement>("button:not([hidden])")) {
-      if (area === "home" && this.#cloud && (original.dataset.route === "home" || original.dataset.route === "news")) continue;
       const row = element("button", { className: "kl-shell-section-row", type: "button", onClick: () => {
         if (!this.#contentDialog.body.contains(list) || !original.isConnected || original.hidden || original.disabled ||
             !this.#mounted || this.#panel.hidden || shell.secondary.dataset.area !== area) return;
@@ -3728,6 +3741,10 @@ export class LinkChatView {
       requests: this.#rosterScope === "friends" && this.#friendsView === "requests", playerScope: this.#rosterScope, playersDirectory: this.#playersDirectory });
     this.#platformShell.sync({ route, hiddenTabs: settings.ui.hiddenTabs, activitiesEnabled: settings.linkActivities.enabled, hasCloud: Boolean(this.#cloud),
       profilePreview: this.#profileInPage && Boolean(this.#profileViewAs?.active) });
+    if (!this.#panel.hidden && platformDestination(route).area === "game" && this.#roomJoinNotices.size) {
+      this.#roomJoinNotices.clear();
+      this.#renderAreaBadges();
+    }
     this.#animatePageRoute(route);
     this.#syncDiscover();
     this.#communityShortcuts?.setVisible(!this.#panel.hidden && ["home", "explore"].includes(platformDestination(route).area));
@@ -3985,7 +4002,7 @@ export class LinkChatView {
           .then(rows => {
             if (!current()) return;
             discover.setMatches(rows?.map(row => ({
-              name: row.name, reason: row.reasons[0],
+              memberNumber: row.memberNumber, status: row.status, name: row.name, reason: row.reasons[0],
               open: () => {
                 if (!current() || this.#matching !== matching || this.#isMemberBlocked(row.memberNumber)) return;
                 matching.openRecommendation(row.memberNumber, "why");
@@ -5349,7 +5366,7 @@ export class LinkChatView {
     );
 
     this.#imageUploadsToggle.type = "checkbox";
-    this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary Litterbox sharing");
+    this.#imageUploadsToggle.setAttribute("aria-label", "Enable temporary KikiLink sharing");
     this.#imageUploadsToggle.addEventListener("change", () =>
       this.#renderImageUploadSettingsOptions(),
     );
@@ -5366,17 +5383,10 @@ export class LinkChatView {
       selectOption("72h", "3 days"),
     );
     this.#imageUploadRetentionSelect.setAttribute("aria-label", "Temporary file lifetime");
-    const litterboxLink = element("a", {
-      className: "kl-inline-link",
-      text: "Litterbox by Catbox",
-    });
-    litterboxLink.href = "https://litterbox.catbox.moe/";
-    litterboxLink.target = "_blank";
-    litterboxLink.rel = "noopener noreferrer";
     this.#imageUploadSettingsOptions.append(
       this.#settingRow(
         "Temporary link lifetime",
-        "Litterbox removes shared chat images and room media after this period.",
+        "WaifuVault expires the public link after this period.",
         this.#imageUploadRetentionSelect,
       ),
       element(
@@ -5386,9 +5396,7 @@ export class LinkChatView {
         element(
           "span",
           {},
-          "Only an explicit Share or Upload action makes a network request. KikiLink replaces the filename; images are resized and stripped of metadata before the public file is sent to ",
-          litterboxLink,
-          ". Audio may retain embedded metadata. Expiration cannot remove copies another person already saved. Manual Gallery files stay on this device and are never uploaded automatically.",
+          "WaifuVault hosts temporary files. Anyone with the link can open them until they expire. Shared images are stripped of metadata. Audio may retain embedded metadata.",
         ),
       ),
     );
@@ -5401,7 +5409,7 @@ export class LinkChatView {
       }),
       this.#settingRow(
         "Share local files",
-        "Create expiring public links through Litterbox without an account.",
+        "Share temporary files through WaifuVault.",
         imageUploadsSwitch,
       ),
       this.#imageUploadSettingsOptions,
@@ -6001,17 +6009,19 @@ export class LinkChatView {
       // Move the original controls once; old stored section IDs remain valid.
       const body = (panel: HTMLElement) => panel.querySelector<HTMLElement>(".kl-settings-panel-body")!;
       const sections = [
-        ["appearance", "General", "Appearance, reading comfort and time."],
-        ["navigation", "Navigation", "Your launcher and visible sections."],
-        ["chat", "Chat & media", "Beep chats, previews and local history. Cloud messages follow the server's retention policy."],
-        ["reactions", "Alerts", "Badges, notices, sounds and reaction rules."],
-        ["players", "Game", "Players, encounters, Blossom and Custom Activities."],
-        ["about", "Data & about", "Account tools, backups and information about this build."],
+        ["appearance", "General"],
+        ["navigation", "Navigation"],
+        ["chat", "Chat & media"],
+        ["reactions", "Alerts"],
+        ["players", "Game"],
+        ["about", "Data & about"],
       ] as const;
-      for (const [id, title, description] of sections) {
+      for (const [id, title] of sections) {
         const panel = this.#settingsPanels.get(id)!;
         panel.querySelector("h2")!.textContent = title;
-        panel.querySelector(".kl-settings-panel-description")!.textContent = description;
+        const description = panel.querySelector(".kl-settings-panel-description");
+        if (id === "chat" && description) description.textContent = "Cloud messages follow the server's retention policy.";
+        else description?.remove();
         const tab = this.#settingsTabs.querySelector<HTMLButtonElement>(`[data-section="${id}"]`)!;
         tab.querySelector("span:not(.kl-icon)")!.textContent = title;
         this.#settingsTabs.append(tab);
@@ -6140,10 +6150,10 @@ export class LinkChatView {
       this.#imageUploadRetentionSelect.setAttribute("aria-label", "Temporary links expire");
       this.#imageUploadSettingsOptions.removeChild(expiry);
       const privacyNote = this.#imageUploadSettingsOptions.querySelector(".kl-image-upload-privacy")!;
-      const sharingInfo = element("button", { type: "button", className: "kl-sharing-info", text: "Litterbox", ariaLabel: "About Litterbox file sharing",
+      const sharingInfo = element("button", { type: "button", className: "kl-sharing-info", text: "File sharing", ariaLabel: "About WaifuVault file sharing",
         onClick: () => this.#contentDialog.show("Temporary file sharing", privacyNote.cloneNode(true)) });
       expiry.querySelector(".kl-setting-help")!.replaceChildren("Public links use ", sharingInfo, ". Unshared Gallery images stay on this device.");
-      shareFiles.title = "Create expiring public links through Litterbox.";
+      shareFiles.title = "Create temporary public links through WaifuVault.";
       expiry.classList.add("kl-settings-expiry");
       for (const select of [this.#imagePreviewSelect, this.#profileImagePreviewSelect]) {
         select.replaceChildren(selectOption("always", "Always show"), selectOption("ask", "Ask first"), selectOption("never", "Links only"));
@@ -6853,15 +6863,15 @@ export class LinkChatView {
         element(
           "span",
           { className: "kl-presence-option-copy" },
-          element("span", { className: "kl-presence-option-title", text: presenceLabel(status) }),
+          element("span", { className: "kl-presence-option-title", text: this.#platformUi && status === "offline" ? "Invisible" : this.#platformUi && status === "idle" ? "Away" : presenceLabel(status) }),
           element("span", { className: "kl-presence-option-help", text: presenceHelp(status) }),
         ),
         element("span", { className: "kl-presence-option-check", text: "✓" }),
       );
       option.dataset.status = status;
       option.addEventListener("click", () => {
-        this.presence.setOwnStatus(status);
-        this.#renderOwnPresence();
+        if (this.#platformUi) this.#draftAvailability = status;
+        else { this.presence.setOwnStatus(status); this.#renderOwnPresence(); }
         this.#renderPresenceDialog();
       });
       this.#presenceOptions.append(option);
@@ -6919,7 +6929,7 @@ export class LinkChatView {
 
     this.#presenceBannerUrl.type = "url";
     this.#presenceBannerUrl.maxLength = 500;
-    this.#presenceBannerUrl.placeholder = "https://files.catbox.moe/banner.webp";
+    this.#presenceBannerUrl.placeholder = "https://example.com/banner.webp";
     this.#presenceBannerUrl.autocomplete = "off";
     this.#presenceBannerUrl.spellcheck = false;
     this.#presenceBannerUrl.setAttribute("aria-label", "Direct profile banner URL");
@@ -6936,10 +6946,6 @@ export class LinkChatView {
         this.#renderPresenceDialog();
         return;
       }
-      if (usesCatboxUploadRelay() && this.#preparedProfileBanner) {
-        void this.#uploadPresenceBanner();
-        return;
-      }
       this.#presenceBannerFileInput.click();
     });
     this.#presenceBannerFileInput.addEventListener("change", () => {
@@ -6949,7 +6955,7 @@ export class LinkChatView {
         this.#cloudProfile.choose("banner", file);
         if (this.#platformUi) this.#renderOwnBannerPreview();
       }
-      else if (file) void this.#uploadPresenceBanner(file, usesCatboxUploadRelay());
+      else if (file) void this.#uploadPresenceBanner(file);
     });
     this.#presenceBannerRemoveButton.addEventListener("click", () => {
       if (this.#cloudProfile) {
@@ -6959,7 +6965,6 @@ export class LinkChatView {
         return;
       }
       if (this.#profileBannerUploadBusy) return;
-      this.#preparedProfileBanner = undefined;
       this.#presenceBannerUrl.value = "";
       this.#presenceBannerStatus.textContent = "Banner removed from this profile draft.";
       this.#presenceBannerStatus.dataset.tone = "warning";
@@ -7096,11 +7101,7 @@ export class LinkChatView {
           className: "kl-custom-field-help",
           text: this.#cloudProfile
             ? "Your selected banner is stored with your KikiLink profile when you save. PNG, JPEG or WebP · up to 5 MiB."
-            : supportsLongLivedCatboxUploads()
-            ? usesCatboxUploadRelay()
-              ? "Upload first prepares a metadata-free WebP locally. Verify & upload then uses the KikiLink relay to send it to public Catbox. The relay does not retain the file, and removing it here does not delete the public copy; Catbox retention applies."
-              : "Upload converts the file to a metadata-free WebP and stores it on public, long-lived Catbox. Removing it here does not delete the old public file; Catbox retention applies."
-            : "The reviewed Catbox relay is not enabled in this FUSAM build. Paste a direct HTTPS banner link instead.",
+            : "Use a direct image link or upload a public WebP to AnonDrop.",
         }),
         this.#presenceBannerStatus,
       ),
@@ -7153,7 +7154,10 @@ export class LinkChatView {
         const file = avatarInput.files?.[0]; avatarInput.value = "";
         if (!file || !this.#cloudProfile) return;
         if (this.#platformUi) {
-          if (await this.#cloudProfile.chooseAvatar(file)) this.#renderOwnAvatarPreview();
+          if (await this.#cloudProfile.chooseAvatar(file)) {
+            this.#renderOwnAvatarPreview();
+            this.#profileAvatarPicker?.focusFraming();
+          }
         } else { this.#cloudProfile.choose("avatar", file); this.#renderOwnAvatarPreview(); }
       });
       const choose = element("button", { type: "button", className: "kl-text-button", onClick: () => avatarInput.click() },
@@ -7224,7 +7228,6 @@ export class LinkChatView {
       this.#cancelProfileBannerUpload();
       this.#profileBannerUploadToken += 1;
       this.#profileBannerUploadBusy = false;
-      this.#preparedProfileBanner = undefined;
       this.#presenceBannerStatus.textContent = "";
       this.#presenceBannerStatus.dataset.tone = "";
       this.#presenceLocalBaseline = undefined;
@@ -7277,6 +7280,8 @@ export class LinkChatView {
     tagsField.classList.add("kl-profile-tags-field");
     tagsField.querySelector(".kl-presence-field-label")!.textContent = "Tags";
     tagsField.querySelector(".kl-custom-field-help")!.textContent = "Up to 5 tags, separated by commas. 20 characters per tag.";
+    this.#presenceMessage.closest("label")?.classList.add("kl-status-note-field");
+    this.#presenceEnabledToggle.closest(".kl-setting-row")?.classList.add("kl-status-sharing-row");
     const details = cloud?.details.element;
     const timeZone = cloud?.details.offset.closest("label");
     const timeZoneHelp = details?.querySelector<HTMLElement>(".kl-custom-field-help");
@@ -7321,8 +7326,7 @@ export class LinkChatView {
     if (activityPrivacy) privacyControls.push(activityPrivacy);
     if (visibility && privacy) {
       visibility.classList.add("kl-profile-visibility-option");
-      privacyControls.push(element("div", { className: "kl-profile-visibility-card" }, visibility,
-        element("p", { className: "kl-custom-field-help", text: "Controls whether your Cloud profile is available to other KikiLink users." })), privacy);
+      privacyControls.push(element("div", { className: "kl-profile-visibility-card" }, visibility), privacy);
     }
     const selected = new Set<HTMLElement>([this.#profileAppearancePreview, ...about, ...appearance, ...privacyControls]);
     if (this.#cloudProfile) selected.add(this.#cloudProfile.element);
@@ -7443,7 +7447,7 @@ export class LinkChatView {
       const member = this.adapter.getOwnMemberNumber();
       const username = this.#cloudProfile?.username.input.value.trim();
       this.#profileEditorHandle.textContent = username ? `@${username}` : `Member #${member}`;
-      this.#profileEditorStatus.textContent = this.#presenceMessage.value.trim() || "Your own corner of KikiLink";
+      this.#profileEditorStatus.textContent = this.#presenceMessage.value.trim() || presenceLabel(this.#draftAvailability);
       const profile = this.#cloudProfile?.current;
       const showLegacy = profile?.memberNumber === member && profile.legacyEligible === true && this.#cloudProfile?.legacyBadge.input.checked;
       if (!showLegacy) this.#profileEditorBadges.replaceChildren();
@@ -8107,7 +8111,7 @@ export class LinkChatView {
       ? element("button", {
           className: "kl-addon-profile-status kl-addon-profile-status-control", type: "button",
           ariaLabel: `Change status: ${statusLabel}${snapshot.statusMessage ? `, ${snapshot.statusMessage}` : ""}`,
-          title: presenceDescription(snapshot), onClick: () => this.#editViewedProfile("presence"),
+          title: presenceDescription(snapshot), onClick: () => this.#editViewedProfile("quick-status"),
         }, element("span", { className: "kl-addon-profile-status-primary" }, presenceDot(snapshot.status), element("strong", { text: statusLabel })),
         statusSeparator, statusText, element("span", { className: "kl-addon-profile-status-chevron" }))
       : element(
@@ -8636,6 +8640,7 @@ export class LinkChatView {
       this.#selectProfileEditorSection(section);
     }
     const config = this.settings.getSection("linkPresence");
+    this.#draftAvailability = config.status;
     this.#presenceEnabledToggle.checked = config.enabled;
     this.#presenceMessage.value = config.statusMessage;
     this.#presenceBio.value = config.bio;
@@ -8653,7 +8658,6 @@ export class LinkChatView {
     this.#presenceOutlineColor.value = config.profileOutlineColor || this.settings.getSection("ui").accent;
     this.#presenceBannerStatus.textContent = "";
     this.#presenceBannerStatus.dataset.tone = "";
-    this.#preparedProfileBanner = undefined;
     this.#autoIdleInput.value = config.autoIdleMinutes.toString();
     this.#afkAutoReplyToggle.checked = config.afkAutoReply.enabled;
     this.#afkAutoReplyMessage.value = config.afkAutoReply.message;
@@ -8678,7 +8682,7 @@ export class LinkChatView {
         this.#presenceBannerUploadButton.disabled = this.#presenceBannerRemoveButton.disabled = locked;
         if (this.#profileStyleReset) this.#profileStyleReset.disabled = locked;
         for (const button of this.#presenceDialog.querySelectorAll<HTMLButtonElement>(".kl-profile-avatar-field button")) button.disabled = locked;
-        for (const range of this.#presenceDialog.querySelectorAll<HTMLInputElement>('.kl-profile-avatar-field input[type="range"]')) range.disabled = locked;
+        if (this.#profileAvatarPicker) this.#profileAvatarPicker.framing.inert = locked;
         for (const button of this.#profileStyleChoices?.querySelectorAll("button") ?? []) button.disabled = locked;
         queueMicrotask(() => this.#updateProfileSaveHint());
       },
@@ -8716,9 +8720,14 @@ export class LinkChatView {
   }
 
   #selectProfileEditorSection(section: string, focus = false): void {
-    // Existing status shortcuts land on the same controls without adding a fifth editor tab.
-    if (section === "presence" && this.#profilePresenceGroup) this.#profilePresenceGroup.open = true;
-    this.#profileSections?.select(section === "presence" ? "about" : section, focus);
+    const quick = section === "quick-status";
+    this.#presenceDialog.dataset.quickStatus = String(quick);
+    const title = this.#presenceDialog.querySelector<HTMLElement>(".kl-dialog-title");
+    if (title) title.textContent = quick ? "Your status" : "Edit profile";
+    if ((quick || section === "presence") && this.#profilePresenceGroup) this.#profilePresenceGroup.open = true;
+    this.#profileSections?.select(quick || section === "presence" ? "about" : section, focus && !quick);
+    if (quick && focus) this.#presenceOptions.querySelector<HTMLButtonElement>('[data-active="true"]:enabled')?.focus();
+
   }
 
   #syncProfileEditorPrivacy(): void {
@@ -8752,7 +8761,7 @@ export class LinkChatView {
   #presenceLocalDraft(): string {
     const draft: PresenceLocalDraft = {
       enabled: this.#presenceEnabledToggle.checked,
-      status: this.settings.getSection("linkPresence").status,
+      status: this.#platformUi ? this.#draftAvailability : this.settings.getSection("linkPresence").status,
       autoIdle: this.#autoIdleInput.value,
       afkEnabled: this.#afkAutoReplyToggle.checked,
       afkMessage: this.#afkAutoReplyMessage.value,
@@ -8776,7 +8785,6 @@ export class LinkChatView {
       gradientPrimary: this.#presenceGradientPrimary.value,
       gradientSecondary: this.#presenceGradientSecondary.value,
       gradientAngle: this.#presenceGradientAngle.value,
-      preparedBanner: Boolean(this.#preparedProfileBanner),
     });
   }
 
@@ -8794,7 +8802,7 @@ export class LinkChatView {
 
   #discardPresenceChanges(): void {
     this.#preferences?.discard();
-    if (this.#presenceLocalBaseline) {
+    if (!this.#platformUi && this.#presenceLocalBaseline) {
       const baseline = JSON.parse(this.#presenceLocalBaseline) as PresenceLocalDraft;
       this.presence.setOwnStatus(baseline.status);
       this.#renderOwnPresence();
@@ -8805,7 +8813,7 @@ export class LinkChatView {
   }
 
   #renderPresenceDialog(): void {
-    const selected = this.settings.getSection("linkPresence").status;
+    const selected = this.#platformUi ? this.#draftAvailability : this.settings.getSection("linkPresence").status;
     const enabled = this.#presenceEnabledToggle.checked;
     for (const option of this.#presenceOptions.querySelectorAll<HTMLButtonElement>(
       ".kl-presence-option",
@@ -8818,24 +8826,13 @@ export class LinkChatView {
     this.#presenceMessage.disabled = !enabled;
     this.#presenceBio.disabled = !enabled && !this.#cloudProfile;
     this.#presenceBannerUrl.disabled = this.#profileBannerUploadBusy;
-    const canUploadToCatbox = Boolean(this.#cloudProfile) || supportsLongLivedCatboxUploads();
-    if (!this.#profileBannerSource) this.#presenceBannerUploadButton.textContent = this.#cloudProfile ? "Choose banner" : !canUploadToCatbox
-      ? "Catbox unavailable in FUSAM"
-      : this.#profileBannerUploadBusy
-      ? this.#profileBannerUploadController?.signal.aborted
-        ? "Cancelling…"
-        : "Cancel upload"
-      : usesCatboxUploadRelay() && this.#preparedProfileBanner
-        ? "Verify & upload"
-        : "Upload banner";
-    this.#presenceBannerUploadButton.disabled =
-      !canUploadToCatbox ||
-      (this.#profileBannerUploadBusy && this.#profileBannerUploadController?.signal.aborted === true);
-    this.#presenceBannerUploadButton.title = canUploadToCatbox
-      ? usesCatboxUploadRelay()
-        ? "Prepare, verify, and relay a public Catbox banner"
-        : "Prepare and upload a public Catbox banner"
-      : "The reviewed FUSAM-to-Catbox relay is not enabled";
+    if (!this.#profileBannerSource) this.#presenceBannerUploadButton.textContent = this.#cloudProfile ? "Choose banner" : this.#profileBannerUploadBusy
+      ? this.#profileBannerUploadController?.signal.aborted ? "Cancelling…" : "Cancel upload"
+      : "Upload banner";
+    this.#presenceBannerUploadButton.disabled = this.#profileBannerUploadBusy && this.#profileBannerUploadController?.signal.aborted === true;
+    this.#presenceBannerUploadButton.title = this.#cloudProfile
+      ? "Choose a banner for your Cloud profile"
+      : "Upload a public banner to AnonDrop";
     this.#presenceBannerRemoveButton.disabled = this.#profileBannerUploadBusy;
     this.#presenceOutlineEnabled.disabled = this.#profileBannerUploadBusy;
     this.#presenceOutlineColor.disabled =
@@ -8963,6 +8960,7 @@ export class LinkChatView {
       const reason = error instanceof Error ? error.message : "Preferences could not save.";
       this.#toast(privacySaved ? `Cloud privacy saved. ${reason}` : reason, "error"); return false;
     }
+    if (this.#platformUi && this.#draftAvailability !== this.settings.getSection("linkPresence").status) this.presence.setOwnStatus(this.#draftAvailability);
     this.presence.setOwnProfile({
       enabled: this.#presenceEnabledToggle.checked,
       statusMessage: this.#presenceMessage.value,
@@ -8992,17 +8990,8 @@ export class LinkChatView {
     return true;
   }
 
-  async #uploadPresenceBanner(file?: File, prepareOnly = false): Promise<void> {
-    if (!supportsLongLivedCatboxUploads()) {
-      this.#toast("Catbox uploads are unavailable in FUSAM. Paste a direct HTTPS link instead.", "error");
-      return;
-    }
-    if (
-      this.#profileBannerUploadBusy ||
-      !this.#presenceDialog.open ||
-      (!file && !this.#preparedProfileBanner)
-    )
-      return;
+  async #uploadPresenceBanner(file: File): Promise<void> {
+    if (this.#profileBannerUploadBusy || !this.#presenceDialog.open) return;
     const token = ++this.#profileBannerUploadToken;
     const controller = new AbortController();
     let statusTimer: ReturnType<typeof setInterval> | undefined;
@@ -9014,39 +9003,22 @@ export class LinkChatView {
     this.#presenceBannerStatus.dataset.tone = "";
     this.#renderPresenceDialog();
     try {
-      let prepared = this.#preparedProfileBanner;
-      if (file) {
-        this.#preparedProfileBanner = undefined;
-        prepared = await prepareProfileBanner(file);
-        if (controller.signal.aborted) {
-          this.#presenceBannerStatus.textContent =
-            "Banner preparation cancelled. Nothing was uploaded.";
-          this.#presenceBannerStatus.dataset.tone = "warning";
-          return;
-        }
-        if (prepared.blob.size > MAX_PROFILE_BANNER_BYTES) {
-          throw new Error("The prepared profile banner is larger than 2 MB");
-        }
-        if (token !== this.#profileBannerUploadToken || !this.#presenceDialog.open) return;
-        if (prepareOnly) {
-          this.#preparedProfileBanner = prepared;
-          this.#presenceBannerStatus.textContent =
-            `Prepared ${formatBytes(prepared.blob.size)}. Press Verify & upload; no file has been sent yet.`;
-          this.#presenceBannerStatus.dataset.tone = "";
-          return;
-        }
+      const prepared = await prepareProfileBanner(file);
+      if (controller.signal.aborted) {
+        this.#presenceBannerStatus.textContent = "Banner preparation cancelled. Nothing was uploaded.";
+        this.#presenceBannerStatus.dataset.tone = "warning";
+        return;
       }
-      if (!prepared) return;
-      this.#presenceBannerStatus.textContent = usesCatboxUploadRelay()
-        ? "Authorizing and uploading to public Catbox storage…"
-        : "Uploading to public Catbox storage…";
+      if (prepared.blob.size > MAX_PROFILE_BANNER_BYTES) throw new Error("The prepared profile banner is larger than 2 MB");
+      if (token !== this.#profileBannerUploadToken || !this.#presenceDialog.open) return;
+      this.#presenceBannerStatus.textContent = "Uploading to AnonDrop…";
       this.#profileBannerUploadStartedAt = Date.now();
       statusTimer = setInterval(() => {
         if (token !== this.#profileBannerUploadToken || controller.signal.aborted) return;
         this.#renderProfileBannerUploadProgress();
       }, 1_000);
       this.#profileBannerUploadStatusTimer = statusTimer;
-      const url = await this.catboxImageUpload(
+      const url = await this.durableImageUpload(
         prepared,
         (progress) => {
           if (token !== this.#profileBannerUploadToken || controller.signal.aborted) return;
@@ -9064,10 +9036,9 @@ export class LinkChatView {
       }
       const normalized = normalizeImageUrl(url);
       if (!normalized || normalized.length > 500) {
-        throw new Error("Catbox returned an invalid profile banner link");
+        throw new Error("AnonDrop returned an invalid profile banner link");
       }
       this.#presenceBannerUrl.value = normalized;
-      this.#preparedProfileBanner = undefined;
       const savedToGallery = this.#saveGalleryImage(normalized);
       this.#presenceBannerStatus.textContent = savedToGallery
         ? "Banner uploaded and saved to Gallery. Save profile to share it."
@@ -9106,9 +9077,7 @@ export class LinkChatView {
       0,
       Math.floor((Date.now() - this.#profileBannerUploadStartedAt) / 1_000),
     );
-    const action = usesCatboxUploadRelay()
-      ? "Authorizing and uploading to public Catbox storage"
-      : "Uploading to public Catbox storage";
+    const action = "Uploading to AnonDrop";
     this.#presenceBannerStatus.textContent = this.#profileBannerUploadPercent === undefined
       ? `${action}… ${elapsedSeconds}s`
       : `${action}… ${this.#profileBannerUploadPercent}% · ${elapsedSeconds}s`;
@@ -9199,26 +9168,19 @@ export class LinkChatView {
     this.#galleryRetentionSelect.addEventListener("change", () =>
       this.#renderLocalImageComposeState());
     this.#galleryRetentionField.append(
-      element("span", { text: "Litterbox lifetime" }),
+      element("span", { text: "Temporary link lifetime" }),
       this.#galleryRetentionSelect,
     );
     const galleryStorageChoices = ([
       ["device", "lock", "This device", "Private · stays until you delete it"],
-        [
-          "catbox",
-          "star",
-          "Catbox",
-          "Public long-lived link · Catbox retention applies",
-        ],
-      ["litterbox", "status", "Litterbox", "Public link · expires automatically"],
+      ["durable", "star", "AnonDrop", "Public link · inactive files may expire"],
+      ["temporary", "status", "WaifuVault", "Public link · choose when it expires"],
     ] as const).map(([storage, icon, title, description]) => {
       const input = element("input") as HTMLInputElement;
-      const unavailable = storage === "catbox" && !supportsLongLivedCatboxUploads();
       input.type = "radio";
       input.name = "kikilink-gallery-storage";
       input.value = storage;
       input.checked = storage === "device";
-      input.disabled = unavailable;
       input.addEventListener("change", () => {
         if (input.checked) this.#setGalleryFileStorage(storage);
       });
@@ -9231,9 +9193,7 @@ export class LinkChatView {
           "span",
           { className: "kl-gallery-storage-copy" },
           element("strong", { text: title }),
-          element("small", {
-            text: unavailable ? "Unavailable in FUSAM · use a direct link" : description,
-          }),
+          element("small", { text: description }),
         ),
       );
       choice.dataset.storage = storage;
@@ -9516,9 +9476,7 @@ export class LinkChatView {
     this.#imageChatTarget = destination === "chat" ? { kind: "chat", peerNumber: this.#activePeer!, peerName: this.#activeNativeName, includeRoom: this.#includeRoom.checked, imageGeneration:this.#community?.directRecovery?.generation } : undefined;
     this.#imageDialogTitle.textContent = destination === "gallery" ? "Add to Gallery" : "Send an image";
     this.#imageDialogSubtitle.textContent = destination === "gallery"
-      ? supportsLongLivedCatboxUploads()
-        ? "Save a direct link, keep a prepared file private, or upload it to Catbox/Litterbox."
-        : "Save a direct link, keep a prepared file private, or use expiring Litterbox storage."
+      ? "Save an image link or choose a file."
       : destination === "group"
         ? "Share a direct image link with every current group member."
         : this.#isCloudImage() ? "Private image for this conversation · expires with its Cloud message."
@@ -9560,7 +9518,6 @@ export class LinkChatView {
   }
 
   #setGalleryFileStorage(storage: GalleryFileStorage): void {
-    if (storage === "catbox" && !supportsLongLivedCatboxUploads()) storage = "device";
     this.#galleryFileStorage = storage;
     for (const input of this.#galleryStorageOptions.querySelectorAll<HTMLInputElement>(
       "input[type='radio']",
@@ -9568,7 +9525,7 @@ export class LinkChatView {
       input.checked = input.value === storage;
       input.closest<HTMLElement>(".kl-gallery-storage-choice")!.dataset.active = String(input.checked);
     }
-    this.#galleryRetentionField.hidden = storage !== "litterbox";
+    this.#galleryRetentionField.hidden = storage !== "temporary";
     this.#imageFilePrivacyIcon.replaceChildren(
       kikiIcon(this.#imageDestination !== "gallery" || storage === "device" ? "lock" : "external"),
     );
@@ -9576,14 +9533,12 @@ export class LinkChatView {
       this.#isCloudImage()
         ? "Only Upload & send uploads the prepared image privately to KikiLink. The filename and metadata are removed. Available to both participants while its Cloud message is retained."
         : this.#imageDestination !== "gallery"
-        ? "Nothing uploads on selection. KikiLink removes the filename and metadata first; only Upload & send creates an expiring Litterbox link."
+        ? "Upload & send shares a prepared image through WaifuVault until the link expires."
         : storage === "device"
-          ? "Nothing uploads. The prepared image stays privately in this browser until you delete it."
-          : storage === "catbox"
-            ? usesCatboxUploadRelay()
-              ? "Nothing uploads on selection. Saving asks for Cloudflare verification, then sends only the prepared WebP through the KikiLink relay to public Catbox. The relay does not retain it."
-              : "Nothing uploads on selection. Saving creates a public, long-lived Catbox link; Catbox retention applies."
-            : "Nothing uploads on selection. Saving creates a public Litterbox link for the lifetime you choose.";
+          ? "The image stays in this browser."
+          : storage === "durable"
+            ? "Saving shares a public AnonDrop link. Inactive files may expire."
+            : "Saving shares a public WaifuVault link for the lifetime you choose.";
     if (this.#imageSourceMode === "file") this.#renderLocalImageComposeState();
   }
 
@@ -9646,8 +9601,7 @@ export class LinkChatView {
     for (const input of this.#galleryStorageOptions.querySelectorAll<HTMLInputElement>(
       "input[type='radio']",
     )) {
-      input.disabled = this.#imageUploadBusy ||
-        (input.value === "catbox" && !supportsLongLivedCatboxUploads());
+      input.disabled = this.#imageUploadBusy;
     }
     this.#galleryRetentionSelect.disabled = this.#imageUploadBusy;
     this.#chooseImageFileButton.textContent = this.#preparedLocalImage
@@ -9656,9 +9610,9 @@ export class LinkChatView {
     this.#sendImageButton.textContent = gallery
       ? storage === "device"
         ? "Save on this device"
-        : storage === "catbox"
-          ? "Upload to Catbox"
-          : "Upload to Litterbox"
+        : storage === "durable"
+          ? "Upload to AnonDrop"
+          : "Upload to WaifuVault"
       : "Upload & send";
     this.#sendImageButton.disabled =
       this.#imageUploadBusy || (cloud ? !cloudReady : !gallery && config === null) || this.#preparedLocalImage === undefined;
@@ -9675,10 +9629,8 @@ export class LinkChatView {
               : gallery
               ? storage === "device"
                 ? "Saving to this device…"
-                : storage === "catbox" && usesCatboxUploadRelay()
-                  ? "Sending the prepared image through the Catbox relay…"
-                  : `Uploading to ${storage === "catbox" ? "Catbox" : "Litterbox"}…`
-              : "Uploading prepared image…",
+                : storage === "durable" ? "Uploading to AnonDrop…" : "Uploading to WaifuVault…"
+              : "Uploading to WaifuVault…",
           }),
           element("small", {
             text: gallery && storage === "device"
@@ -9704,7 +9656,7 @@ export class LinkChatView {
           "span",
           {},
           element("strong", { text: "Temporary upload is off" }),
-          element("small", { text: "Enable Litterbox sharing once in Chat settings." }),
+          element("small", { text: "Enable temporary file sharing in Chat settings." }),
         ),
       );
       this.#localImageStatus.dataset.state = "empty";
@@ -9756,9 +9708,9 @@ export class LinkChatView {
           text: gallery
             ? storage === "device"
               ? "Ready for private device storage"
-              : storage === "catbox"
-                ? "Ready for long-lived Catbox storage"
-                : `Ready for ${formatRetention(this.#galleryRetentionSelect.value as LitterboxUploadConfig["retention"])} Litterbox storage`
+              : storage === "durable"
+                ? "Ready to upload to AnonDrop"
+                : `Ready for ${formatRetention(this.#galleryRetentionSelect.value as LitterboxUploadConfig["retention"])} link lifetime`
             : "Prepared locally",
         }),
         element("small", {
@@ -9932,10 +9884,10 @@ export class LinkChatView {
       if (this.#platformUi && storage !== "device" && this.settings.getSection("linkChat").gallery.saved.filter(saved => !saved.expiresAt || saved.expiresAt > Date.now()).length >= 40) {
         this.#galleryComposeError.textContent = "Your library holds 40 links. Remove one before uploading another image."; return;
       }
-      const litterboxConfig = storage === "litterbox"
+      const litterboxConfig = storage === "temporary"
         ? normalizeLitterboxUploadConfig({ retention: this.#galleryRetentionSelect.value })
         : null;
-      if (storage === "litterbox" && !litterboxConfig) {
+      if (storage === "temporary" && !litterboxConfig) {
         this.#localImageError = "Choose a valid temporary image lifetime";
         this.#renderLocalImageComposeState();
         return;
@@ -9956,8 +9908,8 @@ export class LinkChatView {
             if (this.#mounted && this.#workspaceView === "gallery") void this.#renderGallery();
             return;
           }
-        } else if (storage === "catbox") {
-          remoteUrl = await this.catboxImageUpload(image, undefined, controller.signal);
+        } else if (storage === "durable") {
+          remoteUrl = await this.durableImageUpload(image, undefined, controller.signal);
         } else {
           remoteUrl = await this.imageUploader.upload(image, litterboxConfig!, controller.signal);
         }
@@ -9981,9 +9933,9 @@ export class LinkChatView {
         this.#toast(
           storage === "device"
             ? "Image saved permanently on this device. Nothing was uploaded."
-            : storage === "catbox"
-              ? "Image uploaded to Catbox and saved to Gallery. Catbox retention applies."
-              : `Image uploaded to Litterbox and saved for ${formatRetention(litterboxConfig!.retention)}.`,
+            : storage === "durable"
+              ? "AnonDrop link saved to Gallery."
+              : `WaifuVault link saved for ${formatRetention(litterboxConfig!.retention)}.`,
         );
       } catch (error) {
         if (!this.#isCurrentImageOperation(token, controller)) return;
@@ -10134,24 +10086,10 @@ export class LinkChatView {
   }
 
   #pickGroupAvatar(groupId: string, returnFocus: HTMLElement): void {
-    if (!supportsLongLivedCatboxUploads()) {
-      this.#toast("Catbox uploads are unavailable in FUSAM. Use a direct HTTPS avatar link.", "error");
-      return;
-    }
     if (this.#groupAvatarUploadBusy) {
       this.#toast("Another group avatar is already uploading.", "error");
       return;
     }
-    const prepared = this.#preparedGroupAvatar;
-    if (
-      usesCatboxUploadRelay() &&
-      prepared?.groupId === groupId &&
-      prepared.returnFocus === returnFocus
-    ) {
-      void this.#uploadPreparedGroupAvatar(prepared);
-      return;
-    }
-    if (prepared) this.#clearPendingGroupAvatarPicker(false);
     const group = this.#groupChatService?.getGroup(groupId);
     if (
       !group ||
@@ -10169,14 +10107,12 @@ export class LinkChatView {
   #clearPendingGroupAvatarPicker(restoreFocus: boolean): void {
     if (this.#groupAvatarUploadBusy && restoreFocus) return;
     const target = this.#groupAvatarUploadTarget;
-    const prepared = this.#preparedGroupAvatar;
     this.#groupAvatarUploadTarget = undefined;
-    this.#preparedGroupAvatar = undefined;
     this.#groupAvatarFileInput.value = "";
-    const button = prepared?.returnFocus ?? target?.returnFocus;
+    const button = target?.returnFocus;
     if (button?.isConnected) {
-      button.textContent = "Choose & upload to Catbox";
-      button.title = "Prepare this image and upload it publicly to Catbox";
+      button.textContent = "Choose & upload avatar";
+      button.title = "Prepare this image and upload it to AnonDrop";
     }
     if (restoreFocus && target?.returnFocus.isConnected) {
       target.returnFocus.focus({ preventScroll: true });
@@ -10233,15 +10169,6 @@ export class LinkChatView {
         ownMemberNumber,
         startingAvatarUrl,
       };
-      if (usesCatboxUploadRelay()) {
-        this.#preparedGroupAvatar = prepared;
-        target.returnFocus.textContent = "Verify & upload avatar";
-        target.returnFocus.title = "Verify and upload this prepared image publicly to Catbox";
-        this.#toast(
-          `Prepared ${formatBytes(image.blob.size)}. Press Verify & upload avatar; no file has been sent yet.`,
-        );
-        return;
-      }
       await this.#performGroupAvatarUpload(prepared, controller);
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -10251,42 +10178,12 @@ export class LinkChatView {
       if (this.#groupAvatarUploadController === controller) {
         this.#groupAvatarUploadController = undefined;
         this.#groupAvatarUploadBusy = false;
-        if (!this.#preparedGroupAvatar) this.#groupAvatarUploadTarget = undefined;
+        this.#groupAvatarUploadTarget = undefined;
       }
       if (!controller.signal.aborted && target.returnFocus.isConnected) {
         target.returnFocus.focus({ preventScroll: true });
       }
     }
-  }
-
-  async #uploadPreparedGroupAvatar(
-    prepared: PreparedGroupAvatarUpload,
-  ): Promise<void> {
-    if (this.#groupAvatarUploadBusy || this.#preparedGroupAvatar !== prepared) return;
-    const group = this.#groupChatService?.getGroup(prepared.groupId);
-    let currentOwnMemberNumber: number;
-    try {
-      currentOwnMemberNumber = this.adapter.getOwnMemberNumber();
-    } catch {
-      this.#toast("Your current BC identity could not be verified for this upload.", "error");
-      this.#clearPendingGroupAvatarPicker(true);
-      return;
-    }
-    if (
-      !group ||
-      group.protocolVersion !== 2 ||
-      group.creatorNumber !== prepared.ownMemberNumber ||
-      group.avatarUrl !== prepared.startingAvatarUrl ||
-      currentOwnMemberNumber !== prepared.ownMemberNumber
-    ) {
-      this.#toast("The group changed after the avatar was prepared. Choose the file again.", "error");
-      this.#clearPendingGroupAvatarPicker(true);
-      return;
-    }
-    const controller = new AbortController();
-    this.#groupAvatarUploadController = controller;
-    this.#groupAvatarUploadBusy = true;
-    await this.#performGroupAvatarUpload(prepared, controller);
   }
 
   async #performGroupAvatarUpload(
@@ -10297,10 +10194,8 @@ export class LinkChatView {
     let shownPercent = -10;
     let confirmedUrl: string | undefined;
     try {
-      this.#toast(usesCatboxUploadRelay()
-        ? "Authorizing and uploading the group avatar to Catbox…"
-        : `Prepared ${formatBytes(prepared.image.blob.size)}; waiting for Catbox…`);
-      const url = await this.catboxImageUpload(
+      this.#toast("Uploading the group avatar to AnonDrop…");
+      const url = await this.durableImageUpload(
         prepared.image,
         (progress) => {
           const percent = progress.percent === undefined
@@ -10308,7 +10203,7 @@ export class LinkChatView {
             : Math.max(0, Math.min(100, Math.round(progress.percent)));
           if (percent === undefined || percent < shownPercent + 10) return;
           shownPercent = percent;
-          this.#toast(`Uploading group avatar to Catbox… ${percent}%`);
+          this.#toast(`Uploading group avatar to AnonDrop… ${percent}%`);
         },
         controller.signal,
       );
@@ -10334,8 +10229,7 @@ export class LinkChatView {
       await service.setGroupAvatar(prepared.groupId, url);
       this.#toast("Group avatar uploaded and shared with current members.");
       if (
-        this.#groupAvatarUploadController === controller ||
-        this.#preparedGroupAvatar === prepared
+        this.#groupAvatarUploadController === controller
       ) {
         this.#clearPendingGroupAvatarPicker(false);
       }
@@ -10343,14 +10237,13 @@ export class LinkChatView {
       if (confirmedUrl) {
         const saved = this.#saveGalleryImage(confirmedUrl);
         if (
-          this.#groupAvatarUploadController === controller ||
-          this.#preparedGroupAvatar === prepared
+          this.#groupAvatarUploadController === controller
         ) {
           this.#clearPendingGroupAvatarPicker(false);
         }
         const recovery = saved
-          ? " The confirmed public Catbox link was saved to Gallery."
-          : " The confirmed public Catbox link could not be saved to Gallery.";
+          ? " The confirmed AnonDrop link was saved to Gallery."
+          : " The confirmed AnonDrop link could not be saved to Gallery.";
         this.#toast(`${imageUploadErrorMessage(error)}${recovery}`, "error");
       } else if (!controller.signal.aborted) {
         this.#toast(imageUploadErrorMessage(error), "error");
@@ -10359,7 +10252,7 @@ export class LinkChatView {
       if (this.#groupAvatarUploadController === controller) {
         this.#groupAvatarUploadController = undefined;
         this.#groupAvatarUploadBusy = false;
-        if (!this.#preparedGroupAvatar) this.#groupAvatarUploadTarget = undefined;
+        this.#groupAvatarUploadTarget = undefined;
       }
       if (!controller.signal.aborted && prepared.returnFocus.isConnected) {
         prepared.returnFocus.focus({ preventScroll: true });
@@ -10509,7 +10402,7 @@ export class LinkChatView {
         category: "Destination",
         title: "Media Gallery",
         detail: "Images you add directly and media from saved LinkChat conversations",
-        keywords: "gallery library add upload images pictures device litterbox catbox media all chats",
+        keywords: "gallery library add upload images pictures device WaifuVault AnonDrop media all chats",
         priority: 70,
         action: { kind: "workspace", target: "gallery" },
       },
@@ -11072,8 +10965,8 @@ export class LinkChatView {
       }
       const savedCount = items.filter((item) => item.saved).length;
       this.#gallerySubtitle.textContent = items.length
-        ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` · ${savedCount} added directly` : ""}. Device files are private; Catbox and Litterbox entries use public links.`
-        : "Images from saved chats and anything you add directly will appear here. Choose private device storage, Catbox, or expiring Litterbox for local files.";
+        ? `${items.length} unique image${items.length === 1 ? "" : "s"} from your library and saved chats${savedCount ? ` · ${savedCount} added directly` : ""}. Device files are private. Shared files use public links.`
+        : "Images you save or receive in chats appear here.";
       this.#renderHomeStatus();
       if (items.length === 0) {
         if (deviceGalleryError) {
@@ -11188,13 +11081,7 @@ export class LinkChatView {
         "div",
         { className: "kl-gallery-meta" },
         element("strong", {
-          text: item.provider === "device"
-            ? "On this device"
-            : item.provider === "catbox"
-              ? "Catbox"
-              : item.provider === "litterbox"
-                ? "Litterbox"
-              : "Image",
+          text: item.provider === "device" ? "On this device" : item.provider === "other" ? "Image" : MEDIA_HOST_LABELS[item.provider],
         }),
         galleryDetails,
       ),
@@ -11551,7 +11438,7 @@ export class LinkChatView {
       this.#roomPlaylistSyncStatus,
       element("p", {
         className: "kl-room-media-note",
-        text: "Uploaded backgrounds and room music use your temporary Litterbox lifetime. Images are privacy-prepared; audio is renamed but may retain embedded metadata. For a long-lived room, use a durable HTTPS link you control.",
+        text: "WaifuVault hosts room backgrounds and music for the lifetime selected in Chat settings.",
       }),
       ...(this.#platformUi ? [element("div", { className: "kl-inline-actions" }, this.#roomSaveButton,
         element("button", { className: "kl-text-button", type: "button", text: "Reset media", onClick: () => {
@@ -11563,10 +11450,6 @@ export class LinkChatView {
       "section",
       { className: "kl-room-players" },
       element("h2", { text: "Players & roles" }),
-      element("p", {
-        className: "kl-setting-help",
-        text: "Kick, Admin, and room Whitelist buttons call Bondage Club's native room commands.",
-      }),
       this.#roomPlayers,
     );
     this.#roomManager = new RoomManager((room,authorize) => this.#applyRoomSettings(room,authorize), () => this.adapter.getOwnMemberNumber());
@@ -11626,7 +11509,7 @@ export class LinkChatView {
         this.#buildSpaceSessionBar();
       }
       this.#roomsDirectory = new RoomsDirectory({
-        lobbies: this.#roomLobbiesPanel, history: this.#roomHistory, current,
+        lobbies: this.#roomLobbiesPanel, currentRoom: this.#roomCurrentPanel, history: this.#roomHistory, current,
         ...(this.#spaces ? { spaces: this.#spaces.element, client: this.#spaces.client,
           openContext: () => { if (current()) this.#spaces?.openContext(); },
           closeContext: () => this.#spaces?.closeContext() } : {}),
@@ -11683,8 +11566,8 @@ export class LinkChatView {
 
   #syncRoomsDirectory(): void {
     if (!this.#roomsDirectory) return;
-    const mode = this.#workspaceView === 'spaces' ? 'spaces' : this.#roomSubView === 'history' ? 'history' : 'lobbies';
-    const visible = this.#workspaceView === 'spaces' || this.#workspaceView === 'room' && ['lobbies', 'history'].includes(this.#roomSubView);
+    const mode = this.#workspaceView === 'spaces' ? 'spaces' : this.#roomSubView === 'presets' ? 'lobbies' : this.#roomSubView;
+    const visible = this.#workspaceView === 'spaces' || this.#workspaceView === 'room' && this.#roomSubView !== 'presets';
     this.#roomsDirectory.setVisible(visible && !this.#panel.hidden, mode);
     if (visible) {
       this.#roomPage.hidden = true; this.#contextTitle.textContent = 'Rooms';
@@ -11714,7 +11597,7 @@ export class LinkChatView {
     if (!bar || !label || !view || !leave) return;
     const session = this.#spaceSession?.snapshot;
     const visible = session && this.#mounted && !this.#panel.hidden &&
-      !(this.#workspaceView === "room" && this.#roomSubView === "lobbies") &&
+      !(this.#workspaceView === "room" && (this.#roomSubView === "lobbies" || this.#roomSubView === "current")) &&
       !(this.#workspaceView === "spaces" && this.#spaces?.showingRoom(session.id));
     if (this.#reviewingSpaceSession && (!this.#roomLeave?.dialog.open || !visible ||
         session.id !== this.#reviewingSpaceSession.id || session.name !== this.#reviewingSpaceSession.name)) {
@@ -12903,8 +12786,8 @@ export class LinkChatView {
     }
     const { token, controller } = this.#beginRoomMusicUpload(false);
     try {
-      this.#roomAdminStatus.textContent = "Uploading temporary room music…";
-      const url = await uploadLocalRoomAudio(file, config, undefined, controller.signal);
+      this.#roomAdminStatus.textContent = "Uploading room music to WaifuVault…";
+      const url = await uploadSharedAudio(file, config.retention, undefined, controller.signal);
       if (
         !this.#isCurrentRoomMusicUpload(token, controller) ||
         !this.#isSameRoomOperationTarget(roomTarget)
@@ -13040,9 +12923,7 @@ export class LinkChatView {
     this.#musicFileInput.multiple = true;
     this.#musicFileMode.replaceChildren(
       selectOption("local", "Keep only on this device"),
-      ...(supportsLongLivedCatboxUploads()
-        ? [selectOption("catbox", "Upload to long-lived Catbox")]
-        : []),
+      selectOption("anondrop", "Share through AnonDrop"),
     );
     this.#musicAddButton.addEventListener("click", () => void this.#addMusicTrack());
     this.#musicQueueSearch.type = "search";
@@ -13079,11 +12960,7 @@ export class LinkChatView {
       element("label", {}, element("span", { text: "File handling" }), this.#musicFileMode),
       element("p", {
         className: "kl-setting-help",
-        text: supportsLongLivedCatboxUploads()
-          ? usesCatboxUploadRelay()
-            ? "Local files stay in this browser unless you choose Catbox. That opens Cloudflare verification, then sends the selected file through the KikiLink relay to public Catbox. The relay does not retain it; Cloudflare handles network and upload metadata, audio metadata may remain, and Catbox retention applies."
-            : "Local files stay in this browser. Catbox files are public bearer links and may include embedded audio metadata. KikiLink sends no userhash, but a userscript manager may attach an existing Catbox session cookie; Catbox retention depends on its account and inactivity rules."
-          : "FUSAM keeps selected files on this device. For remote music, use a direct HTTPS link you trust; Catbox upload is unavailable.",
+        text: "Share tracks up to 80 MB through AnonDrop. Inactive files may expire. Audio may retain embedded metadata.",
       }),
       this.#musicAddStatus,
       this.#musicAddButton,
@@ -13480,11 +13357,7 @@ export class LinkChatView {
       element("span", {
         text: unavailable
           ? "Local file missing on this device"
-          : track.source === "local"
-            ? "On this device"
-            : track.source === "catbox"
-              ? "Catbox"
-              : "Direct link",
+          : musicTrackSourceLabel(track),
       }),
     );
     const row = element("article", { className: "kl-music-track" });
@@ -13597,19 +13470,14 @@ export class LinkChatView {
           let source: MusicTrack["source"];
           let locator: string;
           let fallbackTitle = file.name.replace(/\.[^.]+$/u, "");
-          if (fileMode === "catbox") {
-            if (!supportsLongLivedCatboxUploads()) {
-              throw new Error("Catbox uploads are unavailable in FUSAM");
-            }
-            this.#musicAddStatus.textContent = usesCatboxUploadRelay()
-              ? `Sending ${index + 1}/${files.length} through the Catbox relay…`
-              : `Uploading ${index + 1}/${files.length} to Catbox…`;
-            locator = await uploadMusicToCatbox(file, undefined, (progress) => {
+          if (fileMode === "anondrop") {
+            this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length} to AnonDrop…`;
+            locator = await uploadSharedAudio(file, "durable", (progress) => {
               if (controller.signal.aborted) return;
               const amount = progress.percent === undefined ? "" : ` · ${progress.percent}%`;
               this.#musicAddStatus.textContent = `Uploading ${index + 1}/${files.length}${amount}`;
             }, controller.signal);
-            source = "catbox";
+            source = "anondrop";
           } else {
             this.#musicAddStatus.textContent = `Saving ${index + 1}/${files.length} on this device…`;
             const localTrackIds = await this.#getLocalMusicTrackIds();
@@ -13630,9 +13498,9 @@ export class LinkChatView {
             addedAt: Date.now(),
           };
           added.push(track);
-          if (source === "catbox") {
+          if (source === "anondrop") {
             // Persist each confirmed public URL before starting the next upload. Closing the panel,
-            // cancelling a later file, or changing playlists must not lose a file that Catbox has
+            // cancelling a later file, or changing playlists must not lose a file that AnonDrop has
             // already accepted.
             try { this.#appendMusicTracks([track], targetPlaylistId); confirmedRemoteCount++; }
             catch (error) { if (this.#platformUi) { this.#musicUrlInput.value = locator; this.#musicTitleInput.value = track.title; this.#musicFileInput.value = ""; } throw error; }
@@ -14009,11 +13877,7 @@ export class LinkChatView {
     } else {
       this.#musicNowTitle.textContent = track?.title ?? "Nothing playing";
       this.#musicNowSource.textContent = track
-        ? track.source === "local"
-          ? "On this device"
-          : track.source === "catbox"
-            ? "Catbox"
-            : "Direct link"
+        ? musicTrackSourceLabel(track)
         : "Choose a track";
     }
     this.#musicPlayButton.replaceChildren(kikiIcon(track && !this.#audio.paused ? "pause" : "play"));
@@ -14340,9 +14204,9 @@ export class LinkChatView {
       const stored = await this.musicStore.get(track.locator);
       if (signal.aborted) throw new Error("The upload was cancelled");
       if (!stored) throw new Error("This local track is not stored on this device");
-      const url = await uploadLocalRoomAudio(
+      const url = await uploadSharedAudio(
         deviceRoomMusicFile(stored),
-        config,
+        config.retention,
         undefined,
         signal,
       );
@@ -14496,10 +14360,17 @@ export class LinkChatView {
     } catch { return true; }
   }
 
+  #knownDiscoveryMember(member: number): boolean {
+    const state = this.#community?.relationships.get(member)?.state;
+    return this.adapter.isKnownFriend(member) || this.roster.get(member).favorite ||
+      state === "accepted" || state === "sent" || state === "received";
+  }
+
   #peopleDirectoryPlayers(friends: DirectoryPlayer[]): DirectoryPlayer[] {
     if (this.#peopleScope === "hidden") return [];
-    const byMember = new Map(friends.map(person => [person.entry.memberNumber, person]));
-    if (this.#peopleScope !== "friends") {
+    const browse = this.#peopleScope === "all";
+    const byMember = new Map((browse ? [] : friends).map(person => [person.entry.memberNumber, person]));
+    if (!browse && this.#peopleScope !== "friends") {
       for (const entry of this.roster.list("people")) {
         if (byMember.has(entry.memberNumber) || this.#peopleRestricted(entry.memberNumber)) continue;
         if (entry.present || entry.isFriend || entry.firstSeenAt > 0 || entry.encounterCount > 0) {
@@ -14511,19 +14382,15 @@ export class LinkChatView {
       }
     }
     const listed = new Map<number, PeopleDirectoryPerson>();
-    if (this.#peopleScope === "all") {
+    if (browse) {
       for (const item of this.#publicPeople?.items ?? []) {
+        if (!this.#rosterSearch.value.trim() && this.#knownDiscoveryMember(item.memberNumber)) continue;
         listed.set(item.memberNumber, item);
-        const existing = byMember.get(item.memberNumber);
-        if (existing?.directoryOnly) {
-          existing.entry = { ...existing.entry, displayName: item.displayName };
-          existing.directoryUsername = item.username;
-        }
-        if (existing || this.#peopleRestricted(item.memberNumber)) continue;
+        if (this.#peopleRestricted(item.memberNumber)) continue;
         const entry = { ...this.roster.get(item.memberNumber, item.displayName), displayName: item.displayName,
           present: false, isFriend: false, relationships: [] };
         byMember.set(item.memberNumber, { entry, directoryOnly: true, directoryUsername: item.username,
-          presence: { memberNumber: item.memberNumber, source: "unknown", status: "unknown", updatedAt: 0 } });
+          presence: { memberNumber: item.memberNumber, source: "unknown", status: "unknown", addonInstalled: true, updatedAt: 0 } });
       }
     }
     const query = this.#rosterSearch.value.trim().toLowerCase();
@@ -14611,7 +14478,8 @@ export class LinkChatView {
     if (!this.#platformUi) return;
     void this.#peopleBlocks?.load();
     const count = this.#visibleFriendRequests("received").length;
-    for (const badge of [this.#requestsCount, this.#requestsScopeCount, this.#exploreCount, this.#incomingRequestsCount]) {
+    this.#renderAreaBadges();
+    for (const badge of [this.#requestsCount, this.#requestsScopeCount, this.#incomingRequestsCount]) {
       updateBadge(badge, count);
       badge.setAttribute("aria-label", `${count} received friend request${count === 1 ? "" : "s"}`);
     }
@@ -15103,7 +14971,10 @@ export class LinkChatView {
       this.#rosterScope === "current", this.#rosterRoomFilter, playersView);
     if (people) {
       const isFriend = (player: DirectoryPlayer) => player.entry.isFriend || this.#community?.relationships.get(player.entry.memberNumber)?.state === "accepted";
-      entries.sort((a, b) => (this.#peopleSort.value === "Name" ? 0 : Number(isFriend(b)) - Number(isFriend(a)) ||
+      const order = new Map(all.map((player, i) => [player.entry.memberNumber, i]));
+      if (this.#peopleScope === "all" && this.#peopleSort.value !== "Name")
+        entries.sort((a, b) => order.get(a.entry.memberNumber)! - order.get(b.entry.memberNumber)!);
+      else entries.sort((a, b) => (this.#peopleSort.value === "Name" ? 0 : Number(isFriend(b)) - Number(isFriend(a)) ||
         Number(b.entry.present || isOnline(b.presence)) - Number(a.entry.present || isOnline(a.presence))) ||
         a.entry.displayName.localeCompare(b.entry.displayName) || a.entry.memberNumber - b.entry.memberNumber);
       this.#hiddenPeopleCaption.hidden = !hiddenScope;
@@ -15243,8 +15114,7 @@ export class LinkChatView {
       if (!row.isConnected || !this.#mounted || this.#panel.hidden || this.#workspaceView !== "roster" ||
           this.#rosterPage.dataset.peopleView !== "people" || this.adapter.getOwnMemberNumber() !== owner || this.#peopleRestricted(member)) return false;
       const record = this.roster.get(member);
-      return this.#peopleScope === "all" && (Boolean(record.favorite || record.note || record.tags.length) ||
-        Boolean(this.#publicPeople?.items.some(person => person.memberNumber === member))) || this.#peopleScope === "saved" && record.favorite;
+      return this.#peopleScope === "all" && Boolean(this.#publicPeople?.items.some(person => person.memberNumber === member)) || this.#peopleScope === "saved" && record.favorite;
     };
     const open = (event: MouseEvent) => {
       if (current()) this.#openDirectoryProfile(member, row.querySelector(".kl-roster-entry-name")?.textContent ?? player.entry.displayName,
@@ -15418,7 +15288,10 @@ export class LinkChatView {
     const { entry, presence } = player;
     if (player.directoryOnly) {
       const connected = Boolean(this.#cloud?.client.connected && !this.#peopleRestricted(entry.memberNumber));
-      row.querySelector<HTMLElement>(".kl-avatar")!.textContent = entry.displayName.slice(0, 1).toLocaleUpperCase();
+      const avatar = row.querySelector<HTMLElement>(".kl-avatar")!;
+      markAvatarPresence(avatar, entry.memberNumber, connected ? undefined : null);
+      if (connected) this.#updateAvatarPresence(avatar);
+      avatar.textContent = entry.displayName.slice(0, 1).toLocaleUpperCase();
       const name = row.querySelector<HTMLButtonElement>(".kl-roster-entry-name")!;
       name.textContent = entry.displayName;
       name.disabled = !connected;
@@ -16030,7 +15903,7 @@ export class LinkChatView {
         "div",
         { className: "kl-setting-copy" },
         element("div", { className: "kl-setting-name", text: name }),
-        element("div", { className: "kl-setting-help", text: help }),
+        help ? element("div", { className: "kl-setting-help", text: help }) : undefined,
       ),
       control,
     );
@@ -16259,6 +16132,7 @@ export class LinkChatView {
     this.#presenceTriggerDot.dataset.status = enabled ? snapshot.status : "unknown";
     this.#presenceTriggerName.textContent = ownName;
     this.#identityInitial.textContent = Array.from(ownName.trim())[0]?.toLocaleUpperCase() || "?";
+    this.#identityInitial.dataset.avatarPresence = enabled ? snapshot.status : "unknown";
     this.#identityName.title = ownName;
     this.#presenceTriggerStatus.textContent = snapshot.statusMessage
       ? `${label} · ${snapshot.statusMessage}`
@@ -16459,8 +16333,17 @@ export class LinkChatView {
     });
   }
 
+  #updateAvatarPresence(avatar: HTMLElement): void {
+    const member = Number(avatar.dataset.presencePeer);
+    avatar.dataset.avatarPresence = Number.isSafeInteger(member) && member > 0 && !this.#isMemberBlocked(member)
+      ? this.presence.get(member).status : "unknown";
+  }
+
   #updateVisiblePresence(memberNumbers?: number[]): void {
     const filter = memberNumbers ? new Set(memberNumbers) : undefined;
+    for (const avatar of this.#shadow.querySelectorAll<HTMLElement>("[data-presence-peer]")) {
+      if (!filter || filter.has(Number(avatar.dataset.presencePeer))) this.#updateAvatarPresence(avatar);
+    }
     for (const target of this.#shadow.querySelectorAll<HTMLElement>("[data-member-number]")) {
       const memberNumber = Number(target.dataset.memberNumber);
       if (!Number.isSafeInteger(memberNumber) || (filter && !filter.has(memberNumber))) continue;
@@ -19918,8 +19801,8 @@ export class LinkChatView {
     selected: KikiLinkSettings["linkReactions"]["sounds"] = {
       ...this.settings.getSection("linkReactions").sounds,
       chat: soundChoiceOr(this.#chatSoundSelect.value, DEFAULT_SETTINGS.linkReactions.sounds.chat),
-      friendOnline: soundChoiceOr(this.#friendOnlineSoundSelect.value, "sparkle"),
-      roomJoin: soundChoiceOr(this.#roomJoinSoundSelect.value, "pop"),
+      friendOnline: soundChoiceOr(this.#friendOnlineSoundSelect.value, DEFAULT_SETTINGS.linkReactions.sounds.friendOnline),
+      roomJoin: soundChoiceOr(this.#roomJoinSoundSelect.value, DEFAULT_SETTINGS.linkReactions.sounds.roomJoin),
     },
   ): Promise<void> {
     const generation = this.#settingsGeneration, request = ++this.#soundListRequest;
@@ -19937,8 +19820,8 @@ export class LinkChatView {
     const available = new Set(sounds.map((sound) => `custom:${sound.id}`));
     const selections = [
       [this.#chatSoundSelect, selected.chat, DEFAULT_SETTINGS.linkReactions.sounds.chat],
-      [this.#friendOnlineSoundSelect, selected.friendOnline, "sparkle"],
-      [this.#roomJoinSoundSelect, selected.roomJoin, "pop"],
+      [this.#friendOnlineSoundSelect, selected.friendOnline, DEFAULT_SETTINGS.linkReactions.sounds.friendOnline],
+      [this.#roomJoinSoundSelect, selected.roomJoin, DEFAULT_SETTINGS.linkReactions.sounds.roomJoin],
     ] as const;
     for (const [index, [select, requestedChoice, fallback]] of selections.entries()) {
       const choice = this.#platformUi && select.value !== before[index]
@@ -20023,16 +19906,16 @@ export class LinkChatView {
     const settings = this.settings.update((draft) => {
       if (draft.linkReactions.sounds.chat === choice) draft.linkReactions.sounds.chat = DEFAULT_SETTINGS.linkReactions.sounds.chat;
       if (draft.linkReactions.sounds.friendOnline === choice) {
-        draft.linkReactions.sounds.friendOnline = "sparkle";
+        draft.linkReactions.sounds.friendOnline = DEFAULT_SETTINGS.linkReactions.sounds.friendOnline;
       }
-      if (draft.linkReactions.sounds.roomJoin === choice) draft.linkReactions.sounds.roomJoin = "pop";
+      if (draft.linkReactions.sounds.roomJoin === choice) draft.linkReactions.sounds.roomJoin = DEFAULT_SETTINGS.linkReactions.sounds.roomJoin;
     });
     if (this.#platformUi) {
       if (generation !== this.#settingsGeneration || !this.#mounted) return;
       const draft = this.#soundDraft();
       if (draft.chat === choice) draft.chat = DEFAULT_SETTINGS.linkReactions.sounds.chat;
-      if (draft.friendOnline === choice) draft.friendOnline = "sparkle";
-      if (draft.roomJoin === choice) draft.roomJoin = "pop";
+      if (draft.friendOnline === choice) draft.friendOnline = DEFAULT_SETTINGS.linkReactions.sounds.friendOnline;
+      if (draft.roomJoin === choice) draft.roomJoin = DEFAULT_SETTINGS.linkReactions.sounds.roomJoin;
       await this.#refreshCustomSounds(draft);
     } else await this.#refreshCustomSounds(settings.linkReactions.sounds);
     this.#toast(`Deleted “${sound.name}” from this device.`);
@@ -20043,8 +19926,8 @@ export class LinkChatView {
     return this.#platformUi ? {
       ...saved,
       chat: soundChoiceOr(this.#chatSoundSelect.value || saved.chat, DEFAULT_SETTINGS.linkReactions.sounds.chat),
-      friendOnline: soundChoiceOr(this.#friendOnlineSoundSelect.value || saved.friendOnline, "sparkle"),
-      roomJoin: soundChoiceOr(this.#roomJoinSoundSelect.value || saved.roomJoin, "pop"),
+      friendOnline: soundChoiceOr(this.#friendOnlineSoundSelect.value || saved.friendOnline, DEFAULT_SETTINGS.linkReactions.sounds.friendOnline),
+      roomJoin: soundChoiceOr(this.#roomJoinSoundSelect.value || saved.roomJoin, DEFAULT_SETTINGS.linkReactions.sounds.roomJoin),
     } : saved;
   }
 
@@ -20173,11 +20056,11 @@ export class LinkChatView {
       draft.linkReactions.sounds.chat = soundChoiceOr(this.#chatSoundSelect.value, DEFAULT_SETTINGS.linkReactions.sounds.chat);
       draft.linkReactions.sounds.friendOnline = soundChoiceOr(
         this.#friendOnlineSoundSelect.value,
-        "sparkle",
+        DEFAULT_SETTINGS.linkReactions.sounds.friendOnline,
       );
       draft.linkReactions.sounds.roomJoin = soundChoiceOr(
         this.#roomJoinSoundSelect.value,
-        "pop",
+        DEFAULT_SETTINGS.linkReactions.sounds.roomJoin,
       );
       draft.linkReactions.enabled = this.#reactionsToggle.checked;
       draft.linkReactions.rules = reactionRules;
@@ -20623,6 +20506,7 @@ export class LinkChatView {
   #updateFeedBadge(): void {
     if (this.#notifications) { this.#syncNotificationCenter(); return; }
     updateBadge(this.#feedCount, !this.#showUnreadBadges || this.#tabMuted("feed") ? 0 : this.#community?.feedUnread ?? 0);
+    this.#renderAreaBadges();
   }
 
   #syncNotificationCenter(): void {
@@ -20654,13 +20538,40 @@ export class LinkChatView {
       at: group.lastMessage?.createdAt ?? group.createdAt, muted: this.#cloud!.inbox.isMuted(group.id),
     })) ?? []);
   }
+  #renderAreaBadges(): void {
+    if (!this.#areaBadges.size) return;
+    const snapshot = this.#notifications?.snapshot;
+    const unread = snapshot?.mail.filter(item => !item.read && !snapshot.mutedMail?.has(item.id)) ?? [];
+    const requests = this.#visibleFriendRequests("received").length;
+    const counts: Partial<Record<PlatformArea, number>> = {
+      home: snapshot?.total ?? 0,
+      feed: snapshot?.feed ?? (this.#tabMuted("feed") ? 0 : this.#community?.feedUnread ?? 0),
+      explore: Math.max(requests, unread.filter(item => item.kind === "friend_request").length)
+        + unread.filter(item => ["community", "space", "calendar_event"].includes(item.targetType)).length,
+      game: this.#roomJoinNotices.size,
+      create: this.#workshopUpdates,
+      you: unread.filter(item => item.targetType === "profile").length,
+      settings: unread.filter(item => item.kind === "report").length,
+    };
+    if (snapshot) counts.chat = snapshot.chat + unread.filter(item => item.kind === "group_invitation").length;
+    for (const [area, badge] of this.#areaBadges) {
+      const count = counts[area];
+      if (count === undefined) continue;
+      updateBadge(badge, this.#showUnreadBadges ? count : 0);
+      if (badge.parentElement) {
+        if (!badge.hidden) badge.parentElement.setAttribute("aria-description", `${count} notification${count === 1 ? "" : "s"}`);
+        else badge.parentElement.removeAttribute("aria-description");
+      }
+    }
+  }
+
   #renderNotificationBadges(): void {
     const snapshot = this.#notifications?.snapshot;
     if (!snapshot || !this.#mounted) return;
     this.#unreadCount = snapshot.chat;
     const total = this.#showUnreadBadges ? snapshot.total : 0;
     updateBadge(this.#directCount, this.#showDirectBadges ? snapshot.chats.reduce((sum, row) => row.peer ? sum + (row.alertUnread ?? 0) : sum, 0) : 0);
-    updateBadge(this.#chatCount, this.#showUnreadBadges ? snapshot.chat : 0);
+    this.#renderAreaBadges();
     updateBadge(this.#feedCount, this.#showUnreadBadges ? snapshot.feed : 0);
     updateBadge(this.#inboxCount, total);
     updateBadge(this.#badge, total);
@@ -21069,6 +20980,7 @@ export class LinkChatView {
     } catch {
       // Treat guarded native identity as remote for privacy purposes.
     }
+    target.dataset.avatarPresence = this.#cloud && this.#isMemberBlocked(memberNumber) ? "unknown" : snapshot.status;
     if (explicitUrl === undefined && this.#renderCloudAvatar(target, name, memberNumber, snapshot, ownMember, force)) return;
     if (explicitUrl !== undefined) {
       this.#cloudAvatarTargets.delete(target); this.#cloudAvatarObserver?.unobserve(target);
@@ -21552,8 +21464,8 @@ function finderSettingResults(): FinderResult[] {
     {
       section: "chat",
       title: "Chat & history",
-      detail: "Typing, temporary Litterbox sharing, history, retention, and Quick Actions",
-      keywords: "beep messages typing indicator realtime image picture preview upload local litterbox catbox temporary privacy enter send newline save storage hours days clear wave hug boop template afk idle avatar profile",
+      detail: "Typing, temporary file sharing, history, retention, and Quick Actions",
+      keywords: "beep messages typing indicator realtime image picture preview upload local WaifuVault AnonDrop temporary privacy enter send newline save storage hours days clear wave hug boop template afk idle avatar profile",
     },
     {
       section: "players",
@@ -21693,6 +21605,12 @@ function normalizeAudioTrackUrl(value: string): string {
     throw new Error("Use a direct HTTPS audio link ending in a supported audio extension");
   }
   return url.href;
+}
+
+function musicTrackSourceLabel(track: MusicTrack): string {
+  if (track.source === "local") return "On this device";
+  const host = track.source === "url" ? galleryMediaProvider(track.locator) : track.source;
+  return host === "other" ? "Direct link" : MEDIA_HOST_LABELS[host];
 }
 
 function normalizeRoomTrackUrl(value: string): string | undefined {

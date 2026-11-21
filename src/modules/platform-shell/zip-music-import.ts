@@ -60,7 +60,7 @@ export class ZipMusicImportPanel {
         element('p',{text:review.resume ? `${review.files} saved files · ${review.entries} playlist entries still to add` : `${review.files} files to add · ${fileSize(review.bytes)}`}),
         element('p',{text:`${review.entries} playlist entries · ${review.newPlaylists} new ${review.newPlaylists === 1 ? 'playlist' : 'playlists'}`}),
         element('p',{text:`${review.kept} ${review.kept === 1 ? 'file' : 'files'} already saved · ${review.excluded} entries excluded`}),
-        element('p',{text:'Current files and playlist entries are kept. Only local entries backed by newly restored files are added; URL and Catbox tracks are excluded.'}),
+        element('p',{text:'Current files and playlist entries are kept. Only local entries backed by newly restored files are added; Tracks linked to online files are excluded.'}),
         element('p',{text:'Additional file and playlist fields are kept with the restored files as inactive data.'}),
         element('p',{text:`Recovery originals need ${fileSize(review.recoveryBytes)} more storage. Files are saved first, then playlists. An interrupted import can be finished here after reloading.`}),
         element('p',{text:'Importing does not start playback, share music or change the active playlist, volume, shuffle or repeat. File bytes are checked; browser playback support may vary.'}),

@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { ShellActionMenu, type ShellAction } from './action-menu';
 import { MatchingSearch, matchConnectionsButton, matchEmptySuggestions, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSignalBar, matchSignalStatus, matchSuggestionCount, type MatchingBrowseSelection } from './matching-browse-controls';
 import { matchingBreakdown } from './matching-breakdown';
@@ -587,8 +588,8 @@ export class MatchingResourcesPage {
    if (failure !== undefined) throw failure;
  }
  resourceAvatar(c:MatchResource){
-   return element('span',{className:'kl-match-avatar',ariaHidden:'true',title:c.host.name,
-     text:Array.from(c.host.name.trim()).slice(0,2).join('').toUpperCase()});
+   return markAvatarPresence(element('span',{className:'kl-match-avatar',ariaHidden:'true',title:c.host.name,
+     text:Array.from(c.host.name.trim()).slice(0,2).join('').toUpperCase()}), c.host.memberNumber);
  }
  resourceMetrics(c:MatchResource){
    const full=c.members!==null&&c.capacity!==null&&c.members>=c.capacity;
@@ -1049,7 +1050,7 @@ export class MatchingResourcesPage {
        }
        const own = checkedMatchOwn(await this.read('/v1/matching/me', sources.people.required ? sources.people : source), this.recovery.owner);
        if (!current() || !this.allowed(group.host.memberNumber)) return;
-       if (!own.active) {
+       if (!own.active || own.revision === 0) {
          initialFocus = this.#requireSignal(own, sources.people, returnFocus);
          return;
        }

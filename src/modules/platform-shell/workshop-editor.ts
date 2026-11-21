@@ -155,7 +155,6 @@ export class WorkshopEditor {
       progress.append(item);
     });
     const body=element('div',{className:'kl-workshop-editor-body',tabIndex:-1},progress,this.#notices,
-      element('p',{className:'kl-workshop-editor-intro',text:this.#step===1?'Make something useful, familiar, or entirely your own.':this.#step===2?'Set up the content that goes into your package.':'Review what will be saved in your private draft.'}),
       fields,alert);
     const actions=element('footer',{className:'kl-workshop-editor-footer'});
     this.element.replaceChildren(
@@ -165,9 +164,9 @@ export class WorkshopEditor {
       fields.append(
         this.#field('Title',draft.title,80,value=>{draft.title=value;}),
         this.#select('Visibility',draft.visibility,['public','unlisted'],value=>{draft.visibility=value as WorkshopDraft['visibility'];}),
-        this.#field('Summary',draft.summary,180,value=>{draft.summary=value;},true,'A clear, useful line for the Workshop card.'),
+        this.#field('Summary',draft.summary,180,value=>{draft.summary=value;},true),
         this.#typeChoices(),
-        this.#field('Description',draft.description,1200,value=>{draft.description=value;},true,'Explain what’s included and how someone might use it.'),
+        this.#field('Description',draft.description,1200,value=>{draft.description=value;},true),
         this.#field('Tags (comma separated)',draft.tags.join(', '),180,value=>{draft.tags=value.split(',').map(tag=>tag.trim()).filter(Boolean);}),
         note('Public releases appear in Browse. Unlisted releases are available by ID. Profile Creations follows your Activity privacy.'));
     }else if(this.#step===2){

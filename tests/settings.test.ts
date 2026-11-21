@@ -564,11 +564,11 @@ describe("SettingsStore", () => {
         roomJoin: false,
       },
       sounds: {
-        enabled: false,
+        enabled: true,
         volume: 65,
         chat: "kiki",
-        friendOnline: "sparkle",
-        roomJoin: "pop",
+        friendOnline: "kiki",
+        roomJoin: "kiki",
       },
       enabled: true,
       rules: [
@@ -586,6 +586,11 @@ describe("SettingsStore", () => {
         },
       ],
     });
+  });
+
+  it("preserves an explicit mute and previous sound selections", () => {
+    const sounds = { enabled: false, volume: 0, chat: "chime", friendOnline: "sparkle", roomJoin: "pop" };
+    expect(sanitizeSettings({ linkReactions: { sounds } }).linkReactions.sounds).toEqual(sounds);
   });
 
   it("sanitizes simple alerts and notification sound choices", () => {
@@ -610,7 +615,7 @@ describe("SettingsStore", () => {
       enabled: true,
       volume: 65,
       chat: "sparkle",
-      friendOnline: "sparkle",
+      friendOnline: "kiki",
       roomJoin: "chime",
     });
   });
@@ -883,7 +888,24 @@ describe("SettingsStore", () => {
     expect(settings.linkMusic.playlists[0]?.tracks[1]?.source).toBe("catbox");
   });
 
-  it("maps WaifuVault-era lifetimes and hosted tracks back to Catbox settings", () => {
+  it("preserves shared-file links and identifies legacy hosted tracks from their URLs", () => {
+    const remote = [
+      ["catbox", "catbox", "https://files.catbox.moe/song.mp3"],
+      ["hosted", "litterbox", "https://litter.catbox.moe/song.mp3"],
+      ["hosted", "waifuvault", "https://waifuvault.moe/f/155dad29-71bf-49f3-b37d-ee7e96eb061a/song.mp3"],
+      ["anondrop", "anondrop", "https://anondrop.net/soNG42/kikilink-media.ogg"],
+      ["cloud", "cloud", "https://cloud.example/v1/public-files/content/155dad29-71bf-49f3-b37d-ee7e96eb061a.mp3"],
+      ["url", "url", "https://example.org/music.wav"],
+    ] as const;
+    const tracks = remote.map(([source, , locator], index) => ({ id: `t${index}`, title: "Track", source, locator, addedAt: 1 }));
+    const settings = sanitizeSettings({ schemaVersion: 29, linkMusic: { playlists: [{ id: "main", name: "Music", tracks }] } });
+    const expected = remote.map(([, source, locator]) => [source, locator]);
+    for (const snapshot of [settings, sanitizeSettings(settings)]) {
+      expect(snapshot.linkMusic.playlists[0]!.tracks.map(track => [track.source, track.locator])).toEqual(expected);
+    }
+  });
+
+  it("maps earlier expiry choices and retains existing Catbox files", () => {
     expect(sanitizeSettings({
       schemaVersion: 21,
       linkChat: { imageUploads: { enabled: true, retention: "1d" } },

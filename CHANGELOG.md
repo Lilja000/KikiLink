@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 2.0.1 candidate
+
+- Feed has its own main tab between Home and Chat. Home opens on Overview. Rooms includes the current room and its management controls.
+- Click the three dots, right-click or hold a Feed post to reach the same menu and pin action.
+- Reframe an uploaded profile avatar inside a round preview with drag and zoom. Member avatars have consistent proportions and presence indicators in lists and chat headers.
+- Change your status from the profile menu. Profile layout, checkboxes, Explore spacing and the Game and Communities icons have been updated.
+- Body slots and images are together in the activity editor and triggers open expanded. Blossom uses the game's native overhead icon size.
+- New profiles start with public discovery settings, and new installations use the Kiki notification sound. Existing choices are retained.
+- People and Match can suggest unfamiliar members with shared profile details after the Cloud update.
+- Public media uploads use WaifuVault for temporary links and AnonDrop for longer-lived images and music. Existing Cloud profile uploads and older links keep their original destinations.
+
+## Archived Catbox relay proposal
 
 - Prepared, but did not deploy or enable, a consent-gated Cloudflare relay for FUSAM's four explicit
   long-lived Catbox actions: profile banners, managed-group avatars, a selected Gallery Catbox target,

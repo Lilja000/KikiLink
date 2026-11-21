@@ -65,8 +65,7 @@ Message creation requires `clientId`, text, current `membershipVersion`, current
 with 409. Reusing an acknowledged clientId with different text also fails. The
 server creates an authenticated encrypted envelope and sequence number. Proper E2EE
 will require a separately reviewed protocol/schema migration; invented encryption
-modes are rejected in v1. Chat attachments remain in the existing native Catbox chat
-path; the initial Cloud chat composer sends text only.
+modes are rejected in v1. Compatibility chat attachments use the configured shared-file host.
 
 Paged lists return `{items,nextCursor}`; limit is 1–40. Feed uses descending ID keysets
 and a cursor of 0 for newest. Comments/reports use ascending ID keysets. Messages

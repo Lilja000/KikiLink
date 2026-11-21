@@ -13,7 +13,7 @@ export interface DiscoverPerson {
 
 const previewLimit = 3;
 
-/** Discover starts with opted-in identities, then reads only viewer-authorized profile fields. */
+/** Discover starts with shared identities, then reads viewer-authorized profile fields. */
 export async function loadDiscoverPeople(
   client: CloudClient,
   current: () => boolean,
@@ -27,7 +27,7 @@ export async function loadDiscoverPeople(
     if (!valid()) return;
     const { features, source } = await profileMetadata(client, valid);
     if (!valid() || features.profileDiscovery !== true) return;
-    const page = await readPeopleDirectory(client, owner, '', previewLimit, 0);
+    const page = await readPeopleDirectory(client, owner, '', previewLimit, 0, features.peopleSuggestions === true ? Math.floor(Date.now() / 86400000) : undefined);
     if (!valid()) return;
     const people = await Promise.all(page.items.map(async ({ memberNumber }): Promise<DiscoverPerson | undefined> => {
       if (!valid() || inaccessible(memberNumber)) return;

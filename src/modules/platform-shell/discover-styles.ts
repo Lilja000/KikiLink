@@ -28,7 +28,7 @@ export const DISCOVER_STYLES = `
   box-sizing: border-box; min-width: 0; padding: 14px; border: 1px solid var(--kl-border);
   border-radius: var(--kl-explore-card-radius, 10px); background: var(--kl-surface);
 }
-.kl-discover-page > .kl-discover-section { margin-bottom: 12px; }
+.kl-discover-page > :is(.kl-discover-grid, .kl-discover-section) { margin-bottom: 12px; }
 .kl-discover-section > header { margin-bottom: 12px; }
 .kl-discover-section > header h2 { min-width: 0; margin: 0; font-size: 13px; line-height: 1.4; letter-spacing: -.2px; font-weight: 650; }
 .kl-panel[data-platform-preview="true"] .kl-discover-section > header .kl-discover-link {

@@ -13,12 +13,8 @@ Its current stable entry follows the official `main/dist/KikiLink.fusam.js` buil
 jsDelivr. Branch caching can delay updates even after a CDN purge. Migration to the
 versioned release channel below requires a one-time FUSAM manifest update.
 
-FUSAM can use device-local files, direct HTTPS links, and supported temporary Litterbox uploads.
-Long-lived Catbox uploads are unavailable because Catbox does not allow the required cross-origin page
-request; those controls are disabled rather than silently failing. A consent-gated Cloudflare relay is
-being prepared for the four explicit long-lived actions (profile banners, managed-group avatars,
-Gallery Catbox files, and playlist music), but it is not deployed or enabled. It will remain disabled
-unless Catbox gives explicit written permission and any required whitelisting.
+FUSAM and the standalone userscript both offer device-local files, direct HTTPS links,
+and uploads to the public file hosts listed below.
 
 ### Standalone userscript
 
@@ -28,11 +24,9 @@ Open the link in a browser with Tampermonkey or Violentmonkey, confirm the
 installation, then reload Bondage Club. When Home is opened, the userscript checks the official raw
 package metadata for a newer KikiLink version. Do not enable both distributions at once.
 
-Both builds run KikiLink's application in Bondage Club's page realm. The standalone wrapper keeps
-only its bounded cross-origin upload request privilege in the userscript sandbox. Read the
-[privacy model](PRIVACY.md) and [security policy](SECURITY.md), especially before combining KikiLink
-with other page-realm addons. The running version appears as tiny translucent digits in the lower-left
-corner.
+Both builds run KikiLink in Bondage Club’s page realm. The standalone build uses the same
+authenticated upload path as FUSAM. See the [privacy model](PRIVACY.md) and [security policy](SECURITY.md).
+The running version appears in the lower-left corner.
 
 ## Link Deck
 
@@ -95,9 +89,8 @@ corner.
   and fetched image blobs are never cached. Banner/outline/gradient age is updated only by an actual
   profile-details reply, not by an unrelated presence heartbeat
 - Public profile banners can be prepared locally as an exact 1200×400 metadata-free WebP, capped at
-  2 MiB, and uploaded through an explicitly labeled action to long-lived public Catbox storage;
-  progress is visible, slow connections get up to 180 seconds, and Cancel or dialog close aborts the
-  real upload request
+  2 MiB. The Cloud profile editor uses managed profile storage. The compatibility uploader shares a prepared banner through AnonDrop.
+  Cancel or close the dialog to stop an in-progress request.
 - Remote profile banners follow the same dedicated profile-art choice and guarded image loader as avatars
 - Optional Sakura blossoms, Scarlet rose ring, Violet starlight, Golden laurel, Poison thorns,
   Silver moon orbit, or Jade ribbons avatar decorations; Classic, Garden, or Midnight profile styles;
@@ -124,11 +117,15 @@ unencrypted BC `ExtensionSettings` mirror so they can follow that account to ano
 ## KikiLink Cloud
 
 - Automatic verification with the signed-in BC account; remembered browsers reconnect without a BC password prompt
-- Public profiles with bio, custom status, decorations, gradients and supported avatar/banner images
+- New Cloud profiles appear in People search by name or Member Number. Online status, current public room,
+  About, visible communities and recent activity are shared with eligible KikiLink users by default
+- People and Match show a daily selection of unfamiliar members who have filled in a public profile detail,
+  preference or signal. You can browse before choosing your own interests, languages or availability
 - Feed posts, comments and reactions, with owner controls, blocking and scoped reporting
 - Mailbox notifications open the relevant Feed post and comment in the main view
 - Administrator-pinned posts, a gold Featured post for 12 hours below pins, and reaction details
-- Optional private Preferences and controlled compatibility sharing across 225 categorized interests
+- Preferences covers 225 optional interests. New accounts start with public sharing and an enabled matching
+  signal. Edit profile and Preferences let you change visibility and choose which details you publish
 - Bilateral friend requests and automatic offline Direct delivery between eligible confirmed Cloud friends
 - Persistent groups with explicit invitations, owner/admin roles, ownership transfer and pinned messages
 - Cached profiles and stable loading states, targeted refresh and bounded requests
@@ -160,7 +157,7 @@ Cloud groups use the server-backed membership and history model described above.
   unread counts, Gallery access, and new-chat actions
 - Choose 2–4 known BC friends that recently advertised managed-group support and confirm the complete
   participant list before invitations are sent. The creator is visibly identified and can rename a
-  managed group, upload a privacy-prepared avatar to explicitly labeled public Catbox storage, set a
+  managed group, upload a privacy-prepared avatar through an AnonDrop link, set a
   direct avatar link and outline color, and add or kick compatible members while keeping the total at
   3–5 people
 - Existing fixed-membership groups remain readable and usable as legacy groups. Their creator can choose
@@ -216,7 +213,7 @@ Cloud groups use the server-backed membership and history model described above.
 - Pasted Markdown, BBCode, and color wrappers are reduced to the direct image URL before sending
 - Privacy-aware uncropped full-width image previews: ask before loading, always show, or links only
 - Image previews hide the repeated raw URL; `Show original` is the only outbound link on the card
-- Account-free temporary JPG, PNG, and WebP sharing through Litterbox, with selectable
+- Temporary JPG, PNG, and WebP sharing through WaifuVault, with selectable
   1, 12, 24, or 72 hour retention and generic source filenames
 - Local privacy preparation before upload: validate the real file signature, declared JPG/PNG/WebP
   dimensions, and bounded APNG/WebP animation cycle before browser decode; remove the original
@@ -275,15 +272,15 @@ Cloud groups use the server-backed membership and history model described above.
   passwords and large map layouts are deliberately excluded
 - Explicit native Kick, Promote/Demote, and room Whitelist/Unwhitelist actions; Kick asks for confirmation
 - Every player avatar in Room opens that member's KikiLink profile as a separate accessible action
-- Local image preparation and temporary Litterbox sharing can fill the room background field;
+- Local image preparation and temporary WaifuVault sharing can fill the room background field;
   renamed MP3/MP4 room audio up to 20 MB can fill the music field
 - A device-local Music track has a `Share & use as room music` action that creates and reuses a
-  temporary Litterbox link, then opens the same review-and-apply Room Tools flow as Gallery
-- A lazy all-chat gallery deduplicates direct and group images across saved conversations and labels Catbox/Litterbox media
+  temporary WaifuVault link, then opens the same review-and-apply Room Tools flow as Gallery
+- A lazy all-chat gallery deduplicates direct and group images across saved conversations and identifies media from the supported hosts, including older Catbox and Litterbox links
 - A visible Gallery Home card and labeled Chat button open the library without adding another main tab
 - Direct image links can be saved without sending a chat message; privacy-prepared local additions are
-  either kept in account-named IndexedDB on that device, uploaded to public Catbox
-  without automatic expiry, or uploaded to public Litterbox for a chosen 1–72 hour lifetime
+  kept on the device, shared through WaifuVault for 1, 12, 24 or 72 hours, or shared through
+  AnonDrop for longer-term use
 - Gallery Remove permanently deletes device-local images; removing a linked/chat card leaves its chat
   and remote file untouched
 - Gallery cards keep full image proportions, expose only `Show original`, reopen the source chat, and
@@ -294,14 +291,9 @@ Cloud groups use the server-backed membership and history model described above.
 - A lacquer-and-gold now-playing card with a searchable queue, seek bar, previous/next, shuffle,
   repeat-one/repeat-all, independent volume, mute, playback speed, and a sleep timer
 - Rename, duplicate, clear, and delete playlists; rename, reorder, open, or remove individual tracks
-- In the standalone userscript, select several local files in one pass and see live progress during
-  sequential Catbox uploads; FUSAM still disables Catbox upload choices while the prepared relay awaits
-  Catbox's explicit written permission and any required whitelisting
+- Both distributions support sequential public playlist uploads through AnonDrop.
 - Browser/OS Media Session controls for play, pause, seeking, and previous/next where supported
-- Direct HTTPS tracks, local browser-only files up to 80 MB, or explicitly uploaded long-lived
-  Catbox tracks with generic filenames
-- Anonymous Catbox tracks are retained until two years of inactivity; KikiLink does not send a
-  Catbox account token, so it does not describe those uploads as strictly permanent
+- Direct HTTPS tracks, local browser-only files, and uploaded public audio files up to 80 MB.
 - Playlist actions live in one compact Manage menu, and the library/player switch to a single
   scrollable column before controls can overlap on medium or narrow screens
 - Local blobs stay in account-named IndexedDB on the current device; playlist metadata and
@@ -352,9 +344,9 @@ does not process the KikiLink arousal metadata.
 
 - Dedicated Alerts category with one switch for friends coming online and one for players joining the room
 - Private local notices that remain visible beside the launcher while the panel is closed
-- Optional notification sounds, disabled by default
+- Notification sounds are enabled by default and can be muted in Alerts
 - Adjustable 0–100 alert volume for every notification sound
-- Distinct built-in Soft chime, Sakura sparkle, and Gentle pop sounds for chats, friends, and room joins
+- Chats, friend alerts, and room joins use Kiki by default. Each sound can be customized
 - Custom audio files up to five seconds and 10 MB, validated and stored only in this browser's IndexedDB
 - Sound choices and preview controls stay inside a compact optional disclosure
 - The complete event-rule editor remains available inside Advanced instead of filling the main screen
@@ -399,12 +391,12 @@ fetch branding assets from a remote server while the game is running.
 
 KikiLink's own Beeps use Bondage Club's native send path, while its history listener
 captures native Beeps and compatible messenger sends. Custom Activities use native BC
-activity and appearance paths. Direct-chat local-file sharing prepares an image before
-an explicit Litterbox upload; Gallery files stay device-local unless a public-storage
-option is chosen. Cloud profiles and Feed use authenticated, managed media storage.
+activity and appearance paths. Compatibility chat uploads share the prepared image through WaifuVault. Cloud direct
+attachments use the access-controlled Cloud transport. Gallery files stay device-local unless an
+external host is selected. Cloud profiles and Feed use authenticated, managed media storage.
 
 The official build connects to KikiLink Cloud for verified profiles, Feed and groups.
-There is no analytics service. The separate prepared FUSAM Catbox relay remains disabled.
+There is no analytics service.
 Account-prefixed browser storage and a bounded unencrypted BC ExtensionSettings mirror
 retain settings, activities, profile preferences, notebook data and recent direct chats.
 BC compatibility presence is event-driven with a separate four-minute liveness refresh,
@@ -413,36 +405,18 @@ Legacy BC groups retain their bounded direct/creator-relay transport; Cloud grou
 server-backed history and do not require the creator to remain online.
 
 Remote media hosts still receive the viewer's network IP address and request time. Chat and profile
-art default to `Always show`; `Ask before loading` requires a reveal and `Links only` avoids preview requests. Uploaded Catbox/Litterbox
-files are public bearer links, and audio may retain embedded metadata. Full details and deletion limits
+art default to `Always show`; `Ask before loading` requires a reveal and `Links only` avoids preview requests. New shared files and earlier Catbox/Litterbox
+uploads use public links, and audio may retain embedded metadata. Full details and deletion limits
 are in [PRIVACY.md](PRIVACY.md).
 
-### Prepared FUSAM Catbox relay (disabled)
+### Shared files
 
-The proposed FUSAM path uses Cloudflare Turnstile and a Worker, then issues a short-lived bearer token
-kept only in page memory. The Worker admits only exact Bondage Club origins, recognized file types and
-sizes, and bounded request/byte quotas. It constructs the fixed anonymous Catbox upload itself, never
-forwards a Catbox `userhash`, account cookie, arbitrary destination, or caller-supplied provider form,
-and streams the accepted bytes without storing them.
-
-This design does not make the transfer private. Cloudflare can transiently observe the uploader's IP,
-Bondage Club origin, request timing, and file bytes; Catbox receives the file, timing, and the Worker
-connection and may also receive the uploader IP in
-[Cloudflare-added forwarding headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests).
-The relay is
-not an IP-anonymity service. Images are re-encoded to metadata-free WebP before the relay, while audio is not re-encoded
-and may retain tags, artwork, or other embedded metadata. The returned Catbox URL is a public bearer
-link, and anonymous retention is not guaranteed: Catbox's
-[FAQ](https://catbox.moe/faq.php) says an anonymous file may be removed after two years without a
-download.
-
-The relay remains deliberately disabled. Catbox's [Terms](https://catbox.moe/legal.php) prohibit
-reselling or otherwise supplying its service to others, and Catbox's
-[April 14, 2026 notice](https://blog.catbox.moe/post/813932072453455872/happy-11th-birthday-catbox)
-restricted anonymous uploads from datacenter/proxy networks. KikiLink will not enable or advertise the
-relay without Catbox's explicit written permission and any required whitelisting. The standalone
-userscript's direct Catbox path and every temporary Litterbox path are unchanged. See
-[the upload privacy review](docs/LOCAL_IMAGE_UPLOADS.md) for the complete proposed flow.
+WaifuVault serves temporary files from Chat, Gallery and Room Tools for the selected
+1, 12, 24 or 72 hours. AnonDrop serves shared Gallery images and playlist tracks without a
+fixed expiry. Its free service may remove inactive files. Anyone with the direct link can
+open it. Earlier Catbox and Litterbox links keep working for as long as their original hosts
+serve the files. Cloud profile, banner and Feed uploads keep their existing access controls.
+See [shared file privacy](PRIVACY.md#public-shared-files).
 
 ## Account data and switching
 
@@ -476,7 +450,7 @@ src/
 design/branding/       Shipping KikiLink wolf emblem and Blossom marker
 design/references/     Full-resolution KikiLink visual reference
 docs/                  UX principles, accessibility decisions, and protocol notes
-worker/                Disabled-by-default FUSAM Catbox relay and isolated checks
+worker/                Archived Catbox relay prototype
 ```
 
 KikiLink listens to the native Bondage Club socket for Beeps and friend presence, and uses

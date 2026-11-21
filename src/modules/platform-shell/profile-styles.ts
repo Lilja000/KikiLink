@@ -75,7 +75,7 @@ export const PROFILE_STYLES = `
 @container kl-panel (width <= 700px) or ((width <= 900px) and (height <= 500px)) {
  .kl-addon-profile-dialog[open] { border-radius:10px; }
 }
-.kl-addon-profile-body { padding:16px;flex:1;min-height:0;scrollbar-gutter:stable; }
+.kl-addon-profile-body { padding:16px;flex:1;min-height:0;scrollbar-gutter:auto; }
 .kl-addon-profile-card { --kl-profile-banner-height:120px;border-radius:8px;box-shadow:none;overflow:visible; }
 .kl-addon-profile-hero { grid-template-columns:64px minmax(0,1fr);gap:12px;padding:calc(var(--kl-profile-banner-height) + 16px) 12px 12px; }
 .kl-addon-profile-banner { border-radius:8px 8px 0 0; }
@@ -528,14 +528,11 @@ export const PROFILE_STYLES = `
 .kl-profile-avatar-adjust-heading h3,.kl-profile-avatar-backgrounds h3 { margin:0;font-size:var(--kl-type-body);line-height:1.4; }
 .kl-profile-avatar-adjust-heading .kl-text-button { padding:4px 0;border:0;background:none;color:var(--kl-muted); }
 .kl-profile-avatar-adjust-heading .kl-text-button:hover { color:var(--kl-text);text-decoration:underline; }
-.kl-profile-avatar-range { display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:8px;color:var(--kl-muted);font-size:11px; }
-.kl-profile-avatar-range output { color:var(--kl-text);font-size:10px;font-variant-numeric:tabular-nums; }
-.kl-profile-avatar-range input { grid-column:1/-1;appearance:none;width:100%;height:28px;margin:0;padding:0;border:0;background:transparent;accent-color:var(--kl-accent);cursor:pointer; }
-.kl-profile-avatar-range input::-webkit-slider-runnable-track { height:4px;border-radius:4px;background:var(--kl-border-strong); }
-.kl-profile-avatar-range input::-webkit-slider-thumb { appearance:none;width:14px;height:14px;margin-top:-5px;border:1px solid var(--kl-accent-hover);border-radius:50%;background:var(--kl-accent); }
-.kl-profile-avatar-range input::-moz-range-track { height:4px;border-radius:4px;background:var(--kl-border-strong); }
-.kl-profile-avatar-range input::-moz-range-progress { height:4px;border-radius:4px;background:var(--kl-accent); }
-.kl-profile-avatar-range input::-moz-range-thumb { width:14px;height:14px;border:1px solid var(--kl-accent-hover);border-radius:50%;background:var(--kl-accent); }
+.kl-profile-avatar-crop { width:min(164px,100%);aspect-ratio:1;justify-self:center;overflow:hidden;border-radius:50%;background:var(--kl-avatar-bg);box-shadow:0 0 0 1px var(--kl-border-strong);touch-action:none;user-select:none;cursor:grab; }
+.kl-profile-avatar-crop:active { cursor:grabbing; }
+.kl-profile-avatar-crop img { display:block;width:100%;height:100%;object-fit:cover;object-position:var(--kl-avatar-framing-position);transform-origin:var(--kl-avatar-framing-position);transform:scale(var(--kl-avatar-framing-zoom));pointer-events:none; }
+.kl-profile-avatar-zoom { display:flex;justify-content:center;gap:8px; }
+.kl-profile-avatar-zoom button { min-width:36px;min-height:36px; }
 .kl-profile-avatar-choices .kl-profile-choice,.kl-profile-avatar-backgrounds .kl-profile-choice { gap:7px;padding:8px 4px;border-radius:8px;background:var(--kl-surface);color:var(--kl-muted);font-weight:550;line-height:1.3;text-align:center; }
 .kl-profile-avatar-choices .kl-profile-choice { min-height:88px; }
 .kl-profile-avatar-choices .kl-profile-choice > span:last-child { max-width:100%; }
@@ -732,7 +729,6 @@ export const PROFILE_STYLES = `
   .kl-presence-dialog .kl-dialog-header { min-height:61px; }
   .kl-presence-dialog .kl-profile-save-hint { line-height:1.4; }
   .kl-presence-dialog .kl-dialog-header > .kl-icon-button { width:40px;min-width:40px;height:40px;min-height:40px; }
-  .kl-profile-avatar-range input { min-height:36px; }
   .kl-profile-avatar-choices,.kl-profile-avatar-backgrounds .kl-profile-choice-grid { gap:7px; }
   .kl-profile-avatar-choices .kl-profile-choice { min-height:84px; }
 }
@@ -766,10 +762,10 @@ export const PROFILE_STYLES = `
 
 /* Read profile overlay */
 .kl-addon-profile-dialog { --kl-profile-sheet-padding:16px;--kl-profile-header-padding:12px; }
-.kl-addon-profile-dialog > .kl-addon-profile-body { min-width:0;padding:0 0 16px;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;scrollbar-width:auto; }
+.kl-addon-profile-dialog > .kl-addon-profile-body { min-width:0;padding:0 0 16px;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin; }
 .kl-addon-profile-dialog .kl-addon-profile-card[data-profile-owner] { width:100%;min-width:0;background:transparent;border:0;box-shadow:none;isolation:auto; }
 .kl-addon-profile-dialog .kl-addon-profile-card { font-size:12px;line-height:1.5; }
-.kl-addon-profile-dialog .kl-profile-summary { margin-inline:var(--kl-profile-sheet-padding);background-color:var(--kl-profile-bg); }
+.kl-addon-profile-dialog .kl-profile-summary { margin-inline:0;background-color:var(--kl-profile-bg); }
 .kl-addon-profile-dialog .kl-addon-profile-card[data-custom-outline="true"] .kl-profile-summary { outline:1px solid var(--kl-profile-outline);outline-offset:-1px; }
 .kl-addon-profile-dialog .kl-addon-profile-hero { gap:8px 12px;align-items:center;padding-inline:var(--kl-profile-header-padding);padding-bottom:12px; }
 .kl-addon-profile-dialog .kl-addon-profile-banner { border-bottom:0;border-radius:0; }
@@ -865,4 +861,15 @@ export const PROFILE_STYLES = `
 }
 ${PROFILE_READ_SOCIAL_STYLES}
 ${PROFILE_READ_CONTENT_STYLES}
+
+.kl-presence-dialog[data-quick-status="true"] { width:min(420px,calc(100% - 24px));height:fit-content; }
+.kl-presence-dialog[data-quick-status="true"] :is(.kl-platform-profile-tabs,.kl-profile-editor-brand,.kl-profile-presence-controls > summary,.kl-profile-save-hint),
+.kl-presence-dialog[data-quick-status="true"] [data-profile-section="about"] > :not(.kl-profile-presence-controls),
+.kl-presence-dialog[data-quick-status="true"] .kl-profile-presence-controls > div > :not(.kl-presence-options,.kl-status-note-field,.kl-status-sharing-row),
+.kl-presence-dialog[data-quick-status="true"] .kl-status-sharing-row:has(input:checked) { display:none; }
+.kl-presence-dialog[data-quick-status="true"] .kl-profile-presence-controls { border:0;padding:0; }
+.kl-presence-dialog[data-quick-status="true"] .kl-profile-presence-controls > div { padding:0; }
+.kl-own-profile-page > .kl-addon-profile-body { padding-inline:0; }
+.kl-own-profile-page .kl-addon-profile-card { max-width:none; }
+.kl-own-profile-page .kl-addon-profile-card > .kl-platform-profile-sections { padding-inline:var(--kl-profile-header-padding,16px); }
 `;

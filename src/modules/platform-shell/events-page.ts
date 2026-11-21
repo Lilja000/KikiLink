@@ -1,3 +1,4 @@
+import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { calendarCategories, legacyCalendarCategories } from '../../../cloud/shared/calendar-categories.mjs';
 import {spaceRead,SpaceRecoveryError} from '../../cloud/space-mutation-intent';
 import {reportForm} from '../../cloud/report-form';
@@ -735,7 +736,7 @@ export class EventsPage {
     const avatar=element('span',{className:'kl-ev-avatar'});
     if(person.profileVisible&&person.avatarId&&this.options.image)avatar.append(this.options.image(person.avatarId));
     else avatar.textContent=(person.displayName||'Member').trim().slice(0,1).toUpperCase();
-    avatar.setAttribute('aria-hidden','true');return avatar;
+    avatar.setAttribute('aria-hidden','true');return markAvatarPresence(avatar, person.memberNumber, person.profileVisible ? undefined : null);
   }
   #profile(person:EventPerson,label?:string):HTMLElement{
     const name=label??person.displayName??`Member #${person.memberNumber}`;
@@ -1498,7 +1499,7 @@ export class EventsPage {
       const card=element('article',{className:'kl-ev-panel kl-ev-review-card'},
         element('header',{className:'kl-ev-review-title'},element('span',{},kikiIcon('calendar')),
           element('div',{},element('h3',{text:d.title.trim()}),element('small',{text:`Hosted by ${host}`})),this.#badge(access)),
-        element('p',{text:d.description.trim() || 'A little time set aside for good company.'}),element('div',{className:'kl-ev-review-tags'},...[d.category,d.language,...eventTags(d.tags)].map(tag=>this.#tag(tag))));
+        d.description.trim()?element('p',{text:d.description.trim()}):undefined,element('div',{className:'kl-ev-review-tags'},...[d.category,d.language,...eventTags(d.tags)].map(tag=>this.#tag(tag))));
       const facts:Array<[string,string]>=[
         ['Starts',`${eventEditorDateTime(start)} · ${localZone(start)}`],['Ends',`${eventEditorDateTime(end)} · ${localZone(end)}`],
         ['Capacity',`${d.capacity} ${Number(d.capacity)===1?'person':'people'}`],['Room',d.room.trim()||'To be announced'],['Access',access],
@@ -1519,9 +1520,8 @@ export class EventsPage {
       this.#mutate(ed.event?'PUT':'POST',ed.event?`${BASE}/${ed.event.id}`:BASE,body,receipt=>{this.#editor=undefined;this.#close();this.#selected=receipt.eventId;this.#showGuests=false;},ed.source,`${ed.event?'Edit':'Create'} · ${d.title} · ${d.communityId?this.#hosts.find(h=>h.id===d.communityId)?.name??'Original community':'Personal event'}`);
     },ed.step===3?undefined:'arrow-right',undefined,true));
     form.addEventListener('submit',event=>event.preventDefault());
-    const intro=ed.step===1?'Give people a reason to look forward to being together.':ed.event?'One last look before saving your changes.':'One last look before making it a date.';
     const scheduleNote=element('div',{className:'kl-ev-clock-note'},kikiIcon('clock'),element('span',{},element('strong',{text:'Times use your device timezone.'}), ` ${Intl.DateTimeFormat().resolvedOptions().timeZone} · ${eventEditorDateTime(Date.now())}.`));
-    const content=element('fieldset',{className:'kl-ev-editor-content'},ed.step===2?scheduleNote:element('p',{className:'kl-ev-editor-intro',text:intro}),form,error);
+    const content=element('fieldset',{className:'kl-ev-editor-content'},ed.step===2?scheduleNote:undefined,form,error);
     const body=element('div',{className:'kl-ev-dialog-body'},steps,content);
     this.#frameDialog(this.#dialog,title,body,actions,()=>this.#requestClose(),true);
     if(ed.step===2){const preview=element('div',{className:'kl-ev-schedule-preview',role:'status'},kikiIcon('calendar'),element('span'));form.after(preview);}

@@ -18,7 +18,7 @@ export const MAX_PROFILE_AVATAR_BYTES = 2 * 1024 * 1024;
 export const MAX_LOCAL_ROOM_AUDIO_BYTES = 20 * 1024 * 1024;
 export const MAX_CATBOX_MUSIC_BYTES = 80 * 1024 * 1024;
 
-const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
+export const MAX_PREPARED_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_LOCAL_ANIMATION_FRAMES = 240;
 const MAX_LOCAL_ANIMATION_PIXELS = 64 * 1024 * 1024;
 const PROFILE_BANNER_WEBP_QUALITIES = [0.88, 0.76, 0.64, 0.52, 0.4] as const;
@@ -1097,7 +1097,7 @@ function normalizeLitterboxAudioUrl(value: string): string | null {
   }
 }
 
-function roomAudioExtension(file: File): string | undefined {
+export function roomAudioExtension(file: File): string | undefined {
   const named = file.name.toLocaleLowerCase().match(/\.([a-z0-9]+)$/u)?.[1];
   if (named && /^(?:mp3|mp4)$/u.test(named)) return named;
   const mime = file.type.toLocaleLowerCase().split(";", 1)[0];
@@ -1109,7 +1109,7 @@ function roomAudioExtension(file: File): string | undefined {
   return mime ? byMime[mime] : undefined;
 }
 
-function playlistAudioExtension(file: File): string | undefined {
+export function playlistAudioExtension(file: File): string | undefined {
   const named = file.name.toLocaleLowerCase().match(/\.(aac|flac|m4a|mp3|mp4|oga|ogg|opus|wav|webm)$/u)?.[1];
   if (named) return named;
   const mime = file.type.toLocaleLowerCase().split(";", 1)[0];

@@ -46,6 +46,56 @@ describe("CustomActivitiesView", () => {
     expect(settings.get().linkActivities.customActivities[0]).toEqual(original);
     service.stop();
   });
+  it("keeps body and picture choices in their tab and exposes triggers immediately", () => {
+    const adapter = { getOwnName: () => "Kiki" } as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const service = new LinkActivitiesService(adapter, settings);
+    const root = document.createElement("div");
+    document.body.append(root);
+    const view = new CustomActivitiesView(root, adapter, settings, service, vi.fn(), vi.fn(), { openWorkshop: vi.fn() });
+    view.open();
+    root.querySelector<HTMLButtonElement>(".kl-custom-activity-create")!.click();
+    const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const [activity, visuals, triggers] = [...root.querySelectorAll<HTMLElement>('[role="tabpanel"]')];
+    expect(tabs.map(tab => tab.textContent)).toEqual(["Activity", "Body & picture", "Triggers"]);
+    expect(activity!.querySelector(".kl-custom-slot-grid, .kl-custom-image-choice")).toBeNull();
+    tabs[1]!.click();
+    expect(visuals!.hidden).toBe(false);
+    const picker = visuals!.querySelector<HTMLDetailsElement>(".kl-custom-slot-picker")!;
+    const summary = picker.querySelector("summary")!;
+    expect(summary.textContent).toContain("Show all");
+    picker.open = true;
+    picker.dispatchEvent(new Event("toggle"));
+    expect(summary.textContent).toContain("Hide");
+    const choice = picker.querySelector<HTMLButtonElement>(".kl-custom-slot-choice")!;
+    choice.click();
+    expect(picker.open).toBe(false);
+    expect(summary.textContent).toContain(choice.textContent);
+    const image = visuals!.querySelector<HTMLButtonElement>(".kl-custom-image-choice[data-selected=false]")!;
+    image.click();
+    expect(image.getAttribute("aria-pressed")).toBe("true");
+    const scroller = root.querySelector<HTMLElement>(".kl-activity-dialog-body")!;
+    scroller.scrollTop = 120;
+    tabs[2]!.click();
+    expect(scroller.scrollTop).toBe(0);
+    expect(triggers!.hidden).toBe(false);
+    const add = triggers!.querySelector<HTMLButtonElement>(".kl-sequence-add")!;
+    expect(add.closest("details")).toBeNull();
+    add.click();
+    const groups = [...triggers!.querySelectorAll("details")];
+    expect(groups.length).toBeGreaterThanOrEqual(4);
+    expect(groups.every(group => group.open)).toBe(true);
+    [...triggers!.querySelectorAll("button")].find(button => button.textContent === "Remove step")!.click();
+    tabs[0]!.click();
+    activity!.querySelector<HTMLInputElement>('[data-field="name"]')!.value = "Wave";
+    activity!.querySelector<HTMLTextAreaElement>("textarea")!.value = "{me} waves.";
+    root.querySelector<HTMLButtonElement>(".kl-custom-activity-save")!.click();
+    expect(settings.getSection("linkActivities").customActivities).toEqual([
+      expect.objectContaining({ name: "Wave", targetGroup: choice.dataset.slot, image: image.title }),
+    ]);
+    view.destroy();
+  });
+
   it("keeps the selected body slot compact, expands all choices, and keeps images canonical", async () => {
     globalThis.ActivityFemale3DCG = [
       {

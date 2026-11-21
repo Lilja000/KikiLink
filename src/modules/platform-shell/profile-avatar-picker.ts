@@ -37,7 +37,11 @@ export class ProfileAvatarPicker {
   readonly #buttons = new Map<string, HTMLButtonElement>();
   readonly #backgroundButtons = new Map<Background, HTMLButtonElement>();
   readonly #draftPresets = new WeakMap<File, string>();
-  readonly #ranges: readonly [HTMLInputElement, HTMLInputElement, HTMLInputElement];
+  readonly #crop = element("div", { className: "kl-profile-avatar-crop", ariaLabel: "Avatar position. Drag or use the arrow keys." });
+  readonly #photo = element("img", { alt: "" });
+  readonly #zoomIn = element("button", { type: "button", className: "kl-text-button", text: "+", ariaLabel: "Zoom in" });
+  readonly #zoomOut = element("button", { type: "button", className: "kl-text-button", text: "−", ariaLabel: "Zoom out" });
+  #position = { x: 50, y: 50, zoom: 1 };
   #background: Background | undefined;
 
   constructor(readonly editor: CloudProfileEditor, readonly onChange: () => void) {
@@ -65,18 +69,43 @@ export class ProfileAvatarPicker {
     }
     const center = element("button", { type: "button", className: "kl-text-button", text: "Centre", onClick: () => { this.reset(); onChange(); } });
     this.framing.append(element("div", { className: "kl-profile-avatar-adjust-heading" }, element("h3", { text: "Framing" }), center));
-    const range = (label: string, min: number, max: number, step: number, value: number): HTMLInputElement => {
-      const control = element("input", { ariaLabel: label });
-      control.type = "range"; control.min = String(min); control.max = String(max);
-      control.step = String(step); control.defaultValue = String(value);
-      const output = element("output");
-      control.addEventListener("input", () => { this.#updateRange(control); onChange(); });
-      this.framing.append(element("label", { className: "kl-profile-avatar-range" },
-        element("span", { text: label }), output, control));
-      return control;
+    this.#crop.tabIndex = 0;
+    this.#photo.draggable = false;
+    this.#crop.append(this.#photo);
+    this.framing.append(this.#crop, element("div", { className: "kl-profile-avatar-zoom" }, this.#zoomOut, this.#zoomIn));
+    const zoom = (step: number) => {
+      this.#position.zoom = Math.min(2, Math.max(1, Math.round((this.#position.zoom + step) * 10) / 10));
+      onChange();
     };
-    this.#ranges = [range("Horizontal position", 0, 100, 1, 50), range("Vertical position", 0, 100, 1, 50), range("Zoom", 1, 2, 0.05, 1)];
-    this.framing.append(element("p", { className: "kl-custom-field-help", text: "Saving keeps the framed square as your new avatar." }));
+    this.#zoomIn.addEventListener("click", () => zoom(.1));
+    this.#zoomOut.addEventListener("click", () => zoom(-.1));
+    let drag: { pointer: number; x: number; y: number; cropX: number; cropY: number } | undefined;
+    this.#crop.addEventListener("pointerdown", event => {
+      if (!event.isPrimary || event.button !== 0 || !this.#photo.naturalWidth) return;
+      drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, cropX: this.#position.x, cropY: this.#position.y };
+      this.#crop.setPointerCapture(event.pointerId);
+    });
+    this.#crop.addEventListener("pointermove", event => {
+      if (!drag || drag.pointer !== event.pointerId) return;
+      const side = this.#crop.getBoundingClientRect().width;
+      const scale = this.#position.zoom * side / Math.min(this.#photo.naturalWidth, this.#photo.naturalHeight);
+      const shift = (origin: number, distance: number, span: number) => span > .01 ? Math.min(100, Math.max(0, origin - distance / span * 100)) : 50;
+      this.#position.x = shift(drag.cropX, event.clientX - drag.x, this.#photo.naturalWidth * scale - side);
+      this.#position.y = shift(drag.cropY, event.clientY - drag.y, this.#photo.naturalHeight * scale - side);
+      onChange();
+    });
+    this.#crop.addEventListener("lostpointercapture", () => { drag = undefined; });
+    this.#crop.addEventListener("keydown", event => {
+      const step = event.shiftKey ? 10 : 2;
+      const { x, y } = this.#position;
+      if (event.key === "ArrowLeft") this.#position.x = Math.max(0, x - step);
+      else if (event.key === "ArrowRight") this.#position.x = Math.min(100, x + step);
+      else if (event.key === "ArrowUp") this.#position.y = Math.max(0, y - step);
+      else if (event.key === "ArrowDown") this.#position.y = Math.min(100, y + step);
+      else return;
+      event.preventDefault();
+      onChange();
+    });
     const palette = element("div", { className: "kl-profile-choice-grid", ariaLabel: "Avatar background colour" });
     palette.setAttribute("role", "group");
     for (const background of backgrounds) {
@@ -100,17 +129,13 @@ export class ProfileAvatarPicker {
     this.element.append(button);
   }
 
-  #updateRange(input: HTMLInputElement): void {
-    const output = input.previousElementSibling;
-    if (output) output.textContent = input.min === "1" ? `${input.valueAsNumber.toFixed(2)}×` : `${input.value}%`;
+  focusFraming(): void {
+    this.#crop.focus();
   }
 
   reset(): void {
     this.#background = undefined;
-    for (const range of this.#ranges) {
-      range.value = range.defaultValue;
-      this.#updateRange(range);
-    }
+    this.#position = { x: 50, y: 50, zoom: 1 };
   }
 
   get edit(): ProfileAvatarEdit | undefined {
@@ -119,9 +144,8 @@ export class ProfileAvatarPicker {
     if ((source === "initials" || preset) && this.#background)
       return { kind: "background", colors: this.#background.colors, initial: this.#initial.textContent ?? "?" };
     if (source === "image" || (typeof source !== "string" && !preset)) {
-      const [horizontal, vertical, magnification] = this.#ranges;
-      const x = horizontal.valueAsNumber, y = vertical.valueAsNumber, zoom = magnification.valueAsNumber;
-      if (x !== 50 || y !== 50 || zoom !== 1) return { kind: "framing", x, y, zoom };
+      const { x, y, zoom } = this.#position;
+      if (typeof source !== "string" || x !== 50 || y !== 50 || zoom !== 1) return { kind: "framing", x, y, zoom };
     }
     return undefined;
   }
@@ -133,6 +157,15 @@ export class ProfileAvatarPicker {
     for (const [label, button] of this.#buttons) button.setAttribute("aria-pressed", String(label === selected));
     const edit = this.edit;
     this.framing.hidden = source === "initials" || source === "link" || selected !== undefined;
+    const photo = !this.framing.hidden && preview.querySelector("img")?.getAttribute("src");
+    if (photo && photo.startsWith("blob:")) {
+      if (this.#photo.getAttribute("src") !== photo) this.#photo.src = photo;
+    } else this.#photo.removeAttribute("src");
+    const { x, y, zoom } = this.#position;
+    this.#crop.style.setProperty("--kl-avatar-framing-position", `${x}% ${y}%`);
+    this.#crop.style.setProperty("--kl-avatar-framing-zoom", String(zoom));
+    this.#zoomIn.disabled = zoom >= 2;
+    this.#zoomOut.disabled = zoom <= 1;
     this.backgrounds.hidden = selected === undefined;
     for (const [background, button] of this.#backgroundButtons)
       button.setAttribute("aria-pressed", String(this.#background === background));

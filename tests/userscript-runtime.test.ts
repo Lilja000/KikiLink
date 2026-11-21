@@ -97,40 +97,15 @@ afterEach(async () => {
 });
 
 describe("published userscript runtime", () => {
-  it("keeps upload privilege isolated from the page-owned Bondage Club runtime", () => {
+  it("boots the page-owned runtime without installing an old upload host", async () => {
     expect(USER_SCRIPT).toContain("// @sandbox      DOM");
-    expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
-    expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
-    expect(USER_SCRIPT).toContain("// @connect      litterbox.catbox.moe");
-    expect(USER_SCRIPT).not.toContain("// @connect      waifuvault.moe");
-    expect(USER_SCRIPT).not.toContain("// @grant        unsafeWindow");
-    expect(USER_SCRIPT).not.toContain("// @grant        none");
-    expect(USER_SCRIPT).toContain("installUserscriptUploadHost");
-    expect(USER_SCRIPT).toContain("crypto.getRandomValues(new Uint8Array(32))");
-    expect(USER_SCRIPT).toContain("source.capability !== capability");
-    expect(USER_SCRIPT).not.toMatch(
-      /const __KIKILINK_UPLOAD_CAPABILITY__\s*=\s*["'][0-9a-f]{64}["']/u,
-    );
+    expect(USER_SCRIPT).toContain("// @grant        none");
+    expect(USER_SCRIPT).not.toContain("// @connect");
+    expect(USER_SCRIPT).not.toContain("GM_xmlhttpRequest");
+    expect(USER_SCRIPT).not.toContain("unsafeWindow");
     expect(USER_SCRIPT).toContain("kikilinkPageRuntime");
-    expect(USER_SCRIPT).not.toContain("installBCPageContextBridge");
-  });
-
-  it("retains the upload host across BFCache and tears it down on final navigation", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => undefined);
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     evaluatePublishedUserscript();
-
-    const markerId = "kikilink-upload-bridge-v1";
-    expect(document.getElementById(markerId)).not.toBeNull();
-    const cachedHide = new PageTransitionEvent("pagehide");
-    Object.defineProperty(cachedHide, "persisted", { value: true });
-    window.dispatchEvent(cachedHide);
-    expect(document.getElementById(markerId)).not.toBeNull();
-    const finalHide = new PageTransitionEvent("pagehide");
-    Object.defineProperty(finalHide, "persisted", { value: false });
-    window.dispatchEvent(finalHide);
-    expect(document.getElementById(markerId)).toBeNull();
-
+    expect(document.getElementById("kikilink-upload-bridge-v1")).toBeNull();
     await getGlobal<{ destroy(): Promise<void> }>("KikiLink").destroy();
   });
 
@@ -248,8 +223,8 @@ describe("published userscript runtime", () => {
       expect.stringContaining("data:image/svg+xml"),
       310,
       42.5,
-      17.5,
-      17.5,
+      20,
+      20,
     );
     expect(pageWindow.DrawImageResize).toHaveBeenCalledWith(
       "data:image/png;base64,echo",
@@ -521,9 +496,10 @@ describe("published userscript runtime", () => {
     const pageWindow = window as unknown as Record<string, any>;
     expect(USER_SCRIPT).toContain("// @sandbox      DOM");
     expect(USER_SCRIPT).not.toContain("// @grant        unsafeWindow");
-    expect(USER_SCRIPT).toContain("// @grant        GM_xmlhttpRequest");
-    expect(USER_SCRIPT).toContain("// @connect      catbox.moe");
-    expect(USER_SCRIPT).toContain("// @connect      litterbox.catbox.moe");
+    expect(USER_SCRIPT).toContain("// @grant        none");
+    expect(USER_SCRIPT).not.toContain("GM_xmlhttpRequest");
+    expect(USER_SCRIPT).not.toContain("// @connect      catbox.moe");
+    expect(USER_SCRIPT).not.toContain("// @connect      litterbox.catbox.moe");
     expect(USER_SCRIPT).not.toContain("installBCPageContextBridge");
     evaluatePublishedUserscript();
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
@@ -601,15 +577,15 @@ describe("published userscript runtime", () => {
       expect.stringContaining("data:image/svg+xml"),
       520,
       45,
-      35,
-      35,
+      40,
+      40,
     );
     expect(getGlobal<ReturnType<typeof vi.fn>>("DrawImageResize")).toHaveBeenCalledWith(
       expect.stringContaining("data:image/svg+xml"),
       1020,
       45,
-      35,
-      35,
+      40,
+      40,
     );
     expect(registered.some((activity) => activity.Name.startsWith(CUSTOM_ACTIVITY_PREFIX))).toBe(
       true,
