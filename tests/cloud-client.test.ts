@@ -455,7 +455,7 @@ it('queues a group profile burst within six active requests and rejects queued w
   expect((await pending).every(r=>r.status==='rejected')).toBe(true);expect(fetchImpl.mock.calls).toHaveLength(before);client.destroy();
 });
 
-it.each(["profile-discovery", "privacy", "relationships"])("%s hints discard profile cache and reads started before permissions changed", async kind => {
+it.each(["profile-discovery", "privacy", "relationships", "ready"])("%s hints report the cause and discard stale profile reads", async kind => {
   let stream!: ReadableStreamDefaultController<Uint8Array>, delayed!: (value: Response) => void, slow = false;
   let profile = { memberNumber:202,displayName:"Member",bio:"Shared before change",statusMessage:"Custom",publicTags:["tag"],revision:1,visible:true,updatedAt:1,avatarFrame:"none",profileStyle:"classic",avatarId:null,bannerId:null };
   const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -469,6 +469,7 @@ it.each(["profile-discovery", "privacy", "relationships"])("%s hints discard pro
     throw new Error("Unexpected request");
   });
   const {client}=setup(fetchImpl);
+  const changed=vi.fn();client.subscribe(changed);
   try {
     await client.connect();client.retainEvents();await vi.waitFor(()=>expect(stream).toBeDefined());
     await client.profile(202);expect(client.peekProfile(202)?.bio).toBe("Shared before change");
@@ -476,6 +477,7 @@ it.each(["profile-discovery", "privacy", "relationships"])("%s hints discard pro
     await vi.waitFor(()=>expect(delayed).toBeDefined());
     stream.enqueue(new TextEncoder().encode(`event: ${kind}\ndata: {}\n\n`));
     await vi.waitFor(()=>expect(client.peekProfile(202)).toBeUndefined());
+    expect(changed).toHaveBeenCalledWith("profiles-cleared",kind);
     delayed(response(profile));await rejected;expect(client.peekProfile(202)).toBeUndefined();
     slow=false;profile={...profile,bio:"",statusMessage:"",publicTags:[]};
     expect((await client.profile(202)).bio).toBe("");

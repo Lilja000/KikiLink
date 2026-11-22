@@ -26,6 +26,30 @@ function setup(handler: (method: string, path: string, body: any) => Promise<unk
 }
 
 describe("Feed interaction polish", () => {
+  it("keeps desktop post actions inside the Feed scrollport as the reader scrolls", async () => {
+    const { view } = setup(async () => ({ items: [post()], nextCursor: null }), true);
+    await view.render({});
+    const scroller = view.element.closest<HTMLElement>(".kl-cloud")!;
+    const menu = view.element.querySelector<HTMLDetailsElement>(".kl-feed-post-header > details")!;
+    const trigger = menu.querySelector("summary")!;
+    const items = menu.querySelector<HTMLElement>(".kl-social-menu-items")!;
+    items.style.setProperty("--kl-fit-feed-menu", "1");
+    vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(new DOMRect(80, 100, 800, 460));
+    const rect = vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(new DOMRect(810, 490, 32, 32));
+    Object.defineProperty(items, "scrollHeight", { value: 320, configurable: true });
+    menu.open = true;
+    menu.dispatchEvent(new Event("toggle"));
+    expect(menu.hasAttribute("data-open-above")).toBe(true);
+    expect(items.style.getPropertyValue("--kl-feed-menu-height")).toBe("376px");
+    rect.mockReturnValue(new DOMRect(810, 160, 32, 32));
+    scroller.dispatchEvent(new Event("scroll"));
+    expect(menu.hasAttribute("data-open-above")).toBe(false);
+    expect(items.style.getPropertyValue("--kl-feed-menu-height")).toBe("354px");
+    rect.mockReturnValue(new DOMRect(810, 600, 32, 32));
+    scroller.dispatchEvent(new Event("scroll"));
+    expect(menu.open).toBe(false);
+  });
+
   it("marks an attached photo using a corner icon without replacing the preview and posts its spoiler flag", async () => {
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:photo"); vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     const { view, request } = setup(async (method, path) => path === "/v1/me" ? { memberNumber: 101 } : path === "/v1/media/feed" ? { id: "55555555-5555-4555-8555-555555555555" } : method === "POST" ? post() : { items: [], nextCursor: null });

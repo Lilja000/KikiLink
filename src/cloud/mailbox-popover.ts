@@ -288,13 +288,19 @@ export class MailboxPopover {
     return button;
   }
 
+  #restartResults(): void {
+    this.#displayLimit = 40;
+    const list = this.inlineElement.querySelector<HTMLElement>(".kl-mailbox-list");
+    if (list) list.scrollTop = 0;
+  }
+
   #filters(): HTMLElement {
     const filters = element("div", { className: "kl-inbox-filters", role: "group", ariaLabel: "Filter Inbox" });
     for (const [value, label] of [["all", "All"], ["unread", "Unread"], ["mentions", "Mentions"], ["invitations", "Invites"], ["mail", "Mail"]] as const) {
       const button = element("button", { type: "button", className: "kl-text-button", text: label });
       button.dataset.mailAction = `filter-${value}`; button.dataset.inboxFilter = value;
       button.setAttribute("aria-pressed", String(this.#filter === value));
-      button.addEventListener("click", () => { this.#filter = value; this.#displayLimit = 40; this.#actionError = ""; this.render(); });
+      button.addEventListener("click", () => { this.#filter = value; this.#restartResults(); this.#actionError = ""; this.render(); });
       filters.append(button);
     }
     return filters;
@@ -619,7 +625,7 @@ export class MailboxPopover {
     const input = element("input", { type: "checkbox" });
     input.checked = this.#unreadLettersOnly;
     input.dataset.mailAction = "letters-unread-only";
-    input.addEventListener("change", () => { this.#unreadLettersOnly = input.checked; this.#displayLimit = 40; this.render(); });
+    input.addEventListener("change", () => { this.#unreadLettersOnly = input.checked; this.#restartResults(); this.render(); });
     const mark = this.#action("Mark mail as read", "letters-read-all", async () => {
       if (!this.#inlineVisible || this.#filter !== 'mail' || !this.community.personalMail) return;
       await this.community.readMail(undefined, generation, "mail");
@@ -634,7 +640,7 @@ export class MailboxPopover {
     const update = () => {
       if (this.#query === search.value) return;
       this.#query = search.value;
-      this.#displayLimit = 40;
+      this.#restartResults();
       this.#renderSurface(this.inlineElement, true);
     };
     search.addEventListener("input", event => { if (!(event as InputEvent).isComposing) update(); });
@@ -650,7 +656,8 @@ export class MailboxPopover {
     const filter = preview ? this.#filter : "all";
     const mailOnly = filter === "mail";
     const unavailableMail = mailOnly && !this.community.personalMail;
-    const scroll = inline ? surface.scrollTop : surface.querySelector(".kl-mailbox-list")?.scrollTop ?? 0;
+    const pageScroll = surface.scrollTop;
+    const listScroll = surface.querySelector(".kl-mailbox-list")?.scrollTop ?? 0;
     const active = focusedElement(surface);
     const focused = active && surface.contains(active) ? active : null;
     const focusKey = focused?.dataset.mailAction;
@@ -771,7 +778,7 @@ export class MailboxPopover {
         showAll.addEventListener("click", () => {
           this.#filter = "all";
           this.#query = ""; this.#unreadLettersOnly = false;
-          this.#displayLimit = 40;
+          this.#restartResults();
           const input = this.inlineElement.querySelector<HTMLInputElement>('.kl-inbox-search input');
           if (input) input.value = "";
           this.render();
@@ -844,7 +851,8 @@ export class MailboxPopover {
         ? `${count} ${count === 1 ? "update" : "updates"}${paged || truncated ? " shown" : ""}` : "";
       if (this.#resultsStatus.textContent !== announcement) this.#resultsStatus.textContent = announcement;
     }
-    (inline ? surface : list).scrollTop = scroll;
+    if (inline) surface.scrollTop = pageScroll;
+    list.scrollTop = listScroll;
     if (focusKey && !toolbar?.contains(focused)) {
       const popoverControls = !inline && preview ? this.#popoverControls() : undefined;
       const actions = popoverControls ?? [...surface.querySelectorAll<HTMLButtonElement | HTMLInputElement>("[data-mail-action]")]

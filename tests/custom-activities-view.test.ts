@@ -46,6 +46,40 @@ describe("CustomActivitiesView", () => {
     expect(settings.get().linkActivities.customActivities[0]).toEqual(original);
     service.stop();
   });
+  it("simplifies only the unfiltered platform library and keeps Workshop browsing separate from its source filter", () => {
+    const adapter = { getOwnName: () => "Kiki" } as BCAdapter;
+    const settings = new SettingsStore(new MemoryKeyValueStorage());
+    const root = document.createElement("div"), openWorkshop = vi.fn();
+    document.body.append(root);
+    const view = new CustomActivitiesView(root, adapter, settings, new LinkActivitiesService(adapter, settings), vi.fn(), vi.fn(), { openWorkshop });
+    try {
+      view.open();
+      const empty = () => root.querySelector<HTMLElement>(".kl-custom-activity-empty")!;
+      const action = (container: HTMLElement, label: string) =>
+        [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === label)!;
+      const toolbar = root.querySelector<HTMLElement>(".kl-activity-library-actions")!;
+      expect(empty().classList.contains("kl-activity-empty-library")).toBe(true);
+      expect(empty().querySelector(".kl-activity-desktop-label")?.textContent).toBe("No custom activities yet");
+      action(toolbar, "Browse Workshop").click();
+      expect(openWorkshop).toHaveBeenCalledTimes(1);
+      root.querySelector<HTMLButtonElement>('[data-scope="workshop"]')!.click();
+      expect(openWorkshop).toHaveBeenCalledTimes(1);
+      expect(empty().classList.contains("kl-activity-empty-library")).toBe(false);
+      expect(empty().querySelector("h2")?.textContent).toBe("No activity packs yet");
+      action(empty(), "Browse Workshop").click();
+      expect(openWorkshop).toHaveBeenCalledTimes(2);
+      const search = root.querySelector<HTMLInputElement>(".kl-activity-search")!;
+      search.value = "unmatched";
+      search.dispatchEvent(new Event("input"));
+      expect(empty().querySelector("h2")?.textContent).toBe("No activities match");
+      action(empty(), "Clear filters").click();
+      expect(search.value).toBe("");
+      expect(document.activeElement).toBe(search);
+      expect(root.querySelector('[data-scope="all"]')?.getAttribute("aria-pressed")).toBe("true");
+      expect(empty().classList.contains("kl-activity-empty-library")).toBe(true);
+    } finally { view.destroy(); }
+  });
+
   it("keeps body and picture choices in their tab and exposes triggers immediately", () => {
     const adapter = { getOwnName: () => "Kiki" } as BCAdapter;
     const settings = new SettingsStore(new MemoryKeyValueStorage());

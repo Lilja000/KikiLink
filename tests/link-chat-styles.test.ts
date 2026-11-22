@@ -34,6 +34,15 @@ describe("LinkChat visual safeguards", () => {
     expect(declaration(".kl-group-conversation-mark")).toMatch(/pointer-events:\s*none/u);
   });
 
+  it("preserves the whole presence glyph on round list avatars and clips only their images", () => {
+    expect(declaration("[data-avatar-presence]")).toMatch(/overflow:\s*visible\s*!important/u);
+    expect(declaration("[data-avatar-presence] > :is(.kl-cloud-image-wrap,.kl-social-avatar-media)"))
+      .toMatch(/overflow:\s*hidden/u);
+    expect(declaration("[data-avatar-presence] > :is(img,.kl-cloud-image-wrap,.kl-social-avatar-media)"))
+      .toMatch(/border-radius:\s*inherit/u);
+    expect(LINK_CHAT_STYLES).toMatch(/:is\(\.kl-message-row,\.kl-group-message,[^)]+\) \[data-avatar-presence\]::before,[^{]+\{\s*display:\s*none/u);
+  });
+
   it("reserves a stable avatar cell inside one selectable contact card", () => {
     expect(declaration(".kl-group-contact-item")).toMatch(
       /grid-template-columns:\s*48px minmax\(0, 1fr\)/u,

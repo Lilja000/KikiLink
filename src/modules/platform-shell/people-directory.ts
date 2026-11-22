@@ -32,3 +32,24 @@ export async function readPeopleDirectory(
   }
   return page;
 }
+
+/** Revalidate the pages the reader has already opened without dropping them between requests. */
+export async function readPeopleDirectoryPages(
+  client: CloudClient, owner: number, query: string, cursor: number,
+  pages: number, suggestions: number | undefined, current: () => boolean,
+): Promise<Page | undefined> {
+  const items: PeopleDirectoryPerson[] = [];
+  const seen = new Set<number>();
+  let next: number | null = cursor;
+  for (let i = 0; i < pages && next !== null; i++) {
+    const page = await readPeopleDirectory(client, owner, query, 20, next, suggestions);
+    if (!current()) return;
+    for (const person of page.items) {
+      if (seen.has(person.memberNumber)) throw new Error('Directory changed');
+      items.push(person);
+      seen.add(person.memberNumber);
+    }
+    next = page.nextCursor;
+  }
+  return { items, nextCursor: next };
+}

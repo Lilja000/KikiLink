@@ -287,8 +287,8 @@ button { color: inherit; }
   z-index: 2147482999;
   right: max(20px, env(safe-area-inset-right));
   bottom: max(90px, calc(env(safe-area-inset-bottom) + 78px));
-  width: min(1040px, calc(100vw - 40px));
-  height: min(680px, calc(100vh - 130px));
+  width: var(--kl-desktop-panel-width, min(1040px, calc(100vw - 40px)));
+  height: var(--kl-desktop-panel-height, min(680px, calc(100vh - 130px)));
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -866,14 +866,6 @@ button { color: inherit; }
   background: linear-gradient(90deg, var(--kl-accent), var(--kl-gold), transparent);
 }
 .kl-home-hero-copy { position: relative; z-index: 2; min-width: 0; }
-.kl-home-eyebrow,
-.kl-feature-card-kicker,
-.kl-home-next-kicker {
-  color: var(--kl-gold);
-  font-size: var(--kl-type-xxs);
-  font-weight: 900;
-  letter-spacing: 0.16em;
-}
 .kl-home-title {
   margin: 6px 0 4px;
   font-family: Georgia, "Times New Roman", serif;
@@ -881,7 +873,6 @@ button { color: inherit; }
   font-weight: 650;
   letter-spacing: -0.025em;
 }
-.kl-home-lead { max-width: 590px; margin: 0; color: var(--kl-muted); font-size: var(--kl-type-body); }
 .kl-home-statuses { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .kl-home-status {
   display: inline-flex;
@@ -1138,17 +1129,6 @@ button { color: inherit; }
   white-space: nowrap;
 }
 .kl-feature-card-action::after { content: " \u2192"; }
-.kl-home-privacy {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 16px 8px 2px;
-  color: var(--kl-muted);
-  font-size: var(--kl-type-xs);
-  text-align: center;
-}
-.kl-home-privacy-icon { width: 17px; height: 17px; color: var(--kl-gold); }
 
 :host([data-home-layout="compact"]) .kl-home-hero {
   min-height: 0;
@@ -1158,8 +1138,6 @@ button { color: inherit; }
 }
 :host([data-home-layout="compact"]) .kl-home-mark,
 :host([data-home-layout="compact"]) .kl-home-next,
-:host([data-home-layout="compact"]) .kl-home-lead,
-:host([data-home-layout="compact"]) .kl-home-section-description,
 :host([data-home-layout="compact"]) .kl-feature-card-description { display: none; }
 :host([data-home-layout="compact"]) .kl-feature-card {
   min-height: 112px;
@@ -1177,13 +1155,13 @@ button { color: inherit; }
 :host([data-density="compact"]) .kl-settings-panel-body { gap: 13px; }
 
 :host([data-density="super-compact"]) .kl-panel {
-  width: min(920px, calc(100vw - 40px));
-  height: min(600px, calc(100vh - 130px));
+  --kl-desktop-panel-width: min(920px, calc(100vw - 40px));
+  --kl-desktop-panel-height: min(600px, calc(100vh - 130px));
   min-height: 0;
-  grid-template-rows: 52px minmax(0, 1fr);
   border-radius: 20px;
   background: var(--kl-panel-art), var(--kl-panel-bg);
 }
+:host([data-density="super-compact"]) .kl-panel:not([data-platform-preview="true"]) { grid-template-rows: 52px minmax(0, 1fr); }
 :host([data-density="super-compact"]) .kl-topbar { gap: 7px; padding-inline: 12px; }
 :host([data-density="super-compact"]) .kl-brand { gap: 7px; }
 :host([data-density="super-compact"]) .kl-brand-emblem { width: 32px; height: 32px; border-radius: 10px; }
@@ -1191,11 +1169,8 @@ button { color: inherit; }
 :host([data-density="super-compact"]) .kl-feature-page-eyebrow,
 :host([data-density="super-compact"]) .kl-feature-page-subtitle,
 :host([data-density="super-compact"]) .kl-settings-panel-description,
-:host([data-density="super-compact"]) .kl-home-lead,
 :host([data-density="super-compact"]) .kl-home-mark,
-:host([data-density="super-compact"]) .kl-home-section-description,
-:host([data-density="super-compact"]) .kl-feature-card-description,
-:host([data-density="super-compact"]) .kl-home-privacy { display: none; }
+:host([data-density="super-compact"]) .kl-feature-card-description { display: none; }
 :host([data-density="super-compact"]) .kl-finder-trigger { min-height: 34px; padding-block: 4px; }
 :host([data-density="super-compact"]) .kl-icon-button { width: 34px; height: 34px; border-radius: 9px; }
 :host([data-density="super-compact"]) .kl-text-button { min-height: 34px; padding: 5px 10px; border-radius: 9px; }
@@ -3147,7 +3122,6 @@ select:focus-visible {
   .kl-home-next-icon { width: 42px; height: 42px; border-radius: 13px; font-size: 19px; }
   .kl-home-next-footer { align-items: stretch; flex-direction: column; }
   .kl-home-next-button { width: 100%; }
-  .kl-home-lead { font-size: var(--kl-type-sm); }
   .kl-home-statuses { margin-top: 13px; }
   .kl-home-status { max-width: 100%; }
   .kl-home-status-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3155,7 +3129,6 @@ select:focus-visible {
   .kl-feature-card { min-height: 126px; grid-template-columns: 42px minmax(0, 1fr); padding: 13px; }
   .kl-feature-card-icon { width: 42px; height: 42px; padding: 10px; border-radius: 13px; font-size: 19px; }
   .kl-feature-card-title { font-size: var(--kl-type-lg); }
-  .kl-home-privacy { padding-bottom: 8px; }
   .kl-color-control { align-items: flex-end; flex-direction: column; }
   .kl-conversation-side { max-width: 44px; }
   .kl-setting-row { align-items: flex-start; }
@@ -5744,7 +5717,11 @@ ${workshopEditorStyles}
   height:16px!important; min-height:16px!important; max-height:16px!important; flex:0 0 16px!important; padding:0!important;
 }
 
-[data-avatar-presence] { position:relative; }
+/* List portraits can use a circular crop. Clip the artwork on its own layer so
+   the presence glyph can paint across the lower-right edge of the portrait. */
+[data-avatar-presence] { position:relative; overflow:visible!important; }
+[data-avatar-presence] > :is(img,.kl-cloud-image-wrap,.kl-social-avatar-media) { border-radius:inherit; }
+[data-avatar-presence] > :is(.kl-cloud-image-wrap,.kl-social-avatar-media) { overflow:hidden; }
 [data-avatar-presence]::before {
   content:"";position:absolute;z-index:5;right:0;bottom:0;width:clamp(7px,27%,13px);aspect-ratio:1;
   box-sizing:border-box;border:2px solid var(--kl-panel-bg);border-radius:50%;pointer-events:none;

@@ -156,12 +156,12 @@ describe("Cloud UI automatic verification and recovery", () => {
       } }), { headers: { "content-type": "text/event-stream" } });
     });
     await connect(panel); await vi.waitFor(() => expect(stream).toBeDefined());
-    const emit = () => stream!.enqueue(new TextEncoder().encode("event: feed\ndata: {}\n\n"));
+    const emit = (kind = "feed") => stream!.enqueue(new TextEncoder().encode(`event: ${kind}\ndata: {}\n\n`));
     const reads = () => fetchImpl.mock.calls.filter(([url]) => new URL(String(url)).pathname === "/v1/feed").length;
     const before = reads(), card = panel.element.querySelector('[data-post-id="1"]');
     const field = panel.element.querySelector<HTMLTextAreaElement>('textarea[aria-label="Share a post"]')!;
     field.value = "Keep my draft"; field.dispatchEvent(new Event("input")); field.focus();
-    posts.unshift({ ...posts[0]!, id: 2, text: "New post" }); emit(); emit(); emit();
+    posts.unshift({ ...posts[0]!, id: 2, text: "New post" }); emit("ready"); emit(); emit();
     await vi.waitFor(() => expect(panel.element.querySelector('[data-post-id="2"]')).not.toBeNull());
     expect(reads()).toBe(before + 1); expect(panel.element.querySelector('[data-post-id="1"]')).toBe(card);
     expect(field.value).toBe("Keep my draft"); expect(document.activeElement).toBe(field);

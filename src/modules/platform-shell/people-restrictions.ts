@@ -15,6 +15,7 @@ export class PeopleRestrictions {
     this.#owner = this.client.memberNumber;
     this.#origin = this.client.origin;
     this.#members.clear();
+    this.#loading = undefined;
     this.#epoch++;
     this.state = "idle";
   }
@@ -23,23 +24,26 @@ export class PeopleRestrictions {
   #loading: Promise<void> | undefined;
   constructor(readonly client: CloudClient, readonly current: () => boolean, readonly changed: () => void) {}
   invalidate(): void {
+    this.#loading = undefined;
     this.#epoch++;
     this.#checkOwner();
     this.state = "idle";
   }
-  async load(): Promise<void> {
+  async load(revalidate = false): Promise<void> {
     this.#checkOwner();
-    if (this.state === "loading") return this.#loading;
-    if (this.state !== "idle" || !this.current() || !this.client.connected) return;
-    this.#loading = this.#read();
-    return this.#loading;
+    if (this.#loading) return this.#loading;
+    const quiet = revalidate && this.state === "ready";
+    if ((!quiet && this.state !== "idle") || !this.current() || !this.client.connected) return;
+    const task = this.#read(quiet);
+    this.#loading = task;
+    try { await task; } finally { if (task === this.#loading) this.#loading = undefined; }
   }
-  async #read(): Promise<void> {
+  async #read(quiet: boolean): Promise<void> {
     const epoch = ++this.#epoch;
     const owner = this.client.memberNumber, origin = this.client.origin;
     const current = () => this.current() && this.client.connected && epoch === this.#epoch &&
       this.client.memberNumber === owner && this.client.origin === origin;
-    this.state = "loading";
+    if (!quiet) this.state = "loading";
     try {
       const review = await reviewAccountControl(this.client, current);
       if (!current()) return;
@@ -48,7 +52,9 @@ export class PeopleRestrictions {
       if (!current()) return;
       if (!Array.isArray(data?.items) || data.items.some(item => !item || !Number.isSafeInteger(item.memberNumber) || item.memberNumber <= 0))
         throw new Error("Invalid block list");
-      this.#members = new Set(data.items.map(item => item.memberNumber).filter(id => id !== this.client.memberNumber));
+      const next = new Set(data.items.map(item => item.memberNumber).filter(id => id !== owner));
+      if (quiet && next.size === this.#members.size && [...next].every(id => this.#members.has(id))) return;
+      this.#members = next;
       this.state = "ready";
     } catch {
       if (!current()) return;

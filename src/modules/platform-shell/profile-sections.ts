@@ -1,4 +1,5 @@
 import { element } from "../../utils/dom";
+import { revealHorizontalTab } from "./detail-section-navigation";
 
 /** Keep the existing editors mounted: switching sections must never reset a draft. */
 export class ProfileSections {
@@ -45,12 +46,8 @@ export class ProfileSections {
     this.onSelect?.(id);
   }
   scrollActiveTabIntoView(): void {
-    if (this.tabs.scrollWidth <= this.tabs.clientWidth) return;
     const active = this.#items.find(item => !item.panel.hidden);
-    if (!active) return;
-    const strip = this.tabs.getBoundingClientRect(), tab = active.button.getBoundingClientRect();
-    if (tab.left < strip.left) this.tabs.scrollLeft += tab.left - strip.left;
-    else if (tab.right > strip.right) this.tabs.scrollLeft += tab.right - strip.right;
+    if (active) revealHorizontalTab(active.button, this.tabs);
   }
   reveal(control: HTMLElement): void {
     const item = this.#items.find(item => item.panel.contains(control));

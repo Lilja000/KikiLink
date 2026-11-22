@@ -52,7 +52,7 @@ export const DISCOVER_STYLES = `
 }
 .kl-discover-person-avatar {
   position: relative; display: grid; place-items: center; box-sizing: border-box; flex: none;
-  width: 32px; height: 32px; overflow: hidden; border: 1px solid var(--kl-border-strong); border-radius: 50%;
+  width: 32px; height: 32px; border: 1px solid var(--kl-border-strong); border-radius: 50%;
   background: var(--kl-avatar-bg); color: var(--kl-text); font-size: 13px; font-weight: 600;
 }
 .kl-discover-person-avatar > .kl-social-avatar-media:not([data-state="ready"]) { visibility: hidden; }

@@ -31,6 +31,7 @@ export class GalleryBrowser {
   readonly #remove = element("button", { className: "kl-text-button kl-text-button--danger", type: "button", text: "Remove", onClick: () => { void this.#commitRemoval(); } });
   readonly #rows = new Map<string, { signature: string; node: HTMLElement }>();
   #items: GalleryItem[] = [];
+  #loaded = false;
   #admin = false;
   #target: GalleryItem | undefined;
   #busy = false;
@@ -91,13 +92,20 @@ export class GalleryBrowser {
       (!query || `${item.provider} ${item.localId ? "On this device" : item.url} ${item.chat?.peerName ?? ""} ${item.chat?.peerNumber ?? ""} ${item.group?.groupTitle ?? ""} ${item.group?.senderName ?? ""}`.toLocaleLowerCase().includes(query)))
       .sort((a, b) => (a.sortAt - b.sortAt) * (this.#sort.value === "oldest" ? 1 : -1));
   }
-  loading(): void { this.grid.setAttribute("aria-busy", "true"); this.status.hidden = false; this.status.textContent = "Refreshing images…"; }
+  loading(explicit: boolean): void {
+    this.grid.setAttribute("aria-busy", "true");
+    if (this.#loaded && !explicit) return;
+    this.status.hidden = false;
+    this.status.textContent = this.#loaded ? "Refreshing images…" : "Loading images…";
+  }
   setItems(items: GalleryItem[], admin: boolean, warning?: string): void {
-    this.#items = items; this.#admin = admin; this.grid.setAttribute("aria-busy", "false");
+    this.#items = items; this.#loaded = true; this.#admin = admin; this.grid.setAttribute("aria-busy", "false");
     this.#status(warning); this.#render(); this.options.changed();
   }
   failed(message: string): void { this.grid.setAttribute("aria-busy", "false"); this.#status(message); }
   #status(message?: string): void {
+    if (!message && this.status.hidden) return;
+    if (message && this.status.firstElementChild?.textContent === message) return;
     this.status.replaceChildren(); this.status.hidden = !message;
     if (message) this.status.append(element("span", { text: message }), element("button", { className: "kl-text-button", type: "button", text: "Retry", onClick: this.options.refresh }));
   }
@@ -108,13 +116,17 @@ export class GalleryBrowser {
     if (!this.dialog.open) { this.#returnFocus = focusedElement(this.dialog); this.dialog.showModal(); fitPanelDialog(this.dialog); }
     this.dialog.querySelector<HTMLButtonElement>("footer button")?.focus();
   }
-  clear(): void { if (this.dialog.open) this.dialog.close(); this.#items = []; this.#rows.clear(); this.grid.replaceChildren(); this.options.changed(); }
+  clear(): void { if (this.dialog.open) this.dialog.close(); this.#items = []; this.#loaded = false; this.#rows.clear(); this.grid.replaceChildren(); this.#status(); this.options.changed(); }
   destroy(): void { this.#destroyed = true; this.#returnFocus = undefined; if (this.dialog.open) this.dialog.close(); this.dialog.remove(); this.#rows.clear(); this.#items = []; }
 
   #render(): void {
     const visible = this.visibleItems, live = new Set(visible.map(galleryKey));
-    this.count.textContent = `${visible.length} of ${this.#items.length} images`;
-    this.grid.querySelector(".kl-gallery-empty")?.remove();
+    const count = `${visible.length} of ${this.#items.length} images`;
+    if (this.count.textContent !== count) this.count.textContent = count;
+    const empty = this.grid.querySelector<HTMLElement>(".kl-gallery-empty");
+    const emptyState = this.#items.length ? "filtered" : "empty";
+    if (empty && !visible.length && empty.dataset.state === emptyState) return;
+    empty?.remove();
     for (const [id, row] of this.#rows) if (!live.has(id)) { row.node.remove(); this.#rows.delete(id); }
     for (const [index, item] of visible.entries()) {
       const id = galleryKey(item), signature = JSON.stringify([item, this.#admin]);
@@ -134,13 +146,16 @@ export class GalleryBrowser {
       }
       if (this.grid.children[index] !== row.node) this.grid.insertBefore(row.node, this.grid.children[index] ?? null);
     }
-    if (!visible.length) this.grid.append(element("div", { className: "kl-gallery-empty" },
+    if (visible.length) return;
+    const placeholder = element("div", { className: "kl-gallery-empty" },
       kikiIcon("image"),
       element("strong", { text: this.#items.length ? "No matching images" : "Your Gallery is empty" }),
       element("button", { className: "kl-text-button", type: "button", text: this.#items.length ? "Clear filters" : "Add the first image", onClick: () => {
         if (!this.#items.length) { this.options.add(); return; }
         this.#query.value = ""; this.#source.value = "all"; this.#query.dispatchEvent(new Event("input")); this.#query.focus();
-      } })));
+      } }));
+    placeholder.dataset.state = emptyState;
+    this.grid.append(placeholder);
   }
   async #commitRemoval(): Promise<void> {
     const target = this.#target;

@@ -32,6 +32,14 @@ export const INBOX_STYLES = `
 .kl-inbox-surface .kl-mailbox-status:empty { display:none; }
 .kl-inbox-surface .kl-mailbox-list { display:flex; flex-direction:column; gap:8px; padding:0; scrollbar-width:thin; scrollbar-color:var(--kl-border-strong) transparent; }
 .kl-inbox-page .kl-mailbox-list { max-height:none; overflow:visible; }
+@media (hover: hover) and (pointer: fine) {
+  @container kl-panel (width > 900px) and (height > 500px) {
+    .kl-inbox-page { display:flex; flex-direction:column; overflow:hidden; scrollbar-gutter:auto; }
+    .kl-inbox-page > :is(.kl-mailbox-header,.kl-inbox-toolbar,.kl-mailbox-status,.kl-mailbox-list) { width:100%; }
+    .kl-inbox-page > :is(.kl-mailbox-header,.kl-mailbox-status) { flex:none; }
+    .kl-inbox-page > .kl-mailbox-list { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+  }
+}
 .kl-inbox-rows { flex:none; min-width:0; }
 .kl-inbox-page .kl-inbox-rows,.kl-inbox-page .kl-mailbox-empty { border:1px solid var(--kl-border); border-radius:10px; background:var(--kl-surface); }
 .kl-inbox-surface .kl-mailbox-item { min-width:0; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:0 8px; padding:12px; border:0; border-bottom:1px solid var(--kl-border); border-radius:0; background:transparent; }

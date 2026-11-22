@@ -1007,6 +1007,23 @@ export const COMMUNITIES_STYLES = `
   display: flex; flex-direction: column; height: 100%;
 }
 .kl-cm-body:has(> .kl-cm-channel-layout) { flex: 1; min-height: 0; padding-bottom: 14px; }
+@media (hover: hover) and (pointer: fine) {
+  @container kl-workspace (min-width: 720px) {
+    .kl-cm-body:has(> .kl-cm-channel-layout) > .kl-cm-hero {
+      display: grid; grid-template-columns: minmax(0, 1fr) fit-content(48%);
+      align-items: center; gap: 6px 16px; padding-bottom: 0;
+    }
+    .kl-cm-body:has(> .kl-cm-channel-layout) > .kl-cm-hero > .kl-cm-identity { min-width: 0; }
+    .kl-cm-body:has(> .kl-cm-channel-layout) > .kl-cm-hero > .kl-cm-actions {
+      grid-column: 2; grid-row: 1; justify-content: flex-end; margin: 0;
+    }
+    .kl-cm-body:has(> .kl-cm-channel-layout) > .kl-cm-hero > p {
+      grid-column: 1 / -1; margin: 0;
+    }
+    .kl-cm-body:has(> .kl-cm-channel-layout) > .kl-cm-hero > p:empty { display: none; }
+    .kl-cm-sections .kl-cm-tab-count { margin-inline-start: 4px; }
+  }
+}
 .kl-communities-page > div:has(.kl-cm-channel-layout) > .kl-cm-heading { padding-block: 12px 6px; }
 .kl-communities-page > div:has(.kl-cm-channel-layout) > .kl-cm-heading > [data-community-action=back] {
   min-height: 32px; padding: 0 2px; font-size: 11px;
