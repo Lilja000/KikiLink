@@ -74,6 +74,7 @@ ${FEED_IDENTITY_STYLES}
 .kl-cloud .kl-social-avatar { position:relative; width:44px; height:44px; min-width:44px; min-height:44px; padding:0; border:1px solid var(--kl-border); border-radius:50%; overflow:hidden; flex:none; background:linear-gradient(140deg,color-mix(in srgb,var(--kl-gold) 20%,var(--kl-surface)),var(--kl-surface)); color:var(--kl-gold); display:grid; place-items:center; cursor:pointer; }
 .kl-social-avatar-media { position:absolute; inset:0; display:grid; place-items:center; border-radius:inherit; overflow:hidden; pointer-events:none; }
 .kl-social-avatar-image { width:100%; height:100%; object-fit:cover; }
+.kl-social-avatar-media>.kl-social-avatar-image { position:absolute; inset:0; display:block; max-width:none; max-height:none; }
 .kl-social-initials { font-size:15px; font-weight:700; letter-spacing:.02em; }
 .kl-cloud-skeleton,.kl-social-avatar-media[data-state="loading"],.kl-cloud-image-wrap[data-state="loading"] { background:color-mix(in srgb,var(--kl-muted) 12%,var(--kl-surface)); }
 .kl-cloud-skeleton { display:block; width:100%; height:100%; border-radius:inherit; }
@@ -337,7 +338,13 @@ ${FEED_IDENTITY_STYLES}
 .kl-group-empty>.kl-social-button { margin-top:16px; }
 .kl-addon-profile-avatar>.kl-cloud-image-wrap { position:absolute; inset:0; display:grid; place-items:center; border-radius:inherit; overflow:hidden; }
 .kl-addon-profile-avatar>.kl-cloud-image-wrap[data-state="loading"] { min-height:0; }
-.kl-addon-profile-avatar>.kl-cloud-image-wrap>button { font-size:10px; min-height:30px; padding:4px; }
+.kl-addon-profile-avatar>.kl-cloud-image-wrap>button:not(.kl-cloud-full-image) { font-size:10px; min-height:30px; padding:4px; }
+.kl-addon-profile-avatar>.kl-cloud-image-wrap>.kl-cloud-full-image {
+  position:absolute; inset:0; width:100%; height:100%; min-width:0; min-height:0; margin:0; padding:0; border:0; border-radius:inherit; overflow:hidden;
+}
+.kl-addon-profile-avatar>.kl-cloud-image-wrap :is(.kl-unified-preview-image,.kl-cloud-avatar) {
+  display:block; position:absolute; inset:0; width:100%; height:100%; max-width:none; max-height:none; margin:0; object-fit:cover; border-radius:inherit;
+}
 .kl-addon-profile-banner>.kl-cloud-image-wrap { position:absolute; inset:0; display:grid; place-items:center; }
 .kl-addon-profile-banner>.kl-cloud-image-wrap>img { width:100%; height:100%; object-fit:cover; }
 .kl-feed-discussions h3 { display:flex; gap:8px; align-items:center; }

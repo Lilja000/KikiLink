@@ -276,6 +276,15 @@ describe("BCAdapter", () => {
     ]);
   });
 
+  it("uses the native account name of a room member without a nickname or friendship", () => {
+    globalThis.Player = { MemberNumber: 999, Name: "Kiki", FriendNames: new Map() };
+    globalThis.ChatRoomCharacter = [{ MemberNumber: 60421, Name: "Willow", Nickname: "" }];
+    const adapter = new BCAdapter(new EventBus<KikiLinkEvents>(), "2.0.3");
+    expect(adapter.getMemberName(60421)).toBe("Willow");
+    expect(adapter.getMemberName(999)).toBe("Kiki");
+    expect(adapter.getMemberName(54321)).toBe("Member 54321");
+  });
+
   it("skips an inaccessible recent Beep without losing later startup history", () => {
     globalThis.Player = {
       MemberNumber: 999,

@@ -535,8 +535,13 @@ export class BCAdapter {
   getMemberName(memberNumber: number): string {
     const nickname = this.getMemberNickname(memberNumber);
     if (nickname) return nickname;
-    if (typeof Player !== "object" || Player === null) return `Member ${memberNumber}`;
-    return Player.FriendNames?.get(memberNumber) ?? `Member ${memberNumber}`;
+    const player = typeof Player === "object" ? Player : undefined;
+    const knownName = cleanName(player?.FriendNames?.get(memberNumber));
+    if (knownName) return knownName;
+    const character = player?.MemberNumber === memberNumber ? player
+      : typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter)
+        ? ChatRoomCharacter.find(candidate => candidate.MemberNumber === memberNumber) : undefined;
+    return cleanName(character?.Name) ?? `Member ${memberNumber}`;
   }
 
   getMemberNickname(memberNumber: number): string | undefined {

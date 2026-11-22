@@ -1,6 +1,23 @@
 import { normalizeAvatarDecoration, publicProfileTags } from "../core/profile-appearance";
 import type { PresenceSnapshot } from "../core/types";
 import type { CloudProfile } from "./types";
+import type { CommunityService } from "./community";
+
+/** Keep the account number separate from the name when BC only knows an ID. */
+export function memberDisplayName(member: number, nativeName: string | undefined, profile?: CloudProfile, viewer?: number): string {
+  const visible = profile?.memberNumber === member && !profile.isDefault && (profile.visible || member === viewer);
+  for (const value of [visible ? profile.displayName : undefined, nativeName]) {
+    const name = value?.trim();
+    if (name && name !== `Member ${member}` && name !== `Member #${member}` && name !== `#${member}` && name !== String(member)) return name;
+  }
+  return "Member";
+}
+
+export function knownMemberName(community: CommunityService, member: number, senderName?: string): string {
+  if (community.client.isProfileBlocked?.(member)) return "Member";
+  return memberDisplayName(member, senderName?.trim() || community.adapter.getMemberName(member),
+    community.client.peekProfile?.(member), community.client.memberNumber);
+}
 
 /** Cloud supplies saved details; native presence remains the source of live status. */
 export function withCloudProfile(native: PresenceSnapshot, profile: CloudProfile, preserveLegacy = false): PresenceSnapshot {
