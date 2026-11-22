@@ -859,6 +859,19 @@ export const PROFILE_STYLES = `
     .kl-addon-profile-dialog .kl-addon-profile-hero > .kl-addon-profile-actions { grid-column:auto;justify-content:flex-end; }
   }
 }
+@media (min-width:901px) and (min-height:501px) and (hover:hover) and (pointer:fine) {
+  @container kl-panel (width > 700px) {
+    .kl-presence-dialog:not([data-quick-status="true"]) .kl-presence-body {
+      --kl-editor-tabs-height:53px;
+      padding-block-start:0;
+      scroll-padding-block-start:calc(var(--kl-editor-tabs-height) + 8px);
+    }
+    .kl-presence-dialog:not([data-quick-status="true"]) .kl-presence-body > .kl-platform-profile-sections > .kl-platform-profile-tabs {
+      position:sticky;top:0;z-index:4;min-height:var(--kl-editor-tabs-height);margin-block-start:0;background:var(--kl-input-bg);
+    }
+    .kl-presence-dialog .kl-profile-preview-column { top:calc(var(--kl-editor-tabs-height, 0px) + 8px); }
+  }
+}
 ${PROFILE_READ_SOCIAL_STYLES}
 ${PROFILE_READ_CONTENT_STYLES}
 

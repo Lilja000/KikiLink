@@ -96,6 +96,14 @@ export const SETTINGS_CONTENT_STYLES = `
 .kl-settings-panel .kl-volume-control .kl-volume-input { width: 130px; min-width: 50px; max-width: 100%; height: 18px; margin: 2px; padding: 0; border: 1px solid var(--kl-border); border-radius: 8px; }
 .kl-settings-panel .kl-volume-control .kl-volume-value { min-width: 34px; color: var(--kl-muted); text-align: right; font-weight: 400; font-variant-numeric: tabular-nums; }
 .kl-settings-panel .kl-notification-sound-note { max-width: none; margin: 4px 0 0; color: var(--kl-faint, var(--kl-muted)); font-size: var(--kl-type-xs); line-height: 1.5; }
+.kl-settings-alert-groups { display: contents; }
+@media (hover: hover) and (pointer: fine) {
+  @container kl-panel (min-width: 980px) {
+    #kikilink-settings-panel-reactions .kl-settings-panel-body { max-width: none; }
+    .kl-settings-alert-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 16px; }
+    .kl-settings-alert-groups > :first-child { grid-row: span 2; }
+  }
+}
 .kl-settings-panel .kl-switch input:indeterminate + .kl-switch-track::after { transform: translateX(7px); }
 .kl-settings-incoming-sound {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 8px;

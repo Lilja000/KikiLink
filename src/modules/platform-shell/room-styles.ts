@@ -143,6 +143,18 @@ export const ROOM_STYLES = `
 .kl-panel[data-platform-preview="true"] .kl-room-preset-create { align-items: stretch; flex-direction: column; }
 .kl-panel[data-platform-preview="true"] .kl-room-preset-create h2 { display: none; }
 .kl-panel[data-platform-preview="true"] .kl-room-preset-create-actions { width: 100%; }
+.kl-preset-field-heading { display:none; }
+@media (hover:hover) and (pointer:fine) {
+ @container kl-panel (min-width:901px) {
+  .kl-preset-field-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .kl-preset-field-heading label { font-weight:600; }
+  .kl-preset-field-heading .kl-text-button { background:transparent; color:var(--kl-muted); }
+  .kl-preset-field-heading:has([aria-expanded="false"]) + .kl-setting-help { display:none; }
+  .kl-room-preset-create-actions > .kl-preset-name { flex:1; min-width:0; }
+  .kl-room-preset-create-actions > .kl-preset-name:not(:focus)::placeholder { color:transparent; }
+  .kl-room-preset-create-actions > button { flex:none; white-space:nowrap; }
+ }
+}
 .kl-panel[data-platform-preview="true"] .kl-room-preset-card { border-radius:10px; }
 .kl-panel[data-platform-preview="true"] .kl-room-preset-create-actions > input { min-height:var(--kl-room-control); border-radius:8px; }
 .kl-panel[data-platform-preview="true"] .kl-room-preset-copy > small { overflow-wrap: anywhere; font-size: 11px; }
@@ -258,6 +270,13 @@ export const ROOM_STYLES = `
  .kl-rooms-panel .kl-room-directory-status { margin-bottom:8px; }
 }
 @container kl-panel (min-width:1150px) { .kl-rooms-panel .kl-lobby-list { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (hover: hover) and (pointer: fine) {
+ @container kl-panel (min-width:1150px) {
+  .kl-rooms-panel .kl-lobby-list > .kl-lobby-card { display:flex; flex-direction:column; gap:0; }
+  .kl-lobby-list .kl-lobby-copy > .kl-lobby-name { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; white-space:normal; overflow-wrap:anywhere; }
+  .kl-lobby-list .kl-lobby-card-footer { margin-top:auto; }
+ }
+}
 @container kl-workspace (max-width:520px) {
  .kl-rooms-heading { padding-bottom:16px; }
  .kl-rooms-heading h1 { font-size:20px; }

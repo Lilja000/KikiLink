@@ -195,7 +195,8 @@ export class CustomActivitiesView {
         element("div", { className: "kl-activity-search-field" }, kikiIcon("search"), this.#query),
         element("div", { className: "kl-activity-library-actions" },
           element("button", { className: "kl-text-button kl-activity-import", type: "button", onClick: () => file.click() }, kikiIcon("arrow-right"), "Import"),
-          element("button", { className: "kl-text-button", type: "button", onClick: () => this.platform?.openWorkshop() }, kikiIcon("brush"), "Workshop"), options), file);
+          element("button", { className: "kl-text-button", type: "button", onClick: () => this.platform?.openWorkshop() }, kikiIcon("brush"),
+            element("span", {}, element("span", { className: "kl-activity-desktop-label", text: "Browse " }), "Workshop")), options), file);
       this.root.replaceChildren(element("div", { className: "kl-activity-library" }, header, toolbar, this.#status,
         element("div", { className: "kl-activity-library-meta" }, this.#scopes, this.#count, this.#stop), this.#results),
         this.#details.element, this.#libraryMenu.element);
@@ -216,8 +217,10 @@ export class CustomActivitiesView {
     if (!shown.length) {
       const filtered = Boolean(query || this.#scope !== "all");
       const emptyWorkshop = this.#scope === "workshop" && !query;
-      this.#results.append(element("section", { className: "kl-custom-activity-empty" }, kikiIcon("activities"),
-        element("h2", { text: emptyWorkshop ? "No activity packs yet" : filtered ? "No activities match" : "Make an activity your own" }),
+      this.#results.append(element("section", { className: filtered ? "kl-custom-activity-empty" : "kl-custom-activity-empty kl-activity-empty-library" }, kikiIcon("activities"),
+        filtered ? element("h2", { text: emptyWorkshop ? "No activity packs yet" : "No activities match" }) :
+          element("h2", {}, element("span", { className: "kl-activity-desktop-label", text: "No custom activities yet" }),
+            element("span", { className: "kl-activity-mobile-heading", text: "Make an activity your own" })),
         element("p", { text: filtered ? "Try another search or clear your filters." : "Choose a body slot, reuse a vanilla picture, and write the action in your words." }),
         element("div", { className: "kl-activity-empty-actions" },
           element("button", { className: filtered ? "kl-text-button" : "kl-text-button kl-text-button--primary", type: "button", text: filtered ? "Clear filters" : "Create activity", onClick: () => {

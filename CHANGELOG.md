@@ -1,6 +1,23 @@
 # Changelog
 
-## 2.0.1 candidate
+## 2.0.2
+
+- Presence indicators now sit outside the circular image crop in Familiar faces and other member lists.
+- Mutual friends and profile communities stay visible while KikiLink checks for updates. Unchanged rows keep their keyboard focus, and previously opened pages stay in view.
+- Routine updates in People, Feed, room and event listings, and Gallery preserve the displayed content. Initial loading, retry actions and access changes still have visible feedback.
+- Home Overview has fewer repeated labels and no duplicate Feed shortcut in the main workspace. People offers to clear filters only when a search or filter is active.
+- Action menus open on the side of the button with room for them. Long menus scroll within the panel.
+- People keeps the selected filter in view on narrow screens, including after clearing filters.
+- In Super compact, the current page fills the panel on desktop and mobile, including in landscape.
+- In the single-pane chat layout, opening a direct conversation leaves focus in the conversation. Back returns to the selected direct or group conversation in the list.
+- Details opened from the addon, including expanded profile avatars, stay centered within the visible panel, even on a wide monitor or after resizing the window.
+- On desktop, Feed post menus fit within the visible feed and the section tabs stay available while scrolling in Edit profile.
+- Wide desktop Alerts pages show notification switches alongside sound and mute controls. In Rooms, long lobby names can use two lines and adjacent cards align their action buttons.
+- On desktop, the empty Custom activities library shows its creation and Workshop actions once.
+- On desktop, Inbox keeps search, filters and bulk actions in view while the notifications scroll. Group members opens on the roster, and community channels have more room for messages.
+- On desktop, Room presets labels the optional name and saves with Enter. The list of included settings is available under “What's saved?”.
+
+## 2.0.1
 
 - Feed has its own main tab between Home and Chat. Home opens on Overview. Rooms includes the current room and its management controls.
 - Click the three dots, right-click or hold a Feed post to reach the same menu and pin action.

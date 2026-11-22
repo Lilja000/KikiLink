@@ -55,6 +55,13 @@ export const GROUP_CHAT_STYLES = `
 .kl-cloud .kl-group-avatar-more { min-height:36px; border:0; border-radius:50%; background:var(--kl-input-bg); color:var(--kl-muted); font:inherit; font-size:11px; cursor:pointer; }
 .kl-group-header .kl-social-icon-button { width:36px; height:36px; min-height:36px; padding:8px; border-radius:10px; }
 .kl-group-management { flex:none; max-height:55%; min-height:0; overflow:auto; padding:14px 18px; border-bottom:1px solid var(--kl-border); background:var(--kl-surface); }
+@media (hover: hover) and (pointer: fine) {
+  @container kl-panel (width > 900px) or ((width > 700px) and (height > 500px)) {
+    .kl-chat-page .kl-group-management { --kl-group-roster-first:1; max-height:min(65%, 26rem); }
+    .kl-chat-page .kl-group-management .kl-group-member-list { gap:0; padding-top:0; }
+    .kl-chat-page .kl-group-management .kl-group-member { padding-block:4px; }
+  }
+}
 .kl-group-management-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .kl-group-management-heading>h3 { font-size:16px; }
 .kl-group-settings-actions { display:flex; gap:8px; flex-wrap:wrap; }

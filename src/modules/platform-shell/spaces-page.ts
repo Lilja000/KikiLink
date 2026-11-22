@@ -143,7 +143,7 @@ export class SpacesPage {
   #communityName='';#pages=1;#queryKey='';#listScroll=0;#returnId:string|undefined;#restoreList=false;
   #communityCanHost = false;
   readonly #albums: AlbumsPanel;
-  #visible = false; #destroyed = false; #supported = false; #roomOpening = false; #roomThemes = false; #loading = false; #busy = false; #error = '';
+  #backgroundRead = false; #visible = false; #destroyed = false; #supported = false; #roomOpening = false; #roomThemes = false; #loading = false; #busy = false; #error = '';
   #token = 0; #epoch = 0; #roomToken = 0; #scope = 'all'; #tab = 'overview'; #memberState = 'active';
   #paintedRoom: string | undefined;
   #selected: string | undefined; #communityId: string | undefined; #space: PersistentSpace | undefined;
@@ -222,7 +222,8 @@ export class SpacesPage {
     }
     this.#dialog.addEventListener('cancel', event => { event.preventDefault(); this.#requestClose(); });
     this.#dialog.addEventListener('keydown', event => { if (event.key === 'Escape') event.stopPropagation(); });
-    this.#unsubscribe = client.subscribe(kind => {
+    this.#unsubscribe = client.subscribe((kind, cause) => {
+      if (kind === 'profiles-cleared' && cause === 'ready') return;
       if (kind === 'session' || !options.current()) {
         const sameAccount=options.current()&&client.memberNumber===this.#owner&&client.origin===this.#origin,preserve=sameAccount&&!!(this.#editor?.source.generation||this.#pending?.intent||pendingSpaceChanges(client).length||this.#noteDraft&&this.#noteDraft.value!==this.#noteDraft.baseline||this.#reportState.dirty||this.#reportState.pending||this.#reportState.busy);
         this.#epoch++; this.#token++; this.#roomToken++;if(!sameAccount){clearSpaceChanges(this.client);this.#source={required:false};}if(!preserve)this.#pending=undefined;this.#busy=false;
@@ -403,7 +404,7 @@ export class SpacesPage {
     if (!this.#visible || this.#busy) return;
     this.#closeMenus(true);this.#restorePending();
     const before = JSON.stringify([this.#items, this.#space, this.#members, this.#membersError, this.#detailCursor, this.#audit, this.#auditPreviewError, this.#upcoming, this.#eventsError, this.#spaceEvents, this.#spaceModerators, this.#error, this.#catalogLoadError, this.#supported, [...this.#observations]]);
-    const token = ++this.#token; this.#loading = true; this.#error = ''; this.#catalogLoadError = ''; this.element.setAttribute('aria-busy', 'true');
+    const token = ++this.#token; this.#loading = true; this.#backgroundRead = background; this.#error = ''; this.#catalogLoadError = ''; this.element.setAttribute('aria-busy', 'true');
     if (!this.#valid(token)) {
       this.#supported = false; this.#loading = false; this.#clearPrivate(true); this.#render(); return;
     }
@@ -547,7 +548,7 @@ export class SpacesPage {
     }else if(pending&&!this.#busy){
       const retry=this.#button('Retry request',()=>void this.#submit());retry.disabled=false;
       this.#status.append(element('span',{text:this.#error||'The result is not confirmed.'}),retry);
-    }else this.#status.textContent=this.#busy?'Saving…':this.#error||this.#directoryError||(this.#directoryBusy?'Checking rooms…':this.#loading&&!this.#isCatalogLoading()?'Refreshing…':'');
+    }else this.#status.textContent=this.#busy?'Saving…':this.#error||this.#directoryError||(this.#directoryBusy?'Checking rooms…':this.#loading&&!this.#backgroundRead&&!this.#isCatalogLoading()?'Refreshing…':'');
     if(this.#noteDraft&&this.#noteDraft.value!==this.#noteDraft.baseline&&!this.#infoDialog.open){this.#status.append(this.#button('Review private note draft',()=>this.#paintNote()));}
     if(this.#reportDialog&&(this.#reportState.dirty||this.#reportState.pending)&&!this.#reportDialog.open){this.#status.append(this.#button('Review report draft',()=>{this.#reviewReport();}));}
     if(this.#editor?.source.generation&&!pending&&!this.#dialog.open){const b=this.#button('Review saved Space draft',()=>{this.#paintEditor();this.#showDialog();});this.#status.append(b);}

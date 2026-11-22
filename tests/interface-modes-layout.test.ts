@@ -1,6 +1,7 @@
 import { Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
 import { LINK_CHAT_STYLES } from "../src/modules/link-chat/styles";
+import { PLATFORM_SHELL_STYLES } from "../src/modules/platform-shell/styles";
 
 const cases = [320, 390, 720, 820, 1440].flatMap(width =>
   ["comfortable", "compact", "super-compact"].flatMap(density =>
@@ -8,6 +9,26 @@ const cases = [320, 390, 720, 820, 1440].flatMap(width =>
       ["dark", "light"].map(theme => ({ width, density, homeLayout, theme })))));
 
 describe("Interface mode CSS regressions (not painted geometry)", () => {
+  it.each([[800, 360], [390, 844], [1440, 900]])("gives the super compact platform shell the entire panel at %i × %i", async (width, height) => {
+    const win = new Window({ width, height });
+    try {
+      // Happy DOM undercounts :host() specificity. An equivalent class and
+      // attribute selector exercises the browser cascade for this density.
+      const styles = (LINK_CHAT_STYLES + PLATFORM_SHELL_STYLES)
+        .replaceAll(':host([data-density="super-compact"])', '.host[data-density="super-compact"]');
+      win.document.head.innerHTML = `<style>${styles}</style>`;
+      win.document.body.innerHTML = `<div class="host" data-density="super-compact">
+        <section class="kl-panel" data-platform-preview="true"><div class="kl-shell"></div></section></div>`;
+      const panel = win.document.querySelector(".kl-panel")!;
+      const style = win.getComputedStyle(panel);
+      expect(style.gridTemplateRows).toBe("minmax(0, 1fr)");
+      if (width < 900) {
+        expect(style.width).toBe("auto");
+        expect(style.height).toBe("auto");
+      }
+    } finally { await win.happyDOM.close(); }
+  });
+
   it.each(cases)("keeps controls usable at $width / $density / $homeLayout / $theme", async ({ width, density, homeLayout, theme }) => {
     const win = new Window({ width, height: width === 820 ? 390 : 800 });
     try {

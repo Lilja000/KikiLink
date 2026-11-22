@@ -104,7 +104,7 @@ export class EventsPage {
   readonly #plansDialog=element('dialog',{className:'kl-ev-dialog kl-ev-plans-drawer',ariaLabel:'Your next plans'});
   #actionKind:'share'|'report'|undefined;#reportState={busy:false,pending:false,dirty:false};
   #language='';#communityName='';#pages=1;#queryKey='';#listScroll=0;#returnId:string|undefined;#restoreList=false;
-  #visible=false;#destroyed=false;#token=0;#epoch=0;#loading=false;#supported=false;#error='';#busy=false;
+  #backgroundRead=false;#visible=false;#destroyed=false;#token=0;#epoch=0;#loading=false;#supported=false;#error='';#busy=false;
   #catalogLoadError='';
   #discovery=false;#sort='soonest';#scope='all';#when='upcoming';#category='';#layout='cards';#communityId:string|undefined;
   #cardTransition: {id:string;previous?:string|undefined} | undefined;
@@ -126,7 +126,7 @@ export class EventsPage {
       if(!this.#valid(this.#token)||!this.#showGuests||!this.#event||this.#busy||this.#pending)return;
       ++this.#token;
       clearTimeout(this.#searchTimer);
-      this.#loading=true;
+      this.#loading=true;this.#backgroundRead=false;
       this.#guestLoadError='';
       this.#render();
       this.#searchTimer=setTimeout(()=>void this.refresh(),250);
@@ -170,7 +170,8 @@ export class EventsPage {
       else if(this.#toolbar.contains(target)||this.#tabs.contains(target)||this.#heading.contains(target)||this.#activeFilters.contains(target))this.#returnId=undefined;
     });
     this.#dialog.addEventListener('cancel',e=>{e.preventDefault();this.#requestClose();});
-    this.#unsubscribe=client.subscribe(kind=>{
+    this.#unsubscribe=client.subscribe((kind,cause)=>{
+      if(kind==='profiles-cleared' && cause==='ready')return;
       if (this.#discoverOverlay && (kind === 'session' || !this.#discoverCurrent(this.#discoverOverlay))) this.closeDiscoverOverlay();
       if (this.#discoverOverlay?.action === 'create' && (kind === 'communities' || kind === 'spaces') && !this.#busy) {
         // Re-open against current authorization. A generation-bound draft stays available for review.
@@ -420,7 +421,7 @@ export class EventsPage {
     this.#guestPages=append?this.#guestPages+read:read||1;
   }
   async refresh(append=false,background=false):Promise<void>{
-    if(!this.#visible||this.#busy)return;this.#restorePending();const previous=JSON.stringify([this.#items,this.#event,this.#guests,this.#guestLoadError,this.#guestCursor,this.#cursor,this.#error,this.#catalogLoadError,this.#eventUnavailable,this.#supported,this.#discovery,this.#spaceEvents,this.#spaceName,this.#spaceContext]);const token=++this.#token;this.#loading=true;this.#error='';this.#catalogLoadError='';this.#guestLoadError='';this.#eventUnavailable=false;this.element.setAttribute('aria-busy','true');
+    if(!this.#visible||this.#busy)return;this.#restorePending();const previous=JSON.stringify([this.#items,this.#event,this.#guests,this.#guestLoadError,this.#guestCursor,this.#cursor,this.#error,this.#catalogLoadError,this.#eventUnavailable,this.#supported,this.#discovery,this.#spaceEvents,this.#spaceName,this.#spaceContext]);const token=++this.#token;this.#loading=true;this.#backgroundRead=background;this.#error='';this.#catalogLoadError='';this.#guestLoadError='';this.#eventUnavailable=false;this.element.setAttribute('aria-busy','true');
     if(!this.client.connected||!this.options.current()||this.client.memberNumber!==this.#owner||this.client.origin!==this.#origin){this.#supported=false;this.#loading=false;this.#items=[];this.#event=undefined;this.#guests=[];this.#guestCursor=null;this.#guestPages=1;if(!this.#editor?.source.generation)this.#editor=undefined;this.#closePlans();this.#close(true);this.#render();return;}
     if(this.#selected&&this.#showGuests){
       clearTimeout(this.#searchTimer);
@@ -532,7 +533,7 @@ export class EventsPage {
     if(pending?.intent)this.#paintPendingChange(this.#status,pending,()=>this.#paintStatus());
     else if(pending&&!this.#busy){this.#status.append(element('span',{text:this.#error||'The result is not confirmed.'}),this.#button('Retry request',()=>void this.#submit()));(this.#status.lastElementChild as HTMLButtonElement).disabled=false;}
     else if(this.#busy)this.#status.textContent='Saving…';
-    else if(this.#loading)this.#status.textContent=catalogLoading?'':'Refreshing…';
+    else if(this.#loading)this.#status.textContent=catalogLoading||this.#backgroundRead?'':'Refreshing…';
     else if(!this.#selected||this.#event||!this.client.connected||!this.#supported||this.#spaceId&&!this.#spaceEvents)this.#status.textContent=this.#error;
     if(!pending&&!this.#dialog.open){
       if(this.#editor?.source.generation)this.#status.append(this.#button('Resume event draft',()=>{this.#paintEditor();this.#showDialog();}));

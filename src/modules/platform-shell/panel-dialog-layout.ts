@@ -3,12 +3,15 @@ const activeFits = new WeakMap<HTMLDialogElement, () => void>();
 /** Center a native dialog in the visible part of the addon panel. */
 export function fitPanelDialog(dialog: HTMLDialogElement, options?: {
   panel?: HTMLElement;
+  restoreStyles?: boolean;
   layout?: (width: number, height: number) => { marginX: number; marginY: number; maxHeight?: number };
 }): (() => void) | undefined {
   const panel = options?.panel ?? dialog.closest(".kl-panel");
   if (!panel || !dialog.open) return;
 
   activeFits.get(dialog)?.();
+  const previous = options?.restoreStyles ? ["inset", "top", "right", "bottom", "left", "max-width", "max-height", "--kl-dialog-viewport-height"]
+    .map(name => ({ name, value: dialog.style.getPropertyValue(name), priority: dialog.style.getPropertyPriority(name) })) : [];
   const lifetime = new AbortController();
   const viewport = window.visualViewport;
   const resize = () => {
@@ -43,6 +46,10 @@ export function fitPanelDialog(dialog: HTMLDialogElement, options?: {
     if (lifetime.signal.aborted) return;
     observer?.disconnect();
     lifetime.abort();
+    for (const { name, value, priority } of previous) {
+      if (value) dialog.style.setProperty(name, value, priority);
+      else dialog.style.removeProperty(name);
+    }
     activeFits.delete(dialog);
   };
   activeFits.set(dialog, cleanup);

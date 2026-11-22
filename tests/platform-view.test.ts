@@ -49,6 +49,38 @@ describe("platform shell integration with real workspaces", () => {
     } finally { f.view.destroy(); cloud.destroy(); }
   });
 
+  it("reveals the selected People scope after using its filter dialog or clearing filters without moving focus", async () => {
+    const cloud = new CloudClient({ origin: "https://cloud.example.test", memberNumber: 72385,
+      getMemberNumber: () => 72385, isBlocked: () => false, sendProof: vi.fn(), fetchImpl: vi.fn() });
+    const f = await setup(undefined, [], undefined, cloud);
+    try {
+      f.route("people").click();
+      const strip = f.root.querySelector<HTMLElement>(".kl-roster-scopes")!;
+      const hidden = strip.querySelector<HTMLButtonElement>('[data-scope="hidden"]')!;
+      const all = strip.querySelector<HTMLButtonElement>('[data-scope="all"]')!;
+      Object.defineProperties(strip, { clientWidth: { value: 320 }, scrollWidth: { value: 370 } });
+      vi.spyOn(strip, "getBoundingClientRect").mockReturnValue(new DOMRect(20, 249, 320, 44));
+      vi.spyOn(hidden, "getBoundingClientRect").mockImplementation(() => new DOMRect(338 - strip.scrollLeft, 249, 52, 44));
+      vi.spyOn(all, "getBoundingClientRect").mockImplementation(() => new DOMRect(20 - strip.scrollLeft, 249, 44, 44));
+      const filter = f.root.querySelector<HTMLButtonElement>(".kl-people-filter-toggle")!;
+      filter.click();
+      const dialog = f.root.querySelector<HTMLDialogElement>(".kl-people-filter-dialog")!;
+      dialog.querySelector<HTMLButtonElement>('[data-people-scope="hidden"]')!.click();
+      dialog.querySelector<HTMLButtonElement>("footer .kl-text-button--primary")!.click();
+      expect(strip.scrollLeft).toBe(50);
+      expect(f.root.activeElement).toBe(filter);
+      // A refresh with the same selection must not undo the person's manual swipe.
+      strip.scrollLeft = 25;
+      const sort = f.root.querySelector<HTMLSelectElement>(".kl-people-sort select")!;
+      sort.dispatchEvent(new Event("change"));
+      expect(strip.scrollLeft).toBe(25);
+      f.root.querySelector<HTMLButtonElement>(".kl-people-clear-filters")!.click();
+      expect(all.getAttribute("aria-pressed")).toBe("true");
+      expect(strip.scrollLeft).toBe(0);
+      expect(f.root.activeElement).toBe(f.root.querySelector('input[aria-label="Search people"]'));
+    } finally { f.view.destroy(); cloud.destroy(); }
+  });
+
   it("restores old current-room links inside Rooms and remembers the selected mode", async () => {
     const storage = new MemoryKeyValueStorage();
     storage.setItem("kikilink:platform:last-route:v1", "current-room");

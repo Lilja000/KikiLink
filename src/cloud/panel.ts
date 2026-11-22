@@ -60,7 +60,7 @@ interface PanelOptions {
   openNewMessage?(): void;
   enterToSend?(): boolean;
   embeddedGroups?: boolean;
-  groupSelection?(selected: boolean): void;
+  groupSelection?(selected: boolean, returnGroup?: string): void;
   groupArchiveChanged?(archived:boolean):void;
   groupsChanged?(): void;
   mutedGroupMessage?(messageId: string): void;
@@ -271,7 +271,7 @@ export class CloudPanel {
     this.#status.setAttribute("role", "status");
     this.#status.setAttribute("aria-live", "polite");
     document.addEventListener("visibilitychange", this.#resumeFeed);
-    this.#unsubscribe = client.subscribe((kind) => {
+    this.#unsubscribe = client.subscribe((kind, cause) => {
       if (['session', 'disconnected', 'profiles-cleared'].includes(kind)) this.#moderation.hide();
       if (kind === "receipts") {
         if (this.#thread && this.#tab === "groups" && !this.element.hidden)
@@ -287,6 +287,8 @@ export class CloudPanel {
       }
       if (kind.startsWith("profile:")) return;
       if (kind === "profiles-cleared") {
+        // The paired ready event reconciles the displayed feed and thread in place.
+        if (cause === "ready") return;
         this.#surfaces.clear(); this.#completedTab = undefined;
         this.#feedView.removeBlocked(); this.#savedView?.removeBlocked(); this.inbox.invalidate();
         return;
@@ -1057,7 +1059,23 @@ export class CloudPanel {
     const details = element("section", { className: "kl-group-management", hidden: this.#settingsGroup !== g.id, ariaLabel: "Group settings" },
       element("div", { className: "kl-group-management-heading" }, element("h3", { text: "Group settings" }),
         this.#ui.button("Close group settings", () => { details.hidden = true; this.#settingsGroup = undefined; settingsButton.setAttribute("aria-expanded", "false"); settingsButton.focus(); }, "close", "kl-social-icon-button")), identitySettings, memberSettings, notifications, permissions, destructive);
-    const toggle = () => { details.hidden = !details.hidden; this.#settingsGroup = details.hidden ? undefined : g.id; settingsButton.setAttribute("aria-expanded", String(!details.hidden)); };
+    const orderSettings = () => {
+      const rosterFirst = preview && getComputedStyle(details).getPropertyValue("--kl-group-roster-first").trim() === "1";
+      const first = rosterFirst ? memberSettings : identitySettings;
+      const second = rosterFirst ? identitySettings : memberSettings;
+      if (second.previousElementSibling !== first) details.insertBefore(first, second);
+      return rosterFirst;
+    };
+    const toggle = () => {
+      details.hidden = !details.hidden;
+      this.#settingsGroup = details.hidden ? undefined : g.id;
+      settingsButton.setAttribute("aria-expanded", String(!details.hidden));
+      if (!details.hidden && orderSettings()) {
+        details.scrollTop = 0;
+        memberSettings.tabIndex = -1;
+        memberSettings.focus({ preventScroll: true });
+      }
+    };
     const avatar = element("span", { className: "kl-avatar kl-group-header-avatar", ariaHidden: "true" }, kikiIcon("users"));
     if (g.avatarId) avatar.replaceChildren(this.#image(g.avatarId, "Group avatar", "kl-social-avatar-image", undefined, true));
     const identity = preview ? element("div", { className: "kl-group-identity" }) : this.#ui.button("Show group members", toggle, undefined, "kl-group-identity");
@@ -1075,7 +1093,7 @@ export class CloudPanel {
     });
     const card = element("header", { className: "kl-group-header" },
       this.#ui.button(this.options.platformPreview ? "Back to conversations" : "Back to groups", async () => {
-        this.#group = undefined; this.#createGroup = false; this.#settingsGroup = undefined; this.inbox.select(); this.options.groupSelection?.(false);
+        this.#group = undefined; this.#createGroup = false; this.#settingsGroup = undefined; this.inbox.select(); this.options.groupSelection?.(false, g.id);
         this.inbox.invalidate(); await this.refresh();
       }, this.options.platformPreview ? "back" : "previous", "kl-social-icon-button kl-group-back"), identity, ...(preview ? [] : [stack]), settingsButton);
     for(const m of g.members){
@@ -1189,6 +1207,7 @@ export class CloudPanel {
     this.#thread = thread;
     this.inbox.select(g.id);
     this.#body.replaceChildren(card, details,queue.surface("panel",this.#ui,current,async()=>{this.inbox.invalidate();await this.refresh();},e=>!this.options.embeddedGroups||!['accept','decline'].includes(e.intent.target.action)),thread.element);mounted=true;
+    if (!details.hidden) orderSettings();
     if (this.#groupTarget?.groupId === g.id) await thread.openMessage(this.#groupTarget.messageId);
     else await thread.loadOlder();
     if (operation === this.#renderToken) this.#refreshMessages = () => thread.updates();

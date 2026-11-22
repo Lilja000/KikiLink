@@ -699,6 +699,17 @@ ${APPEARANCE_STYLES}
   max-height:min(60dvh, 360px); overflow-y:auto; overscroll-behavior:contain;
   gap:0; padding:4px; border-radius:10px; background:var(--kl-surface-2); box-shadow:0 8px 24px #0005;
 }
+@media (hover: hover) and (pointer: fine) {
+  @container kl-panel (width > 900px) or ((width > 700px) and (height > 500px)) {
+    .kl-platform-feed :is(.kl-feed-post-header,.kl-comment-header) > .kl-social-menu > .kl-social-menu-items {
+      --kl-fit-feed-menu: 1;
+      max-height:min(60dvh, 360px, var(--kl-feed-menu-height, 360px));
+    }
+    .kl-platform-feed :is(.kl-feed-post-header,.kl-comment-header) > .kl-social-menu[data-open-above] > .kl-social-menu-items {
+      top:auto; bottom:calc(100% + 6px);
+    }
+  }
+}
 .kl-cloud .kl-platform-feed :is(.kl-feed-post-header,.kl-comment-header) > .kl-social-menu .kl-social-menu-items > button {
   box-sizing:border-box; width:100%; min-width:0; min-height:32px; height:auto;
   padding:9px 10px; gap:8px; border:0; border-radius:8px; background:transparent; box-shadow:none;

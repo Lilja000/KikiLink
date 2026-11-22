@@ -235,10 +235,11 @@ export class CommunitiesPage {
     this.#mentions = new MentionPicker(client, member => options.blocked?.(member) ?? false);
     this.element.addEventListener('scroll', this.#scheduleRead, true);
     document.addEventListener('visibilitychange', this.#scheduleRead);
-    this.#unsubscribe = client.subscribe(kind => {
+    this.#unsubscribe = client.subscribe((kind, cause) => {
+      if (kind === 'profiles-cleared' && cause === 'ready') return;
       const memberPrivacyChanged = this.#directoryEnabled && this.#tab === 'active' && ['privacy','relationships'].includes(kind);
       if (['session','disconnected','communities','blocks'].includes(kind)) { this.#notificationDialog?.hide(); this.#historyArchive.close(); this.#historyCopies.close(); this.#historyTimeline.close(); this.#closeDialog?.(); this.#moderation.hide(); }
-      if (this.#contextDrawer && ['calendar','privacy','relationships','profiles-cleared','ready'].includes(kind)) this.#closeDialog?.();
+      if (this.#contextDrawer && ['calendar','privacy','relationships','profiles-cleared'].includes(kind)) this.#closeDialog?.();
       if (kind === 'community-reports') void this.#moderation.refresh();
       if (kind === 'session' || kind === 'disconnected' || !client.connected || !options.current()) {
         this.#managementRecovery.invalidate();this.#managementAction.hide();
@@ -250,7 +251,7 @@ export class CommunitiesPage {
         if (this.#visible) void this.refresh();
       } else if (this.#visible && !this.#busy) {
         if (kind === 'spaces' && this.#spacesEnabled && this.#tab === 'overview' && this.#selected) void this.refresh(false, true);
-        else if (memberPrivacyChanged || ['communities', 'channel-read', 'channel-messages', 'ready', 'connection', 'connected', 'reconnected', 'profiles-cleared', 'profiles', 'presence', 'calendar', 'blocks', 'media-invalidated'].includes(kind)) void this.refresh(false, kind === 'channel-messages' || kind === 'channel-read');
+        else if (memberPrivacyChanged || ['communities', 'channel-read', 'channel-messages', 'ready', 'connection', 'connected', 'reconnected', 'profiles-cleared', 'profiles', 'presence', 'calendar', 'blocks', 'media-invalidated'].includes(kind)) void this.refresh(false, ['channel-messages', 'channel-read', 'ready', 'connected', 'reconnected', 'profiles', 'presence', 'calendar', 'media-invalidated'].includes(kind));
       }
     });
   }

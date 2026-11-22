@@ -72,6 +72,8 @@ export class AccountSettings {
   readonly #sessionMenu = new ShellActionMenu("explore");
   #checkedAt = 0;
   #auditTimer:ReturnType<typeof setInterval>|undefined;
+  #auditPoll: object | undefined;
+  #auditDisplay = "";
   constructor(readonly client: Client | undefined, readonly activity: AccountActivity, readonly options: {
     navigate(page: AccountSettingsPage | "moderation" | "my-reports"): void;
     nativeHidden?(): { blacklist: readonly number[] | undefined; ghostList: readonly number[] | undefined } | undefined;
@@ -101,12 +103,12 @@ export class AccountSettings {
     this.#clearSessionHistory();
     this.#morePrivacy.open = false;
     this.#viewVersion++;this.#review=undefined;this.#dialog.close(); this.#page = page; this.#visible = true; this.#feedback = ""; this.#failed = false;
-    clearInterval(this.#auditTimer);if(page==='audit'&&this.activity instanceof SafetyActivity)this.#auditTimer=setInterval(()=>{if(!this.#busy)void this.refresh();},20_000);
+    clearInterval(this.#auditTimer);this.#auditPoll=undefined;if(page==='audit'&&this.activity instanceof SafetyActivity)this.#auditTimer=setInterval(()=>void this.#pollAudit(),20_000);
     void this.refresh();
   }
   hide(): void {
     if (!this.#visible) return;
-    clearInterval(this.#auditTimer);if(this.activity instanceof SafetyActivity)this.activity.invalidateAccess();
+    clearInterval(this.#auditTimer);this.#auditPoll=undefined;if(this.activity instanceof SafetyActivity)this.activity.invalidateAccess();
     this.#clearSessionHistory(); this.#sessionMenu.close(false);
     this.#visible = false; this.#viewVersion++;this.#review=undefined;this.#generation++; this.#dialog.close(); this.#body.replaceChildren();
     this.#syncPanel?.hide(); this.#privacyPanel?.hide();
@@ -519,7 +521,31 @@ export class AccountSettings {
       this.#note("Explicit account actions on this device. Showing up to 100 recent entries from 30 days. Moderation requires current access; archived history is protected."),
       element("div", { className: "kl-setting-tool-buttons" }, ...actions)), true);
   }
+  #auditSnapshot(): string {
+    const rows = this.activity.list(this.#kind).slice(0, 100);
+    const clearable = this.activity instanceof SafetyActivity ? this.activity.clearable(this.#kind) : rows;
+    return JSON.stringify([rows, clearable.map(row => row.id), this.activity.volatile]);
+  }
+  async #pollAudit(): Promise<void> {
+    const activity = this.activity;
+    if (!(activity instanceof SafetyActivity) || !this.#active() || this.#page !== "audit" || this.#busy || this.#auditPoll) return;
+    const task = this.#auditPoll = {}, generation = this.#generation;
+    const current = () => this.#auditPoll === task && this.#active() && this.#page === "audit" && !this.#busy && generation === this.#generation;
+    const paint = () => {
+      if (current() && this.#auditDisplay !== this.#auditSnapshot()) this.#render();
+    };
+    try {
+      // The access check immediately withdraws previous moderation grants. Local entries stay in place.
+      const check = activity.refreshAccess(current);
+      paint();
+      await check;
+      paint();
+    } finally {
+      if (this.#auditPoll === task) this.#auditPoll = undefined;
+    }
+  }
   #renderAudit(): void {
+    this.#auditDisplay = this.#auditSnapshot();
     const clearableVisibleIds = () => {
       const visible = this.activity.list(this.#kind).slice(0, 100);
       const allowed = new Set((this.activity instanceof SafetyActivity ? this.activity.clearable(this.#kind) : visible).map(e => e.id));

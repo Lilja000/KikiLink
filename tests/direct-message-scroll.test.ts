@@ -122,3 +122,24 @@ it.each(['scroll','viewport'] as const)('does not override a later Direct %s int
   const expected=h.history.scrollTop; h.image.dispatchEvent(new Event('cloud-image-ready'));
   expect(h.history.scrollTop).toBe(expected); expect(h.adapter.sendBeep).not.toHaveBeenCalled();
 });
+
+it('returns to the same Direct row and opens it in reading mode on a one-pane layout',async()=>{
+  const {root,view}=await setup();
+  const panel=root.querySelector<HTMLElement>('.kl-panel')!;
+  Object.defineProperty(panel,'clientWidth',{configurable:true,value:377});
+  const back=root.querySelector<HTMLButtonElement>('.kl-chat-header .kl-back')!;
+  const composer=root.querySelector<HTMLTextAreaElement>('.kl-composer-input')!;
+  const opener=root.querySelector<HTMLButtonElement>('[data-conversation-key="direct:202"]')!;
+  back.click();
+  expect(panel.dataset.mobileView).toBe('list');
+  expect(root.activeElement).toBe(opener);
+  opener.click();
+  await vi.waitFor(()=>expect(panel.dataset.mobileView).toBe('chat'));
+  expect(root.activeElement).toBe(back);
+  await view.openChat(202,'Seraphine',true);
+  expect(root.activeElement).toBe(composer);
+  root.querySelector<HTMLInputElement>('.kl-chat-unread-only input')!.click();
+  await vi.waitFor(()=>expect(root.contains(opener)).toBe(false));
+  back.click();
+  expect(root.activeElement).toBe(root.querySelector('.kl-chat-inbox'));
+});

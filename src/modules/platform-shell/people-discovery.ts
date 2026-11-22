@@ -1,7 +1,7 @@
 import type { CloudClient } from '../../cloud/client';
 import { element } from '../../cloud/dom';
 import { ContentDialog } from '../link-chat/content-dialog';
-import { readPeopleDirectory, type PeopleDirectoryPerson } from './people-directory';
+import { readPeopleDirectoryPages, type PeopleDirectoryPerson } from './people-directory';
 
 /** Explicit Cloud discovery, separate from native friends and the private notebook. */
 export class PeopleDiscovery {
@@ -15,6 +15,7 @@ export class PeopleDiscovery {
   #busy = false;
   #token = 0;
   #queued = false;
+  #pages = 0;
   #items: PeopleDirectoryPerson[] = [];
   #next: number | null = null;
   #release: (()=>void) | undefined;
@@ -22,17 +23,23 @@ export class PeopleDiscovery {
     current(): boolean; profile(member:number,name:string):void; privacy():void;
   }) {
     this.element.classList.add('kl-people-discovery');
-    this.#unsubscribe = client.subscribe(kind => {
+    this.#unsubscribe = client.subscribe((kind, cause) => {
       if (!options.current() || kind==='session' || kind==='connection') { this.close(); return; }
       if (this.#visible && ['profile-discovery','privacy','profiles-cleared','ready'].includes(kind)) {
-        this.#clear(); this.#busy=true; this.#render('Refreshing shared profiles…');
-        if (!this.#queued) { this.#queued=true; queueMicrotask(()=>{this.#queued=false;if(this.#visible)void this.#load();}); }
+        if (kind === 'profiles-cleared' && cause === 'ready' || kind === 'ready' && this.#busy) return;
+        if (kind !== 'ready') {
+          this.#clear(); this.#busy = true; this.#render('Loading shared profiles…');
+        }
+        if (!this.#queued) {
+          this.#queued = true;
+          queueMicrotask(() => { this.#queued = false; if (this.#visible) void this.#load(0, this.#pages > 0); });
+        }
       }
     });
     this.#search.addEventListener('input',()=>{this.#clear();this.#render('Search to update results.');});
   }
   #active(): boolean { return this.#visible && this.options.current() && this.client.connected; }
-  #clear(): void { this.#token++; this.#items=[];this.#next=null;this.#busy=false; }
+  #clear(): void { this.#token++; this.#items=[];this.#next=null;this.#pages=0;this.#busy=false; }
   #button(label:string,fn:()=>void):HTMLButtonElement {
     const button=element('button',{type:'button',className:'kl-text-button',text:label});
     button.addEventListener('click',()=>{if(this.#active()&&!this.#busy)fn();});return button;
@@ -50,22 +57,28 @@ export class PeopleDiscovery {
   close(): void { this.#hidden();this.#dialog.close(); }
   destroy(): void { this.close();this.#unsubscribe();this.#dialog.destroy(); }
   #day = 0;
-  async #load(cursor=0): Promise<void> {
+  async #load(cursor=0,quiet=false): Promise<void> {
     if (!this.#visible) return;
     if (!this.options.current()) {this.close();return;}
     const token=++this.#token, query=this.#search.value.trim();
     const current=()=>this.#active()&&token===this.#token;
-    if (!cursor) {this.#items=[];this.#next=null;this.#day=Math.floor(Date.now()/86400000); }
-    this.#busy=true;this.#render('Loading shared profiles…');
+    const pages = quiet ? this.#pages : 1;
+    if (!cursor) {
+      if (!quiet) { this.#items = []; this.#next = null; this.#pages = 0; }
+      this.#day = Math.floor(Date.now()/86400000);
+    }
+    if (!quiet) { this.#busy=true;this.#render('Loading shared profiles…'); }
     if (!this.client.connected) {this.#clear();this.#render('Connect to Cloud to discover shared profiles.');return;}
     try {
       const me=await this.client.request<{memberNumber:number;features?:{profileDiscovery?:boolean;peopleSuggestions?:boolean}}>('GET','/v1/me');
       if (!current()) return;
       if (me.memberNumber!==this.client.memberNumber) throw new Error('Account changed');
       if (me.features?.profileDiscovery!==true) {this.#clear();this.#render('Profile discovery is not available on this Cloud server yet.');return;}
-      const page=await readPeopleDirectory(this.client,me.memberNumber,query,20,cursor,me.features.peopleSuggestions===true && !query ? this.#day : undefined);
-      if (!current()) return;
-      this.#items=[...this.#items,...page.items];this.#next=page.nextCursor;this.#busy=false;this.#render();
+      const page=await readPeopleDirectoryPages(this.client,me.memberNumber,query,cursor,pages,me.features.peopleSuggestions===true && !query ? this.#day : undefined,current);
+      if (!page || !current()) return;
+      if (quiet && page.nextCursor === this.#next && JSON.stringify(page.items) === JSON.stringify(this.#items)) return;
+      this.#pages = cursor ? this.#pages + 1 : pages;
+      this.#items=cursor ? [...this.#items,...page.items] : page.items;this.#next=page.nextCursor;this.#busy=false;this.#render();
     } catch {
       if (!current()) return;
       this.#clear();this.#render('Shared profiles could not load. Refresh to try again.');

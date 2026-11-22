@@ -11,6 +11,7 @@ import { kikiIcon } from "../modules/link-chat/icons";
 import { FeedCommentsDialog } from "./feed-comments-dialog";
 import { ContentDialog } from "../modules/link-chat/content-dialog";
 import { bindContextMenuGesture } from "../utils/context-menu-gesture";
+import { menuVerticalSpace } from "../utils/anchored-surface";
 import { appendFeedFormattedText } from "./feed-spoilers";
 import { FeedPollView, pollEditor, validPollDraft } from "./feed-poll";
 import { parseMetadata } from "./feed-draft-metadata";
@@ -150,6 +151,7 @@ export class CloudFeedView {
   #contentVersion = 0;
   #discussionSignature: string | undefined;
   readonly #menuGestures = new AbortController();
+  #stopMenuTracking: (() => void) | undefined;
   readonly #postDialog = new ContentDialog();
   readonly #mentions: MentionPicker;
   readonly #reactionDialog = new ContentDialog();
@@ -412,6 +414,7 @@ export class CloudFeedView {
   }
 
   closeDialogs(): void {
+    this.#stopMenuTracking?.();
     this.#mentions.close();
     const composer = this.#draftHost.#composeDialog;
     if (composer?.element.parentElement === this.element) this.#draftHost.#disposeComposer();
@@ -820,8 +823,48 @@ export class CloudFeedView {
   }
   #feedMenu(label: string, actions: HTMLElement[]): HTMLElement {
     const menu = this.ui.menu(label, actions) as HTMLDetailsElement;
-    if (this.options.platformPreview) menu.addEventListener("toggle", () => {
-      if (menu.open) menu.querySelector<HTMLButtonElement>(".kl-social-menu-items > button:not(:disabled)")?.focus({ preventScroll: true });
+    if (!this.options.platformPreview) return menu;
+    const summary = menu.querySelector("summary")!;
+    const items = menu.querySelector<HTMLElement>(".kl-social-menu-items")!;
+    let tracking: AbortController | undefined;
+    const stop = () => {
+      tracking?.abort();
+      tracking = undefined;
+      menu.removeAttribute("data-open-above");
+      items.style.removeProperty("--kl-feed-menu-height");
+      if (this.#stopMenuTracking === stop) this.#stopMenuTracking = undefined;
+    };
+    menu.addEventListener("toggle", () => {
+      if (!menu.open) { stop(); return; }
+      this.#stopMenuTracking?.();
+      const scroller = menu.closest<HTMLElement>(".kl-comment-dialog-scroll, .kl-cloud");
+      if (scroller && getComputedStyle(items).getPropertyValue("--kl-fit-feed-menu").trim()) {
+        const place = () => {
+          if (!menu.isConnected || !menu.open) { stop(); return; }
+          if (!getComputedStyle(items).getPropertyValue("--kl-fit-feed-menu").trim()) { stop(); return; }
+          const frame = scroller.getBoundingClientRect(), trigger = summary.getBoundingClientRect();
+          const viewport = window.visualViewport, viewportTop = viewport?.offsetTop ?? 0;
+          const top = Math.max(frame.top, viewportTop), bottom = Math.min(frame.bottom, viewportTop + (viewport?.height ?? innerHeight));
+          if (trigger.bottom <= top || trigger.top >= bottom) { menu.open = false; return; }
+          const { openAbove, available } = menuVerticalSpace(trigger, top, bottom, items.scrollHeight + items.offsetHeight - items.clientHeight);
+          menu.toggleAttribute("data-open-above", openAbove);
+          items.style.setProperty("--kl-feed-menu-height", `${Math.max(0, available)}px`);
+        };
+        tracking = new AbortController();
+        this.#stopMenuTracking = stop;
+        const options = { signal: tracking.signal, passive: true };
+        scroller.addEventListener("scroll", place, options);
+        window.addEventListener("resize", place, options);
+        window.visualViewport?.addEventListener("resize", place, options);
+        window.matchMedia?.("(hover: hover) and (pointer: fine)").addEventListener("change", place, options);
+        if (typeof ResizeObserver !== "undefined") {
+          const observer = new ResizeObserver(place);
+          observer.observe(scroller);
+          tracking.signal.addEventListener("abort", () => observer.disconnect(), { once: true });
+        }
+        place();
+      }
+      if (menu.open) items.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
     });
     return menu;
   }

@@ -46,6 +46,14 @@ export const ACTIVITIES_STYLES = `
 .kl-activities-page .kl-custom-activity-empty > .kl-icon { width: 32px; height: 32px; color: var(--kl-muted); }
 .kl-activities-page .kl-custom-activity-empty h2 { margin: 0; font: 600 16px var(--kl-font,system-ui); }
 .kl-activity-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.kl-activity-desktop-label { display: none; }
+@media (hover: hover) and (pointer: fine) {
+ @container kl-panel (width > 900px) or ((width > 700px) and (height > 500px)) {
+  .kl-activity-desktop-label { display: inline; }
+  .kl-activity-empty-library :is(.kl-activity-mobile-heading, .kl-activity-empty-actions),
+  .kl-activity-empty-library > p { display: none; }
+ }
+}
 .kl-activity-preview { line-height: 1.6; overflow-wrap: anywhere; }
 .kl-activity-preview-meta, .kl-activity-preview small { color: var(--kl-muted); }
 .kl-dialog.kl-activity-details-dialog { position: fixed; margin: auto; border-radius: 12px; background: var(--kl-surface); }

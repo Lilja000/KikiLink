@@ -36,6 +36,10 @@ export class CloudError extends Error {
     super(code);
   }
 }
+/** Network failures are reported as 503 by the authenticated transport. */
+export function isTemporaryCloudReadError(error: unknown): boolean {
+  return error instanceof CloudError && (error.status === 408 || error.status === 429 || error.status >= 500 && error.status <= 599);
+}
 interface PendingIdentity {
   challengeId: string;
   exchange: string;
@@ -88,7 +92,7 @@ export class CloudClient {
   #mediaVersion = 0;
   #blocked = new Set<number>();
   #profileVersion = 0;
-  #listeners = new Set<(kind: string) => void>();
+  #listeners = new Set<(kind: string, cause?: string) => void>();
   #activeRequests = 0;
   #requestWaiters: Array<() => void> = [];
   #epoch = 0;
@@ -442,14 +446,14 @@ export class CloudClient {
         }).catch(() => {});
       }, delay);
   }
-  subscribe(listener: (kind: string) => void): () => void {
+  subscribe(listener: (kind: string, cause?: string) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
-  #notify(kind: string): void {
+  #notify(kind: string, cause?: string): void {
     for (const listener of this.#listeners) {
       try {
-        listener(kind);
+        if (cause === undefined) listener(kind); else listener(kind, cause);
       } catch {
         /* UI listeners do not affect transport. */
       }
@@ -1018,7 +1022,7 @@ export class CloudClient {
               buffer = buffer.slice(end + 2);
               const kind = /^event: (direct-retention|music-sessions|matching|workshop-moderation|workshop|profile-friends|profile-activity|profile-location|profile-discovery|profile-communities|privacy|albums|spaces|calendar|community-reports|communities|channel-read|channel-messages|feed|groups|typing|reports|ready|relationships|mailbox|direct|direct-reactions|message-reactions|read|receipts|feed-read|preferences)\n/mu.exec(entry)?.[1];
               if (kind) { this.#authenticated("/v1/events");
-                if (["profile-discovery", "privacy", "relationships", "ready"].includes(kind)) { this.#profileVersion++; this.#cache.clear(); this.#inflight.clear(); this.#notify("profiles-cleared"); } if (["relationships", "communities", "community-reports", "ready"].includes(kind)) this.#clearMedia(); this.#notify(kind); }
+                if (["profile-discovery", "privacy", "relationships", "ready"].includes(kind)) { this.#profileVersion++; this.#cache.clear(); this.#inflight.clear(); this.#notify("profiles-cleared", kind); } if (["relationships", "communities", "community-reports", "ready"].includes(kind)) this.#clearMedia(); this.#notify(kind); }
             }
           }
         } finally {

@@ -14,8 +14,8 @@ export const PLATFORM_SHELL_STYLES = `
 @media(max-width: 540px) { .kl-legacy-badge-field { gap: 10px; padding: 12px; } .kl-legacy-badge-emblem { width: 48px; height: 48px; } .kl-legacy-badge-emblem .kl-legacy-badge-mark { width: 34px; height: 34px; } }
 
 .kl-panel[data-platform-preview="true"] {
-  width: min(1220px, calc(100vw - 32px));
-  height: min(760px, calc(100dvh - 110px));
+  width: var(--kl-desktop-panel-width, min(1220px, calc(100vw - 32px)));
+  height: var(--kl-desktop-panel-height, min(760px, calc(100dvh - 110px)));
   grid-template-rows: 56px minmax(0, 1fr);
   border: 0;
   border-radius: 12px;
@@ -104,7 +104,6 @@ export const PLATFORM_SHELL_STYLES = `
   font-family: inherit; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere;
 }
 .kl-home--overview .kl-home-title { font-size: var(--kl-type-xl); letter-spacing: -.3px; }
-.kl-home--overview .kl-home-lead { line-height: 1.6; }
 .kl-home--overview .kl-home-statuses { gap: 6px; margin-top: 12px; }
 .kl-home--overview .kl-home-status {
   min-width: 0; min-height: 28px; padding: 3px 8px;

@@ -11,6 +11,7 @@ import { LINK_CHAT_STYLES } from "../src/modules/link-chat/styles";
 import { LinkChatView } from "../src/modules/link-chat/view";
 import { MUTE_DURATIONS } from "../src/modules/link-chat/conversation-mute";
 import { MemoryChatRepository } from "../src/storage/memory-chat-repository";
+import { anchorSurface } from "../src/utils/anchored-surface";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 
@@ -75,6 +76,31 @@ async function viewHarness(options: { cloud?: boolean; chat?: boolean } = {}) {
 }
 
 describe("requested interface cleanup", () => {
+  it("keeps an anchored menu off its trigger and restores its full height when reopened", () => {
+    const panel = new DOMRect(8, 8, 374, 374);
+    const button = document.createElement("button");
+    const menu = document.createElement("dialog");
+    const triggerRect = vi.spyOn(button, "getBoundingClientRect");
+    vi.spyOn(menu, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, 0, 230,
+      Math.min(308, parseFloat(menu.style.getPropertyValue("--kl-surface-height")))));
+
+    triggerRect.mockReturnValue(new DOMRect(288, 274, 36, 40));
+    anchorSurface(menu, button, panel);
+    expect(menu.style.left).toBe("94px");
+    expect(menu.style.top).toBe("16px");
+    expect(menu.style.getPropertyValue("--kl-surface-height")).toBe("252px");
+
+    triggerRect.mockReturnValue(new DOMRect(288, 16, 36, 40));
+    anchorSurface(menu, button, panel);
+    expect(menu.style.top).toBe("62px");
+    expect(menu.getBoundingClientRect().height).toBe(308);
+
+    triggerRect.mockReturnValue(new DOMRect(288, 712, 36, 40));
+    anchorSurface(menu, button, new DOMRect(8, 8, 374, 828));
+    expect(menu.style.top).toBe("398px");
+    expect(menu.getBoundingClientRect().height).toBe(308);
+  });
+
   it("fits editing and contact dialogs into a shortened visual viewport without widening them", async () => {
     const previous = Object.getOwnPropertyDescriptor(window, "visualViewport");
     const viewport = Object.assign(new EventTarget(), { height: 340, offsetTop: 20 });
@@ -119,6 +145,37 @@ describe("requested interface cleanup", () => {
     markAll.click();
     await vi.waitFor(() => expect(readMail).toHaveBeenCalledOnce());
     expect(CLOUD_STYLES).toMatch(/\.kl-mailbox-header\s*\{[^}]*border-bottom:/u);
+  });
+
+  it("keeps the Inbox reading position across updates and starts changed filters at the first result", async () => {
+    const items = Array.from({ length: 24 }, (_, id) => ({
+      id: id + 1, kind: "mention", actor: 202, targetType: "post", targetId: "1",
+      count: 1, read: false, pending: false, createdAt: 1000 + id, updatedAt: 1000 + id,
+    }));
+    const community = {
+      client: { connected: true }, adapter: { getMemberName: () => "Reina" },
+      mailbox: { unread: items.length, items, nextCursor: null }, mailboxLoaded: true,
+      subscribe: () => () => {}, refresh: async () => {},
+    } as unknown as CommunityService;
+    const inbox = new MailboxPopover(community, { open: vi.fn(), platformPreview: true });
+    cleanup.push(() => inbox.destroy());
+    const page = inbox.inlineElement;
+    document.body.append(page);
+    inbox.setInlineVisible(true);
+    const list = () => page.querySelector<HTMLElement>(".kl-mailbox-list")!;
+    await vi.waitFor(() => expect(list().getAttribute("aria-busy")).toBe("false"));
+
+    list().scrollTop = 320;
+    inbox.render();
+    expect(list().scrollTop).toBe(320);
+    page.querySelector<HTMLButtonElement>('[data-inbox-filter="mentions"]')!.click();
+    expect(list().scrollTop).toBe(0);
+    list().scrollTop = 180;
+    const search = page.querySelector<HTMLInputElement>('input[type="search"]')!;
+    search.value = "Reina";
+    search.dispatchEvent(new Event("input"));
+    expect(list().scrollTop).toBe(0);
+    expect(list().querySelectorAll(".kl-mailbox-item")).toHaveLength(items.length);
   });
 
   it("shows one Mute action first and all existing durations in a second sheet", async () => {

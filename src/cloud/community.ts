@@ -200,7 +200,8 @@ export class CommunityService {
     this.#friendsKey = `kikilink:cloud:native-friends:${client.memberNumber}:v1`;
     this.#nativeFriends = new Set(adapter.ownFriends?.() ?? []);
     try { const old = JSON.parse(storage.getItem(this.#friendsKey) ?? "null"); if (Array.isArray(old)) this.#nativeFriends = new Set(old.filter(n => Number.isSafeInteger(n) && n > 0)); } catch { /* First successful sync records a baseline. */ }
-    this.#disposers.push(client.subscribe(kind => {
+    this.#disposers.push(client.subscribe((kind, cause) => {
+      if (kind === 'profiles-cleared' && cause === 'ready') return;
       if (kind === "session") {
         this.groupInvitationHistoryPreview = false;
         this.personalMail = false; this.personalMailLoaded = false; this.personalMailRevision++;
