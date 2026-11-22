@@ -3,6 +3,7 @@ import { chatAlertMode } from "../core/chat-alerts";
 import type { ConversationMeta, KikiLinkSettings, FeedTabAlerts } from "../core/types";
 import { conversationMuted } from "../modules/link-chat/conversation-mute";
 import { isPersonalLetter, type ChannelNotice, type CommunityService, type MailItem } from "./community";
+import { knownMemberName } from "./profile-data";
 
 export interface InboxChat {
   key: string; recoveryGeneration?: string; peer?: number; groupId?: string; communityId?: string; channelId?: string; latest?: number; channelMode?: 'all' | 'mentions' | 'off'; title: string; unread: number;
@@ -283,7 +284,7 @@ export class NotificationCenter {
         const id = mentioned ? author.mentionMessageId : author.messageId;
         if (!id || sequence <= (this.#channelSequences.get(key) ?? 0)) continue;
         void this.notify({key: `channel:${id}`, category: "channel", channelId: channel.channelId, actor: author.author, at: author.at,
-          text: mentioned ? `${this.community.adapter.getMemberName(author.author)} mentioned you in ${channel.title}` : `New message in ${channel.title}`, mentioned, cloud: true});
+          text: mentioned ? `${knownMemberName(this.community, author.author)} mentioned you in ${channel.title}` : `New message in ${channel.title}`, mentioned, cloud: true});
       }
     }
     this.#channelSequences = next;
@@ -307,8 +308,8 @@ export class NotificationCenter {
       // A watcher/reaction batch that remains unread is still the same alert.
       if (previous && !previous.read) continue;
       const category = isChat ? item.channelId ? "channel" : item.peer ? "direct" : "group" : feedMail(item) ? "feed" : "social";
-      const who = item.actor ? this.community.adapter.getMemberName(item.actor) : "KikiLink";
-      const label = item.kind === "personal_mail" ? `New mail from ${item.mailSenderName || who}` : item.kind === "space_invitation" ? `${who} invited you to ${item.spaceName ?? "a space"}` : item.kind === "space_request" ? `${who} requested to join ${item.spaceName ?? "your space"}` : item.kind === "space_approved" ? `Your request to join ${item.spaceName ?? "a space"} was approved` : item.kind === "event_reminder" ? `Starting soon: ${item.eventTitle ?? "Your event"}` : item.kind === "event_place" ? `Your place is ready: ${item.eventTitle ?? "Your event"}` : item.kind === "event_updated" ? `Event updated: ${item.eventTitle ?? "Your event"}` : item.kind === "event_cancelled" ? `Event cancelled: ${item.eventTitle ?? "Your event"}` : item.kind === "mention" ? `${who} mentioned you` : item.kind === "comment_reply" ? `${who} replied to your comment` :
+      const who = item.actor ? knownMemberName(this.community, item.actor, item.mailSenderName) : "KikiLink";
+      const label = item.kind === "personal_mail" ? `New mail from ${who}` : item.kind === "space_invitation" ? `${who} invited you to ${item.spaceName ?? "a space"}` : item.kind === "space_request" ? `${who} requested to join ${item.spaceName ?? "your space"}` : item.kind === "space_approved" ? `Your request to join ${item.spaceName ?? "a space"} was approved` : item.kind === "event_reminder" ? `Starting soon: ${item.eventTitle ?? "Your event"}` : item.kind === "event_place" ? `Your place is ready: ${item.eventTitle ?? "Your event"}` : item.kind === "event_updated" ? `Event updated: ${item.eventTitle ?? "Your event"}` : item.kind === "event_cancelled" ? `Event cancelled: ${item.eventTitle ?? "Your event"}` : item.kind === "mention" ? `${who} mentioned you` : item.kind === "comment_reply" ? `${who} replied to your comment` :
         item.kind === "comment" || item.kind === "post_comment" ? `${who} commented on a post you follow` : item.kind === "reaction" ? "New reactions to your post or comment" :
         item.kind === "friend_request" ? `${who} sent a friend request` : item.kind === "group_invitation" ? `${who} invited you to a group` : item.kind === "community_invitation" ? `${who} invited you to a community` : item.kind === "community_request" ? `${who} requested to join your community` : item.kind === "community_approved" ? "Your community join request was approved" : "New KikiLink notification";
       // Settings, access and the invitation state can change after a toast or sound was queued.

@@ -1177,11 +1177,15 @@ export const COMMUNITIES_STYLES = `
   position: relative; display: grid; place-items: center; width: calc(var(--kl-channel-avatar-size) - 4px);
   height: calc(var(--kl-channel-avatar-size) - 4px); margin: 2px; grid-column: 1; grid-row: 1;
 }
-.kl-cm-thread > .kl-cm-messages .kl-cm-avatar > button {
+.kl-cm-thread > .kl-cm-messages .kl-cm-avatar > .kl-cm-author-face {
+  position:relative; overflow:hidden;
   display: grid; place-items: center; width: 100%; height: 100%; min-height: 0; padding: 0;
   border: 0; border-radius: inherit; background: transparent; color: inherit; font: inherit; cursor: pointer;
 }
-.kl-cm-thread > .kl-cm-messages .kl-cm-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.kl-cm-author-initials { display:grid; place-items:center; }
+.kl-cm-author-initials > .kl-icon { width:15px; height:15px; }
+.kl-cm-author-face > .kl-social-avatar-media:not([data-state="ready"]) { visibility:hidden; }
+.kl-cm-thread > .kl-cm-messages .kl-cm-avatar img { position:absolute; inset:0; display:block; width:100%; height:100%; object-fit:cover; border-radius:inherit; }
 .kl-cm-thread > .kl-cm-messages .kl-cm-message--self > .kl-cm-avatar { grid-column: 2; }
 .kl-cm-thread > .kl-cm-messages .kl-cm-message > .kl-cm-bubble {
   grid-column: 2; grid-row: 1; padding: 6px 10px; border: 0; border-radius: 10px;

@@ -1,6 +1,7 @@
 import { GroupManagementActions, type GroupManagementSource, type GroupManagementDraft } from "./group-management-intent";
 import {SocialUI} from './social-ui';
 import { element } from "./dom";
+import { knownMemberName } from "./profile-data";
 import { anchorSurface } from "../utils/anchored-surface";
 import { focusedElement } from "../utils/dom";
 import { kikiIcon, type KikiLinkIconName } from "../modules/link-chat/icons";
@@ -52,6 +53,8 @@ export class MailboxPopover {
   readonly #badge = countBadge();
   readonly #resultsStatus = element("p", { className: "kl-inbox-results-status kl-sr-only", role: "status" });
   readonly #unsubscribe: () => void;
+  readonly #unsubscribeProfiles?: () => void;
+  readonly #updateActor = new WeakMap<HTMLElement, () => void>();
   readonly #pending = new Set<string>();
   readonly #confirmedInvitations = new Set<string>();
   readonly #invitationAttempts = new WeakMap<GroupManagementDraft, InlineInvitationResponse>();
@@ -112,6 +115,15 @@ export class MailboxPopover {
       if (this.#destroyed) return;
       if (this.element.open || this.#inlineVisible) this.render();
       else this.#updateTrigger();
+    });
+    this.#unsubscribeProfiles = community.client.subscribe?.((kind, cause) => {
+      if (!this.#inlineVisible && !this.element.open || kind === "profiles-cleared" && cause === "ready") return;
+      const member = kind.startsWith("profile:") ? Number(kind.slice(8)) : undefined;
+      if (member === undefined && !["profiles-cleared", "blocks", "session", "disconnected"].includes(kind)) return;
+      const selector = member === undefined ? "[data-mail-actor]" : `[data-mail-actor="${member}"]`;
+      for (const surface of [this.inlineElement, this.element]) {
+        surface.querySelectorAll<HTMLElement>(selector).forEach(row => this.#updateActor.get(row)?.());
+      }
     });
     this.#updateTrigger();
   }
@@ -346,16 +358,15 @@ export class MailboxPopover {
   }
 
   #mailCopy(item: MailItem, preview: boolean): { title: string; source: string; icon: KikiLinkIconName; who: string; invitation?: string } {
+    const who = item.actor ? knownMemberName(this.community, item.actor, item.mailSenderName) : "KikiLink";
     if (isPersonalLetter(item)) {
-      const who = item.mailSenderName?.trim() || `Member ${item.actor}`;
       return { title: item.mailSubject!, source: `Mail · ${who}`, who, icon: "mail", invitation: item.mailPreview ?? "" };
     }
-    const who = item.actor ? this.community.adapter.getMemberName(item.actor) : "KikiLink";
     const mentionSource = ({
       group_message: "Group chat", direct_message: "Direct", community_message: "Community channel", comment: "Feed comment",
     } as Record<string, string>)[item.targetType] ?? "Feed post";
     const labels: Record<string, string> = {
-      mention: `${who} mentioned you in ${item.targetType === "group_message" ? "a group" : item.targetType === "direct_message" ? "Direct" : item.targetType === "comment" ? "a comment" : "a post"}`,
+      mention: `${who} mentioned you in ${item.targetType === "community_message" ? "a community channel" : item.targetType === "group_message" ? "a group" : item.targetType === "direct_message" ? "Direct" : item.targetType === "comment" ? "a comment" : "a post"}`,
       comment: `${who} commented on your post`, reaction: `${item.count} reaction${item.count === 1 ? "" : "s"} on your ${item.targetType}`,
       comment_reply: `${who} replied to your comment`, post_comment: item.count > 1 ? `${item.count} new comments on a post you follow` : `${who} commented on a post you follow`,
       friend_request: `${who} sent a friend request`, friend_accepted: `${who} accepted your friend request`, group_invitation: `${who} invited you to a group`,
@@ -481,6 +492,23 @@ export class MailboxPopover {
       }
       this.#presentRow(open, { title, source, icon, name: who, actor: item.actor, at: letter ? item.createdAt : item.updatedAt, unread: !item.read, muted,
         ...(description ? { preview: description } : {}) });
+      if (item.actor) {
+        const actor = item.actor;
+        row.dataset.mailActor = String(actor);
+        let name = who;
+        this.#updateActor.set(row, () => {
+          const copy = this.#mailCopy(item, true);
+          if (copy.who === name) return;
+          name = copy.who;
+          open.querySelector(".kl-inbox-title strong")!.textContent = copy.title;
+          open.querySelector(".kl-inbox-source > span")!.textContent = copy.source;
+          open.setAttribute("aria-label", `${copy.title}${item.read ? "" : ", unread"}${muted ? ", muted" : ""}`);
+          if (description && invitationText === invitation && invitation && copy.invitation) description.textContent = copy.invitation;
+          const avatar = open.querySelector<HTMLElement>(".kl-inbox-item-icon")!;
+          if (this.options.renderAvatar) this.options.renderAvatar(avatar, name, actor);
+          else avatar.textContent = [...name][0]?.toLocaleUpperCase() ?? "?";
+        });
+      }
       if (!item.read) row.append(this.#action("Mark as read", `read-${item.id}`, () => {
         if (!letter) return read(item);
         if (row.isConnected && visibleLetter()) return this.community.readMail(item.id, item.recoveryGeneration, "mail");
@@ -877,7 +905,7 @@ export class MailboxPopover {
 
   destroy(): void {
     if (this.#destroyed) return;
-    this.#destroyed = true; clearTimeout(this.#searchTimer); this.#letterSearch = undefined; this.#unsubscribe(); this.close(false);this.#groupActions?.clear();this.#groupUI?.destroy();
+    this.#destroyed = true; clearTimeout(this.#searchTimer); this.#letterSearch = undefined; this.#unsubscribe(); this.#unsubscribeProfiles?.(); this.close(false);this.#groupActions?.clear();this.#groupUI?.destroy();
     this.element.remove(); this.inlineElement.remove(); this.button.remove();
   }
 }

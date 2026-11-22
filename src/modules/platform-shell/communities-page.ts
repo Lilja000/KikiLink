@@ -1,3 +1,6 @@
+import { memberDisplayName } from "../../cloud/profile-data";
+import type { CloudProfile } from "../../cloud/types";
+import { initials } from "../../cloud/social-ui";
 import { markAvatarPresence } from "../link-chat/avatar-presence";
 import type { ChannelMuteScope } from '../../cloud/channel-timed-mutes';
 import { CommunityNotificationDialog } from './community-notification-dialog';
@@ -160,6 +163,7 @@ export class CommunitiesPage {
   #channels: Channel[] = [];
   #channelId: string | undefined;
   #messages: Message[] = [];
+  readonly #authorRetryAfter = new Map<number, number>();
   #messageCursor: number | null = null;
   #historyBefore = 0;
   #members: Member[] = [];
@@ -236,7 +240,18 @@ export class CommunitiesPage {
     this.element.addEventListener('scroll', this.#scheduleRead, true);
     document.addEventListener('visibilitychange', this.#scheduleRead);
     this.#unsubscribe = client.subscribe((kind, cause) => {
+      if (kind.startsWith('profile:')) {
+        const member = Number(kind.slice(8));
+        if (this.#valid(this.#token) && this.#tab === 'channels') this.#paintAuthor(member);
+        return;
+      }
       if (kind === 'profiles-cleared' && cause === 'ready') return;
+      if (['profiles-cleared', 'blocks', 'session', 'disconnected'].includes(kind)) {
+        this.#authorRetryAfter.clear();
+        if (this.#tab === 'channels' && this.#visible) {
+          for (const member of new Set(this.#messages.map(message => message.author))) this.#paintAuthor(member);
+        }
+      }
       const memberPrivacyChanged = this.#directoryEnabled && this.#tab === 'active' && ['privacy','relationships'].includes(kind);
       if (['session','disconnected','communities','blocks'].includes(kind)) { this.#notificationDialog?.hide(); this.#historyArchive.close(); this.#historyCopies.close(); this.#historyTimeline.close(); this.#closeDialog?.(); this.#moderation.hide(); }
       if (this.#contextDrawer && ['calendar','privacy','relationships','profiles-cleared'].includes(kind)) this.#closeDialog?.();
@@ -306,7 +321,9 @@ export class CommunitiesPage {
   openReports(id: string): void { this.open(id); this.#management=true; this.#tab='reports'; if(this.#visible)void this.refresh(); }
   #base(): string { return `/v1/communities/${this.#selected}`; }
   #messageBase(): string { return `${this.#base()}/channels/${this.#channelId}/messages`; }
-  #name(member: number): string { return `${this.options.name(member) || 'Member'} · #${member}`; }
+  #name(member: number): string {
+    return `${memberDisplayName(member, this.options.name(member), this.client.peekProfile?.(member), this.client.memberNumber)} · #${member}`;
+  }
   #directoryQueryKey(): string {
     return JSON.stringify([this.#scope, this.#search.value.trim(), this.#listLanguage, this.#listAccess, this.#sort, this.#activeOnly, this.#withEvents]);
   }
@@ -1947,7 +1964,7 @@ export class CommunitiesPage {
       const grouped = !!previous && previous.author === m.author && m.createdAt >= previous.createdAt &&
         m.createdAt - previous.createdAt < 300_000 && localDay(previous.createdAt) === localDay(m.createdAt);
       previous = m;
-      const name = this.options.name(m.author) || 'Member';
+      const name = memberDisplayName(m.author, this.options.name(m.author), this.client.peekProfile?.(m.author), this.client.memberNumber);
       const text = element('p'); appendMentionText(text,m.text,[],undefined,m.mentions,this.options.openProfile);
       const author = this.options.openProfile
         ? this.#button(`channel-author-${m.id}`, name, () => this.options.openProfile?.(m.author))
@@ -1957,7 +1974,8 @@ export class CommunitiesPage {
         bindClockText(element('time'), m.createdAt));
       const bubble = element('div', { className: 'kl-cm-bubble' }, meta, text);
       const row = element('article', { className: `kl-cm-message${m.author===this.client.memberNumber?' kl-cm-message--self':''}` },
-        grouped ? null : this.#channelAvatar(m, name), bubble);
+        grouped ? null : this.#channelAvatar(m), bubble);
+      row.dataset.author = String(m.author);
       row.dataset.messageId = m.id; row.dataset.highlight = String(m.id === this.#target);
       row.dataset.messageTime = String(m.createdAt); row.dataset.grouped = String(grouped);
       if (grouped) row.setAttribute('aria-label', `Message from ${name}`);
@@ -1981,7 +1999,12 @@ export class CommunitiesPage {
       }
       messages.append(row);
     }
-    if (messages.childElementCount) syncDateSeparators(messages, undefined, 'compact');
+    if (messages.childElementCount) {
+      syncDateSeparators(messages, undefined, 'compact');
+      const authors = [...new Set(this.#messages.map(message => message.author))];
+      for (const member of authors) this.#paintAuthor(member, messages);
+      void this.#loadAuthors(authors, messages);
+    }
     else messages.append(element('p', { className: 'kl-cm-empty', text: this.#loading ? 'Loading messages…' : 'No messages yet. Start the conversation.' }));
     if (ch.canPost) {
       const sendPath=`/v1/communities/${c.id}/channels/${ch.id}/messages`;
@@ -2044,18 +2067,74 @@ export class CommunitiesPage {
     } else thread.append(element('div', { className: 'kl-cm-compose' },
       element('p', { text: 'Only the community team can post in this channel.' })));
   }
-  #channelAvatar(message: Message, name: string): HTMLElement {
-    const initials = Array.from(name).slice(0, 2).join('').toUpperCase();
-    const profile = this.client.peekProfile?.(message.author);
-    const image = profile?.visible && profile.avatarId ? this.options.avatar?.(profile.avatarId, message.author === this.client.memberNumber) : undefined;
+  #channelAvatar(message: Message): HTMLElement {
     const avatar = element('span', { className: 'kl-cm-avatar' });
-    const content = this.options.openProfile
+    const face = this.options.openProfile
       ? this.#button(`channel-avatar-${message.id}`, '', () => this.options.openProfile?.(message.author))
-      : avatar;
-    if (content !== avatar) { content.setAttribute('aria-label', `Open ${name}’s profile`); avatar.append(content); }
-    content.append(initials);
-    if (image) { image.setAttribute('aria-hidden', 'true'); content.append(image); }
+      : element('span');
+    face.classList.add('kl-cm-author-face');
+    avatar.append(face);
     return avatar;
+  }
+
+  #paintAuthor(member: number, root: HTMLElement = this.#content, profile = this.client.peekProfile?.(member)): void {
+    const rows = root.querySelectorAll<HTMLElement>(`.kl-cm-message[data-author="${member}"]`);
+    if (!rows.length) return;
+    const blocked = this.options.blocked?.(member) || this.client.isProfileBlocked?.(member);
+    const shared = !blocked && profile?.memberNumber === member && !profile.isDefault &&
+      (profile.visible || member === this.client.memberNumber) ? profile : undefined;
+    const name = memberDisplayName(member, blocked ? undefined : this.options.name(member), shared, this.client.memberNumber);
+    const asset = shared?.avatarId || '';
+    for (const row of rows) {
+      const author = row.querySelector<HTMLElement>('.kl-cm-author');
+      const face = row.querySelector<HTMLElement>('.kl-cm-author-face');
+      if (!author || !face) { row.setAttribute('aria-label', `Message from ${name}`); continue; }
+      if (author.textContent !== name) author.textContent = name;
+      author.title = `${name} · #${member}`;
+      if (face instanceof HTMLButtonElement) face.setAttribute('aria-label', `Open ${name}’s profile`);
+      if (face.dataset.name === name && face.dataset.asset === asset) continue;
+      let fallback = face.querySelector<HTMLElement>('.kl-cm-author-initials');
+      if (!fallback) {
+        fallback = element('span', { className: 'kl-cm-author-initials' });
+        fallback.setAttribute('aria-hidden', 'true');
+        face.prepend(fallback);
+      }
+      if (face.dataset.name !== name) {
+        fallback.replaceChildren(name === 'Member' ? kikiIcon('profile') : initials(name));
+        face.dataset.name = name;
+      }
+      if (face.dataset.asset === asset) continue;
+      face.dataset.asset = asset;
+      face.querySelector('.kl-social-avatar-media')?.remove();
+      const image = asset ? this.options.avatar?.(asset, member === this.client.memberNumber) : undefined;
+      if (image) { image.classList.add('kl-social-avatar-media'); image.setAttribute('aria-hidden', 'true'); face.append(image); }
+    }
+  }
+
+  async #loadAuthors(members: number[], messages: HTMLElement): Promise<void> {
+    // The newly rendered thread is attached at the end of the same render.
+    await Promise.resolve();
+    const current = () => this.#valid(this.#token) && this.#tab === 'channels' && this.#content.contains(messages);
+    if (!current() || !this.client.profile) return;
+    let next = 0;
+    const read = async () => {
+      while (current() && next < members.length) {
+        const member = members[next++]!;
+        if (this.options.blocked?.(member) || this.client.isProfileBlocked?.(member) ||
+            Date.now() < (this.#authorRetryAfter.get(member) ?? 0)) continue;
+        let profile: CloudProfile;
+        try { profile = await this.client.profile(member); }
+        catch {
+          if (current()) {
+            this.#authorRetryAfter.set(member, Date.now() + 30000);
+            if (this.#authorRetryAfter.size > 100) this.#authorRetryAfter.delete(this.#authorRetryAfter.keys().next().value!);
+          }
+          continue;
+        }
+        if (current()) this.#paintAuthor(member, messages, this.client.peekProfile ? this.client.peekProfile(member) : profile);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, members.length) }, read));
   }
   #dialog(title: string): { dialog: HTMLDialogElement; close: () => void } {
     this.#historyArchive.close(); this.#historyCopies.close(); this.#historyTimeline.close(); this.#closeDialog?.();

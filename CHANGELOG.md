@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.3
+
+- Profile photos fill the avatar circle, including small and rectangular uploads. Click the portrait to open the original.
+- Community channels load the author's shared name and picture when you open a conversation. Replies from the same person share one profile lookup. Names and photos update in place when profile access changes.
+- Inbox and community mention alerts use the available profile or in-game name. Players in the same room can be identified by their account name even without a nickname or friendship.
+
 ## 2.0.2
 
 - Presence indicators now sit outside the circular image crop in Familiar faces and other member lists.

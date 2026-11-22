@@ -147,6 +147,36 @@ describe("requested interface cleanup", () => {
     expect(CLOUD_STYLES).toMatch(/\.kl-mailbox-header\s*\{[^}]*border-bottom:/u);
   });
 
+  it("updates community mention authors in place as profiles become available or private", async () => {
+    let notify: (kind: string) => void = () => {};
+    let profile: { memberNumber: number; displayName: string; visible: boolean } | undefined;
+    const item = { id: 1, actor: 60421, kind: "mention", targetType: "community_message", targetId: "1",
+      count: 1, read: false, pending: false, createdAt: 1000, updatedAt: 1000 };
+    const community = {
+      client: { connected: true, peekProfile: () => profile, subscribe: (fn: typeof notify) => { notify = fn; return () => {}; } },
+      adapter: { getMemberName: () => "Member 60421" },
+      mailbox: { unread: 1, items: [item], nextCursor: null }, mailboxLoaded: true,
+      subscribe: () => () => {}, refresh: async () => {},
+    } as unknown as CommunityService;
+    const inbox = new MailboxPopover(community, { open: vi.fn(), platformPreview: true });
+    cleanup.push(() => inbox.destroy());
+    document.body.append(inbox.inlineElement);
+    inbox.setInlineVisible(true);
+    await vi.waitFor(() => expect(inbox.inlineElement.querySelector(".kl-mailbox-list")?.getAttribute("aria-busy")).toBe("false"));
+    const button = inbox.inlineElement.querySelector<HTMLButtonElement>('[data-mail-action="open-1"]')!;
+    expect(button.getAttribute("aria-label")).toBe("Member mentioned you in a community channel, unread");
+    button.focus();
+    profile = { memberNumber: 60421, displayName: "Willow", visible: true };
+    notify("profile:60421");
+    expect(button.querySelector("strong")?.textContent).toContain("Willow");
+    expect(button.querySelector(".kl-inbox-item-icon")?.textContent).toBe("W");
+    expect(document.activeElement).toBe(button);
+    profile = { ...profile, visible: false };
+    notify("profile:60421");
+    expect(button.textContent).not.toContain("Willow");
+    expect(button.getAttribute("aria-label")).not.toContain("60421");
+  });
+
   it("keeps the Inbox reading position across updates and starts changed filters at the first result", async () => {
     const items = Array.from({ length: 24 }, (_, id) => ({
       id: id + 1, kind: "mention", actor: 202, targetType: "post", targetId: "1",
