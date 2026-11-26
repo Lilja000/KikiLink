@@ -674,7 +674,7 @@ export const CHAT_PAGE_STYLES = `
   .kl-chat-page .kl-message-row:is([data-group="middle"], [data-group="end"]) .kl-chat-message-heading:not(:has(.kl-message-room, .kl-message-retry-actions)) .kl-message-meta { inset-inline-start: -2px; width: 36px; }
   .kl-chat-page .kl-message-row[data-direction="outgoing"]:is([data-group="middle"], [data-group="end"]) .kl-chat-message-heading:not(:has(.kl-message-room, .kl-message-retry-actions)) .kl-message-meta { inset-inline: auto -2px; }
   .kl-panel[data-platform-preview="true"] .kl-chat-page .kl-message-row[data-group] .kl-message-bubble { padding-inline-end: 10px; }
-  .kl-panel[data-platform-preview="true"] .kl-chat-page .kl-message-row[data-direction="outgoing"] .kl-message-bubble { padding-inline: 34px 8px; }
+  .kl-panel[data-platform-preview="true"] .kl-chat-page .kl-message-row[data-direction="outgoing"] .kl-message-bubble { padding-inline: 10px 8px; }
   .kl-chat-page .kl-message-row .kl-message-side-actions {
     inset-block-start: 3px;
     inset-inline-end: 1px;
@@ -693,7 +693,7 @@ export const CHAT_PAGE_STYLES = `
   .kl-chat-page :is(.kl-message-row, .kl-group-message) .kl-message-reactions > .kl-message-reaction { min-height: 40px; height: 40px; }
   .kl-chat-page :is(.kl-message-row, .kl-group-message) .kl-message-reaction-trigger:not(:only-child) { min-height: 40px; height: 40px; }
   .kl-chat-page :is(.kl-message-row, .kl-group-message) .kl-message-reaction-trigger { opacity: 1; pointer-events: auto; }
-  .kl-chat-page :is(.kl-message-row, .kl-group-message) .kl-message-reaction-trigger:only-child { top: 3px; right: 39px; width: 28px; min-width: 28px; height: 28px; min-height: 28px; border: 0; background: transparent; opacity: 0; }
+  .kl-chat-page :is(.kl-message-row, .kl-group-message) .kl-message-reaction-trigger:only-child { top: 3px; right: calc(var(--kl-action-square) + 3px); width: 28px; min-width: 28px; height: 28px; min-height: 28px; border: 0; background: transparent; opacity: 0; }
   .kl-chat-page :is(.kl-message-row, .kl-group-message):focus-within .kl-message-reaction-trigger:only-child,
   .kl-chat-page :is(.kl-message-row, .kl-group-message) .kl-message-reaction-trigger:only-child[aria-expanded="true"] { opacity: 1; }
   .kl-panel[data-platform-preview="true"] .kl-chat-page .kl-composer { padding: 6px; }
@@ -714,11 +714,18 @@ export const CHAT_PAGE_STYLES = `
   .kl-group-thread-preview .kl-group-message[data-grouped] .kl-social-author-copy { min-height: 0; }
   .kl-panel[data-platform-preview="true"] .kl-group-thread-preview .kl-group-message[data-grouped] .kl-social-meta { left: -2px; width: 36px; }
   .kl-panel[data-platform-preview="true"] .kl-group-thread-preview .kl-group-message[data-own="true"][data-grouped] .kl-social-meta { right: -2px; left: auto; }
-  .kl-panel[data-platform-preview="true"] .kl-group-thread-preview .kl-group-message[data-own="true"] .kl-group-message-bubble { padding-right: 8px; padding-left: 34px; }
+  .kl-panel[data-platform-preview="true"] .kl-group-thread-preview .kl-group-message[data-own="true"] .kl-group-message-bubble { padding-right: 8px; padding-left: 10px; }
   .kl-group-thread-preview .kl-group-message .kl-message-side-actions { top: 3px; right: 1px; padding: 0; border: 0; background: transparent; box-shadow: none; opacity: 1; pointer-events: auto; }
   .kl-group-thread-preview .kl-group-message[data-own="true"] .kl-message-side-actions { right: auto; left: 1px; }
   .kl-group-thread-preview .kl-group-message .kl-message-side-actions > .kl-message-action:not(.kl-message-options) { display: none; }
-  .kl-group-thread-preview .kl-group-message .kl-message-side-actions > .kl-message-options { width: 36px; min-height: 36px; height: 36px; }
+  /* Reserve the outer edge for the always-visible menu, including on one-line grouped messages. */
+  :is(.kl-chat-page .kl-messages .kl-message-row, .kl-group-thread-preview .kl-group-message):has(.kl-message-options) {
+    min-height: calc(var(--kl-action-square) + 6px);
+    padding-inline-end: calc(var(--kl-action-square) + 5px);
+  }
+  :is(.kl-chat-page .kl-messages .kl-message-row[data-direction="outgoing"], .kl-group-thread-preview .kl-group-message[data-own="true"]):has(.kl-message-options) {
+    padding-inline: calc(var(--kl-action-square) + 5px) 6px;
+  }
   .kl-panel[data-platform-preview="true"] .kl-group-thread-preview .kl-group-composer { padding: 6px; }
   .kl-group-thread-preview .kl-group-compose-main { padding: 2px; gap: 0; }
   .kl-group-thread-preview .kl-group-compose-main > button { width: 36px; min-width: 36px; min-height: 40px; height: 40px; }

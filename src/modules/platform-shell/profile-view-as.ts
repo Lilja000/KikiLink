@@ -1,3 +1,4 @@
+import { sectionLink } from './section-link';
 import { checkedWorkshopPage, type WorkshopPage } from "./workshop-model";
 import { checkedProfileEvents, profileEventCard, type ProfileEventsPage } from "./profile-events";
 import { CloudError, type CloudClient } from '../../cloud/client';
@@ -188,7 +189,7 @@ export class ProfileViewAs {
       preferences.append(element('div',{className:'kl-profile-preference-filters'},searchField(query),category));render();
     }else if(preview.preferences.state==='private')preferences.append(profilePreferencesLocked('kl-profile-view-as-locked','Preferences are private for this audience.',this.#button('Return to your view',()=>this.options.done())));
     else preferences.append(note('Only compatibility may be shared. Individual ratings are hidden.'));
-    const viewCommunities=this.#button('View all',()=>sections.select('communities',true));
+    const viewCommunities=sectionLink(this.#button('View all',()=>sections.select('communities',true)));
     const about=this.#about(profile,preview.communities,viewCommunities);
     const communities=preview.communities.state==='private'
       ?this.#locked('Communities are private')

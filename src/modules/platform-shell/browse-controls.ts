@@ -6,10 +6,34 @@ export function iconButton(label: string, icon: KikiLinkIconName, run: () => voi
   return element('button', { type: 'button', className: 'kl-text-button kl-browse-icon', ariaLabel: label, title: label, onClick: run }, kikiIcon(icon));
 }
 
-export function searchField(input: HTMLInputElement, clearLabel = 'Clear search'): HTMLElement {
-  return element('div', { className: 'kl-browse-search' }, kikiIcon('search'), input, iconButton(clearLabel, 'close', () => {
-    input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); input.focus();
-  }));
+/** Use the owner's clear action for both the keyboard and the visible button. */
+export function bindSearchEscape(field: HTMLElement, input: HTMLInputElement, clear: HTMLButtonElement): void {
+  field.addEventListener('keydown', event => {
+    if (event.target !== input || event.key !== 'Escape' || event.defaultPrevented) return;
+    if (event.isComposing || event.keyCode === 229) {
+      event.stopPropagation();
+      return;
+    }
+    if (!input.value || input.disabled || input.readOnly) return;
+    event.preventDefault();
+    event.stopPropagation();
+    clear.click();
+  }, true);
+}
+
+export function searchField(input: HTMLInputElement, clearLabel = 'Clear search',
+  options?: { className?: string; afterClear?: () => void }): HTMLElement {
+  const clear = iconButton(clearLabel, 'close', () => {
+    if (!clear.isConnected || clear.parentElement !== input.parentElement || input.disabled || input.readOnly || !input.value) return;
+    input.focus({ preventScroll: true });
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    options?.afterClear?.();
+  });
+  const field = element('div', { className: 'kl-browse-search' }, kikiIcon('search'), input, clear);
+  if (options?.className) field.classList.add(options.className);
+  bindSearchEscape(field, input, clear);
+  return field;
 }
 
 interface Field {
@@ -21,6 +45,10 @@ interface Field {
   presentation?: 'chips' | 'checkbox';
   description?: string;
 }
+function defaultValue(field: Field): string {
+  return field.presentation === 'checkbox' ? '0' : field.choices?.[0]?.[0] ?? '';
+}
+
 interface FilterControl {
   field: Field;
   element: HTMLElement;
@@ -57,12 +85,20 @@ export class BrowseFilters {
     this.#values = { ...values };
     if (this.#summary.textContent !== summary) this.#summary.textContent = summary;
     this.#summary.hidden = !summary;
-    const count = this.fields.filter(f => values[f.key] !== (f.presentation === 'checkbox' ? '0' : f.choices?.[0]?.[0] ?? '') && !!values[f.key]).length;
+    const count = this.fields.filter(f => values[f.key] !== defaultValue(f) && !!values[f.key]).length;
+    this.button.dataset.active = String(count > 0);
     this.button.lastElementChild!.textContent = count ? `Filters · ${count}` : 'Filters';
+  }
+  remove(key: string): void {
+    const field = this.fields.find(field => field.key === key);
+    if (!field || this.button.disabled || !this.button.isConnected) return;
+    this.#values = { ...this.#values, [key]: defaultValue(field) };
+    this.button.focus({ preventScroll: true });
+    this.apply({ ...this.#values });
   }
   close(): void { if (this.dialog.open) this.dialog.close(); }
   #control(field: Field): FilterControl {
-    const value = this.#values[field.key] ?? field.choices?.[0]?.[0] ?? '';
+    const value = this.#values[field.key] ?? defaultValue(field);
     if (field.presentation === 'chips' && field.choices) {
       let selected = value;
       const buttons = field.choices.map(([choice, label]) => element('button', {
@@ -106,10 +142,22 @@ export class BrowseFilters {
     element('div', { className: 'kl-browse-dialog-body' },
       this.sheet.description ? element('p', { className: 'kl-browse-dialog-description', text: this.sheet.description }) : null,
       this.#summary, element('div', { className: 'kl-browse-dialog-fields' }, ...controls.map(control => control.element))));
+    const focusFirstField = () => {
+      form.querySelector<HTMLElement>('.kl-browse-dialog-fields :is(button[aria-pressed="true"], input, select)')?.focus({ preventScroll: true });
+    };
     const reset = element('button', { type: 'button', className: 'kl-text-button', text: 'Reset filters', onClick: () => {
       if (!this.dialog.open || !form.isConnected) return;
-      for (const control of controls) control.write(control.field.choices?.[0]?.[0] ?? '');
+      for (const control of controls) control.write(defaultValue(control.field));
+      focusFirstField();
+      syncReset();
     } });
+    const syncReset = () => {
+      reset.disabled = controls.every(control => control.read() === defaultValue(control.field));
+    };
+    form.addEventListener('input', syncReset);
+    form.addEventListener('change', syncReset);
+    form.addEventListener('click', syncReset);
+    syncReset();
     form.append(element('footer', {}, reset, element('button', { type: 'submit', className: 'kl-text-button kl-text-button--primary', text: this.sheet.submitLabel })));
     form.addEventListener('submit', e => { e.preventDefault(); if (!this.dialog.open || !form.isConnected || this.button.disabled) return; const values = Object.fromEntries(controls.map(control => [control.field.key, control.read()])); this.close(); this.apply(values); });
     this.dialog.replaceChildren(form); this.dialog.showModal();
@@ -117,7 +165,7 @@ export class BrowseFilters {
     fitPanelDialog(this.dialog, { layout: (width, height) => width <= 700 || width <= 900 && height <= 500
       ? { marginX: 0, marginY: 0, maxHeight: height - 20 }
       : { marginX: 12, marginY: 12 } });
-    (form.querySelector<HTMLElement>('select') ?? form.querySelector<HTMLElement>('[aria-pressed="true"]'))?.focus({ preventScroll: true });
+    focusFirstField();
   }
 }
 
@@ -137,7 +185,7 @@ export const BROWSE_STYLES = `
 :is(.kl-communities-page,.kl-events-page,.kl-spaces-page) .kl-browse-search input:focus-visible{outline:0}
 .kl-browse-search input::-webkit-search-cancel-button{-webkit-appearance:none}
 .kl-browse-search>.kl-browse-icon{background:transparent;border:0}
-.kl-browse-search:has(input:placeholder-shown)>.kl-browse-icon{visibility:hidden}
+.kl-browse-search:has(input:is(:placeholder-shown,:disabled,[readonly]))>.kl-browse-icon{visibility:hidden}
 .kl-browse-icon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:34px;height:34px;padding:7px!important}
 .kl-browse-icon>.kl-icon{width:16px;height:16px}
 .kl-browse-filter{gap:8px;min-height:var(--kl-explore-control,36px);border-radius:var(--kl-explore-radius,8px)}

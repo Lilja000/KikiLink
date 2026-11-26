@@ -1,6 +1,7 @@
 import { markAvatarPresence } from "../modules/link-chat/avatar-presence";
 import { applyAvatarAppearance } from "../modules/link-chat/appearance-renderer";
 import { element } from "./dom";
+import { focusedElement } from "../utils/dom";
 import { kikiIcon, type KikiLinkIconName } from "../modules/link-chat/icons";
 import type { CloudClient } from "./client";
 import type { CloudPost } from "./types";
@@ -22,6 +23,7 @@ export class SocialUI {
   readonly #authors = new Set<WeakRef<HTMLElement>>();
   readonly #menus = new Set<WeakRef<HTMLDetailsElement>>();
   #pressedMenu: HTMLDetailsElement | undefined;
+  #invokingButton: HTMLButtonElement | undefined;
   readonly #menuPointerDown = (event: Event) => {
     const path = event.composedPath();
     this.#pressedMenu = undefined;
@@ -66,7 +68,12 @@ export class SocialUI {
     const button = element("button", { type: "button", className, title: label, ariaLabel: label },
       ...(icon ? [kikiIcon(icon)] : []), element("span", { text: label }));
     // Composers manage both the pending state and empty-draft validation themselves.
-    button.addEventListener("click", () => void this.options.run(action, manageBusy ? button : undefined));
+    button.addEventListener("click", () => void this.options.run(() => {
+      // The busy state can blur the button before a confirmation records its opener.
+      const previous = this.#invokingButton;
+      this.#invokingButton = button;
+      try { return action(); } finally { this.#invokingButton = previous; }
+    }, manageBusy ? button : undefined));
     return button;
   }
   author(profile: Author, at?: number, interaction?: (() => void) | "label", feedAuthor = false, messageAvatar = false): HTMLElement {
@@ -182,14 +189,54 @@ export class SocialUI {
     });
     return details;
   }
-  confirm(container: HTMLElement, title: string, action: () => Promise<unknown>, label = "Delete"): void {
-    container.querySelector(".kl-social-confirm")?.remove();
+  confirmationOpener(container: HTMLElement): HTMLElement | undefined {
+    const control = this.#invokingButton ?? focusedElement(container);
+    return control?.closest("details.kl-social-menu")?.querySelector<HTMLElement>(":scope > summary") ?? control;
+  }
+  confirm(container: HTMLElement, title: string, action: () => Promise<unknown>, label = "Delete", opener = this.confirmationOpener(container)): HTMLElement | undefined {
+    const previous = container.querySelector<HTMLElement>(":scope > .kl-social-confirm");
+    if (previous?.getAttribute("aria-busy") === "true") {
+      previous.focus({ preventScroll: true });
+      return;
+    }
+    previous?.remove();
     const box = element("div", { className: "kl-social-confirm", role: "group", ariaLabel: title });
-    box.append(element("strong", { text: title }),
-      this.button("Cancel", () => box.remove()),
-      this.button(label, async () => { await action(); box.remove(); }, "check", "kl-social-button kl-social-danger"));
+    box.tabIndex = -1;
+    let pending = false;
+    const close = (returnFocus: boolean) => {
+      box.remove();
+      if (returnFocus && opener?.isConnected && !opener.closest("[hidden], [inert], dialog:not([open])")) opener.focus({ preventScroll: true });
+    };
+    const dismiss = () => { if (!pending && box.isConnected) close(true); };
+    const cancel = this.button("Cancel", dismiss, undefined, "kl-social-button", false);
+    box.addEventListener("keydown", event => {
+      if (event.key !== "Escape" && !(pending && (event.key === "Enter" || event.key === " "))) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    });
+    const confirm = this.button(label, async () => {
+      if (pending || !box.isConnected) return;
+      pending = true;
+      if (box.contains(focusedElement(box) ?? null)) box.focus({ preventScroll: true });
+      cancel.disabled = confirm.disabled = true;
+      box.setAttribute("aria-busy", "true");
+      try {
+        await action();
+        if (box.isConnected) close(focusedElement(box) === box);
+      } finally {
+        pending = false;
+        if (box.isConnected) {
+          cancel.disabled = confirm.disabled = false;
+          box.removeAttribute("aria-busy");
+          if (focusedElement(box) === box) cancel.focus({ preventScroll: true });
+        }
+      }
+    }, "check", "kl-social-button kl-social-danger", false);
+    box.append(element("strong", { text: title }), cancel, confirm);
     container.append(box);
-    box.querySelector<HTMLButtonElement>("button")?.focus();
+    cancel.focus();
+    return box;
   }
 }
 

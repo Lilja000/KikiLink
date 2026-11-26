@@ -1144,7 +1144,8 @@ describe("platform shell integration with real workspaces", () => {
     } finally { f.view.destroy(); f.cloud.destroy(); }
   });
 
-  async function discoverWorkshopContext(browsePatch: Partial<WorkshopSummary> = {}) {
+  async function discoverWorkshopContext(browsePatch: Partial<WorkshopSummary> = {}, failSecondPageOnce = false) {
+    const paged = failSecondPageOnce;
     const owner = 72385;
     const origin = "https://cloud.example.test";
     const generation = "a".repeat(32);
@@ -1195,10 +1196,17 @@ describe("platform shell integration with real workspaces", () => {
         const collection = url.searchParams.get("collection") ?? "all";
         const items = collection === "featured" ? await readFeatured() : [{ ...newest, ...browsePatch }, second, featured];
         const sort = url.searchParams.get("sort");
-        const rows = sort === "recommended" ? items.map(item => ({ ...item, discovery: { ...item.discovery, recommended: false } })) : items;
+        const query = url.searchParams.get("q")?.toLowerCase() ?? "";
+        const matches = items.filter(item => item.title.toLowerCase().includes(query));
+        const rows = sort === "recommended" ? matches.map(item => ({ ...item, discovery: { ...item.discovery, recommended: false } })) : matches;
+        const offset = paged && url.searchParams.get("cursor") === "second" ? 1 : 0;
+        if (offset && failSecondPageOnce) {
+          failSecondPageOnce = false;
+          throw new CloudError("fixture_unavailable", 503);
+        }
         return {
-          items: rows.slice(0, Number(url.searchParams.get("limit"))), nextCursor: null,
-          sort, scope: url.searchParams.get("scope"), collection,
+          items: paged ? rows.slice(offset, offset + 1) : rows.slice(0, Number(url.searchParams.get("limit"))),
+          nextCursor: paged && !offset ? "second" : null, sort, scope: url.searchParams.get("scope"), collection,
         };
       }
       throw new CloudError("fixture_unavailable", 503);
@@ -1228,6 +1236,64 @@ describe("platform shell integration with real workspaces", () => {
       },
     };
   }
+
+  it("retries a failed Workshop page at its original cursor and can return to the previous page", async () => {
+    const f = await discoverWorkshopContext({}, true);
+    try {
+      f.area("create").click();
+      f.route("workshop").click();
+      const page = f.root.querySelector<HTMLElement>(".kl-workshop-page")!;
+      const titles = () => [...page.querySelectorAll("button.kl-workshop-title")].map(button => button.textContent);
+      await vi.waitFor(() => expect(titles()).toEqual([f.newest.title]));
+      page.querySelector<HTMLButtonElement>('[data-page-action="next"]')!.click();
+      await vi.waitFor(() => expect(page.querySelector("button[data-page-retry]")).not.toBeNull());
+      page.querySelector<HTMLButtonElement>("button[data-page-retry]")!.click();
+      await vi.waitFor(() => expect(titles()).toEqual([f.second.title]));
+      expect(f.catalogReads().slice(-2).map(url => url.searchParams.get("cursor"))).toEqual(["second", "second"]);
+      page.querySelector<HTMLButtonElement>('[data-page-action="previous"]')!.click();
+      await vi.waitFor(() => expect(titles()).toEqual([f.newest.title]));
+    } finally { f.view.destroy(); f.cloud.destroy(); }
+  });
+
+  it("offers one recovery action for empty Workshop searches and the empty installed library", async () => {
+    const f = await discoverWorkshopContext();
+    try {
+      f.area("create").click();
+      f.route("workshop").click();
+      const page = f.root.querySelector<HTMLElement>(".kl-workshop-page")!;
+      const emptyTitle = () => page.querySelector(".kl-workshop-empty h2")?.textContent;
+      const resetButtons = () => [...page.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent === "Clear filters");
+      await vi.waitFor(() => expect(page.querySelector(".kl-workshop-card")).not.toBeNull());
+      const search = page.querySelector<HTMLInputElement>('[aria-label="Search Workshop"]')!;
+      search.value = "No such creation";
+      search.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await vi.waitFor(() => expect(emptyTitle()).toBe("No matching creations"));
+      expect(resetButtons()).toHaveLength(1);
+      resetButtons()[0]!.click();
+      await vi.waitFor(() => expect(page.querySelector(".kl-workshop-card")).not.toBeNull());
+      const restoredSearch = page.querySelector<HTMLInputElement>('[aria-label="Search Workshop"]')!;
+      expect(restoredSearch.value).toBe("");
+      restoredSearch.value = "No such creation";
+      restoredSearch.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await vi.waitFor(() => expect(emptyTitle()).toBe("No matching creations"));
+
+      f.root.querySelector<HTMLButtonElement>('[data-workshop-section="installed"]')!.click();
+      await vi.waitFor(() => expect(emptyTitle()).toBe("No installed creations yet"));
+      expect(resetButtons()).toHaveLength(0);
+      expect(page.querySelector(".kl-workshop-empty button")?.textContent).toBe("Browse Workshop");
+      const installedSearch = page.querySelector<HTMLInputElement>('[aria-label="Search installed packages"]')!;
+      installedSearch.value = "No such creation";
+      installedSearch.dispatchEvent(new Event("input", { bubbles: true }));
+      expect(emptyTitle()).toBe("No matching installed creations");
+      expect(resetButtons()).toHaveLength(1);
+      resetButtons()[0]!.click();
+      expect(emptyTitle()).toBe("No installed creations yet");
+      expect(f.root.activeElement).toBe(page.querySelector('[aria-label="Search installed packages"]'));
+      page.querySelector<HTMLButtonElement>(".kl-workshop-empty button")!.click();
+      await vi.waitFor(() => expect(page.querySelector(".kl-workshop-card")).not.toBeNull());
+      expect(page.querySelector<HTMLInputElement>('[aria-label="Search Workshop"]')?.value).toBe("");
+    } finally { f.view.destroy(); f.cloud.destroy(); }
+  });
 
   it("shows Featured Workshop works first in Discover and opens current detail or Browse", async () => {
     const f = await discoverWorkshopContext();
@@ -1409,16 +1475,39 @@ describe("platform shell integration with real workspaces", () => {
       const enter=()=>search.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
       const fill=(query:string)=>{search.value=query;search.dispatchEvent(new Event('input',{bubbles:true}));};
       await ready();expect(names()).toEqual(['Garden','Studio']);expect(empty.hidden).toBe(true);
+      const initialSearches = request.mock.calls.length;
+      fill('Garden');fill('');
+      expect(request).toHaveBeenCalledTimes(initialSearches);
+      expect(names()).toEqual(['Garden','Studio']);
       fill('Garden');enter();await ready();expect(request).toHaveBeenLastCalledWith('Garden','X');
-      panel.querySelector<HTMLButtonElement>('[data-room-filter="friends"]')!.click();
+      expect(names()).toEqual(['Garden']);
+      fill('');fill('S');fill('');
+      await ready();
+      expect(request).toHaveBeenCalledTimes(initialSearches+2);
+      expect(request).toHaveBeenLastCalledWith('','X');
+      expect(names()).toEqual(['Garden','Studio']);
+      fill('Garden');enter();await ready();
+      const friendsScope=panel.querySelector<HTMLButtonElement>('[data-room-filter="friends"]')!;
+      friendsScope.click();
+      const calls=request.mock.calls.length;
+      search.focus();search.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+      await ready();
+      expect(request).toHaveBeenCalledTimes(calls+1);expect(request).toHaveBeenLastCalledWith('','X');
+      expect(friendsScope.getAttribute('aria-pressed')).toBe('true');expect(f.root.activeElement).toBe(search);
+      fill('Garden');enter();await ready();
       const filterButton=panel.querySelector<HTMLButtonElement>('.kl-lobby-filter-button')!;
       filterButton.click();const filters=panel.querySelector<HTMLDialogElement>('.kl-lobby-filter-dialog')!;
       const change=(control:HTMLSelectElement,value:string)=>{control.value=value;control.dispatchEvent(new Event('change',{bubbles:true}));};
       change(filters.querySelector<HTMLSelectElement>('[aria-label="Language"]')!,'l:en');
       change(filters.querySelector<HTMLSelectElement>('[aria-label="Access"]')!,'private');
-      filters.close();fill('');
+      filters.close();fill('');await ready();
       expect(empty.hidden).toBe(false);expect(status.textContent).toContain('0 rooms');
       expect(empty.querySelector('h2')?.textContent).toBe('No matching lobbies');
+      const activeFilters = panel.querySelector<HTMLElement>('.kl-lobby-filter-summary')!;
+      expect(activeFilters.hidden).toBe(false);
+      expect(activeFilters.textContent).toContain('Private');
+      expect([...activeFilters.querySelectorAll('button')].some(button => button.textContent === 'Clear filters')).toBe(false);
+      expect(clear.textContent).toBe('Clear filters');
       expect(empty.querySelector('[data-icon="door"]')).not.toBeNull();
       const currentCard=panel.querySelector<HTMLElement>('.kl-current-room-summary')!;
       expect(currentCard.hidden).toBe(false);expect(currentCard.textContent).toContain(current.name);
@@ -1426,7 +1515,7 @@ describe("platform shell integration with real workspaces", () => {
       const searches=request.mock.calls.length;
       clear.focus();clear.click();
       expect(empty.hidden).toBe(true);expect(f.root.activeElement).toBe(search);
-      await ready();expect(request).toHaveBeenCalledTimes(searches+1);expect(request).toHaveBeenLastCalledWith('','X');
+      await ready();expect(request).toHaveBeenCalledTimes(searches);expect(request).toHaveBeenLastCalledWith('','X');
       expect(names()).toEqual(['Garden','Studio']);expect(search.value).toBe('');expect(space.value).toBe('X');
       expect(panel.querySelector('[data-room-filter="all"]')?.getAttribute('aria-pressed')).toBe('true');
       expect(filters.querySelector<HTMLSelectElement>('[aria-label="Language"]')?.value).toBe('*');
@@ -1434,6 +1523,14 @@ describe("platform shell integration with real workspaces", () => {
       expect(currentCard.hidden).toBe(false);
       change(space,'M');await ready();expect(empty.hidden).toBe(false);clear.click();await ready();
       expect(request).toHaveBeenLastCalledWith('','X');expect(names()).toEqual(['Garden','Studio']);
+      request.mockResolvedValueOnce([]);
+      panel.querySelector<HTMLButtonElement>('.kl-lobby-refresh')!.click();await ready();
+      expect(empty.hidden).toBe(false);expect(clear.textContent).toBe('Refresh');
+      expect(empty.querySelector('h2')?.textContent).toBe('No lobbies available');
+      const beforeRefresh=request.mock.calls.length;
+      clear.click();await ready();
+      expect(request).toHaveBeenCalledTimes(beforeRefresh+1);expect(names()).toEqual(['Garden','Studio']);
+      expect(f.root.activeElement).toBe(search);
       request.mockRejectedValueOnce(new Error('Room list unavailable'));
       fill('Missing');expect(empty.hidden).toBe(false);enter();expect(empty.hidden).toBe(true);
       await vi.waitFor(()=>expect(status.dataset.state).toBe('error'));

@@ -1,3 +1,4 @@
+import { pageAction } from './page-action';
 import { profileOptions } from './profile-controls';
 import { CloudError, type CloudClient } from '../../cloud/client';
 import { element } from '../../cloud/dom';
@@ -131,7 +132,7 @@ export class ProfileActivity {
       });
       this.element.append(profileActivityRow(item,source));
     }
-    if(this.#next)this.element.append(this.#button('More activity',()=>void this.#load(this.#pages+1)));
+    if(this.#next)this.element.append(pageAction(this.#button('Load more activity',()=>void this.#load(this.#pages+1))));
     if(this.#limited)this.element.append(element('p',{className:'kl-profile-section-note',text:'Showing up to 200 visible items. Open Feed, Events or Albums for more.'}));
     for(const b of this.element.querySelectorAll<HTMLButtonElement>('button'))b.disabled=this.#busy;
   }

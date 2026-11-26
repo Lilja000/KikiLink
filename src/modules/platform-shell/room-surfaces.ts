@@ -1,3 +1,4 @@
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
 import type { BCRoomAdminPlayer, BCRoomAdminSnapshot } from "../../bc/adapter";
 import { element, focusedElement } from "../../utils/dom";
 import { kikiIcon } from "../link-chat/icons";
@@ -36,7 +37,7 @@ export class RoomSettingsDialog {
       element("button", { className: "kl-icon-button", type: "button", ariaLabel: "Close room settings", onClick: () => this.close() }, kikiIcon("close"))), status, tabs, body);
     this.element.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
     this.element.addEventListener("cancel", event => { event.preventDefault(); this.close(); });
-    this.element.addEventListener("click", event => { if (event.target === this.element) this.close(); });
+    onDialogBackdropClick(this.element, () => this.close());
     this.element.addEventListener("close", () => {
       // A queued close event must not move focus out of an already reopened sheet.
       if (this.element.open) return;

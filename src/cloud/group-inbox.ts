@@ -1,3 +1,4 @@
+import { pageAction } from '../modules/platform-shell/page-action';
 import { GroupMessagePresentation } from './group-message-presentation';
 import { ScopedTimedMutes } from './scoped-timed-mutes';
 import { conversationMuted } from '../modules/link-chat/conversation-mute';
@@ -696,9 +697,9 @@ export class CloudGroupInbox {
       nodes.push(this.options.platformPreview ? this.#rowFrame(row, group.title) : row);
     }
     for (const id of this.#rows.keys()) if (!this.groups.some(g => g.id === id)) this.#rows.delete(id);
-    if (matches > this.#limit) nodes.push(this.ui.button("Load more groups", async () => {
+    if (matches > this.#limit) nodes.push(pageAction(this.ui.button("Load more groups", async () => {
       this.#limit += 20; this.#updatedAt = 0; this.render(); await this.refresh();
-    }, "next"));
+    })));
     if (!nodes.length) nodes.push(this.options.platformPreview ? this.#empty(Boolean(query || this.#unreadOnly)) :
       element("p", { className: "kl-empty-copy", text: query ? "No matching groups." : this.#archivedOnly ? "No archived groups." : this.#unreadOnly ? "No unread groups." : "Your groups will appear here. Use + to create one." }));
     nodes.push(this.management.surface("inbox",this.ui,()=>!this.#closed&&this.client.connected&&this.element.isConnected,async()=>{await this.refresh(true);await this.options.inviteChanged();},e=>['accept','decline'].includes(e.intent.target.action)),this.#menu.element);

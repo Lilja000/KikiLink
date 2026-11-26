@@ -1,3 +1,5 @@
+import { pageAction } from './page-action';
+import { sectionLink } from './section-link';
 import { ProfileReadContent } from './profile-read-content';
 import { profileOptions } from './profile-controls';
 import { CloudError, isTemporaryCloudReadError, type CloudClient } from '../../cloud/client';
@@ -144,9 +146,9 @@ export class ProfileCommunities {
     const title=own?'Your communities':this.options.preview?'Communities in common':`${this.options.displayName?.()||'Profile'}’s communities`;
     const header=content.node('header',title,()=>{
       const node=element('header',{className:'kl-profile-section-heading'},element('h3',{text:title}));
-      if(this.options.preview)node.append(this.#button('View all',()=>this.options.viewAll?.()));
+      if(this.options.preview)node.append(sectionLink(this.#button('View all',()=>this.options.viewAll?.())));
       else {
-        if(own)node.append(this.#button('Explore communities',()=>this.options.open(),'kl-text-button kl-profile-communities-explore'));
+        if(own)node.append(sectionLink(this.#button('Explore communities',()=>this.options.open(),'kl-text-button kl-profile-communities-explore')));
         node.append(profileOptions('Communities options',this.#button('Refresh communities',()=>void this.refresh()),...(own?[this.#button('Edit community privacy',this.options.privacy)]:[])));
       }
       return node;
@@ -162,14 +164,14 @@ export class ProfileCommunities {
     }));
     children.push(list);
     if(state==='retry')children.push(content.node('retry','',retry));
-    if(!this.options.preview&&this.#next!==null)children.push(content.node('more','',()=>this.#button('More communities',button=>{
+    if(!this.options.preview&&this.#next!==null)children.push(content.node('more','',()=>pageAction(this.#button('Load more communities',button=>{
       const seen = new Set(this.#items.map(item=>item.id));
       const restore = preserveProfilePagingPosition(button,()=>{
         const rows = [...this.element.querySelectorAll<HTMLButtonElement>('.kl-profile-community-row')];
         return rows.find(row=>!seen.has(row.dataset.communityId ?? '')) ?? rows.at(-1) ?? this.element.querySelector<HTMLElement>('.kl-profile-read-retry');
       });
       void this.#load(this.#pages+1,restore);
-    })));
+    }))));
     content.show(this.element,children,list,rows);
     for(const button of this.element.querySelectorAll<HTMLButtonElement>('button')){
       const disabled=this.#busy&&!this.#confirmed;

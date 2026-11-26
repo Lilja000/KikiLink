@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.4
+
+- Discover links, catalogue actions, search fields, filters and three-dot menus now use consistent controls across the addon. Loading more results keeps keyboard navigation in the list.
+- Switching profile tabs keeps the tab strip in place, including after scrolling or with reduced motion enabled.
+- The Coming up panel in Feed shows its entire close button. Both Add audio buttons in Music use the same size and icon.
+- Dialogs restore keyboard focus to the control that opened them. Empty search results offer a way to clear the filters.
+- Clearing a submitted lobby search restores the full room list. Escape closes the playlist menu even immediately after it opens.
+
 ## 2.0.3
 
 - Profile photos fill the avatar circle, including small and rectangular uploads. Click the portrait to open the original.

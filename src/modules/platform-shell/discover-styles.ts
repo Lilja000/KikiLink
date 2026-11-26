@@ -29,14 +29,9 @@ export const DISCOVER_STYLES = `
   border-radius: var(--kl-explore-card-radius, 10px); background: var(--kl-surface);
 }
 .kl-discover-page > :is(.kl-discover-grid, .kl-discover-section) { margin-bottom: 12px; }
-.kl-discover-section > header { margin-bottom: 12px; }
+.kl-discover-section > header { margin: -4px 0 8px; }
 .kl-discover-section > header h2 { min-width: 0; margin: 0; font-size: 13px; line-height: 1.4; letter-spacing: -.2px; font-weight: 650; }
-.kl-panel[data-platform-preview="true"] .kl-discover-section > header .kl-discover-link {
-  display: inline-flex; align-items: center; gap: 8px; height: auto; min-height: 0; padding: 0;
-  border: 0; background: transparent; color: var(--kl-text); font-size: 11px; font-weight: 400; line-height: 1.5;
-}
-.kl-discover-section > header .kl-discover-link:hover { color: var(--kl-text); text-decoration: underline; }
-.kl-discover-link > svg { width: 16px; height: 16px; }
+.kl-discover-section > header .kl-discover-link { flex: 0 1 11em; margin-inline-start: auto; }
 .kl-discover-row {
   display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 10px 0;
   border: 0; border-bottom: 1px solid var(--kl-border); background: transparent; color: var(--kl-text);
@@ -116,16 +111,11 @@ export const DISCOVER_STYLES = `
 .kl-discover-note > svg { flex: none; width: 17px; height: 17px; }
 .kl-discover-note > p { flex: 1; min-width: 0; }
 .kl-discover-note strong { display: block; color: var(--kl-text); font-weight: 550; }
-.kl-discover-note > .kl-text-button {
-  flex: none; min-height: var(--kl-explore-control, 36px); padding: 0 12px; border-radius: var(--kl-explore-radius, 8px);
-  background: transparent; font-size: 11px; font-weight: 550;
-}
-.kl-discover-note > .kl-text-button:hover { background: var(--kl-surface-hover); }
+.kl-discover-note > .kl-section-link { flex: none; }
 @container kl-panel (max-width: 700px) {
   .kl-discover-heading { align-items: flex-start; gap: 10px; }
   .kl-discover-heading-actions { gap: 10px; }
   .kl-discover-heading .kl-text-button { padding-inline: 10px; font-size: 11px; }
-  .kl-discover-heading-actions .kl-discover-plans-toggle { width: 40px; padding: 0; }
   .kl-discover-person, .kl-discover-community { min-height: 52px; }
   .kl-discover-grid { grid-template-columns: minmax(0, 1fr); }
   .kl-discover-section { padding: 12px; }
@@ -150,8 +140,8 @@ export const DISCOVER_STYLES = `
 @container kl-panel (width <= 900px) and (height <= 500px) {
   .kl-discover-heading { margin-bottom: 8px; }
 }
-@media (pointer: coarse) {
-  .kl-discover-link { position: relative; }
-  .kl-discover-link::after { content: ''; position: absolute; inset: -12px -4px; }
+@container kl-workspace (max-width: 500px) {
+  .kl-discover-heading-actions .kl-discover-plans-toggle { min-width: 40px; padding-inline: 0; }
+  .kl-discover-plans-toggle > span { display: none; }
 }
 `;

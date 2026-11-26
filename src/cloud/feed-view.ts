@@ -1,3 +1,6 @@
+import { pageAction } from '../modules/platform-shell/page-action';
+import { bindSearchEscape } from "../modules/platform-shell/browse-controls";
+import { preserveSelectionFocus } from "../modules/platform-shell/browse-focus";
 import {MediaUploadIntent} from './media-upload-intent';
 import {confirmCloudBlock} from './account-control-ui';
 import {FeedContentDrafts,FeedContentError,feedContentSource,type FeedContentSource,type FeedContentTarget} from './feed-content-intent';
@@ -11,7 +14,7 @@ import { kikiIcon } from "../modules/link-chat/icons";
 import { FeedCommentsDialog } from "./feed-comments-dialog";
 import { ContentDialog } from "../modules/link-chat/content-dialog";
 import { bindContextMenuGesture } from "../utils/context-menu-gesture";
-import { menuVerticalSpace } from "../utils/anchored-surface";
+import { trackMenuPlacement } from "../utils/anchored-surface";
 import { appendFeedFormattedText } from "./feed-spoilers";
 import { FeedPollView, pollEditor, validPollDraft } from "./feed-poll";
 import { parseMetadata } from "./feed-draft-metadata";
@@ -21,6 +24,16 @@ import { remainingDraftAfterSend } from "../utils/sent-draft";
 import { bindClockText } from "../core/time-format";
 import { MentionPicker } from './mention-picker';
 import type { CloudComment, CloudFeedPage, CloudPage, CloudPost, CloudProfile, CloudReactions, CloudReactionMember, CloudPollDraft } from "./types";
+
+function updateFeedPageAction(button: HTMLButtonElement, replacePage: boolean, appendLabel: string, nextLabel: string): void {
+  const label = replacePage ? nextLabel : appendLabel;
+  if (button.getAttribute("aria-label") !== label) {
+    button.querySelector("span")!.textContent = label;
+    button.setAttribute("aria-label", label);
+    button.title = label;
+  }
+  pageAction(button, replacePage ? "next" : "more");
+}
 
 function insertSpoiler(field: HTMLTextAreaElement): void {
   const start = field.selectionStart, end = field.selectionEnd;
@@ -566,6 +579,7 @@ export class CloudFeedView {
       void this.ui.options.run(() => this.render(this.#features));
     });
     if (clearSearch) {
+      bindSearchEscape(searchForm, search, clearSearch);
       search.addEventListener("input", () => { clearSearch.hidden = !search.value; });
       clearSearch.addEventListener("click", () => {
         search.value = "";
@@ -591,8 +605,10 @@ export class CloudFeedView {
     for (const [key, title] of filters) {
       const button = this.ui.button(title, () => {
         if (key === "saved" && this.options.openSaved) { this.options.openSaved(); return; }
-        if (this.#filter === key) return; this.#filter = key; return this.render(this.#features);
-      });
+        if (this.#filter === key) return;
+        this.#filter = key;
+        return preserveSelectionFocus(this.element, () => this.render(this.#features));
+      }, undefined, "kl-social-button", false);
       button.setAttribute("aria-pressed", String(this.#filter === key));
       if (preview && key !== "all" && key !== "friends" && key !== "following") additionalFilters.push(button);
       else filter.append(button);
@@ -675,7 +691,7 @@ export class CloudFeedView {
     this.#postDeleted = id => {
       if (!seen.delete(id)) return;
       total--; updateStatus();
-      more.querySelector("span")!.textContent = total >= 100 ? "Continue to older posts" : "Load more posts";
+      updateFeedPageAction(more, total >= 100, "Load more posts", "Continue to older posts");
     };
     this.#postCreated = post => {
       this.#contentVersion++;
@@ -691,7 +707,7 @@ export class CloudFeedView {
         const id = Number(last.dataset.postId);
         last.remove(); seen.delete(id); this.#loaded.delete(id); this.#removePoll(id); total--;
       }
-      more.querySelector("span")!.textContent = total >= 100 ? "Continue to older posts" : "Load more posts";
+      updateFeedPageAction(more, total >= 100, "Load more posts", "Continue to older posts");
       updateStatus(); this.#renderDiscussions();
     };
     const load = async () => {
@@ -726,7 +742,7 @@ export class CloudFeedView {
           throw new CloudError("invalid_cursor");
         cursor = page.nextCursor ?? 0; hasMore = page.nextCursor !== null;
         more.hidden = !hasMore;
-        more.querySelector("span")!.textContent = total >= 100 ? "Continue to older posts" : "Load more posts";
+        updateFeedPageAction(more, total >= 100, "Load more posts", "Continue to older posts");
         updateStatus();
       } catch (error) {
         if (generation === this.#generation && feedRecoveryConflict(error)) this.#holdFeed();
@@ -736,7 +752,7 @@ export class CloudFeedView {
         if (generation === this.#generation) { more.disabled = false; loading.hidden = true; }
       }
     };
-    const more = this.ui.button("Load more posts", load, "next", "kl-social-button kl-feed-more");
+    const more = pageAction(this.ui.button("Load more posts", load, undefined, "kl-social-button kl-feed-more"));
     main.append(more);
     if (preview && !saved) main.append(element("details", { className: "kl-feed-circle" },
       element("summary", { text: "From your circle" }), this.#discussion));
@@ -808,7 +824,7 @@ export class CloudFeedView {
         hasMore = !exhausted || [...incoming.keys()].some(id => id < cursor);
       }
       more.hidden = !hasMore;
-      more.querySelector("span")!.textContent = total >= 100 ? "Continue to older posts" : "Load more posts";
+      updateFeedPageAction(more, total >= 100, "Load more posts", "Continue to older posts");
       updateStatus(); this.#renderDiscussions();
       if (anchor?.isConnected && anchorTop !== undefined) scroll.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
       if ((fresh || (this.#fresh && !this.#loaded.has(this.#fresh))) && !this.#query && this.#filter === "all") {
@@ -826,43 +842,20 @@ export class CloudFeedView {
     if (!this.options.platformPreview) return menu;
     const summary = menu.querySelector("summary")!;
     const items = menu.querySelector<HTMLElement>(".kl-social-menu-items")!;
-    let tracking: AbortController | undefined;
+    let release: (() => void) | undefined;
     const stop = () => {
-      tracking?.abort();
-      tracking = undefined;
-      menu.removeAttribute("data-open-above");
-      items.style.removeProperty("--kl-feed-menu-height");
+      release?.();
+      release = undefined;
       if (this.#stopMenuTracking === stop) this.#stopMenuTracking = undefined;
     };
     menu.addEventListener("toggle", () => {
       if (!menu.open) { stop(); return; }
       this.#stopMenuTracking?.();
       const scroller = menu.closest<HTMLElement>(".kl-comment-dialog-scroll, .kl-cloud");
-      if (scroller && getComputedStyle(items).getPropertyValue("--kl-fit-feed-menu").trim()) {
-        const place = () => {
-          if (!menu.isConnected || !menu.open) { stop(); return; }
-          if (!getComputedStyle(items).getPropertyValue("--kl-fit-feed-menu").trim()) { stop(); return; }
-          const frame = scroller.getBoundingClientRect(), trigger = summary.getBoundingClientRect();
-          const viewport = window.visualViewport, viewportTop = viewport?.offsetTop ?? 0;
-          const top = Math.max(frame.top, viewportTop), bottom = Math.min(frame.bottom, viewportTop + (viewport?.height ?? innerHeight));
-          if (trigger.bottom <= top || trigger.top >= bottom) { menu.open = false; return; }
-          const { openAbove, available } = menuVerticalSpace(trigger, top, bottom, items.scrollHeight + items.offsetHeight - items.clientHeight);
-          menu.toggleAttribute("data-open-above", openAbove);
-          items.style.setProperty("--kl-feed-menu-height", `${Math.max(0, available)}px`);
-        };
-        tracking = new AbortController();
+      const enabled = () => Boolean(getComputedStyle(items).getPropertyValue("--kl-fit-feed-menu").trim());
+      if (scroller && enabled()) {
         this.#stopMenuTracking = stop;
-        const options = { signal: tracking.signal, passive: true };
-        scroller.addEventListener("scroll", place, options);
-        window.addEventListener("resize", place, options);
-        window.visualViewport?.addEventListener("resize", place, options);
-        window.matchMedia?.("(hover: hover) and (pointer: fine)").addEventListener("change", place, options);
-        if (typeof ResizeObserver !== "undefined") {
-          const observer = new ResizeObserver(place);
-          observer.observe(scroller);
-          tracking.signal.addEventListener("abort", () => observer.disconnect(), { once: true });
-        }
-        place();
+        release = trackMenuPlacement(menu, summary, items, scroller, "--kl-feed-menu-height", enabled);
       }
       if (menu.open) items.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
     });
@@ -963,12 +956,12 @@ export class CloudFeedView {
             element("span", { className: "kl-reaction-member-emoji", ariaLabel: reaction?.[2] ?? item.reaction, role: "img", text: reaction?.[1] ?? "?" })));
         }
         cursor = page.nextCursor ?? cursor; more.hidden = page.nextCursor === null;
-        more.querySelector("span")!.textContent = count >= 200 ? "Next reactions" : "More reactions";
+        updateFeedPageAction(more, count >= 200, "Load more reactions", "Next reactions");
         status.textContent = !count ? "No reactions to show." : "";
       } catch { if (active) status.textContent = "Could not load reactions. Try again."; }
       finally { busy = false; more.disabled = false; }
     };
-    const more = this.ui.button("More reactions", load, "next");
+    const more = pageAction(this.ui.button("Load more reactions", load));
     const body = element("div", { className: "kl-cloud kl-reaction-details" }, status, list, more);
     anchor.querySelector<HTMLElement>(".kl-social-menu > summary")?.focus({ preventScroll: true });
     dialog.show(this.options.platformPreview ? "Who reacted" : "Reactions", body, () => { active = false; });
@@ -1149,7 +1142,7 @@ export class CloudFeedView {
       renderPoll(); change(); pollSlot.querySelector<HTMLInputElement>("input")?.focus();
     }, "poll") : undefined;
     const spoiler = features.feedSpoilers && !close ? this.ui.button("Spoiler text", () => { if (current()) insertSpoiler(text); }, "eye-off") : undefined;
-    const discard = this.ui.button("Discard draft", () => this.ui.confirm(card, "Discard this saved draft and its attachments? This does not undo a post that may already be on the server.", async () => {
+    const discard = this.ui.button("Discard draft", () => void this.ui.confirm(card, "Discard this saved draft and its attachments? This does not undo a post that may already be on the server.", async () => {
       if (!current() || posting) return;
       const key=this.#postKey(),store=this.#contentDrafts();
       this.#activePosts++; posting = true; text.disabled = true; update();
@@ -1169,7 +1162,7 @@ export class CloudFeedView {
     });
     if(this.#postSourceMissing&&contentSource.required){
       const review=element('div',{className:'kl-cloud-note'},element('p',{text:this.#pendingPost?'We could not identify the Feed used for this older send attempt. Your text and images are kept. Discard the uncertain attempt before preparing a new post.':'Review this saved draft and its attachments before using it in the current Feed.'}));
-      review.append(this.ui.button(this.#pendingPost?'Discard older send attempt':'Use reviewed draft in current Feed',()=>this.ui.confirm(review,this.#pendingPost?'The previous post may already exist. Discard only its send attempt and keep the draft?':'Use this reviewed draft as a new post in the current Feed?',async()=>{
+      review.append(this.ui.button(this.#pendingPost?'Discard older send attempt':'Use reviewed draft in current Feed',()=>void this.ui.confirm(review,this.#pendingPost?'The previous post may already exist. Discard only its send attempt and keep the draft?':'Use this reviewed draft as a new post in the current Feed?',async()=>{
         if(!current()||posting)return;this.#pendingPost=undefined;this.#clientId=crypto.randomUUID();this.#uploaded=new WeakMap();this.#postSourceMissing=false;this.#saveDraft(surface);await this.#draftStore?.flush();if(current())await surface.render(features);
       },'Continue'),'check'));card.append(review);
     }
@@ -1261,7 +1254,7 @@ export class CloudFeedView {
     }
     if (post.author === this.ui.options.client.memberNumber) {
       actions.push(this.ui.button("Edit post", () => this.#postAction(card, post, "edit"), "edit", "kl-social-button kl-feed-write", false),
-        this.ui.button("Delete post", () => this.#postAction(card, post, "delete"), "trash", "kl-social-button kl-feed-write", false));
+        this.ui.button("Delete post", () => this.#postAction(card, post, "delete"), "trash", "kl-social-button kl-feed-write kl-social-danger", false));
     } else actions.push(this.ui.button("Report post", () => this.options.report(card, "post", String(post.id), reportSource), "warning"),
       this.ui.button("Block author", () => confirmCloudBlock(this.ui,card,post.author,()=>card.isConnected&&!this.#recoveryHold,async()=>{await this.render(this.#features);}), "lock"));
     if (this.options.platformPreview) {
@@ -1730,7 +1723,7 @@ export class CloudFeedView {
             store.complete(editKey);comment.text=next.text;comment.mentions=next.mentions??[];comment.revision=next.revision;body.replaceChildren();this.#formatMentionBody(body,next);
           },text=>{store.save(editKey,{action:'edit',type:'comment',targetId:comment.id,postId,preview:comment.text},source,{text,revision});});
         }, "edit"),
-        this.ui.button("Delete", () => this.ui.confirm(row, "Delete this comment?", async () => {
+        this.ui.button("Delete", () => void this.ui.confirm(row, "Delete this comment?", async () => {
           const deleteKey=`delete:comment:${comment.id}`,result=await this.#writeContent(row,deleteKey,{action:'delete',type:'comment',targetId:comment.id,postId,preview:comment.text},source,{revision:comment.revision});if(!result)return;
           store.complete(deleteKey);
           comments.delete(comment.id); rows.delete(comment.id); placeThreads(); row.remove(); total--; this.#commentCount(card, postId, -1);
@@ -1740,7 +1733,7 @@ export class CloudFeedView {
             const context = rows.get(child.id)?.querySelector<HTMLElement>(":scope > .kl-comment-parent");
             if (context) { context.textContent = "Reply to an unavailable comment"; context.setAttribute("aria-label", "Reply to an unavailable comment"); context.removeAttribute("title"); delete context.dataset.replyAuthor; }
           }
-        }), "trash"));
+        }), "trash", "kl-social-button kl-social-danger"));
       else if (comment.author !== this.ui.options.client.memberNumber) actions.push(this.ui.button("Report", () => this.options.report(row, "comment", String(comment.id), reportSource), "warning"));
       row.prepend(element("header", { className: "kl-comment-header" }, this.ui.author(comment.profile, comment.createdAt, undefined, true), this.#feedMenu("Comment options", actions)));
       if (comment.parentId) {
@@ -1768,16 +1761,16 @@ export class CloudFeedView {
         placeThreads();
         if (page.nextCursor !== null && (page.nextCursor <= 0 || (cursor > 0 && page.nextCursor <= cursor))) throw new CloudError("invalid_cursor");
         cursor = page.nextCursor ?? 0; more.hidden = page.nextCursor === null;
-        more.querySelector("span")!.textContent = total >= 100 ? "Next comments" : "More comments";
+        updateFeedPageAction(more, total >= 100, "Load more comments", "Next comments");
       } catch (error) {
         if (box.isConnected && targetAccess && feedRecoveryConflict(error)) this.#holdFeed();
         else if (box.isConnected) throw error;
       } finally { busy = false; }
     };
-    const more = this.ui.button("More comments", async () => {
+    const more = pageAction(this.ui.button("Load more comments", async () => {
       if (total >= 100) { list.replaceChildren(); comments.clear(); rows.clear(); total = 0; }
       await load();
-    }, "next");
+    }));
     const send = this.ui.button("Send comment", async () => {
       if (readOnly() || drafts !== this.#commentDrafts || !box.isConnected) return;
       if (sending || !draft.value.trim()) { draft.focus(); return; }

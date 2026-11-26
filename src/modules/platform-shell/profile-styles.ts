@@ -307,8 +307,7 @@ export const PROFILE_STYLES = `
 :is(.kl-profile-matching-signal,.kl-profile-matching-common-ground) .kl-text-button { flex:none;font-size:11px; }
 .kl-profile-matching-actions { display:flex;flex-wrap:wrap;gap:8px;margin-top:12px; }
 .kl-profile-matching-common-ground .kl-match-reasons { margin-bottom:0;overflow-wrap:anywhere; }
-.kl-profile-overview .kl-profile-communities .kl-profile-section-heading > .kl-text-button { flex:none;min-height:32px;padding:0;border:0;background:none;font-size:11px;font-weight:400; }
-.kl-profile-overview .kl-profile-communities .kl-profile-section-heading > .kl-text-button:hover { text-decoration:underline; }
+.kl-profile-overview .kl-profile-communities .kl-profile-section-heading > .kl-section-link { flex: none; }
 .kl-profile-details { display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;font-size:11px;line-height:1.6;margin:0; }
 .kl-profile-details dt { color:var(--kl-profile-muted); }.kl-profile-details dd { margin:0;overflow-wrap:anywhere; }
 .kl-addon-profile-card .kl-addon-profile-private { margin:0;padding:8px 0;border:0;background:none; }
@@ -762,7 +761,11 @@ export const PROFILE_STYLES = `
 
 /* Read profile overlay */
 .kl-addon-profile-dialog { --kl-profile-sheet-padding:16px;--kl-profile-header-padding:12px; }
-.kl-addon-profile-dialog > .kl-addon-profile-body { min-width:0;padding:0 0 16px;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin; }
+.kl-addon-profile-dialog[open]:has(.kl-platform-profile-tabs) {
+  height:var(--kl-dialog-viewport-height,100dvh);
+  container-type:size;
+}
+.kl-addon-profile-dialog > .kl-addon-profile-body { min-width:0;padding:0 0 16px;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin;scrollbar-gutter:stable; }
 .kl-addon-profile-dialog .kl-addon-profile-card[data-profile-owner] { width:100%;min-width:0;background:transparent;border:0;box-shadow:none;isolation:auto; }
 .kl-addon-profile-dialog .kl-addon-profile-card { font-size:12px;line-height:1.5; }
 .kl-addon-profile-dialog .kl-profile-summary { margin-inline:0;background-color:var(--kl-profile-bg); }
@@ -811,7 +814,11 @@ export const PROFILE_STYLES = `
 .kl-addon-profile-dialog .kl-addon-profile-fact:last-child { padding-inline-end:0; }
 .kl-addon-profile-dialog .kl-addon-profile-fact > span { font-weight:500; }
 .kl-addon-profile-dialog .kl-addon-profile-fact strong { font-weight:550;white-space:normal;overflow-wrap:anywhere; }
-.kl-addon-profile-dialog .kl-addon-profile-card > .kl-platform-profile-sections { padding:0 var(--kl-profile-sheet-padding); }
+.kl-addon-profile-dialog .kl-addon-profile-card > .kl-platform-profile-sections {
+  padding:0 var(--kl-profile-sheet-padding);
+  min-height:max(0px,calc(100cqh - var(--kl-profile-tab-offset,100cqh)));
+  transition-property:none;
+}
 .kl-addon-profile-dialog .kl-addon-profile-card .kl-platform-profile-tabs { position:sticky;top:0;z-index:4;flex-wrap:nowrap;gap:16px;overflow-x:auto;scrollbar-width:none;background:var(--kl-surface); }
 .kl-addon-profile-dialog .kl-addon-profile-card .kl-platform-profile-tabs > button { flex:none;position:relative;height:38px;min-height:auto;padding:0 2px 10px;border:0;font-weight:500;line-height:1.5; }
 .kl-addon-profile-dialog .kl-addon-profile-card .kl-platform-profile-tabs > button[aria-selected="true"]::after { content:"";position:absolute;inset:auto 0 0;height:2px;border-radius:2px;background:var(--kl-accent); }

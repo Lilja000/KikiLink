@@ -1,3 +1,6 @@
+import { bindSearchEscape } from "./browse-controls";
+import { removableFilter } from './applied-filter';
+import { preserveSelectionFocus } from "./browse-focus";
 import {type WorkshopSource} from './workshop-engagement';
 import type {WorkshopInstallSharing,SharedInstallations} from './workshop-install-sharing';
 import {WorkshopSpaceReview} from './workshop-space-review';
@@ -108,33 +111,51 @@ export class WorkshopInstalled {
       clearSearch.classList.add('kl-workshop-search-clear');clearSearch.setAttribute('aria-label','Clear installed search');clearSearch.title='Clear installed search';clearSearch.replaceChildren(kikiIcon('close'));
       const updateClear=()=>{clearSearch.hidden=!search.value;};search.addEventListener('input',event=>{updateClear();if(!(event as InputEvent).isComposing)filter(true);});search.addEventListener('compositionend',()=>filter(true));updateClear();
       const form=element('form',{className:'kl-workshop-search',ariaLabel:'Filter installed packages'},element('div',{className:'kl-workshop-search-field'},searchButton,search,clearSearch),type);
+      bindSearchEscape(form, search, clearSearch);
       form.addEventListener('submit',event=>{event.preventDefault();filter(true);});
       const update=this.#button('Check for updates',()=>this.#checkUpdates());update.classList.add('kl-workshop-update-button');update.prepend(kikiIcon('refresh'));
       const toolbar=element('div',{className:'kl-workshop-library-toolbar'},update,note('Updates are reviewed before any version changes.'));
       const filters=element('div',{className:'kl-workshop-filter-row'});
       if(this.bookmarks){
         const scopes=element('div',{className:'kl-workshop-scopes',role:'group',ariaLabel:'Installed library filters'});
-        for(const [label,saved] of [['All',false],['Saved',true]] as const){const control=this.#button(label,()=>{this.#savedOnly=saved;this.list();});control.setAttribute('aria-pressed',String(this.#savedOnly===saved));scopes.append(control);}
+        for(const [label,saved] of [['All',false],['Saved',true]] as const){const control=this.#button(label,()=>{this.#savedOnly=saved;void preserveSelectionFocus(this.element,()=>this.list());});control.setAttribute('aria-pressed',String(this.#savedOnly===saved));scopes.append(control);}
         filters.append(scopes);
       }
       const sort=element('select',{ariaLabel:'Sort installed creations'});sort.append(element('option',{value:'newest',text:'Newest'}),element('option',{value:'title',text:'Title A–Z'}));sort.value=this.#sort;
       sort.addEventListener('change',()=>{if(!this.active()||this.#busy||!sort.isConnected)return;const restoreFocus=focusedElement(this.element)===sort;this.#sort=sort.value==='title'?'title':'newest';this.list();if(restoreFocus)this.element.querySelector<HTMLSelectElement>('[aria-label="Sort installed creations"]')?.focus({preventScroll:true});});
       filters.append(element('div',{className:'kl-workshop-sort-controls'},element('label',{},'Sort',sort)));
-      const clear=()=>{this.#query='';this.#type='';this.#savedOnly=false;this.list();};
-      const activeFilters=element('div',{className:'kl-workshop-active-filters'});if(this.#query||this.#type||this.#savedOnly){if(this.#type)activeFilters.append(element('span',{className:'kl-workshop-tag',text:this.#type}));activeFilters.append(this.#button('Clear filters',clear));}
+      const clear=()=>{
+        this.#query='';this.#type='';this.#savedOnly=false;
+        this.list();
+        this.element.querySelector<HTMLInputElement>('.kl-workshop-search-field input')?.focus({preventScroll:true});
+      };
+      const activeFilters=element('div',{className:'kl-workshop-active-filters'});
+      if (this.#type) {
+        const button = removableFilter(this.#button(this.#type, () => {
+          type.value = '';
+          filter(true);
+        }), this.#type);
+        button.classList.add('kl-workshop-tag');
+        activeFilters.append(button);
+      }
       this.element.append(element('h2',{className:'kl-workshop-installed-title',text:'Installed'}),form,filters,activeFilters,toolbar);
       const saved=this.#savedOnly?this.bookmarks?.list():undefined;
       const installed=this.library.list(),byId=new Map(installed.map(item=>[item.id,item])),ready=new Map<string,boolean>();
       const usable=(item:InstalledWorkshopPackage,path=new Set<string>()):boolean=>{if(ready.has(item.id))return ready.get(item.id)!;if(path.has(item.id))return false;const next=new Set(path).add(item.id);const valid=item.enabled&&item.release.permissions.every(permission=>item.grantedPermissions.includes(permission))&&(item.release.deps??[]).every(dep=>{const child=byId.get(dep.id);return !!child&&compareWorkshopVersions(child.release.version,dep.minVersion)>=0&&usable(child,next);});ready.set(item.id,valid);return valid;};
       const query=this.#query.normalize('NFKC').trim().toLowerCase();
+      const filtered=!!(query||this.#type||this.#savedOnly);
       const items=installed.filter(item=>(!this.#type||item.release.type===this.#type)&&(!saved||saved.includes(item.id))&&`${item.release.title} ${item.authorName} ${item.release.tags.join(' ')}`.normalize('NFKC').toLowerCase().includes(query));
       items.sort((a,b)=>this.#sort==='title'?a.release.title.localeCompare(b.release.title)||a.id.localeCompare(b.id):b.installedAt-a.installedAt||a.id.localeCompare(b.id));
       this.element.append(element('p',{className:'kl-workshop-results',role:'status',text:`${items.length} ${items.length===1?'creation':'creations'}`}));
       if(!items.length){
-        const clearFilters=this.#button('Clear filters',clear),browse=this.browse?this.#button('Browse Workshop',this.browse):undefined;browse?.classList.add('kl-workshop-action-primary');
-        this.element.append(element('section',{className:'kl-workshop-empty'},kikiIcon('brush'),element('h2',{text:'Your library starts here'}),note('Try another search, clear a filter, or browse the Workshop.'),clearFilters,browse),this.#menu.element);
+        const action=filtered?this.#button('Clear filters',clear):this.browse&&this.#button('Browse Workshop',this.browse);
+        action?.classList.add('kl-text-button--primary');
+        this.element.append(element('section',{className:'kl-workshop-empty kl-explore-empty kl-explore-catalog-empty'},kikiIcon(filtered?'search':'brush'),
+          element('h2',{text:filtered?'No matching installed creations':'No installed creations yet'}),
+          note(filtered?'Try another search or clear your filters.':'Creations you install from Workshop will appear here.'),action),this.#menu.element);
         return;
       }
+      if(filtered)activeFilters.append(this.#button('Clear filters',clear));
       const list=element('div',{className:'kl-workshop-installed-list'}),listToken=this.#token;
       const unchanged=(item:InstalledWorkshopPackage)=>{try{return this.active()&&listToken===this.#token&&installedFingerprint(this.library.get(item.id))===installedFingerprint(item);}catch{return false;}};
       for(const item of items){

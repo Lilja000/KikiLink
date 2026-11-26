@@ -1,3 +1,6 @@
+import { pageAction } from '../modules/platform-shell/page-action';
+import { onDialogBackdropClick } from "../utils/dialog-backdrop";
+import { sectionLink } from "../modules/platform-shell/section-link";
 import { GroupManagementActions, type GroupManagementSource, type GroupManagementDraft } from "./group-management-intent";
 import {SocialUI} from './social-ui';
 import { element } from "./dom";
@@ -109,7 +112,7 @@ export class MailboxPopover {
     }
     this.button.addEventListener("click", () => { if (this.element.open) this.close(); else void this.open(); });
     this.element.addEventListener("cancel", event => { event.preventDefault(); this.close(); });
-    this.element.addEventListener("click", event => { if (event.target === this.element) this.close(); });
+    onDialogBackdropClick(this.element, () => this.close());
     this.element.addEventListener("close", () => { if (!this.element.open) this.#resetPopover(); });
     this.#unsubscribe = (options.notifications ?? community).subscribe(() => {
       if (this.#destroyed) return;
@@ -834,8 +837,9 @@ export class MailboxPopover {
     if (rowsTarget !== list) list.append(rowsTarget);
     if (!unavailableMail) {
       if (!compact) {
-        if (truncated) list.append(this.#action("Load more", "more", () => { this.#displayLimit += 40; this.render(); }, { local: true }));
-        else if (paged && !showLoadError) list.append(this.#action("Load more", "more", () => this.community.moreMail()));
+        const moreLabel = mailOnly ? "Load more letters" : "Load more updates";
+        if (truncated) list.append(pageAction(this.#action(moreLabel, "more", () => { this.#displayLimit += 40; this.render(); }, { local: true })));
+        else if (paged && !showLoadError) list.append(pageAction(this.#action(moreLabel, "more", () => this.community.moreMail())));
       }
       if (!mailOnly && this.#groupActions && this.#groupUI) {
         const session = inline ? this.#inlineSession : this.#bellSession;
@@ -852,7 +856,7 @@ export class MailboxPopover {
       }
     }
     const footer = !inline && preview && this.options.openInbox ? element("footer", { className: "kl-inbox-footer" },
-      this.#action("Open Inbox", "open-inbox", () => { this.close(); this.options.openInbox?.(); }, { icon: "arrow-right", local: true })) : undefined;
+      sectionLink(this.#action("Open Inbox", "open-inbox", () => { this.close(); this.options.openInbox?.(); }, { local: true }))) : undefined;
     if (toolbar) {
       surface.querySelector(".kl-mailbox-header")?.replaceWith(header);
       surface.querySelector(".kl-mailbox-status")?.replaceWith(status);

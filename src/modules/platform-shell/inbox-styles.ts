@@ -105,9 +105,6 @@ export const INBOX_STYLES = `
 .kl-mailbox-popover.kl-inbox-surface .kl-mailbox-empty { min-height:0; padding:28px 12px; font-size:var(--kl-type-body); }
 .kl-mailbox-popover.kl-inbox-surface .kl-mailbox-empty strong { color:inherit; font-weight:400; }
 .kl-inbox-footer { padding:4px; border-top:1px solid var(--kl-border); }
-.kl-inbox-surface .kl-inbox-footer>.kl-text-button { min-height:36px; justify-content:center; gap:8px; border:0; border-radius:8px; color:var(--kl-text); background:transparent; font-size:var(--kl-type-sm); }
-.kl-inbox-surface .kl-inbox-footer>.kl-text-button:hover { background:var(--kl-surface-hover); }
-.kl-inbox-footer>.kl-text-button>.kl-icon { order:1; width:15px; height:15px; }
 @container kl-panel (700px < width <= 1100px) {
   .kl-inbox-page { --kl-inbox-inset:16px; }
 }
@@ -135,7 +132,6 @@ export const INBOX_STYLES = `
   .kl-mailbox-popover.kl-inbox-surface { --kl-inbox-tool-size:36px; }
   .kl-mailbox-popover.kl-inbox-surface .kl-mailbox-header { padding:4px 10px; }
   .kl-mailbox-popover.kl-inbox-surface .kl-mailbox-item>.kl-mailbox-icon-button { --kl-inbox-tool-size:36px; }
-  .kl-inbox-surface .kl-inbox-footer>.kl-text-button { min-height:40px; }
 }
 @media (pointer:coarse) {
   .kl-inbox-surface,.kl-mailbox-popover.kl-inbox-surface { --kl-inbox-search-height:44px; --kl-inbox-tool-size:44px; }

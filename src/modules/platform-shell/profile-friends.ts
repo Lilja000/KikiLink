@@ -1,3 +1,4 @@
+import { pageAction } from './page-action';
 import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { ProfileReadContent } from './profile-read-content';
 import { profileOptions } from './profile-controls';
@@ -146,7 +147,7 @@ export class ProfileFriends {
     }));
     children.push(list);
     if(retry)children.push(content.node('retry','',()=>this.#button('Retry',()=>void this.refresh(),'kl-text-button kl-profile-read-retry')));
-    if(this.#next)children.push(content.node('more','',()=>this.#button('More friends',button=>{
+    if(this.#next)children.push(content.node('more','',()=>pageAction(this.#button('Load more friends',button=>{
       const seen=new Set(this.#items.map(item=>String(item.memberNumber)));
       const restore=preserveProfilePagingPosition(button,()=>{
         const rows=[...this.element.querySelectorAll<HTMLButtonElement>('.kl-profile-friend-row')];
@@ -154,7 +155,7 @@ export class ProfileFriends {
           this.element.querySelector<HTMLElement>('.kl-profile-read-retry')??this.element.querySelector('summary');
       });
       void this.#load(this.#pages+1,restore);
-    })));
+    }))));
     if(this.#pages>=20&&!message)children.push(content.node('limit','',()=>element('p',{className:'kl-profile-section-note',text:'Showing up to 60 shared friends.'})));
     content.show(this.element,children,list,rows);
     for(const button of this.element.querySelectorAll<HTMLButtonElement>('button')) {

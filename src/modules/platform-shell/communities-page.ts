@@ -1,3 +1,8 @@
+import { focusPageResults, pageResult } from './page-result-focus';
+import { pageAction } from './page-action';
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
+import { removableFilter } from './applied-filter';
+import { sectionLink } from './section-link';
 import { memberDisplayName } from "../../cloud/profile-data";
 import type { CloudProfile } from "../../cloud/types";
 import { initials } from "../../cloud/social-ui";
@@ -21,8 +26,9 @@ import { renderCommunityManagerPanel } from './community-manager-panel';
 import { renderCommunityArchive, renderCommunityLifecycleReview, renderCommunityOwnership } from './community-lifecycle-panel';
 import { communityIcon, communityTags, type CommunityDesign } from './community-design';
 import { BrowseFilters, iconButton, searchField } from './browse-controls';
+import { shareLinkFields } from './share-link-fields';
 import { fitPanelDialog } from './panel-dialog-layout';
-import { revealDetailSection } from './detail-section-navigation';
+import { revealDetailSection, revealHorizontalTab } from './detail-section-navigation';
 import { eventRange, localZone } from './event-time';
 import type { CalendarEvent } from './events-page';
 import { calendarRead } from '../../cloud/calendar-mutation-intent';
@@ -687,8 +693,12 @@ export class CommunitiesPage {
     if (this.#creating) content.append(element('p', { className: 'kl-cm-status', text: 'Checking community creation…' }));
     if (!this.#supported && !this.#directoryLoadError && !this.#directoryLoading) { if(this.#editor&&this.#editorVisible)this.#renderEditor(content);if(this.#loading)content.append(this.#loadingCards());else content.append(this.#emptyState('users','Communities are not available yet','Update the Cloud server to enable Communities.')); return; }
     if (this.#confirm) content.append(element('div', { className: 'kl-cm-confirm' }, element('p', { text: this.#confirm.text }), this.#button('confirm', 'Confirm', this.#confirm.run, true), this.#button('cancel-confirm', 'Cancel', () => { this.#confirm = undefined; this.#render(); })));
-    if (!this.#selected) this.#renderList(content);
-    else if (this.#community) this.#renderCommunity(content, this.#community);
+    if (!this.#selected) {
+      this.#renderList(content);
+      const strip = content.querySelector<HTMLElement>('.kl-cm-tabs');
+      const selected = strip?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]');
+      if (strip && selected) revealHorizontalTab(selected, strip, 2);
+    } else if (this.#community) this.#renderCommunity(content, this.#community);
     else if (this.#loading) content.append(this.#loadingCards());
     else {
       const empty = this.#emptyState(this.#error ? 'warning' : 'users', this.#error ? 'Community couldn’t load' : 'Community unavailable', this.#error || 'It may have been removed or your access may have changed.');
@@ -798,11 +808,9 @@ export class CommunitiesPage {
       element('p', { className: 'kl-cm-context-event-status', text: this.#eventsEnabled ? 'Loading upcoming events…' : 'Events are unavailable.' }));
     preview.dataset.state = this.#eventsEnabled ? 'loading' : 'unavailable';
     preview.setAttribute('aria-live', 'polite');
-    const link = (action: string, text: string, run: () => void, icon?: KikiLinkIconName) => {
+    const link = (action: string, text: string, run: () => void) => {
       const button = this.#button(action, text, () => { if (current()) { close(); run(); } });
-      button.classList.add('kl-cm-context-link');
-      if (icon) button.append(kikiIcon(icon));
-      return button;
+      return sectionLink(button);
     };
     const openSection = (tab: 'active' | 'about') =>
       this.#content.querySelector<HTMLButtonElement>(`.kl-cm-sections [data-community-action="tab-${tab}"]`)?.click();
@@ -823,7 +831,7 @@ export class CommunitiesPage {
           element('section', {}, heading('In this community', kikiIcon('calendar')), preview),
           element('section', { className: 'kl-cm-context-members-section' }, heading('Online now', typeof community.onlineCount === 'number' ?
             element('span', { className: 'kl-cm-context-online', text: `${community.onlineCount} online` }) : undefined),
-            roster, link('context-members', 'Explore members', () => openSection('active'), 'arrow-right')),
+            roster, link('context-members', 'Explore members', () => openSection('active'))),
           element('hr'),
           element('section', { className: 'kl-cm-context-rules-section' }, heading('House rules', kikiIcon('heart', 'kl-icon', true)),
             community.rules.length ? element('ul', {}, ...community.rules.slice(0, 3).map(text => element('li', { text }))) :
@@ -833,7 +841,7 @@ export class CommunitiesPage {
       }
     } else {
       const friends = this.options.onlineFriends?.().filter(friend => !this.options.blocked?.(friend.memberNumber)) ?? [];
-      const people = this.options.openPeople ? link('context-people', 'Explore people', () => this.options.openPeople?.(), 'arrow-right') : null;
+      const people = this.options.openPeople ? link('context-people', 'Explore people', () => this.options.openPeople?.()) : null;
       const refresh = this.#button('context-refresh', 'Refresh communities', () => {
         if (!current()) return;
         dismiss();
@@ -860,11 +868,7 @@ export class CommunitiesPage {
     drawer.addEventListener('keydown', event => { if (event.key === 'Escape') event.stopPropagation(); });
     drawer.addEventListener('cancel', event => { event.preventDefault(); dismiss(); });
     drawer.addEventListener('close', close);
-    drawer.addEventListener('click', event => {
-      if (event.target !== drawer) return;
-      const bounds = drawer.getBoundingClientRect();
-      if (event.clientX < bounds.left || event.clientX >= bounds.right || event.clientY < bounds.top || event.clientY >= bounds.bottom) dismiss();
-    });
+    onDialogBackdropClick(drawer, dismiss);
     this.#contextDrawer = drawer;
     this.#closeDialog = close;
     this.#overlays.append(drawer);
@@ -991,15 +995,18 @@ export class CommunitiesPage {
     if (filtered) {
       const selected = element('div', { className: 'kl-cm-active-filters', ariaLabel: 'Selected filters' });
       const add = (key: string, label: string, clear: () => void) => {
-        const button = this.#button(`remove-filter-${key}`, '', () => { clear(); this.#list = []; void this.refresh(); });
-        button.setAttribute('aria-label', `Remove ${label} filter`);
-        button.append(element('span', { text: label }), kikiIcon('close')); selected.append(button);
+        const button = this.#button(`remove-filter-${key}`, label, () => {
+          this.#search.focus({ preventScroll: true });
+          clear(); this.#list = []; void this.refresh();
+        });
+        selected.append(removableFilter(button, label));
       };
       if (this.#activeOnly === '1') add('active', 'Active now', () => { this.#activeOnly = '0'; });
       if (this.#withEvents === '1') add('events', 'Upcoming events', () => { this.#withEvents = '0'; });
       if (this.#listLanguage) add('language', this.#listLanguage, () => { this.#listLanguage = ''; });
-      selected.append(this.#button('clear-filters', 'Clear all', () => { reset(); this.#search.focus({ preventScroll: true }); }));
-      root.append(selected);
+      if (this.#list.length || this.#directoryLoading || this.#directoryLoadError)
+        selected.append(this.#button('clear-filters', 'Clear filters', () => { reset(); this.#search.focus({ preventScroll: true }); }));
+      if (selected.childElementCount) root.append(selected);
     }
     if (this.#directoryLoading) {
       if (checkingCapability) root.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
@@ -1032,17 +1039,21 @@ export class CommunitiesPage {
       const empty=this.#emptyState(filtered?'search':'users',filtered?'No communities found':'No communities yet',filtered?'Try a different name or clear your filters to find your people.':this.#scope==='mine'?'Find your people in Discover, or create a community.':'Communities shared with you will appear here.');
       if(filtered){
         empty.classList.add('kl-explore-empty');
-        empty.append(this.#button('reset-list','Reset filters',()=>{reset();this.#search.focus({preventScroll:true});},true));
+        empty.append(this.#button('reset-list','Clear filters',()=>{reset();this.#search.focus({preventScroll:true});},true));
       }
       root.append(empty);
     }
-    if (this.#cursor !== null) root.append(this.#button('more', 'More communities', () => void this.refresh(true)));
+    if (this.#cursor !== null) {
+      const more = pageAction(this.#button('more', 'Load more communities', () => void focusPageResults(this.#content, () => this.refresh(true))));
+      more.disabled ||= this.#loading;
+      root.append(more);
+    }
   }
   #card(c: Community): HTMLElement {
-    const title = this.#button(`title-${c.id}`, c.name, () => this.#openCard(c.id));
+    const title = pageResult(this.#button(`title-${c.id}`, c.name, () => this.#openCard(c.id)), c.id);
     title.title = c.name;
     const detail = this.#button(`open-${c.id}`, c.membership === 'invited' ? 'Review invitation' : 'Details', () => this.#openCard(c.id));
-    detail.classList.add('kl-cm-card-details');
+    detail.classList.add('kl-cm-card-details', 'kl-catalog-details');
     detail.append(kikiIcon('arrow-right'));
     detail.setAttribute('aria-label', c.membership === 'invited' ? `Review invitation to ${c.name}` : `View ${c.name} details`);
     const actions = element('div', { className: 'kl-cm-card-actions' });
@@ -1200,27 +1211,14 @@ export class CommunitiesPage {
     const {dialog, close} = this.#dialog('Share community');
     dialog.classList.remove('kl-cm-dialog');
     dialog.classList.add('kl-cm-share-dialog', 'kl-explore-share-dialog');
-    const input = element('input', { ariaLabel: 'Community link' });
-    input.value = link; input.readOnly = true;
-    const status = element('p'); status.setAttribute('role', 'status');
-    const copy = this.#button('copy-community-link', 'Copy community link', () => {
-      const current = () => opener.isConnected && input.isConnected && dialog.open && this.#valid(this.#token) && this.client.connected;
-      if (!current()) return;
-      const fallback = () => {
-        if (!current()) return;
-        status.textContent = 'Select and copy the link.';
-        input.focus(); input.select();
-      };
-      if (!navigator.clipboard) { fallback(); return; }
-      void navigator.clipboard.writeText(link).then(() => { if (current()) status.textContent = 'Link copied.'; }).catch(fallback);
-    }, true);
+    const fields = shareLinkFields('Community link', link, 'This link opens the community in KikiLink on the same Cloud.',
+      () => opener.isConnected && dialog.open && this.#valid(this.#token));
+    const copy = this.#button('copy-community-link', 'Copy community link', fields.copy, true);
     dialog.replaceChildren(
       element('header', { className: 'kl-explore-share-heading' },
         element('div', {}, element('span', { className: 'kl-explore-share-eyebrow', text: 'KIKILINK' }), element('h2', { text: 'Share community' })),
         iconButton('Close dialog', 'close', close)),
-      element('div', { className: 'kl-explore-share-body' },
-        element('p', { text: 'This link opens the community in KikiLink on the same Cloud.' }),
-        element('label', {}, element('span', { text: 'Community link' }), input), status),
+      fields.body,
       element('footer', { className: 'kl-explore-share-footer' }, this.#button('close-community-share', 'Close', close), copy),
     );
     dialog.addEventListener('keydown', event => { if (event.key === 'Escape') event.stopPropagation(); });
@@ -1229,8 +1227,7 @@ export class CommunitiesPage {
     }, { once: true });
     dialog.showModal();
     fitPanelDialog(dialog);
-    input.focus({ preventScroll: true });
-    input.select();
+    fields.select();
   }
   #visibility(c: Community): HTMLElement {
     const text = c.access === 'request' ? 'Request only' : c.access === 'private' ? 'Private' : 'Public';
@@ -1278,7 +1275,7 @@ export class CommunitiesPage {
       if (this.options.openEvents) this.options.openEvents(c.id);
       else this.#switchTab('events');
     });
-    all.classList.add('kl-cm-subtle');
+    sectionLink(all);
     const browse = overview || this.options.openEvents ? all : null;
     const actions = !overview && this.options.createEvent && this.#canCreateEvent(c)
       ? element('div', { className: 'kl-cm-event-preview-actions' }, browse, this.#createEventButton(c))
@@ -1365,7 +1362,7 @@ export class CommunitiesPage {
     if (this.#previewError) overview.append(element('div', { className: 'kl-cm-status' },
       element('span', { text: this.#previewError }), this.#button('retry-previews', 'Retry', () => void this.refresh())));
     const members = this.#button('overview-members', 'View members', () => this.#openSection('active', members));
-    members.classList.add('kl-cm-subtle');
+    sectionLink(members);
     overview.append(element('div', { className: 'kl-cm-pulse' },
       typeof c.onlineCount === 'number' ? element('span', { className: c.onlineCount ? 'kl-cm-pulse-online kl-cm-card-online' : 'kl-cm-pulse-online kl-cm-card-online kl-cm-card-online--quiet' }, element('strong', { text: String(c.onlineCount) }), ' online') : null,
       members,
@@ -1375,7 +1372,7 @@ export class CommunitiesPage {
     const side = element('aside', { className: 'kl-cm-overview-side', ariaLabel: 'Community information' });
     if (this.#eventsEnabled) this.#previewEvents(main, c, true);
     const openChannels = this.#button('overview-channels', 'Open channels', () => this.#openSection('channels', openChannels));
-    openChannels.classList.add('kl-cm-subtle');
+    sectionLink(openChannels);
     const channels = element('section', { className: 'kl-cm-panel' },
       element('header', {}, element('h2', { text: 'Conversations' }), openChannels));
     for (const channel of this.#channels.slice(0, 3)) {
@@ -1392,7 +1389,7 @@ export class CommunitiesPage {
     main.append(channels);
     if (this.#spacesEnabled) {
       const all = this.#button('spaces', 'All spaces', () => this.options.openSpaces?.(c.id));
-      all.classList.add('kl-cm-subtle');
+      sectionLink(all);
       const spaces = element('section', { className: 'kl-cm-panel' },
         element('header', {}, element('h2', { text: 'Community Spaces' }), this.options.openSpaces ? all : null));
       for (const space of this.#spaces) {
@@ -1412,7 +1409,7 @@ export class CommunitiesPage {
     }
     if (c.rules.length) {
       const rules = this.#button('overview-about', 'Read all rules', () => this.#openSection('about', rules));
-      rules.classList.add('kl-cm-subtle');
+      sectionLink(rules);
       side.append(element('section', { className: 'kl-cm-panel' }, element('h2', { text: 'House rules' }),
         element('ol', {}, ...c.rules.slice(0, 3).map(rule => element('li', { text: rule }))), rules));
     }
@@ -1568,7 +1565,7 @@ export class CommunitiesPage {
       if (!this.#archives.length && !this.#loading) rows.append(element('p', { className: 'kl-cm-empty', text: 'No archived channels.' }));
     } else if (this.#tab === 'audit') {
       root.append(element('div', { className: 'kl-cm-rows' }, ...this.#audit.map(e => element('article', {}, element('strong', { text: `${this.#name(e.actor)} · ${e.action.replaceAll('_', ' ')}` }), element('small', { text: new Date(e.createdAt).toLocaleString() })))));
-      if (this.#cursor !== null) root.append(this.#button('more-audit', 'Older activity', () => void this.refresh(true)));
+      if (this.#cursor !== null) root.append(pageAction(this.#button('more-audit', 'Older activity', () => void this.refresh(true)), 'next'));
     } else {
       if(this.#directoryEnabled){
         const role=element('select',{ariaLabel:'Filter member roles'});role.dataset.communityField='member-role';for(const[value,text]of [['','All roles'],...Object.entries(roles)]){const o=element('option',{text:text!});o.value=value!;role.append(o);}role.value=this.#memberRole;role.addEventListener('change',()=>{this.#memberRole=role.value;this.#cursor=null;void this.refresh();});
@@ -1632,7 +1629,7 @@ export class CommunitiesPage {
             element('p', { text: filtered ? this.#memberOnline === '1' ? 'Try another name or role, or clear the online filter.' : 'Try another name or role.' : 'Members will appear here when available.' })));
         } else rows.append(element('p', { text: 'No members in this view.' }));
       }
-      if (this.#cursor !== null) root.append(this.#button('more-members', 'Next members', () => void this.refresh(true)));
+      if (this.#cursor !== null) root.append(pageAction(this.#button('more-members', 'Next members', () => void this.refresh(true)), 'next'));
     }
   }
   #currentDirectoryMember(communityId: string, memberNumber: number): { community: Community; member: Member } | undefined {
@@ -1954,7 +1951,7 @@ export class CommunitiesPage {
     this.#channelOptions = dialog; header.append(options); thread.append(dialog);
     if(this.#historyTimeline.active){this.#historyTimeline.mount(thread);if(this.#historyTimeline.active){this.#historyTimeline.sync();return;}}
     if (this.#historyBefore || this.#target) thread.append(this.#button('latest-messages', 'Back to latest', () => { this.#target = undefined; this.#historyBefore = 0; this.#channelScroll = undefined; this.#scrollToChannel = true; void this.refresh(); }));
-    if (!this.#loading && this.#messageCursor !== null) thread.append(this.#button('older-messages', 'Older messages', () => void this.#older()));
+    if (!this.#loading && this.#messageCursor !== null) thread.append(pageAction(this.#button('older-messages', 'Older messages', () => void this.#older()), 'older'));
     const messages = element('div', { className: 'kl-cm-messages', tabIndex: 0, ariaLabel: 'Channel messages' });
     messages.dataset.channelId = ch.id; thread.append(messages);
     if (this.#rich && !this.#loading) this.#reactions = new MessageReactions(this.client, messages, { base: `/v1/communities/${c.id}/channels/${ch.id}`, kind: 'channel', enabled: () => this.#valid(this.#token)&&!this.#channelHold, channel:{communityId:c.id,channelId:ch.id,label:`${c.name} / #${ch.name}`,source:this.#mutationSources.get(ch)!,actions:this.#channelActions,changed:()=>{if(!this.#destroyed)this.#render();}} });

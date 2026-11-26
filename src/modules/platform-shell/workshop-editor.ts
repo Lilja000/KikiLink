@@ -1,3 +1,4 @@
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
 import type {WorkshopAutosaveStatus} from './workshop-autosave';
 import type {WorkshopDraftState} from './workshop-drafts';
 import {checkedCommunityTemplate} from '../../../cloud/shared/community-template.mjs';
@@ -30,11 +31,7 @@ export class WorkshopEditor {
     this.#render();
     this.element.addEventListener('keydown',event=>event.stopPropagation());
     this.element.addEventListener('cancel',event=>{event.preventDefault();this.#requestClose(focusedElement(this.element));});
-    this.element.addEventListener('click',event=>{
-      if(event.target!==this.element)return;
-      const bounds=this.element.getBoundingClientRect();
-      if(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom)this.#requestClose(focusedElement(this.element));
-    });
+    onDialogBackdropClick(this.element, () => this.#requestClose(focusedElement(this.element)));
   }
   show(status:HTMLElement):void {
     if(status.parentElement!==this.#notices)this.#notices.append(status);

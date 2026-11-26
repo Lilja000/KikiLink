@@ -67,7 +67,7 @@ it("edits and hides owned group messages locally without a Cloud write, includin
 });
 
 it("opens the compact message menu from the keyboard and returns focus to its trigger", async () => {
-  const { bubbles, menu } = await setup(false, true);
+  const { bubbles, menu, request } = await setup(false, true);
   const row = bubbles[1]!.closest<HTMLElement>(".kl-group-message")!;
   expect(row.hasAttribute("data-grouped")).toBe(true);
   expect(row.querySelector<HTMLButtonElement>(".kl-social-name")!.tabIndex).toBe(-1);
@@ -83,6 +83,17 @@ it("opens the compact message menu from the keyboard and returns focus to its tr
   expect(menu.hidden).toBe(true);
   expect(more.getAttribute("aria-expanded")).toBe("false");
   expect(document.activeElement).toBe(more);
+  for (const opener of [more, bubbles[1]!]) {
+    if (opener === more) more.click();
+    else opener.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    button(menu, "Delete message").click();
+    const review = row.querySelector<HTMLElement>(".kl-social-confirm")!;
+    expect(document.activeElement).toBe(button(review, "Cancel"));
+    button(review, "Cancel").click();
+    expect(review.isConnected).toBe(false);
+    expect(document.activeElement).toBe(opener);
+  }
+  expect(request.mock.calls.every(([method]) => method === "GET")).toBe(true);
 });
 
 it("keeps history tools behind one disclosure, with Escape focus and existing access checks", async () => {

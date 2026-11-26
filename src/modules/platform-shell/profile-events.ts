@@ -1,3 +1,4 @@
+import { pageAction } from './page-action';
 import { calendarCategories, legacyCalendarCategories } from '../../../cloud/shared/calendar-categories.mjs';
 import { profileOptions } from './profile-controls';
 import { CloudError, type CloudClient } from '../../cloud/client';
@@ -113,7 +114,7 @@ export class ProfileEvents {
       });
       this.element.append(card);
     }
-    if(this.#next)this.element.append(this.#button('More events',()=>void this.#load(this.#pages+1)));if(this.#limited)this.element.append(element('p',{className:'kl-profile-section-note',text:'Showing up to 200 visible events. Open Events to explore more.'}));
+    if(this.#next)this.element.append(pageAction(this.#button('Load more events',()=>void this.#load(this.#pages+1))));if(this.#limited)this.element.append(element('p',{className:'kl-profile-section-note',text:'Showing up to 200 visible events. Open Events to explore more.'}));
     for(const button of this.element.querySelectorAll('button'))button.disabled=this.#busy;
   }
 }

@@ -60,3 +60,30 @@ it("lets an existing full-width sheet override the default fit and leaves detach
   expect(dialog.element.style.maxWidth).toBe("");
   dialog.destroy();
 });
+
+it("keeps the details dialog open when a drag crosses its edge and closes it on a backdrop click", () => {
+  const dialog = new ContentDialog();
+  document.body.append(dialog.element);
+  const content = document.createElement("p");
+  dialog.show("Details", content);
+  vi.spyOn(dialog.element, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 100, 200, 200));
+  const press = (target: HTMLElement, x: number) => target.dispatchEvent(new PointerEvent("pointerdown", {
+    bubbles: true, isPrimary: true, button: 0, clientX: x, clientY: 150,
+  }));
+  const click = (x: number) => dialog.element.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: x, clientY: 150 }));
+
+  press(content, 140);
+  click(80);
+  expect(dialog.element.open).toBe(true);
+  press(dialog.element, 80);
+  click(105);
+  expect(dialog.element.open).toBe(true);
+  press(dialog.element, 80);
+  dialog.element.dispatchEvent(new PointerEvent("pointercancel"));
+  click(80);
+  expect(dialog.element.open).toBe(true);
+  press(dialog.element, 80);
+  click(80);
+  expect(dialog.element.open).toBe(false);
+  dialog.destroy();
+});

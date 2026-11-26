@@ -1,3 +1,5 @@
+import { PAGE_ACTION_STYLES } from '../platform-shell/page-action';
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
 import { markAvatarPresence } from "./avatar-presence";
 import { openLocalMessageEditor } from "../platform-shell/local-message-editor";
 import { DirectPresentation } from "./direct-presentation";
@@ -21,6 +23,15 @@ import { loadDiscoverEvents } from '../platform-shell/discover-events';
 import { loadDiscoverPeople } from '../platform-shell/discover-people';
 import { loadDiscoverSpaces } from '../platform-shell/discover-spaces';
 import { loadDiscoverWorkshop } from '../platform-shell/discover-workshop';
+import { DIALOG_CLOSE_CONTROL_STYLES } from '../platform-shell/dialog-close-control-styles';
+import { SECTION_LINK_STYLES } from '../platform-shell/section-link';
+import { ACTION_MENU_STYLES } from '../platform-shell/action-menu-styles';
+import { OVERFLOW_CONTROL_STYLES } from '../platform-shell/overflow-control-styles';
+import { APPLIED_FILTER_STYLES } from '../platform-shell/applied-filter';
+import { SCOPE_FILTER_STYLES } from '../platform-shell/scope-filter-styles';
+import { TOOLBAR_SELECT_STYLES } from '../platform-shell/toolbar-select-styles';
+import { DIALOG_ACTION_STYLES } from '../platform-shell/dialog-action-styles';
+import { INTERACTION_STYLES } from '../platform-shell/interaction-styles';
 import { DISCOVER_STYLES } from '../platform-shell/discover-styles';
 import type { MatchResourceKind } from '../../../cloud/shared/matching-resources.mjs';
 import { ProfileMatchingSignal } from '../platform-shell/profile-matching-signal';
@@ -131,6 +142,7 @@ import {
   KIKILINK_DISTRIBUTION,
 } from "../../core/distribution";
 import { element, focusedElement, reconcileChildren } from "../../utils/dom";
+import { trackMenuPlacement } from "../../utils/anchored-surface";
 import { InteractiveList } from "../../utils/interactive-list";
 import { captureHistoryReadingAnchor } from "../../utils/history-reading-anchor";
 import { nativeFriendSnapshotIsFresh } from "../../bc/friend-state";
@@ -515,6 +527,7 @@ export class LinkChatView {
   #musicSource: "device" | "cloud" | "session" = "device";
   #musicActions: MusicLibraryActions | undefined;
   #openMusicMenu: HTMLDetailsElement | undefined;
+  #releaseMusicMenuFit: (() => void) | undefined;
   #musicAddDialog: MusicDialog | undefined;
   #musicQueueSignature = "";
   #musicPlayEpoch = 0;
@@ -569,6 +582,7 @@ export class LinkChatView {
   readonly #peopleFilterToggle = element("button", { type: "button", className: "kl-text-button kl-people-filter-toggle" }, kikiIcon("filter"), "Filters");
   #peopleFilterDialog: HTMLDialogElement | undefined;
   #peopleFilterCount: HTMLElement | undefined;
+  #peopleFilterReset: HTMLButtonElement | undefined;
   readonly #peopleResultsCount = element("span");
   readonly #hiddenPeopleCaption = element("span", {text: "Blocked and ghosted"});
   readonly #peopleClearFilters = element("button", {
@@ -1443,7 +1457,7 @@ export class LinkChatView {
     ariaLabel: "Lobby space",
   }) as HTMLSelectElement;
   readonly #lobbyRefreshButton = element("button", {
-    className: "kl-icon-button kl-lobby-refresh",
+    className: "kl-icon-button kl-catalog-refresh kl-lobby-refresh",
     type: "button",
     title: "Refresh room list",
     ariaLabel: "Refresh room list",
@@ -1455,6 +1469,20 @@ export class LinkChatView {
   readonly #lobbyDetails = new LobbyFilters(() => this.#renderLobbies(true), () => this.#resetLobbyFilters(), this.#platformUi);
   readonly #lobbyEmpty = element("section", { className: this.#platformUi
     ? "kl-lobby-empty kl-explore-empty kl-explore-catalog-empty" : "kl-gallery-empty" });
+  readonly #lobbyEmptyTitle = element("h2");
+  readonly #lobbyEmptyHelp = element("p");
+  readonly #lobbyEmptyAction = element("button", {
+    className: this.#platformUi ? "kl-text-button kl-text-button--primary" : "kl-text-button",
+    type: "button",
+    onClick: () => {
+      if (this.#lobbyEmpty.hidden || this.#lobbyRefreshButton.disabled) return;
+      if (this.#hasLobbyFilters()) this.#resetLobbyFilters();
+      else {
+        this.#lobbyQuery.focus({ preventScroll: true });
+        void this.#refreshLobbies();
+      }
+    },
+  });
   readonly #roomBack = element("button", { className: "kl-text-button kl-social-back", type: "button", text: "Back to Players" });
   readonly #presetName = element("input", { className: "kl-search kl-preset-name" }) as HTMLInputElement;
   readonly #saveRoomPresetButton = element("button", {
@@ -1680,7 +1708,7 @@ export class LinkChatView {
     ariaLabel: "Custom Activities",
   });
   readonly #newChatDialog = element("dialog", { className: "kl-dialog kl-new-chat-dialog" });
-  readonly #newChatQuery = element("input", { className: "kl-search kl-new-chat-query" }) as HTMLInputElement;
+  readonly #newChatQuery = element("input", { className: "kl-search kl-new-chat-query", ariaLabel: "Search contacts" }) as HTMLInputElement;
   readonly #newChatFilterSelect = element("select", {
     className: "kl-select kl-new-chat-filter",
     ariaLabel: "Filter known contacts",
@@ -1903,6 +1931,7 @@ export class LinkChatView {
   #lobbyFilter: RoomDirectoryFilter = "all";
   #lobbyHasLoaded = false;
   #lobbyHasNarrowedSearch = false;
+  #lobbyFetchingFullList = false;
   #lobbyUpdatedAt = 0;
   #lobbyObservation: { owner: number; searchSpace: BCRoomSearchSpace; checkedAt: number; rooms: readonly BCLobbyRoom[] } | undefined;
   #lobbyError = "";
@@ -2442,6 +2471,7 @@ export class LinkChatView {
         + REPORT_STYLES + ROOM_STYLES + PLAYERS_STYLES + ACTIVITIES_STYLES + MUSIC_STYLES + GALLERY_STYLES
       : "");
     if (this.#platformUi) style.textContent += CHAT_PAGE_STYLES;
+    style.textContent += INTERACTION_STYLES + SCOPE_FILTER_STYLES + TOOLBAR_SELECT_STYLES + APPLIED_FILTER_STYLES + SECTION_LINK_STYLES + ACTION_MENU_STYLES + OVERFLOW_CONTROL_STYLES + DIALOG_CLOSE_CONTROL_STYLES + DIALOG_ACTION_STYLES + PAGE_ACTION_STYLES;
     this.#applyTheme(this.settings.get());
     this.#buildLauncher();
     this.#buildPanel();
@@ -2613,6 +2643,7 @@ export class LinkChatView {
     this.#musicPlayEpoch++;
     this.#musicMetadataController?.abort();
     this.#musicMetadataController = undefined;
+    this.#closeMusicMenu();
     this.#musicActions?.destroy(); this.#musicAddDialog?.destroy();
     this.#settingsRecovery?.destroy();
     this.#settingsBackup?.destroy();
@@ -3336,7 +3367,7 @@ export class LinkChatView {
     });
     const searchWrap = this.#platformUi
       ? element("div", { className: "kl-search-wrap" },
-          element("div", { className: "kl-chat-search-field" }, kikiIcon("search"), this.#search),
+          searchField(this.#search, "Clear conversation search", { className: "kl-chat-search-field" }),
           element("label", { className: "kl-chat-unread-only" }, this.#chatUnreadOnly, "Unread only"))
       : element("div", { className: "kl-search-wrap" }, this.#search, filters);
     const sidebar = element(
@@ -6667,7 +6698,7 @@ export class LinkChatView {
     const body = element(
       "div",
       { className: "kl-dialog-body kl-new-chat-body" },
-      this.#newChatQuery,
+      this.#platformUi ? searchField(this.#newChatQuery, "Clear contact search", { className: "kl-new-chat-search-field" }) : this.#newChatQuery,
       element(
         "div",
         { className: "kl-contact-toolbar" },
@@ -7513,11 +7544,7 @@ export class LinkChatView {
     const closeButton = this.#dialogCloseButton("Close KikiLink profile", close);
     if (this.#platformUi) {
       closeButton.autofocus = true;
-      this.#addonProfileDialog.addEventListener("pointerdown", event => {
-        if (event.target !== this.#addonProfileDialog) return;
-        const bounds = this.#addonProfileDialog.getBoundingClientRect();
-        if (event.clientX < bounds.left || event.clientX >= bounds.right || event.clientY < bounds.top || event.clientY >= bounds.bottom) close();
-      });
+      onDialogBackdropClick(this.#addonProfileDialog, close);
     }
     this.#addonProfileDialog.append(
       element(
@@ -11704,7 +11731,11 @@ export class LinkChatView {
     this.#lobbyQuery.maxLength = 160;
     this.#lobbyStatus.setAttribute("role", "status");
     this.#lobbyStatus.setAttribute("aria-live", "polite");
-    this.#lobbyQuery.addEventListener("input", () => this.#renderLobbies(true));
+    this.#lobbyQuery.addEventListener("input", () => {
+      if (!this.#lobbyQuery.value.trim() && this.#lobbyHasNarrowedSearch && !this.#lobbyFetchingFullList)
+        void this.#refreshLobbies();
+      this.#renderLobbies(true);
+    });
     this.#lobbyQuery.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -11746,14 +11777,9 @@ export class LinkChatView {
     this.#lobbyFilters.append(this.#lobbyDetails.button);
     this.#lobbyRows = new InteractiveList(this.#lobbyList, (room) => roomKey(room.name),
       (room) => this.#lobbyCard(room), (row, room) => this.#updateLobbyCard(row, room));
-    if (this.#platformUi) {
-      this.#lobbyEmpty.hidden = true;
-      this.#lobbyEmpty.append(kikiIcon("door"),
-        element("h2", { text: "No matching lobbies" }),
-        element("p", { text: "Try another search or clear your filters." }),
-        element("button", { type: "button", className: "kl-text-button kl-text-button--primary", text: "Clear filters",
-          onClick: () => { if (!this.#lobbyEmpty.hidden) this.#resetLobbyFilters(); } }));
-    }
+    this.#lobbyEmpty.hidden = true;
+    if (this.#platformUi) this.#lobbyEmpty.append(kikiIcon("door"), this.#lobbyEmptyTitle);
+    this.#lobbyEmpty.append(this.#lobbyEmptyHelp, this.#lobbyEmptyAction);
     this.#roomLobbiesPanel.append(
       ...(this.#platformUi ? [] : [this.#currentRoomCard]),
       element(
@@ -11775,15 +11801,20 @@ export class LinkChatView {
     );
   }
 
+  #hasLobbyFilters(): boolean {
+    const { language, access } = this.#lobbyDetails.value;
+    return Boolean(this.#lobbyQuery.value.trim() || this.#lobbyFilter !== "all" || this.#lobbySpaceSelect.value !== "X"
+      || language !== null || access !== "all" || this.#platformUi && this.#lobbyHasNarrowedSearch);
+  }
+
   #resetLobbyFilters(): void {
     // Clearing the local search field can leave a narrower native response in the directory.
-    const refresh = Boolean(this.#lobbyQuery.value.trim()) || this.#lobbySpaceSelect.value !== 'X'
-      || this.#platformUi && this.#lobbyHasNarrowedSearch;
+    const refresh = this.#lobbySpaceSelect.value !== 'X' || this.#lobbyHasNarrowedSearch && !this.#lobbyFetchingFullList;
     this.#lobbyQuery.value = ''; this.#lobbyFilter = 'all'; this.#lobbySpaceSelect.value = 'X';
     this.#lobbyDetails.set({ language: null, access: 'all' });
     if (refresh) { this.#lobbyRooms = []; this.#lobbyError = ''; this.#lobbyUpdatedAt = 0; void this.#refreshLobbies(); }
     this.#renderLobbies(true);
-    if (this.#platformUi && !this.#lobbyDetails.dialog.open) this.#lobbyQuery.focus({ preventScroll: true });
+    if (!this.#lobbyDetails.dialog.open) this.#lobbyQuery.focus({ preventScroll: true });
   }
 
   async #refreshLobbies(): Promise<void> {
@@ -11792,6 +11823,7 @@ export class LinkChatView {
     const owner = this.#lobbyOwner;
     const query = this.#lobbyQuery.value;
     const narrowed = Boolean(query.trim());
+    this.#lobbyFetchingFullList = !narrowed;
     this.#lobbyHasNarrowedSearch ||= narrowed;
     this.#lobbyHasLoaded = true;
     this.#lobbyError = "";
@@ -11818,7 +11850,11 @@ export class LinkChatView {
         ? error.message
         : "The room list could not be refreshed.";
     } finally {
-      if (token === this.#lobbyRenderToken) { this.#lobbyRefreshButton.disabled = false; this.#renderLobbies(); }
+      if (token === this.#lobbyRenderToken) {
+        this.#lobbyFetchingFullList = false;
+        this.#lobbyRefreshButton.disabled = false;
+        this.#renderLobbies();
+      }
     }
   }
 
@@ -11834,6 +11870,7 @@ export class LinkChatView {
       this.#lobbyUpdatedAt = 0;
       this.#lobbyHasLoaded = false;
       this.#lobbyHasNarrowedSearch = false;
+      this.#lobbyFetchingFullList = false;
       this.#lobbyRefreshButton.disabled = false;
       this.#socialTrail = [];
     }
@@ -11868,19 +11905,27 @@ export class LinkChatView {
       button.setAttribute("aria-pressed", String(button.dataset.roomFilter === this.#lobbyFilter));
     }
     const total = `${matches.length} room${matches.length === 1 ? '' : 's'}`;
-    this.#lobbyDetails.update(source, matches.length, this.#lobbyRefreshButton.disabled ? 'Refreshing…' : this.#lobbyError ? 'Last loaded list; refresh to retry' : 'Loaded BC room list');
     this.#updateLobbyStatus(total, currentName);
+    this.#lobbyEmpty.hidden = this.#platformUi
+      ? matches.length > 0 || !this.#lobbyHasLoaded || this.#lobbyStatus.dataset.state !== "ready"
+      : rooms.length > 0;
+    const hasFilters = this.#hasLobbyFilters();
+    this.#lobbyDetails.update(source, matches.length, this.#lobbyRefreshButton.disabled ? 'Refreshing…' : this.#lobbyError ? 'Last loaded list; refresh to retry' : 'Loaded BC room list', this.#lobbyEmpty.hidden, hasFilters);
     this.#lobbyRows?.updateVisible(source);
     this.#lobbyRows?.render(rooms, forceOrder);
-    if (this.#platformUi) {
-      this.#lobbyEmpty.hidden = matches.length > 0 || !this.#lobbyHasLoaded || this.#lobbyStatus.dataset.state !== "ready";
-      return;
+    this.#lobbyEmptyAction.disabled = this.#lobbyRefreshButton.disabled;
+    if (!this.#lobbyEmpty.hidden) {
+      const icon = this.#lobbyQuery.value.trim() ? "search" : "door";
+      const currentIcon = this.#lobbyEmpty.firstElementChild;
+      if (this.#platformUi && currentIcon?.getAttribute("data-icon") !== icon)
+        currentIcon?.replaceWith(kikiIcon(icon));
+      const action = hasFilters ? "Clear filters" : "Refresh";
+      if (this.#lobbyEmptyAction.textContent !== action) {
+        this.#lobbyEmptyTitle.textContent = hasFilters ? "No matching lobbies" : "No lobbies available";
+        this.#lobbyEmptyHelp.textContent = hasFilters ? "Try another search or clear your filters." : "Refresh the room list to check again.";
+        this.#lobbyEmptyAction.textContent = action;
+      }
     }
-    this.#lobbyEmpty.hidden = rooms.length > 0;
-    this.#lobbyEmpty.replaceChildren(element('p', { text: this.#lobbyQuery.value || this.#lobbyFilter !== 'all' || this.#lobbyDetails.value.language !== null || this.#lobbyDetails.value.access !== 'all'
-      ? 'No rooms match these filters. Try another search or clear your filters.'
-      : `No rooms returned for ${lobbySpaceLabel(this.#lobbySpaceSelect.value)}. Refresh to try again.` }),
-      element('button', { type: 'button', className: 'kl-text-button', text: 'Clear filters', onClick: () => this.#resetLobbyFilters() }));
   }
 
   #updateLobbyStatus(total: string, currentName: string): void {
@@ -12830,31 +12875,50 @@ export class LinkChatView {
     }
   }
 
-  #closeMusicMenu(): void {
-    if (this.#openMusicMenu) this.#openMusicMenu.open = false;
+  #closeMusicMenu(menu = this.#openMusicMenu): void {
+    if (menu) menu.open = false;
+    if (menu !== this.#openMusicMenu) return;
+    this.#releaseMusicMenuFit?.();
+    this.#releaseMusicMenuFit = undefined;
     this.#openMusicMenu = undefined;
   }
 
   #bindMusicMenu(menu: HTMLDetailsElement, summary: HTMLElement): void {
-    summary.addEventListener("click", () => {
-      if (this.#openMusicMenu !== menu) this.#closeMusicMenu();
-      this.#openMusicMenu = menu.open ? undefined : menu;
+    menu.addEventListener("toggle", () => {
+      if (!menu.open || !menu.isConnected) {
+        if (this.#openMusicMenu === menu) this.#closeMusicMenu();
+        return;
+      }
+      if (this.#openMusicMenu === menu) return;
+      this.#closeMusicMenu();
+      this.#openMusicMenu = menu;
+      const scroller = menu.closest<HTMLElement>(".kl-music-body"), items = summary.nextElementSibling;
+      if (scroller && items instanceof HTMLElement)
+        this.#releaseMusicMenuFit = trackMenuPlacement(menu, summary, items, scroller, "--kl-music-menu-height");
     });
     menu.addEventListener("click", event => {
       if (!menu.open || !(event.target instanceof Element) || !event.target.closest("button,a")) return;
-      this.#closeMusicMenu();
+      this.#closeMusicMenu(menu);
       summary.focus({ preventScroll: true });
     }, true);
     menu.addEventListener("keydown", event => {
       if (event.key !== "Escape" || !menu.open) return;
       event.preventDefault();
       event.stopPropagation();
-      this.#closeMusicMenu();
+      this.#closeMusicMenu(menu);
       summary.focus({ preventScroll: true });
     });
     menu.addEventListener("focusout", event => {
-      if (this.#openMusicMenu === menu && event.relatedTarget instanceof Node && !menu.contains(event.relatedTarget)) this.#closeMusicMenu();
+      if (menu.open && event.relatedTarget instanceof Node && !menu.contains(event.relatedTarget)) this.#closeMusicMenu(menu);
     });
+  }
+
+  #musicAddAudioButton(): HTMLButtonElement {
+    return element("button", {
+      className: "kl-text-button kl-text-button--primary kl-music-open-add",
+      type: "button",
+      onClick: () => this.#musicAddDialog?.show(),
+    }, kikiIcon("plus"), element("span", { text: "Add audio" }));
   }
 
   #buildMusicPage(): void {
@@ -12889,27 +12953,23 @@ export class LinkChatView {
     const renamePlaylist = element("button", {
       className: "kl-text-button",
       type: "button",
-      text: "Rename",
       onClick: () => this.#renameActivePlaylist(),
-    });
+    }, kikiIcon("edit"), "Rename");
     const duplicatePlaylist = element("button", {
       className: "kl-text-button",
       type: "button",
-      text: "Duplicate",
       onClick: () => this.#duplicateActivePlaylist(),
-    });
+    }, kikiIcon("copy"), "Duplicate");
     const clearPlaylist = element("button", {
-      className: "kl-text-button",
+      className: "kl-text-button kl-text-button--danger",
       type: "button",
-      text: "Clear",
       onClick: () => void this.#clearActivePlaylist(),
-    });
+    }, kikiIcon("close"), "Clear");
     const deletePlaylist = element("button", {
       className: "kl-text-button kl-text-button--danger",
       type: "button",
-      text: "Delete",
       onClick: () => void this.#deleteActivePlaylist(),
-    });
+    }, kikiIcon("trash"), "Delete");
     const playlistMenu = element("details", { className: "kl-music-playlist-menu" });
     playlistMenu.append(
       element("summary", {
@@ -12960,7 +13020,7 @@ export class LinkChatView {
       element(
         "div",
         { className: "kl-music-queue-tools" },
-        element("div", { className: "kl-music-queue-search-wrap" }, kikiIcon("search"), this.#musicQueueSearch),
+        searchField(this.#musicQueueSearch, "Clear track search", { className: "kl-music-queue-search-wrap" }),
         this.#musicQueueSummary,
       ),
       this.#musicQueue,
@@ -13101,7 +13161,7 @@ export class LinkChatView {
       player.append(seek, controls);
     }
     const body = element("div", { className: "kl-music-body" }, library, element("div", { className: "kl-music-side" }, nowPlaying, add));
-    const addAudio = element("button", { className: "kl-text-button kl-text-button--primary kl-music-open-add", type: "button", text: "Add audio", onClick: () => this.#musicAddDialog?.show() });
+    const addAudio = this.#musicAddAudioButton();
     if (this.#platformUi) {
       this.#musicPage.dataset.musicRedesign = "true";
       this.#musicActions = new MusicLibraryActions(this.settings, {
@@ -13114,7 +13174,6 @@ export class LinkChatView {
       add.append(element("button", { className: "kl-text-button kl-music-import-cancel", type: "button", text: "Cancel import", onClick: () => this.#cancelMusicAddUpload() }));
       header.append(element("div", { className: "kl-music-heading-actions" }, this.#musicActions.resume, this.#newPlaylistButton, addAudio));
       this.#newPlaylistButton.replaceChildren(kikiIcon("plus"), element("span", { text: "Playlist" }));
-      addAudio.prepend(kikiIcon("plus"));
       this.#playlistSelect.setAttribute("aria-label", "Playlist");
       this.#musicQueue.setAttribute("aria-label", "Tracks");
       library.setAttribute("aria-label", "Music library");
@@ -13266,9 +13325,11 @@ export class LinkChatView {
         { className: "kl-music-empty" },
         kikiIcon("music"),
         element("h2", { text: message }),
-        element("button", { className: query ? "kl-text-button" : "kl-text-button kl-text-button--primary", type: "button", text: query ? "Clear search" : "Add audio", onClick: () => {
-          if (query) { this.#musicQueueSearch.value = ""; this.#musicQueueSearch.dispatchEvent(new Event("input")); this.#musicQueueSearch.focus(); } else this.#musicAddDialog?.show();
-        } }),
+        query ? element("button", { className: "kl-text-button", type: "button", text: "Clear search", onClick: () => {
+          this.#musicQueueSearch.value = "";
+          this.#musicQueueSearch.dispatchEvent(new Event("input"));
+          this.#musicQueueSearch.focus();
+        } }) : this.#musicAddAudioButton(),
       ));
       else this.#musicQueue.append(
         element("div", {
@@ -13321,30 +13382,26 @@ export class LinkChatView {
       actions.append(element("button", {
         className: "kl-music-track-room",
         type: "button",
-        text: track.source === "local" ? "Share & use as room music" : "Use as room music",
         onClick: () => void this.#useMusicTrackAsRoomMusic(track),
-      }));
+      }, kikiIcon("music"), track.source === "local" ? "Share & use as room music" : "Use as room music"));
     }
     actions.append(
       element("button", {
         type: "button",
-        text: "Rename",
         onClick: () => this.#renameMusicTrack(track),
-      }),
+      }, kikiIcon("edit"), "Rename"),
       element("button", {
         type: "button",
-        text: "Move up",
         onClick: () => this.#moveMusicTrack(track, -1),
-      }),
+      }, kikiIcon("chevron-down", "kl-music-move-up-icon"), "Move up"),
       element("button", {
         type: "button",
-        text: "Move down",
         onClick: () => this.#moveMusicTrack(track, 1),
-      }),
+      }, kikiIcon("chevron-down"), "Move down"),
     );
     if (this.#platformUi) {
       const playlistId = this.settings.getSection("linkMusic").activePlaylistId;
-      actions.insertBefore(element("button", { type: "button", text: "Add to playlist", onClick: () => this.#musicActions?.edit("copy", playlistId, track.id) }), actions.children[roomAdmin && (track.source === "local" || directRoomUrl) ? 2 : 1] ?? null);
+      actions.insertBefore(element("button", { type: "button", onClick: () => this.#musicActions?.edit("copy", playlistId, track.id) }, kikiIcon("plus"), "Add to playlist"), actions.children[roomAdmin && (track.source === "local" || directRoomUrl) ? 2 : 1] ?? null);
       const order = [...actions.querySelectorAll<HTMLButtonElement>("button")];
       const up = order.find(b => b.textContent === "Move up"), down = order.find(b => b.textContent === "Move down");
       if (up) up.disabled = index === 0;
@@ -13352,7 +13409,7 @@ export class LinkChatView {
       this.#bindMusicMenu(menu, menuToggle);
     }
     if (track.source !== "local") {
-      const original = element("a", { text: "Open original" });
+      const original = element("a", {}, kikiIcon("external"), "Open original");
       original.href = track.locator;
       original.target = "_blank";
       original.rel = "noopener noreferrer";
@@ -13361,9 +13418,8 @@ export class LinkChatView {
     actions.append(element("button", {
       className: "kl-music-track-delete",
       type: "button",
-      text: "Remove",
       onClick: () => void this.#removeMusicTrack(track),
-    }));
+    }, kikiIcon("trash"), "Remove"));
     menu.append(menuToggle, actions);
     const number = element("span", { className: "kl-music-track-number", text: (index + 1).toString() });
     const copy = element(
@@ -14802,13 +14858,15 @@ export class LinkChatView {
     const count = element("p", { className: "kl-people-filter-count" });
     count.setAttribute("role", "status");
     this.#peopleFilterCount = count;
-    const reset = () => {
+    const options = element("div");
+    const focusScope = () => options.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus({ preventScroll: true });
+    this.#peopleFilterReset = element("button", { type: "button", className: "kl-text-button", text: "Reset filters", onClick: () => {
       if (!dialog.open || this.#rosterPage.dataset.peopleView !== "people") return;
       this.#peopleLanguage.value = "";
       Object.assign(this.#peopleFilters, { favorites: false, online: false, addon: false });
       this.#selectPeopleScope("all");
-    };
-    const options = element("div");
+      focusScope();
+    } });
     for (const [scope, label] of PEOPLE_SCOPES) {
       const button = element("button", { type: "button", className: "kl-text-button", text: label, onClick: () => {
         if (dialog.open && this.#rosterPage.dataset.peopleView === "people") this.#selectPeopleScope(scope);
@@ -14833,7 +14891,7 @@ export class LinkChatView {
         element("label", {className: "kl-field"}, element("span", {text: "Language"}), this.#peopleLanguage),
         element("details", {}, element("summary", {text: "Additional filters"}), addon), count),
       element("footer", {},
-        element("button", { type: "button", className: "kl-text-button", text: "Reset filters", onClick: reset }),
+        this.#peopleFilterReset,
         element("button", { type: "button", className: "kl-text-button kl-text-button--primary", text: "Show people", onClick: () => this.#closePeopleFilters() })),
     );
     this.#peopleFilterToggle.setAttribute("aria-controls", dialog.id);
@@ -14846,7 +14904,7 @@ export class LinkChatView {
       fitPanelDialog(dialog, { layout: (width, height) => width <= 700 || width <= 900 && height <= 500
         ? { marginX: 0, marginY: 0, maxHeight: height - 20 }
         : { marginX: 12, marginY: 12 } });
-      options.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus({ preventScroll: true });
+      focusScope();
     });
     dialog.addEventListener("keydown", event => event.stopPropagation());
     dialog.addEventListener("cancel", event => { event.preventDefault(); this.#closePeopleFilters(); });
@@ -15001,6 +15059,7 @@ export class LinkChatView {
       const matching = `${count} ${total === 1 ? "matches" : "match"} your filters.`;
       if (this.#peopleFilterCount && this.#peopleFilterCount.textContent !== matching) this.#peopleFilterCount.textContent = matching;
       const anyFilter = this.#peopleScope !== "all" || !!this.#peopleLanguage.value || Object.values(filters).some(Boolean);
+      if (this.#peopleFilterReset) this.#peopleFilterReset.disabled = !anyFilter;
       this.#peopleActiveFilters.hidden = !this.#rosterSearch.value && !this.#rosterRoomFilter && !anyFilter;
       for (const button of this.#peopleFilterDialog?.querySelectorAll<HTMLButtonElement>("[data-people-dialog-filter]") ?? []) {
         button.setAttribute("aria-pressed", String(button.dataset.peopleScope ? button.dataset.peopleScope === this.#peopleScope : filters.addon));
@@ -15060,12 +15119,14 @@ export class LinkChatView {
     const peopleNoMatch = people && !entries.length;
     const peopleFiltered = Boolean(this.#rosterSearch.value.trim() || this.#rosterRoomFilter ||
       this.#peopleLanguage.value || Object.values(filters).some(Boolean));
+    if (peopleNoMatch && peopleFiltered && !this.#rosterEmpty.hidden) this.#peopleActiveFilters.hidden = true;
     if (noRoom) emptyMessage = "You’re not in a room.";
     else if (playersEmpty) emptyMessage = "No players match";
     const emptyAction = playersEmpty ? noRoom ? "Browse rooms" : "Clear filters" : "";
     // Keep a focused empty-state action alive through roster/presence refreshes.
     const requestsEmpty = requestsReady && !entries.length;
-    const emptyKey = `${peopleNoMatch ? this.#peopleScope : ""}/${peopleFiltered}/${playersView}/${emptyMessage}/${emptyAction}/${requestsEmpty ? requestHint : ""}`;
+    const peopleEmptyIcon = this.#rosterSearch.value.trim() ? "search" : "users";
+    const emptyKey = `${peopleNoMatch ? this.#peopleScope + peopleEmptyIcon : ""}/${peopleFiltered}/${playersView}/${emptyMessage}/${emptyAction}/${requestsEmpty ? requestHint : ""}`;
     if (this.#rosterEmpty.dataset.key !== emptyKey) {
       this.#rosterEmpty.dataset.key = emptyKey;
       for (const name of ["kl-people-no-match", "kl-explore-empty", "kl-explore-catalog-empty"])
@@ -15077,7 +15138,7 @@ export class LinkChatView {
           all: "No suggestions yet", friends: "No friends yet", online: "No one is online right now",
           saved: "No saved profiles yet", hidden: "No hidden profiles",
         }[this.#peopleScope];
-        this.#rosterEmpty.replaceChildren(kikiIcon("users"), element("h2", { text: title }));
+        this.#rosterEmpty.replaceChildren(kikiIcon(peopleEmptyIcon), element("h2", { text: title }));
         if (peopleFiltered) {
           this.#rosterEmpty.append(element("p", { text: "Try another name, username or filter." }),
             element("button", { className: "kl-text-button kl-text-button--primary", type: "button", text: "Clear filters",
@@ -21680,10 +21741,6 @@ function formatAudioTime(value: number): string {
   const seconds = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${(seconds % 60).toString().padStart(2, "0")}`;
-}
-
-function lobbySpaceLabel(value: string): string {
-  return value === "X" ? "Mixed" : value === "M" ? "Male" : "Female";
 }
 
 function lobbyRoomNameKey(value: string): string {

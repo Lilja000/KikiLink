@@ -1,3 +1,5 @@
+import { pageAction } from './page-action';
+import { bindSearchEscape } from "./browse-controls";
 import { ModerationGeneration, ModerationGenerationError, moderationGenerationConflict, type ModerationAccess } from '../../cloud/moderation-generation';
 import { kikiIcon } from '../link-chat/icons';
 import { moderationDialog } from '../../cloud/moderation-dialog';
@@ -335,6 +337,7 @@ export class ChannelModerationPanel {
     }, false, 'Clear report search');
     clear.title = 'Clear report search'; clear.hidden = !search.value;
     clear.classList.add('kl-mod-clear-search'); clear.replaceChildren(kikiIcon('close')); field.append(clear);
+    bindSearchEscape(field, search, clear);
     if(this.#queue&&!this.#triage)this.#communitySelector(toolbar);
     if (this.#triage && this.#state !== 'journal') for (const [key,label,values] of triageFilterOptions) {
       if (key === 'state' && this.#state === 'resolved') continue;
@@ -403,8 +406,8 @@ export class ChannelModerationPanel {
       } else if (!matches && !this.#error) rows.append(element('section', { className: 'kl-mod-empty' }, kikiIcon('shield'), element('h2', { text: query ? 'No matching entries' : this.#state === 'journal' ? 'No moderation decisions yet.' : 'No reports in this view.' }),
         element('p', { className: 'kl-mod-note', text: serverSearch && this.#cursor !== null ? 'No matches in this batch. Continue to search older reports.' : query ? 'Try another search.' : 'Refresh to check for changes.' })));
       pager.replaceChildren();
-      if (this.#cursor !== null) pager.append(this.#button('Older entries', () => { this.#before = this.#cursor!; this.element.replaceChildren(); void this.refresh(); }));
-      if (this.#before) pager.append(this.#button('Back to latest', () => { this.#before = 0; this.element.replaceChildren(); void this.refresh(); }));
+      if (this.#cursor !== null) pager.append(pageAction(this.#button('Older entries', () => { this.#before = this.#cursor!; this.element.replaceChildren(); void this.refresh(); }), 'next'));
+      if (this.#before) pager.append(pageAction(this.#button('Back to latest', () => { this.#before = 0; this.element.replaceChildren(); void this.refresh(); }), 'previous'));
     };
     const input = (composing: boolean) => {
       if (!this.element.contains(search)) return;
@@ -428,7 +431,7 @@ export class ChannelModerationPanel {
       if(this.#communityFilter && !choices.some(c=>c.id===this.#communityFilter))choices.push({id:this.#communityFilter,name:this.#communityName});
       for(const c of choices){const o=element('option',{text:c.name+(c.archived?' · Archived':'')});o.value=c.id;o.selected=c.id===this.#communityFilter;select.append(o);}
       select.addEventListener('change',()=>{if(!this.#valid(this.#epoch)||this.#loading||!this.element.contains(select))return;this.#communityFilter=select.value;this.#before=0;this.#memberBefore='0.0';this.#memberDraft=undefined;this.element.replaceChildren();void this.refresh();});toolbar.append(select);
-      if(this.#choiceNext!==null)toolbar.append(this.#button('More communities',()=>{this.#choiceBefore=this.#choiceNext!;this.element.replaceChildren();void this.refresh();}));
+      if(this.#choiceNext!==null)toolbar.append(pageAction(this.#button('More communities',()=>{this.#choiceBefore=this.#choiceNext!;this.element.replaceChildren();void this.refresh();}), 'next'));
       if(this.#choiceBefore)toolbar.append(this.#button('First communities',()=>{this.#choiceBefore=0;this.element.replaceChildren();void this.refresh();}));
   }
   #renderManagement():void {
@@ -472,8 +475,8 @@ export class ChannelModerationPanel {
     }
     if(!(activity?this.#activity:this.#members).length)rows.append(element('section',{className:'kl-mod-empty'},kikiIcon('shield'),element('h2',{text:activity?'No activity in this view':this.#state==='requests'?'No join requests':'No members in this view'}),element('p',{className:'kl-mod-note',text:'Choose another community or refresh to check for changes.'})));
     const next=activity?this.#cursor:this.#memberNext;
-    if(next!==null)this.element.append(this.#button('Next page',()=>{if(activity)this.#before=next as number;else this.#memberBefore=next as string;this.element.replaceChildren();void this.refresh();}));
-    if(activity?this.#before:this.#memberBefore!=='0.0')this.element.append(this.#button('Back to first page',()=>{this.#before=0;this.#memberBefore='0.0';this.element.replaceChildren();void this.refresh();}));
+    if(next!==null)this.element.append(pageAction(this.#button('Next page',()=>{if(activity)this.#before=next as number;else this.#memberBefore=next as string;this.element.replaceChildren();void this.refresh();}), 'next'));
+    if(activity?this.#before:this.#memberBefore!=='0.0')this.element.append(pageAction(this.#button('Back to first page',()=>{this.#before=0;this.#memberBefore='0.0';this.element.replaceChildren();void this.refresh();}), 'previous'));
     if(this.#state==='team'){
       const table=element('table',{className:'kl-mod-role-matrix'}),body=element('tbody');
       const roleColumn = element('th', { text: 'Role' }), permissionsColumn = element('th', { text: 'Community permissions' });
@@ -589,7 +592,7 @@ export class ChannelModerationPanel {
     }
     if (this.#decisions && this.#review) {
       if (this.#review.history.items.length) this.element.append(decisionHistory(this.#review.history.items));
-      if (this.#review.history.nextCursor !== null) this.element.append(this.#button('Older decisions', () => void this.#olderDecisions()));
+      if (this.#review.history.nextCursor !== null) this.element.append(pageAction(this.#button('Load more decisions', () => void this.#olderDecisions())));
     }
     if (report.readOnly) return;
     const controls = this.#decisions && this.#review && !this.#triagePending

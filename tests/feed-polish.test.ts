@@ -26,6 +26,75 @@ function setup(handler: (method: string, path: string, body: any) => Promise<unk
 }
 
 describe("Feed interaction polish", () => {
+  it("keeps an in-flight confirmation until the action settles and allows a retry after failure", async () => {
+    const { ui } = setup(async () => ({}));
+    const card = document.createElement("article");
+    let reject!: (cause: Error) => void;
+    const pending = new Promise<void>((_, fail) => { reject = fail; });
+    const action = vi.fn<() => Promise<void>>().mockReturnValueOnce(pending).mockResolvedValue(undefined);
+    const trigger = ui.button("Delete comment", () => { ui.confirm(card, "Delete this comment?", action); });
+    document.body.append(card);
+    card.append(trigger);
+    trigger.click();
+    const review = card.querySelector<HTMLElement>(".kl-social-confirm")!;
+    const [cancel, confirm] = review.querySelectorAll("button");
+    confirm!.focus();
+    confirm!.click();
+    expect(document.activeElement).toBe(review);
+    expect(cancel!.disabled && confirm!.disabled).toBe(true);
+    review.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    trigger.click();
+    cancel!.click();
+    confirm!.click();
+    expect(card.querySelector(".kl-social-confirm")).toBe(review);
+    expect(action).toHaveBeenCalledTimes(1);
+    reject(new Error("Temporary failure"));
+    await vi.waitFor(() => expect(confirm!.disabled).toBe(false));
+    expect(cancel!.disabled).toBe(false);
+    expect(document.activeElement).toBe(cancel);
+    confirm!.click();
+    await vi.waitFor(() => expect(review.isConnected).toBe(false));
+    expect(action).toHaveBeenCalledTimes(2);
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("dismisses a comment deletion review and returns to that comment's options", async () => {
+    const comment = { ...post(), id: 3, postId: 7, author: 101, profile: { ...profile, memberNumber: 101 } };
+    const { view, request } = setup(async (_method, path) => ({
+      items: path.includes("/comments") ? [comment] : [post()], nextCursor: null,
+    }), true);
+    await view.render({});
+    view.element.querySelector<HTMLButtonElement>('button[aria-label^="Comments"]')!.click();
+    const row = await vi.waitFor(() => {
+      const node = view.element.querySelector<HTMLElement>('[data-comment-id="3"]');
+      expect(node).not.toBeNull();
+      return node!;
+    });
+    const dialog = row.closest("dialog")!;
+    const menu = row.querySelector("details")!;
+    const summary = menu.querySelector("summary")!;
+    const remove = menu.querySelector<HTMLButtonElement>('button[aria-label="Delete"]')!;
+    for (const viaEscape of [true, false]) {
+      menu.open = true;
+      remove.focus();
+      remove.click();
+      const review = row.querySelector<HTMLElement>(".kl-social-confirm")!;
+      const cancel = review.querySelector<HTMLButtonElement>('button[aria-label="Cancel"]')!;
+      expect(document.activeElement).toBe(cancel);
+      if (viaEscape) {
+        const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+        cancel.dispatchEvent(escape);
+        expect(escape.defaultPrevented).toBe(true);
+      } else cancel.click();
+      expect(review.isConnected).toBe(false);
+      expect(dialog.open).toBe(true);
+      expect(document.activeElement).toBe(summary);
+      await Promise.resolve();
+    }
+    expect(request.mock.calls.every(([method]) => method === "GET")).toBe(true);
+  });
+
   it("keeps desktop post actions inside the Feed scrollport as the reader scrolls", async () => {
     const { view } = setup(async () => ({ items: [post()], nextCursor: null }), true);
     await view.render({});

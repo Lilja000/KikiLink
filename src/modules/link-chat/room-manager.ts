@@ -1,3 +1,4 @@
+import { pageAction } from '../platform-shell/page-action';
 import type { BCRoomAdminSnapshot } from "../../bc/adapter";
 import { roomOptions, type RoomChoice, type RoomRoleChoice } from "../../bc/room-options";
 import type { RoomPresetData } from "../../core/types";
@@ -151,8 +152,8 @@ export class RoomManager {
     const all = [...available];
     if (room.background && !all.some(item => item.name === room.background)) all.unshift({ name: room.background, label: room.background, tags: [] });
     let page = 0;
-    const prev = element("button", { className: "kl-text-button", type: "button", text: "Previous", onClick: () => { page--; draw(); } });
-    const next = element("button", { className: "kl-text-button", type: "button", text: "Next", onClick: () => { page++; draw(); } });
+    const prev = pageAction(element("button", { className: "kl-text-button", type: "button", text: "Previous", onClick: () => { page--; draw(); } }), 'previous');
+    const next = pageAction(element("button", { className: "kl-text-button", type: "button", text: "Next", onClick: () => { page++; draw(); } }), 'next');
     const count = element("span", { className: "kl-room-media-note" });
     const draw = (): void => {
       const query = search.value.trim().toLocaleLowerCase();

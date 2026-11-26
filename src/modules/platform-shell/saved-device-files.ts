@@ -1,3 +1,4 @@
+import { pageAction } from './page-action';
 import {SavedDeviceFiles,type SavedDeviceFile,type SavedFileReferences} from '../../storage/saved-device-files';
 import {AccountKeyValueStorage} from '../../storage/account-data-storage';
 import {FEED_DRAFT_METADATA_KEY,parseMetadata,metadataFiles} from '../../cloud/feed-draft-metadata';
@@ -44,7 +45,7 @@ export class SavedDeviceFilesPanel {
   const pages=Math.max(1,Math.ceil(this.#files.length/20));this.#page=Math.min(this.#page,pages-1);this.#rows.replaceChildren();
   this.#status.textContent=`${this.#files.length} files · ${(this.#files.reduce((n,f)=>n+f.bytes,0)/1048576).toFixed(1)} MiB · ${this.#files.filter(f=>!f.inUse&&!f.held).length} without a current link.`;
   if(!this.#files.length){this.#rows.append(element('p',{text:'No saved music or Feed files on this device.'}));return;}
-  if(pages>1)this.#rows.append(element('div',{className:'kl-setting-tool-buttons'},this.#button('Previous file page',()=>{this.#page--;this.#render();},this.#page===0),element('span',{text:`Page ${this.#page+1} of ${pages}`}),this.#button('Next file page',()=>{this.#page++;this.#render();},this.#page+1===pages)));
+  if(pages>1)this.#rows.append(element('div',{className:'kl-setting-tool-buttons'},pageAction(this.#button('Previous file page',()=>{this.#page--;this.#render();},this.#page===0), 'previous'),element('span',{text:`Page ${this.#page+1} of ${pages}`}),pageAction(this.#button('Next file page',()=>{this.#page++;this.#render();},this.#page+1===pages), 'next')));
   for(const item of this.#files.slice(this.#page*20,this.#page*20+20)){
    const row=element('section',{className:'kl-setting-group'},element('strong',{text:item.name}),element('p',{className:'kl-setting-help',text:`${item.kind==='music'?'Music':'Feed image'} · ${(item.bytes/1024).toFixed(1)} KiB · ${item.held?'Protected by an unfinished import':item.inUse?'Currently in use':'No current link'}`}));
    row.append(element('div',{className:'kl-setting-tool-buttons'},this.#button('Download file',()=>this.#download(item)),this.#button('Remove file…',()=>this.#confirm(item),item.inUse||item.held)));this.#rows.append(row);

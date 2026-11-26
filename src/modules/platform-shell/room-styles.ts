@@ -213,7 +213,7 @@ export const ROOM_STYLES = `
 .kl-rooms-panel :is(.kl-lobby-search-wrap,.kl-room-history-toolbar) .kl-browse-search > .kl-browse-icon { width:24px; height:24px; min-height:0; padding:4px!important; }
 .kl-rooms-panel .kl-lobby-search-wrap input { flex:1; width:0; min-width:0; min-height:0; height:100%; padding:0; border:0; border-radius:0; outline:none; background:transparent; font-size:12px; }
 .kl-rooms-panel .kl-browse-search:has(input:placeholder-shown) > .kl-browse-icon { display:none; }
-.kl-rooms-panel .kl-lobby-search-wrap > .kl-lobby-refresh { grid-area:1 / 3; width:var(--kl-explore-control,36px); height:var(--kl-explore-control,36px); min-height:0; border-radius:var(--kl-explore-radius,8px); }
+.kl-rooms-panel .kl-lobby-search-wrap > .kl-lobby-refresh { grid-area:1 / 3; }
 .kl-rooms-panel .kl-lobby-filters { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:4px; }
 .kl-lobby-scopes { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
 .kl-rooms-panel .kl-lobby-scopes .kl-directory-filter { min-height:var(--kl-explore-small,32px); padding:0 9px; border:1px solid transparent; border-radius:var(--kl-explore-radius,8px); background:transparent; color:var(--kl-muted); font-size:11px; font-weight:500; }
@@ -291,7 +291,6 @@ export const ROOM_STYLES = `
 @media(pointer:coarse) {
  .kl-rooms-heading > .kl-rooms-context { min-width:44px; min-height:44px; }
  .kl-rooms-panel .kl-lobby-search-wrap { grid-template-columns:minmax(72px,96px) minmax(0,1fr) 44px; }
- .kl-rooms-panel .kl-lobby-search-wrap > .kl-lobby-refresh { width:44px; height:44px; }
  .kl-rooms-panel .kl-lobby-indicators { --kl-lobby-indicator-size:44px; }
  .kl-rooms-panel .kl-lobby-scopes .kl-directory-filter, .kl-rooms-panel .kl-lobby-card-footer :is(.kl-text-button,.kl-room-people-label) { min-height:44px; }
  .kl-rooms-panel .kl-lobby-friend-profile { width:44px; height:44px; }

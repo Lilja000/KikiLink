@@ -1,3 +1,4 @@
+import { pageAction } from '../modules/platform-shell/page-action';
 import {ModerationGeneration} from './moderation-generation';
 import {captureReportSource,type ReportSource} from './report-source';
 import { CloudError, type CloudClient } from './client';
@@ -99,8 +100,8 @@ export class CommunityReportDialog {
       this.#select.value = this.#selected?.id ?? '';
       this.#status.textContent = this.#choices.length ? '' : this.#next ? 'No matches in this batch. Continue to search older communities.' : 'No communities found. Try another search.';
       this.#paging.replaceChildren();
-      if (this.#next) this.#paging.append(this.#button('More communities', () => void this.#load(this.#next!)));
-      if (cursor) this.#paging.append(this.#button('First communities', () => void this.#load()));
+      if (this.#next) this.#paging.append(pageAction(this.#button('More communities', () => void this.#load(this.#next!)), 'next'));
+      if (cursor) this.#paging.append(pageAction(this.#button('First communities', () => void this.#load()), 'previous'));
     } catch (error) {
       if (!this.#current() || epoch !== this.#epoch) return;
       this.#selected = undefined; this.#choices = []; this.#select.replaceChildren(); this.#paging.replaceChildren();

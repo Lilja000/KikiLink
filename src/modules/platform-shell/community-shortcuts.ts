@@ -1,3 +1,4 @@
+import { sectionLink } from "./section-link";
 import {communityManagementRead} from '../../cloud/moderation-generation';
 import type { CloudClient } from "../../cloud/client";
 import { element } from "../../utils/dom";
@@ -38,7 +39,7 @@ export class CommunityShortcuts {
     const token = ++this.#token; this.#supported = false; this.element.replaceChildren();
     if (!this.#valid(token)) return;
     const heading = element("h3", { text: "Your communities" });
-    const browse = element("button", { type: "button", className: "kl-shell-community-browse", text: "Browse communities", onClick: () => { if (this.#valid(token)) this.open(); } });
+    const browse = sectionLink(element("button", { type: "button", className: "kl-text-button kl-shell-community-browse", text: "Browse communities", onClick: () => { if (this.#valid(token)) this.open(); } }));
     const create = () => {
       if (this.canCreate) this.element.append(element("button", { type: "button", className: "kl-shell-community-create", onClick: () => { if (this.#valid(token)) this.create(); } },
         kikiIcon("plus"), element("span", { text: "Create a community" })));

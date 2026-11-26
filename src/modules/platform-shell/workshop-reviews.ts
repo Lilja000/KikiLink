@@ -1,3 +1,4 @@
+import { pageAction } from './page-action';
 import { markAvatarPresence } from "../link-chat/avatar-presence";
 import {engagementReview,engagementWrite,engagementReceipt,workshopAccessAt,type WorkshopSource} from './workshop-engagement';
 import {element} from '../../cloud/dom';
@@ -58,7 +59,7 @@ export class WorkshopReviews {
    this.element.append(element('article',{className:'kl-workshop-card kl-workshop-review-row'},
     markAvatarPresence(element('span',{className:'kl-workshop-review-avatar',ariaHidden:'true'},kikiIcon('profile')),review.reviewer),copy));
   }
-  if(data.nextCursor)this.element.append(this.#button('More reviews',()=>void this.refresh(true)));
+  if(data.nextCursor)this.element.append(pageAction(this.#button('Load more reviews',()=>void this.refresh(true))));
  }
  #editor():void{
   const draft=this.#state.draft!;

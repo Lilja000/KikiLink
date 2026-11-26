@@ -1,3 +1,4 @@
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
 import { element } from "../../utils/dom";
 import type { SettingsStore } from "../../core/settings";
 import type { QuickAction } from "../../core/types";
@@ -10,8 +11,10 @@ export class QuickActionSettings {
   readonly status = element("p", { className: "kl-setting-help" });
   readonly dialog = element("dialog", { className: "kl-dialog kl-settings-quick-dialog" });
   #signature = "";
+  #dismissBackdrop: (() => void) | undefined;
   constructor(readonly store: SettingsStore, readonly active: () => boolean) {
     this.dialog.addEventListener("keydown", event => event.stopPropagation());
+    onDialogBackdropClick(this.dialog, () => this.#dismissBackdrop?.());
     this.add.prepend(kikiIcon("plus"));
     this.add.addEventListener("click", () => this.#open(undefined));
     this.status.hidden = true;
@@ -114,8 +117,13 @@ export class QuickActionSettings {
     this.dialog.replaceChildren(element("header", { className: "kl-dialog-header" }, element("h2", { className: "kl-dialog-title", text: title }),
       element("button", { type: "button", className: "kl-icon-button", ariaLabel: "Close editor", onClick: close }, kikiIcon("close"))), edit, confirm, footer);
     this.dialog.oncancel = event => { event.preventDefault(); if (confirm.hidden) close(); else keep.click(); };
-    this.dialog.onclick = event => { if (event.target === this.dialog && confirm.hidden) close(); };
-    this.dialog.addEventListener("close", () => { if (!this.dialog.open) { this.dialog.replaceChildren(); if (this.active()) this.#focus(index ?? actions.length); } }, { once: true });
+    this.#dismissBackdrop = () => { if (confirm.hidden) close(); };
+    this.dialog.onclose = () => {
+      if (this.dialog.open) return;
+      this.#dismissBackdrop = undefined;
+      this.dialog.replaceChildren();
+      if (this.active()) this.#focus(index ?? actions.length);
+    };
     this.dialog.showModal(); fitPanelDialog(this.dialog); name.focus();
   }
 }

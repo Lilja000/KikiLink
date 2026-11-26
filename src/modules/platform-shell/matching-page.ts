@@ -1,6 +1,8 @@
+import { pageAction } from './page-action';
+import { preserveSelectionFocus } from "./browse-focus";
 import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { ShellActionMenu } from './action-menu';
-import { MatchingSearch, matchConnectionsButton, matchEmptySuggestions, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSignalBar, matchSignalStatus, matchSuggestionCount, setMatchConnectionsCount, type MatchingBrowseSelection } from './matching-browse-controls';
+import { MatchingSearch, matchConnectionsButton, matchEmptySuggestions, matchFilterButton, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSignalBar, matchSignalStatus, matchSuggestionCount, setMatchConnectionsCount, type MatchingBrowseSelection } from './matching-browse-controls';
 import { matchingBreakdown } from './matching-breakdown';
 import { matchingCatalogError, matchingCatalogLoading, matchingCatalogReadFailed } from './matching-catalog-state';
 import { MatchingHideSuggestion } from './matching-hide-suggestion';
@@ -279,7 +281,7 @@ export class MatchingPage {
   }
   #applyBrowse(): void {
     this.#saveBrowse();
-    void this.refresh();
+    void preserveSelectionFocus(this.#body, () => this.refresh());
   }
   #current = () =>
     this.#visible && this.#type==="people" &&
@@ -1123,10 +1125,10 @@ export class MatchingPage {
     }
     if (this.#next !== null)
       this.#results.append(
-        this.#button(
-          this.#page === "people" ? "More suggestions" : "More connections",
+        pageAction(this.#button(
+          this.#page === "people" ? "Load more suggestions" : "Load more connections",
           () => void this.refresh(true),
-        ),
+        )),
       );
   }
   #drawCatalogState(returnFocus: HTMLElement): boolean {
@@ -1207,10 +1209,7 @@ export class MatchingPage {
     });
   }
   #filterButton() {
-    const button = this.#button("Filters", () => this.#filtersDialog());
-    button.classList.add("kl-match-filter-button");
-    button.prepend(kikiIcon("filter"));
-    return button;
+    return matchFilterButton(this.#button("Filters", () => this.#filtersDialog()), this.#filters, DEFAULT_MATCH_FILTERS);
   }
   #avatar(name: string, member: number, status?: string | null) {
     return markAvatarPresence(element("span", { className: "kl-match-avatar", ariaHidden: "true", text: Array.from(name.trim()).slice(0, 2).join("").toUpperCase() }), member, status);

@@ -88,17 +88,6 @@ export const PROFILE_READ_CONTENT_STYLES = `
   color: var(--kl-text);
 }
 .kl-profile-creations > .kl-profile-section-heading { display: block; margin: 0; }
-.kl-profile-creations .kl-profile-creations-mine {
-  min-height: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1.5;
-}
-.kl-profile-creations .kl-profile-creations-mine:hover { text-decoration: underline; }
 .kl-profile-creations > .kl-profile-section-note { margin-top: 8px; color: var(--kl-muted); font-size: 10px; line-height: 1.75; }
 .kl-profile-creation-row {
   display: flex;

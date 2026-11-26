@@ -1,3 +1,4 @@
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
 import { element, focusedElement } from "../../utils/dom";
 import { kikiIcon } from "./icons";
 import { fitPanelDialog } from "../platform-shell/panel-dialog-layout";
@@ -16,7 +17,7 @@ export class ContentDialog {
     const close = element("button", { type: "button", className: "kl-icon-button", ariaLabel: "Close details", onClick: () => this.#requestClose() }, kikiIcon("close"));
     this.element.append(element("header", { className: "kl-dialog-header" }, this.#title, close), this.body);
     this.element.addEventListener("cancel", event => { event.preventDefault(); this.#requestClose(); });
-    this.element.addEventListener("click", event => { if (event.target === this.element) this.#requestClose(); });
+    onDialogBackdropClick(this.element, () => this.#requestClose());
     this.element.addEventListener("close", () => this.#finishClose());
   }
   #requestClose(): void {

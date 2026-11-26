@@ -1,3 +1,7 @@
+import { focusPageResults, pageResult } from './page-result-focus';
+import { pageAction } from './page-action';
+import { removableFilter } from './applied-filter';
+import { sectionLink } from './section-link';
 import { ShellActionMenu, type ShellAction } from './action-menu';
 import { spaceAppearance, type SpaceIcon, type SpaceColor } from '../../../cloud/shared/space-appearance.mjs';
 import { spaceShareUrl } from './space-share';
@@ -11,6 +15,7 @@ import {SpaceRoomCreationReview} from './space-room-creation';
 import type {BCRoomCreationDraft} from '../../bc/room-creation';
 import {workshopColor} from '../../core/workshop-destinations';
 import { BrowseFilters, iconButton, searchField } from './browse-controls';
+import { shareLinkFields } from './share-link-fields';
 import { fitPanelDialog } from './panel-dialog-layout';
 import { revealDetailSection } from './detail-section-navigation';
 import { observedSpaceRoom, spaceDirectoryStatus, spaceRoomIdentity, spaceRoomKey, visibleSpaces, type SpaceDirectorySort, type SpaceDirectoryStatus, type SpaceRoomObservation } from './space-directory';
@@ -554,7 +559,7 @@ export class SpacesPage {
     if(this.#editor?.source.generation&&!pending&&!this.#dialog.open){const b=this.#button('Review saved Space draft',()=>{this.#paintEditor();this.#showDialog();});this.#status.append(b);}
   }
 
-  #paintCatalogControls(summary = ''): void {
+  #paintCatalogControls(summary = ''): HTMLButtonElement | undefined {
     this.#filters.set({scope:this.#scope,language:this.#language.value,status:this.#roomFilter}, summary);
     const disabled = this.#busy || !!this.#pending;
     this.#filters.button.disabled = this.#search.disabled = this.#sortControl.disabled = disabled;
@@ -567,11 +572,20 @@ export class SpacesPage {
     const showActiveFilters = this.options.directory
       ? this.#scope !== 'all' || Boolean(this.#language.value || this.#roomFilter)
       : this.#filtered();
+    if (!this.#filtered()) return;
+    const reset = this.#button('Clear filters', () => {
+      this.#resetFilters();
+      this.#search.focus({ preventScroll: true });
+    });
     if (showActiveFilters) {
       const status = this.#roomFilter === 'open' ? 'Open' : this.#roomFilter === 'full' ? 'Full' : this.#roomFilter === 'closed' ? 'Closed' : '';
-      this.#activeFilters.append(...[this.#language.value, status].filter(Boolean).map(text => this.#badge(text)),
-        this.#button('Clear filters', () => this.#resetFilters()));
+      const tags = [];
+      for (const [key, value] of [['language', this.#language.value], ['status', status]] as const) {
+        if (value) tags.push(removableFilter(this.#button(value, () => this.#filters.remove(key)), value));
+      }
+      this.#activeFilters.append(...tags, reset);
     }
+    return reset;
   }
   #render(sectionTrigger?: HTMLButtonElement): void {
     this.#notifyRoomRoute();
@@ -592,7 +606,7 @@ export class SpacesPage {
     this.#heading.hidden = !!this.options.directory;
     this.#toolbar.hidden = this.#scopeRow.hidden = this.#activeFilters.hidden = !!this.#selected;
     const catalogLoading = !this.#selected && this.#loading && this.#isCatalogLoading();
-    if (!this.#selected) this.#paintCatalogControls(this.#catalogLoadError || catalogLoading ? '' :
+    const reset = this.#selected ? undefined : this.#paintCatalogControls(this.#catalogLoadError || catalogLoading ? '' :
       `${visible.length} ${visible.length===1?'Space':'Spaces'} shown${this.#cursor?' · more available':''}`);
     if (!this.client.connected || !this.options.current()) { this.#results.replaceChildren(this.#empty('Connect to Cloud', 'Your spaces will appear here.')); return; }
     if (catalogLoading) return;
@@ -655,10 +669,11 @@ export class SpacesPage {
     }
     const filtered = this.#filtered();
     const roomFilterHelp = this.options.directory ? 'Check room status in Your Space context, load more spaces or clear the filters.' : 'Check room status, load more spaces or clear the filters.';
-    const empty=this.#empty(this.#roomFilter?'No matching rooms in loaded spaces':filtered?'No matching rooms':'No spaces here yet',this.#roomFilter?roomFilterHelp:filtered?'Try a different name, language or room status.':'Create a place for your people, or try another filter.','door');
-    if(filtered){
+    const empty=this.#empty(this.#roomFilter?'No matching rooms in loaded spaces':filtered?'No matching rooms':'No spaces here yet',this.#roomFilter?roomFilterHelp:filtered?'Try a different name, language or room status.':'Create a place for your people, or try another filter.',this.#search.value.trim()?'search':'door');
+    if(!visible.length && reset){
       empty.classList.add('kl-explore-empty');
-      empty.append(this.#button('Clear filters', () => {this.#resetFilters();this.#search.focus({preventScroll:true});}, undefined, undefined, true));
+      reset.classList.add('kl-text-button--primary');
+      empty.append(reset);
     }
     else empty.append(this.#button('Create space',()=>this.#edit(),'plus',undefined,true));
     const directoryNote = [this.#cursor && 'Sort and room filters apply to loaded spaces.', !this.options.directory && roomStatusNote].filter(Boolean).join(' ');
@@ -666,7 +681,16 @@ export class SpacesPage {
       element('span',{role:'status',text:`${visible.length} ${visible.length===1?'Space':'Spaces'}${this.#roomFilter?` match · ${this.#items.length} loaded`:this.#cursor?' loaded':''}${this.#cursor?' · More available':''}`}),
       ...(directoryNote ? [element('span', { className: 'kl-sp-directory-note', text: directoryNote })] : [])),
       ...(visible.length?[element('div', { className: 'kl-sp-grid' }, ...visible.map(s => this.#card(s)))]:[empty]));
-    if (this.#cursor) {const more=this.#button('Load more spaces', () => void this.refresh(true));more.disabled ||= this.#loading||this.#directoryBusy;this.#results.append(more);}
+    if (this.#cursor) {
+      const more = pageAction(this.#button('Load more spaces', () => {
+        void focusPageResults(this.#results, () => {
+          more.disabled = true;
+          return this.refresh(true);
+        });
+      }));
+      more.disabled ||= this.#loading || this.#directoryBusy;
+      this.#results.append(more);
+    }
     if(this.#restoreList&&!this.#loading){this.#restoreList=false;this.element.scrollTop=this.#listScroll;if(this.#returnId)this.#results.querySelector<HTMLButtonElement>(`[data-space-id="${this.#returnId}"] .kl-sp-title`)?.focus({preventScroll:true});}
   }
   #filtered(): boolean {
@@ -919,23 +943,12 @@ export class SpacesPage {
     const available = () => catalog ? this.#listedSpace(space.id) : this.#activeSpace(space);
     if(!available())return;let url:string;
     try{url=spaceShareUrl(location.href,space.id,this.client.origin);}catch{this.#error='The Space link could not be created.';this.#paintStatus();return;}
-    const input = element('input', { ariaLabel: 'Space link', value: url });
-    input.readOnly = true;
-    const status = element('p', { role: 'status', hidden: true });
-    const current = () => this.#infoDialog.open && this.#infoDialog.contains(input) && input.isConnected && !!available();
-    const selectLink = () => { input.focus({ preventScroll: true }); input.select(); };
-    const announce = (text: string) => { status.hidden = false; status.textContent = text; };
-    const copy = this.#infoButton('Copy Space link', () => {
-      if (!current()) return;
-      const fallback = () => { if (current()) { announce('Select and copy the link.'); selectLink(); } };
-      if (!navigator.clipboard?.writeText) { fallback(); return; }
-      void navigator.clipboard.writeText(url).then(() => { if (current()) announce('Link copied.'); }).catch(fallback);
-    });
-    const body = element('div', { className: 'kl-sp-info-body kl-explore-share-body' },
-      element('p', { text: 'This link opens the Space in KikiLink on the same Cloud. Access is checked when it is opened.' }),
-      element('label', {}, element('span', { text: 'Space link' }), input), status);
-    this.#showInfo('Share Space', body, copy);
-    if (current()) selectLink();
+    const fields = shareLinkFields('Space link', url,
+      'This link opens the Space in KikiLink on the same Cloud. Access is checked when it is opened.',
+      () => this.#infoDialog.open && !!available());
+    fields.body.classList.add('kl-sp-info-body');
+    this.#showInfo('Share Space', fields.body, this.#infoButton('Copy Space link', fields.copy, true));
+    fields.select();
   }
   #information(space?: PersistentSpace): void {
     const current=space?this.#activeSpace(space):undefined;if(space&&!current)return;
@@ -1026,7 +1039,7 @@ export class SpacesPage {
     const more = iconButton(`${s.name} options`, 'more', () => this.#spaceMenu(s, more, true));
     more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
     article.append(this.#cover(s), element('div', { className: 'kl-sp-card-body' },
-      element('div',{className:'kl-sp-card-heading'},this.#spaceIcon(s),element('div',{className:'kl-sp-card-heading-copy'},element('h2',{},element('button',{type:'button',className:'kl-sp-title',text:s.name,title:s.name,onClick:()=>this.#openCard(s.id)})),element('small',{text:s.communityName||'Independent Space'})),more),
+      element('div',{className:'kl-sp-card-heading'},this.#spaceIcon(s),element('div',{className:'kl-sp-card-heading-copy'},element('h2',{},pageResult(element('button',{type:'button',className:'kl-sp-title',text:s.name,title:s.name,onClick:()=>this.#openCard(s.id)}),s.id)),element('small',{text:s.communityName||'Independent Space'})),more),
       element('p', { className: 'kl-sp-description', text: s.description }),
       element('div',{className:'kl-sp-meta kl-sp-directory-room'},this.#roomBadge(s, observed, true),element('span',{},kikiIcon('globe'),element('span',{text:s.language})),...(observed?[element('span',{},kikiIcon('users'),element('span',{text:`${observed.memberCount}/${observed.memberLimit} in room`}))]:[])),
       element('div',{className:'kl-sp-card-tags'},this.#badge(accessLabel(s.access)),...(s.membership==='active'?[this.#roleBadge(s.role, false)]:[]),...(s.archived?[this.#badge('Archived')]:[]),...s.tags.slice(0,2).map(t=>this.#badge(t))),
@@ -1191,7 +1204,7 @@ export class SpacesPage {
         if(accepted){this.#eventsPanelSpace=s.id;panel.append(this.#eventsPanel.element);this.#eventsPanel.setVisible(true);}
         else{this.#eventsPanel.setVisible(false);panel.append(element('section',{className:'kl-sp-panel'},element('p',{role:'status',text:'Finish or discard the previous event change in Events first.'}),this.#button('Open Events',()=>this.options.openEvents())));}
       }
-      else panel.append(element('section',{className:'kl-sp-panel'},...this.#upcomingBody(s),this.#button('Explore events',()=>this.options.openSpaceEvents?.(s.id,s.name))));
+      else panel.append(element('section',{className:'kl-sp-panel'},...this.#upcomingBody(s),sectionLink(this.#button('Explore events',()=>this.options.openSpaceEvents?.(s.id,s.name)))));
     }
     else if (this.#tab === 'members') panel.append(this.#memberPanel(s));
     else if (this.#tab === 'room') panel.append(this.#roomPanel(s));
@@ -1202,7 +1215,7 @@ export class SpacesPage {
       if(this.#auditPreviewError)activity.append(element('p',{className:'kl-sp-small-empty',role:'status',text:this.#auditPreviewError}),this.#button('Retry activity',()=>void this.refresh(!!this.#detailCursor&&this.#audit.length>0),'refresh'));
       if(!this.#audit.length&&!this.#auditPreviewError)activity.append(element('p',{className:'kl-sp-small-empty',text:'No recent activity.'}));
       for (const a of this.#audit) activity.append(this.#activityRow(a));
-      if (this.#detailCursor&&!this.#auditPreviewError) {const more=this.#button('More activity', () => void this.refresh(true));more.disabled ||= this.#loading;activity.append(more);} panel.append(activity);
+      if (this.#detailCursor&&!this.#auditPreviewError) {const more=pageAction(this.#button('Load more activity', () => void this.refresh(true)));more.disabled ||= this.#loading;activity.append(more);} panel.append(activity);
     } else {
       const overview = this.#tab === 'overview';
       const section = (title: string, body: HTMLElement[], action?: HTMLElement) => element('section', { className: 'kl-sp-panel kl-sp-detail-section' },
@@ -1214,12 +1227,13 @@ export class SpacesPage {
         const announcement = section('Announcement', [element('p', { text: s.announcement || 'No announcement.' })], editAnnouncement);
         const viewRoom = this.#button('View room', () => {
           if (this.#activeSpace(s)?.canRead) this.#openSection('room', viewRoom);
-        }, 'arrow-right');
+        });
+        sectionLink(viewRoom);
         const room = section('Room', [this.#roomBadge(s, this.#roomStatus),
           element('p', { text: s.room ? s.room.name : 'A room has not been linked yet.' }), viewRoom]);
         const allEvents = this.#button(this.#canOpenSection(s, 'events') ? 'All events' : 'Browse events', () => this.#allEvents(s, allEvents));
-        const upcoming=section('Coming up',this.#upcomingBody(s),allEvents);
-        const activity = section('Activity', [], s.canManage && (this.#audit.length > 0 || this.#auditPreviewError) ? this.#button('All activity', () => this.#openSection('audit')) : undefined);
+        const upcoming=section('Coming up',this.#upcomingBody(s),sectionLink(allEvents));
+        const activity = section('Activity', [], s.canManage && (this.#audit.length > 0 || this.#auditPreviewError) ? sectionLink(this.#button('All activity', () => this.#openSection('audit'))) : undefined);
         if (!s.canManage) activity.append(element('p', { className: 'kl-sp-small-empty', text: 'Activity is shared with Space managers.' }));
         else if (this.#auditPreviewError) activity.append(element('p', { className: 'kl-sp-small-empty', role: 'status', text: this.#auditPreviewError }));
         else if (!this.#audit.length) activity.append(element('p', { className: 'kl-sp-small-empty', text: 'No recent activity.' }));
@@ -1321,7 +1335,7 @@ export class SpacesPage {
     }
     if(!visible.length)grid.append(element('p',{className:'kl-sp-small-empty',text:query||this.#memberRole?this.#detailCursor?'No matches among loaded members.':'No members match those filters.':'No people to show in this view.'}));
     if(query&&identities.some(({identity})=>identity.searchable===false))body.append(element('p',{className:'kl-sp-member-search-note',text:'Search matches names and usernames available to you, plus member numbers.'}));
-    if(this.#detailCursor){if(query||this.#memberRole)body.append(element('p',{className:'kl-sp-member-search-note',role:'status',text:'Filters apply to loaded members. Load more to include the remaining people.'}));if(!this.#membersError){const more=this.#button('More people',()=>void this.refresh(true));more.disabled ||=this.#loading;body.append(more);}}
+    if(this.#detailCursor){if(query||this.#memberRole)body.append(element('p',{className:'kl-sp-member-search-note',role:'status',text:'Filters apply to loaded members. Load more to include the remaining people.'}));if(!this.#membersError){const more=pageAction(this.#button('Load more people',()=>void this.refresh(true)));more.disabled ||=this.#loading;body.append(more);}}
     return body;
   }
   #memberOptions(s: PersistentSpace, m: Member, name: string, actions: ShellAction[]): HTMLButtonElement {

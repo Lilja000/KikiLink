@@ -1,3 +1,4 @@
+import { searchField } from "./browse-controls";
 import {AudioGenerationError,type AudioReview} from '../../cloud/audio-generation';
 import type { CloudAudioLibrary } from "../../cloud/audio-library";
 import { element, focusedElement } from "../../utils/dom";
@@ -136,7 +137,7 @@ export class CloudAudioPanel {
     this.#player.hidden = true;
     this.#player.append(this.#current, this.#audio);
     this.element.append(
-      element("div", { className: "kl-cloud-audio-tools" }, this.#search, this.#add,
+      element("div", { className: "kl-cloud-audio-tools" }, searchField(this.#search, "Clear Cloud music search", { className: "kl-cloud-audio-search" }), this.#add,
         this.#button("reload", "Refresh", () => void this.#load(), "refresh")),
       element("p", { className: "kl-cloud-audio-privacy", text: "Private · saved until you delete" }),
       this.#form, this.#status, this.#list, this.#player,

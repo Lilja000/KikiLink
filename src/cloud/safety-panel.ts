@@ -1,3 +1,5 @@
+import { pageAction } from '../modules/platform-shell/page-action';
+import { bindSearchEscape } from "../modules/platform-shell/browse-controls";
 import { MyReportsRecovery, MyReportsRecoveryError, myReportsRecoveryConflict } from './my-reports-recovery';
 import { CloudClient, CloudError } from './client';
 import { element } from './dom';
@@ -253,6 +255,7 @@ export class SafetyPanel {
         const clear = this.#button('Clear report search', () => { this.#query = ''; apply(); });
         clear.classList.add('kl-report-clear'); clear.title = 'Clear report search';
         clear.setAttribute('aria-label', 'Clear report search'); clear.replaceChildren(kikiIcon('close')); clear.hidden = !this.#query;
+        bindSearchEscape(search, search, clear);
         search.addEventListener('input', () => {
           if (this.#current() && this.element.contains(search)) { this.#query = search.value; clear.hidden = !this.#query; }
         });
@@ -273,7 +276,7 @@ export class SafetyPanel {
       this.element.append(toolbar);
       if(this.#search){
         const actions=element('div',{className:'kl-mod-actions'});
-        if(this.#choiceNext)actions.append(this.#button('More communities',()=>{this.#choiceBefore=this.#choiceNext!;void this.refresh();}));
+        if(this.#choiceNext)actions.append(pageAction(this.#button('More communities',()=>{this.#choiceBefore=this.#choiceNext!;void this.refresh();}), 'next'));
         if(this.#choiceBefore)actions.append(this.#button('First communities',()=>{this.#choiceBefore='';void this.refresh();}));
         if(this.#items.length && this.#filtered())actions.append(this.#button('Reset filters',()=>this.#reset()));if(actions.childElementCount)this.element.append(actions);
       }
@@ -298,7 +301,7 @@ export class SafetyPanel {
         this.#button('Reset filters', () => this.#reset())));
     }
     const pages=element('div',{className:'kl-mod-actions'});
-    if(this.#next!==null)pages.append(this.#button('Next page',()=>{this.#cursor=this.#next!;void this.refresh();}));
-    if(this.#cursor)pages.append(this.#button('Back to first page',()=>{this.#cursor='';void this.refresh();}));this.element.append(pages);
+    if(this.#next!==null)pages.append(pageAction(this.#button('Next page',()=>{this.#cursor=this.#next!;void this.refresh();}), 'next'));
+    if(this.#cursor)pages.append(pageAction(this.#button('Back to first page',()=>{this.#cursor='';void this.refresh();}), 'previous'));this.element.append(pages);
   }
 }

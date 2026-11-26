@@ -1,3 +1,4 @@
+import { bindSearchEscape } from "./browse-controls";
 import type { MatchFilters, MatchOwn } from '../../../cloud/shared/matching.mjs';
 import { element } from '../../cloud/dom';
 import { bindClockText } from '../../core/time-format';
@@ -11,6 +12,19 @@ export type MatchingBrowseSelection = Pick<MatchFilters,
 export function matchingBrowseSelection(filters: MatchingBrowseSelection): MatchingBrowseSelection {
   const { query, scope, sort, intent, language, interest, community, timezone, available, priority } = filters;
   return { query, scope, sort, intent, language, interest, community, timezone, available, priority };
+}
+
+/** Scope, sort and search already show their current value in the toolbar. */
+export function matchFilterButton<T extends MatchingBrowseSelection>(
+  button: HTMLButtonElement, filters: T, defaults: T,
+): HTMLButtonElement {
+  button.classList.add('kl-match-filter-button');
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.dataset.active = String((Object.keys(defaults) as (keyof T)[]).some(key =>
+    key !== 'query' && key !== 'sort' && key !== 'scope' && filters[key] !== defaults[key],
+  ));
+  button.prepend(kikiIcon('filter'));
+  return button;
 }
 
 export const matchOptionsSelector = '.kl-match-options';
@@ -151,7 +165,9 @@ function matchSearch(input: HTMLInputElement, apply: () => void): HTMLElement {
     input.focus();
     apply();
   });
-  return element('div', { className: 'kl-match-search' }, search, input, clear);
+  const field = element('div', { className: 'kl-match-search' }, search, input, clear);
+  bindSearchEscape(field, input, clear);
+  return field;
 }
 
 export function matchSuggestionCount(count: number, hasMore: boolean): HTMLElement {
