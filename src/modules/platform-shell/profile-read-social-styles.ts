@@ -34,12 +34,7 @@ export const PROFILE_READ_SOCIAL_STYLES = `
   padding:12px;border-bottom:1px solid var(--kl-border);
 }
 .kl-profile-communities .kl-profile-section-heading { flex-wrap:wrap;gap:10px; }
-.kl-profile-communities .kl-profile-section-heading > .kl-profile-communities-explore {
-  height:34px;min-height:0;padding:0 11px;margin-inline-start:auto;
-  border-radius:7px;background:transparent;color:var(--kl-text);font-size:12px;font-weight:550;line-height:1.5;
-}
-.kl-profile-communities .kl-profile-communities-explore:hover { background:var(--kl-surface-hover); }
-.kl-profile-communities .kl-profile-communities-explore:active { transform:none; }
+.kl-profile-communities .kl-profile-communities-explore { margin-inline-start: auto; }
 .kl-profile-communities .kl-profile-communities-explore + .kl-profile-options { margin-inline-start:0; }
 :is(.kl-profile-friends,.kl-profile-communities) > .kl-text-button { margin-top:8px; }
 .kl-addon-profile-dialog .kl-addon-profile-card :is(.kl-profile-friend-row,.kl-profile-community-row) { gap:8px;padding:8px 0; }
@@ -50,6 +45,5 @@ export const PROFILE_READ_SOCIAL_STYLES = `
   .kl-addon-profile-card :is(.kl-profile-friend-row,.kl-profile-community-row) { min-height:48px; }
   .kl-addon-profile-dialog .kl-addon-profile-card :is(.kl-profile-friend-row,.kl-profile-community-row) { min-height:44px; }
   .kl-own-profile-page .kl-platform-profile-section > .kl-profile-communities:not(:has(> .kl-profile-view-as-locked)) { padding-inline:0; }
-  .kl-profile-communities .kl-profile-section-heading > .kl-profile-communities-explore { min-height:40px; }
 }
 `;

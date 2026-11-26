@@ -1,6 +1,8 @@
+import { pageAction } from './page-action';
+import { preserveSelectionFocus } from "./browse-focus";
 import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { ShellActionMenu, type ShellAction } from './action-menu';
-import { MatchingSearch, matchConnectionsButton, matchEmptySuggestions, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSignalBar, matchSignalStatus, matchSuggestionCount, type MatchingBrowseSelection } from './matching-browse-controls';
+import { MatchingSearch, matchConnectionsButton, matchEmptySuggestions, matchFilterButton, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSignalBar, matchSignalStatus, matchSuggestionCount, type MatchingBrowseSelection } from './matching-browse-controls';
 import { matchingBreakdown } from './matching-breakdown';
 import { matchingCatalogError, matchingCatalogLoading, matchingCatalogReadFailed } from './matching-catalog-state';
 import { MatchingInformation, matchingInformationButton } from './matching-information';
@@ -435,8 +437,7 @@ export class MatchingResourcesPage {
        void this.refresh();
      } else if (!this.#search.pending) this.draw();
    });
-   const filters=this.button('Filters',()=>this.filters());filters.classList.add('kl-match-filter-button');filters.prepend(kikiIcon('filter'));
-   filters.setAttribute('aria-haspopup', 'dialog');
+   const filters = matchFilterButton(this.button('Filters', () => this.filters()), this.#filters, DEFAULT_RESOURCE_FILTERS);
    const toolbar=element('form',{className:'kl-match-toolbar'},
      searchControl,matchScopeControls(this.#filters.scope,(scope,label)=>this.button(label,()=>this.setScope(scope))),filters,
      this.select('Resource sort', ['recommended', 'time', 'name'], this.#filters.sort, value => {
@@ -477,14 +478,14 @@ export class MatchingResourcesPage {
        this.resetFilters();
      }), this.#hiddenTrigger('empty')));
  }
- if(this.#next!==null)this.results.append(this.button('Load more resources',()=>void this.refresh(true)));
+ if(this.#next!==null)this.results.append(pageAction(this.button('Load more resources',()=>void this.refresh(true))));
  }
  #saveBrowse(): void {
    if (this.current() && this.#page === 'browse') this.options.browseChanged?.();
  }
  #applyBrowse(): void {
    this.#saveBrowse();
-   void this.refresh();
+   void preserveSelectionFocus(this.body, () => this.refresh());
  }
  setScope(scope: ResourceFilters['scope']): void {
    if (this.#filters.scope === scope) return;

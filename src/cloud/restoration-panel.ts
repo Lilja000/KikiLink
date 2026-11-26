@@ -1,3 +1,4 @@
+import { pageAction } from '../modules/platform-shell/page-action';
 import {CloudError,type CloudClient} from './client';
 import {ModerationGenerationError,moderationGenerationConflict,type ModerationAccess} from './moderation-generation';
 import type {KeyValueStorage} from '../core/settings';
@@ -82,7 +83,7 @@ export class RestorationPanel {
    if(!this.#appeals.length)rows.append(element('section',{className:'kl-mod-empty'},kikiIcon('shield'),element('h2',{text:'No appeals to show.'})));
   }
   this.element.append(rows);
-  if(this.#next!==null||this.#cursor){const pages=element('div',{className:'kl-mod-actions'});if(this.#next!==null)pages.append(this.#button('Older entries',()=>{this.#cursor=this.#next!;void this.refresh();}));if(this.#cursor)pages.append(this.#button('First page',()=>{this.#cursor=0;void this.refresh();}));this.element.append(pages);}
+  if(this.#next!==null||this.#cursor){const pages=element('div',{className:'kl-mod-actions'});if(this.#next!==null)pages.append(pageAction(this.#button('Older entries',()=>{this.#cursor=this.#next!;void this.refresh();}), 'next'));if(this.#cursor)pages.append(pageAction(this.#button('First page',()=>{this.#cursor=0;void this.refresh();}), 'previous'));this.element.append(pages);}
  }
  #renderDetail():void{
   const r=this.#restriction,a=this.#appeal;

@@ -10,7 +10,7 @@ export class MessageInteraction {
   #suppressClickUntil = 0;
 
   constructor(readonly root: HTMLElement, readonly history: HTMLElement,
-    readonly actions?: (row: HTMLElement) => HTMLElement[], compact = false) {
+    readonly actions?: (row: HTMLElement, anchor: HTMLElement) => HTMLElement[], compact = false) {
     this.#menu.classList.toggle("kl-chat-options-menu", compact);
     if (actions) root.append(this.#menu);
     const signal = this.#lifetime.signal;
@@ -84,8 +84,9 @@ export class MessageInteraction {
     if (trigger && this.#anchor === trigger && !this.#menu.hidden) { this.close(true); return; }
     this.close();
     if (!this.history.contains(row) || !row.dataset.actionable) return;
-    const actions = this.actions?.(row) ?? []; if (!actions.length) return;
-    this.#anchor = trigger ?? row.querySelector<HTMLElement>(".kl-message-bubble") ?? row;
+    const opener = trigger ?? row.querySelector<HTMLElement>(".kl-message-bubble") ?? row;
+    const actions = this.actions?.(row, opener) ?? []; if (!actions.length) return;
+    this.#anchor = opener;
     if (trigger) trigger.setAttribute("aria-expanded", "true");
     for (const action of actions) {
       action.setAttribute("role", "menuitem");

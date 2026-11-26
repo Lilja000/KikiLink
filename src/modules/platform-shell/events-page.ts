@@ -1,3 +1,9 @@
+import { focusPageResults, pageResult } from './page-result-focus';
+import { pageAction } from './page-action';
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
+import { removableFilter } from './applied-filter';
+import { preserveSelectionFocus } from "./browse-focus";
+import { sectionLink } from './section-link';
 import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { calendarCategories, legacyCalendarCategories } from '../../../cloud/shared/calendar-categories.mjs';
 import {spaceRead,SpaceRecoveryError} from '../../cloud/space-mutation-intent';
@@ -8,6 +14,7 @@ import {calendarReadAt} from '../../cloud/calendar-mutation-intent';
 import {CalendarMutationIntent,CalendarRecoveryError,calendarRead,sameCalendarSource,calendarChangeText,pendingCalendarChanges,clearCalendarChanges,type CalendarRecoverySource} from '../../cloud/calendar-mutation-intent';
 import {communityManagementRead} from '../../cloud/moderation-generation';
 import { BrowseFilters, iconButton, searchField } from './browse-controls';
+import { shareLinkFields } from './share-link-fields';
 import { CloudClient, CloudError } from '../../cloud/client';
 import { element as makeElement } from '../../cloud/dom';
 type Props=NonNullable<Parameters<typeof makeElement>[1]>&{disabled?:boolean;onClick?:(event:MouseEvent)=>void;href?:string;download?:string};
@@ -103,6 +110,7 @@ export class EventsPage {
   readonly #actionsDialog=element('dialog',{className:'kl-ev-dialog',ariaLabel:'Event action'});
   readonly #plansDialog=element('dialog',{className:'kl-ev-dialog kl-ev-plans-drawer',ariaLabel:'Your next plans'});
   #actionKind:'share'|'report'|undefined;#reportState={busy:false,pending:false,dirty:false};
+  #reviewReportExit:(()=>void)|undefined;
   #language='';#communityName='';#pages=1;#queryKey='';#listScroll=0;#returnId:string|undefined;#restoreList=false;
   #backgroundRead=false;#visible=false;#destroyed=false;#token=0;#epoch=0;#loading=false;#supported=false;#error='';#busy=false;
   #catalogLoadError='';
@@ -137,11 +145,7 @@ export class EventsPage {
     this.#plansDialog.addEventListener('close',()=>{if(!this.#plansDialog.open&&this.#discoverOverlay?.action==='plans')this.#closePlans(true);});
     this.#dialog.addEventListener('close',()=>{if(!this.#dialog.open&&this.#discoverOverlay?.action==='create')this.#dismissDiscoverEditor(true);});
     this.#plansDialog.addEventListener('cancel',e=>{e.preventDefault();this.#closePlans(true);});
-    this.#plansDialog.addEventListener('click',event=>{
-      if(event.target!==this.#plansDialog)return;
-      const bounds=this.#plansDialog.getBoundingClientRect();
-      if(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom)this.#closePlans(true);
-    });
+    onDialogBackdropClick(this.#plansDialog, () => this.#closePlans(true));
     this.#guestSearch.addEventListener('keydown',e=>e.stopPropagation());
     this.#search.maxLength=80;this.#searchBox=searchField(this.#search,'Clear event search');
     this.#filters=new BrowseFilters('Filter events',[
@@ -566,13 +570,20 @@ export class EventsPage {
     this.#frameDialog(this.#dialog,'Event change',body,undefined,()=>{if(!this.#busy)this.#dismissDiscoverEditor(true);},true);
     this.#showDialog();
   }
-  #paintActiveFilters(): void {
+  #paintActiveFilters(): HTMLButtonElement | undefined {
     this.#activeFilters.replaceChildren();
     if (this.#selected || !this.#filtered()) return;
     const when = this.#when === 'upcoming' ? '' : periods.find(([value]) => value === this.#when)?.[1];
-    const tags = [when, this.#category, this.#language]
-      .filter((value): value is string => Boolean(value)).map(value => this.#tag(value));
-    this.#activeFilters.append(...tags, this.#button('Clear filters', () => this.#clearFilters()));
+    const tags = [];
+    for (const [key, value] of [['when', when], ['category', this.#category], ['language', this.#language]] as const) {
+      if (value) tags.push(removableFilter(this.#button(value, () => this.#filters.remove(key)), value));
+    }
+    const reset = this.#button('Clear filters', () => {
+      this.#clearFilters();
+      this.#search.focus({ preventScroll: true });
+    });
+    this.#activeFilters.append(...tags, reset);
+    return reset;
   }
   #render():void{
     const detailTabTrigger = this.#detailTabTrigger;
@@ -586,7 +597,9 @@ export class EventsPage {
     back?.classList.add('kl-ev-back-link');
     this.#heading.classList.toggle('kl-ev-path',!!this.#selected);
     const create=this.#button('Create event',()=>this.#edit(),'plus',undefined,true);create.disabled ||= !this.#supported||!this.client.connected||!!this.#spaceId&&(!this.#spaceEvents||!this.#spaceContext||!this.#details);
-    this.#heading.replaceChildren(element('div',{},back,...(this.#selected?[]:[element('h1',{text:'Events'})])),element('div',{},iconButton('Refresh','refresh',()=>void this.refresh()),...(this.#selected?[]:[create])));
+    const refresh = element('button', { type: 'button', className: 'kl-icon-button kl-catalog-refresh',
+      ariaLabel: 'Refresh', title: 'Refresh', onClick: () => void this.refresh() }, kikiIcon('refresh'));
+    this.#heading.replaceChildren(element('div',{},back,...(this.#selected?[]:[element('h1',{text:'Events'})])),element('div',{},refresh,...(this.#selected?[]:[create])));
     const eventCount=`${this.#items.length}${this.#cursor?'+':''} ${this.#items.length===1&&!this.#cursor?'event':'events'}`;
     const filterSummary=this.client.connected&&this.#supported&&!this.#error&&!this.#catalogLoadError?`${eventCount} shown`:'';
     this.#filters.set({scope:this.#scope,when:this.#when,category:this.#category,language:this.#language},filterSummary);this.#filters.button.disabled=this.#busy||!!this.#pending;this.#search.disabled=this.#busy||!!this.#pending;
@@ -597,13 +610,13 @@ export class EventsPage {
       this.#context.append(this.#button(this.#spaceName||'Space',()=>this.options.openSpace?.(id),'door'),clear);
     }
     this.#toolbar.hidden=this.#tabs.hidden=!!this.#selected;
-    this.#paintActiveFilters();
+    const reset = this.#paintActiveFilters();
     if(!this.#selected){
       const focused=focusedElement(this.#search);
       const plansFocused=focused?.matches('.kl-ev-context-action')&&!this.#plansDialog.open;
       const selection=[this.#search.selectionStart,this.#search.selectionEnd];
       const plans=this.#button('Your plans',()=>this.#openPlans(),'calendar');
-      plans.classList.add('kl-ev-context-action');plans.title='Your plans';plans.querySelector('span')?.classList.add('kl-ev-sr');
+      plans.classList.add('kl-ev-context-action');plans.title='Your plans';plans.setAttribute('aria-label',plans.title);
       plans.setAttribute('aria-haspopup','dialog');
       plans.disabled ||= !this.#supported||!this.client.connected;
       this.#toolbar.replaceChildren(this.#searchBox,this.#filters.button,plans);
@@ -611,13 +624,13 @@ export class EventsPage {
       else if(plansFocused&&!plans.disabled)plans.focus({preventScroll:true});
       const scopeButtons = element('div', { className: 'kl-ev-scopes', role: 'group', ariaLabel: 'Event filters' },
         ...scopes.map(([value,label])=>
-          this.#button(label,()=>{this.#scope=value;void this.refresh();},undefined,this.#scope===value)));
+          this.#button(label,()=>{this.#scope=value;void preserveSelectionFocus(this.#tabs, () => this.refresh());},undefined,this.#scope===value)));
       const layout = element('div', { className: 'kl-ev-layout', role: 'group', ariaLabel: 'Event layout' },
         ...(['cards', 'agenda'] as const).map(value => this.#button(value === 'cards' ? 'Cards' : 'Agenda',
-          () => { this.#layout = value; void this.refresh(); }, value === 'cards' ? 'feed' : 'calendar', this.#layout === value)));
+          () => { this.#layout = value; void preserveSelectionFocus(this.#tabs, () => this.refresh()); }, value === 'cards' ? 'feed' : 'calendar', this.#layout === value)));
       const layoutTools = element('div', { className: 'kl-ev-layout-tools' }, layout);
       if (this.#layout === 'cards' && this.#discovery) layoutTools.append(element('label', { className: 'kl-ev-sort' }, 'Sort',
-        this.#select('Sort events', [['soonest', 'Soonest'], ['popular', 'Popular']], this.#sort, value => { this.#sort = value; void this.refresh(); })));
+        this.#select('Sort events', [['soonest', 'Soonest'], ['popular', 'Popular']], this.#sort, value => { this.#sort = value; void preserveSelectionFocus(this.#tabs, () => this.refresh()); })));
       if (this.#layout === 'agenda') layoutTools.append(element('small', { className: 'kl-ev-meta', text: 'By date' }));
       this.#tabs.replaceChildren(scopeButtons, layoutTools);
       if(focused?.matches('.kl-ev-detail-context')&&this.#scope==='plans')scopeButtons.querySelector<HTMLElement>('button[aria-pressed=true]')?.focus({preventScroll:true});
@@ -672,15 +685,20 @@ export class EventsPage {
     } else if(!this.#items.length){
       if(this.#loading){this.#results.replaceChildren(this.#loadingGrid('Loading events'));return;}
       const filtered=this.#filtered(), linkedEmpty=!!this.options.embedded&&!this.#error&&!this.#cursor&&!filtered;
-      const empty=this.#empty(linkedEmpty?'No events linked yet':this.#error?'Events couldn’t load':this.#cursor?'Keep searching':filtered?'No matching events':'No events yet',linkedEmpty?'Events linked to this room will appear here.':this.#error?'Your saved plans are unchanged.':this.#cursor?'More events are available to search.':filtered?'Try another search or clear your filters.':'Create an event and make a plan.',this.#error?'warning':linkedEmpty?'door':'calendar');
-      if(linkedEmpty&&this.options.browseEvents)empty.append(this.#button('Explore events',()=>this.options.browseEvents?.()));
+      const empty=this.#empty(linkedEmpty?'No events linked yet':this.#error?'Events couldn’t load':this.#cursor?'Keep searching':filtered?'No matching events':'No events yet',linkedEmpty?'Events linked to this room will appear here.':this.#error?'Your saved plans are unchanged.':this.#cursor?'More events are available to search.':filtered?'Try another search or clear your filters.':'Create an event and make a plan.',this.#error?'warning':linkedEmpty?'door':this.#search.value.trim()?'search':'calendar');
+      if(linkedEmpty&&this.options.browseEvents)empty.append(sectionLink(this.#button('Explore events',()=>this.options.browseEvents?.())));
       const directoryEmpty=!this.options.embedded&&!this.#error&&!this.#cursor&&filtered;
       if(directoryEmpty)empty.classList.add('kl-explore-empty');
-      if(!this.options.embedded||this.#error||this.#cursor||filtered)empty.append(this.#error?this.#button('Retry',()=>void this.refresh(),'refresh'):this.#cursor?this.#button('Load more events',()=>void this.refresh(true)):filtered?this.#button('Clear filters',()=>{this.#clearFilters();if(directoryEmpty)this.#search.focus({preventScroll:true});},undefined,undefined,directoryEmpty):this.#button('Create an event',()=>this.#edit(),'plus',undefined,true));
+      if (this.#error) empty.append(this.#button('Retry',()=>void this.refresh(),'refresh'));
+      else if (this.#cursor) empty.append(this.#moreEvents());
+      else if (reset) {
+        reset.classList.toggle('kl-text-button--primary', directoryEmpty);
+        empty.append(reset);
+      } else if (!this.options.embedded) empty.append(this.#button('Create an event',()=>this.#edit(),'plus',undefined,true));
       this.#results.replaceChildren(...(directoryEmpty?[summary()]:[]),empty);
     } else {
       const content = this.#layout === 'agenda' ? this.#agenda() : element('div', { className: 'kl-ev-grid' }, ...this.#items.map(event => this.#card(event)));
-      this.#results.replaceChildren(...(this.options.embedded?[]:[summary()]),content);if(this.#cursor)this.#results.append(this.#button('Load more events',()=>void this.refresh(true)));
+      this.#results.replaceChildren(...(this.options.embedded?[]:[summary()]),content);if(this.#cursor)this.#results.append(this.#moreEvents());
     }
     if (this.#restoreList && !this.#loading) {
       this.#restoreList = false;
@@ -691,6 +709,16 @@ export class EventsPage {
         : undefined;
       (previousCard ?? this.#search).focus({ preventScroll: true });
     }
+  }
+  #moreEvents(): HTMLButtonElement {
+    const more = pageAction(this.#button('Load more events', () => {
+      void focusPageResults(this.#results, () => {
+        more.disabled = true;
+        return this.refresh(true);
+      });
+    }));
+    more.disabled ||= this.#loading;
+    return more;
   }
   #agenda(): HTMLElement {
     const groups = new Map<string, CalendarEvent[]>();
@@ -800,7 +828,7 @@ export class EventsPage {
         if (manageable(selected)) {
           const upcoming = selected.startsAt > Date.now();
           if (upcoming) actions.push({ label:'Edit event', icon:'edit', run:run(event=>{if (manageable(event) && event.startsAt > Date.now()) this.#edit(event);}) });
-          actions.push({ label:'Cancel event', icon:'close', run:run(event=>{if (manageable(event)) this.#cancel(event);}) });
+          actions.push({ label:'Cancel event', icon:'close', danger:true, run:run(event=>{if (manageable(event)) this.#cancel(event);}) });
         }
         if (this.#reports) actions.push({ label:'Report event', icon:'flag', run:run(event=>this.#report(event)) });
         this.#cardActions.open(trigger,'Event options',actions,undefined,false,false);
@@ -815,7 +843,7 @@ export class EventsPage {
     const facts=element('div',{className:'kl-ev-card-facts kl-ev-meta'},
       element('span',{},kikiIcon('clock'),this.#clock(e)),element('span',{},kikiIcon('users'),`${e.going}/${e.capacity} going`),
       element('span',{},kikiIcon('globe'),e.language));
-    article.append(this.#date(e),element('h2',{},element('button',{type:'button',className:'kl-ev-title',title:e.title,text:e.title,onClick:()=>this.#openCard(e.id)})),
+    article.append(this.#date(e),element('h2',{},pageResult(element('button',{type:'button',className:'kl-ev-title',title:e.title,text:e.title,onClick:()=>this.#openCard(e.id)}),e.id)),
       hostLine,element('div',{className:'kl-ev-card-category kl-ev-meta'},element('span',{text:e.category}),visibility),this.#eventMenu(e),
       element('p',{className:'kl-ev-description',text:e.description}),facts,
       element('div',{className:'kl-ev-tags'},this.#stateBadge(e),this.#selectionBadge(e),...(e.tags??[]).slice(0,2).map(t=>this.#tag(t))),
@@ -824,7 +852,7 @@ export class EventsPage {
   }
   #row(e:CalendarEvent):HTMLElement{
     const row=element('article',{className:'kl-ev-row'});row.dataset.eventId=e.id;
-    row.append(this.#rowOpen(e,()=>this.#openCard(e.id)),element('div',{className:'kl-ev-row-controls'},this.#attendance(e),this.#eventMenu(e)));return row;
+    row.append(pageResult(this.#rowOpen(e,()=>this.#openCard(e.id)),e.id),element('div',{className:'kl-ev-row-controls'},this.#attendance(e),this.#eventMenu(e)));return row;
   }
   #rowOpen(e:CalendarEvent,openEvent:()=>void):HTMLButtonElement{
     const host=this.#person(e.hostProfile,e.host);
@@ -952,7 +980,7 @@ export class EventsPage {
         }
         if(this.#guests.length)guests.append(grid);
         else guests.append(element('p',{className:'kl-ev-section-empty',role:'status',text:this.#guestCursor?'More guests are available to search.':this.#guestSearch.value?'No guests match that name.':'No guests to show yet.'}));
-        if(this.#guestCursor!==null){const more=this.#button('More guests',()=>reload(more,true));guests.append(more);}
+        if(this.#guestCursor!==null){const more=pageAction(this.#button('Load more guests',()=>reload(more,true)));guests.append(more);}
       }
       panel.append(guests);
     }else panel.append(element('div',{className:'kl-ev-detail-grid'},
@@ -1063,6 +1091,7 @@ export class EventsPage {
   }
   #frameDialog(dialog:HTMLDialogElement,title:string,body:HTMLElement,footer:HTMLElement|undefined,close:()=>void,editor=false):void {
     dialog.setAttribute('aria-label',title);
+    dialog.classList.remove('kl-explore-share-dialog');
     dialog.classList.toggle('kl-ev-editor-dialog',editor);
     const closeButton=element('button',{type:'button',className:'kl-ev-dialog-close',ariaLabel:'Close dialog',onClick:close},kikiIcon('close'));
     dialog.replaceChildren(element('header',{className:'kl-ev-dialog-header'},
@@ -1088,7 +1117,7 @@ export class EventsPage {
       }
       this.#layout='agenda';this.#clearFilters('plans');
     });
-    viewAll.classList.add('kl-ev-plans-link');
+    sectionLink(viewAll);
     const body=element('div',{className:'kl-ev-dialog-body kl-ev-plans-body'},
       element('header',{},element('h2',{text:event?'Event details':'Upcoming'}),kikiIcon('calendar')),
       event?this.#planEventDetails(event):undefined,
@@ -1166,7 +1195,7 @@ export class EventsPage {
     this.#focusDialogBody(dialog);
   }
   #focusDialogBody(dialog:HTMLDialogElement):void {
-    const input=dialog.querySelector<HTMLElement>('.kl-ev-dialog-body :is(input,textarea,select):not(:disabled)');
+    const input=dialog.querySelector<HTMLElement>('.kl-ev-dialog-body :is(input,textarea,select):not(:disabled):not([inert] *)');
     const action=dialog.querySelector<HTMLElement>('.kl-ev-dialog-footer button:not(:disabled)');
     (input??action??dialog.querySelector<HTMLElement>('.kl-ev-dialog-close'))?.focus({preventScroll:true});
   }
@@ -1174,30 +1203,82 @@ export class EventsPage {
   #closeAction(force=false):void{
     if(!force&&this.#actionKind==='report'&&(this.#reportState.busy||this.#reportState.pending||this.#reportState.dirty)){
       if(this.#reportState.busy)return;
-      if(!this.#actionsDialog.querySelector('.kl-ev-discard-report'))this.#actionsDialog.querySelector('.kl-ev-dialog-body')?.append(element('div',{className:'kl-ev-discard-report'},element('p',{text:'Discard this report draft? A pending submission may already have reached the server.'}),this.#button('Keep report',()=>this.#actionsDialog.querySelector('.kl-ev-discard-report')?.remove()),this.#button('Discard report',()=>this.#closeAction(true))));return;
+      this.#reviewReportExit?.();
+      return;
     }
-    if(this.#actionsDialog.open)this.#actionsDialog.close();this.#actionsDialog.replaceChildren();this.#actionKind=undefined;this.#reportState={busy:false,pending:false,dirty:false};
+    if(this.#actionsDialog.open)this.#actionsDialog.close();this.#actionsDialog.replaceChildren();this.#reviewReportExit=undefined;this.#actionKind=undefined;this.#reportState={busy:false,pending:false,dirty:false};
   }
   #share(e:CalendarEvent):void{
     if(this.#actionKind==='report'){this.#showAction();return;}
     let url:string;try{url=eventShareUrl(location.href,e.id,this.client.origin);}catch{this.#error='The event link could not be created.';this.#paintStatus();return;}
     this.#actionKind='share';
-    const input=element('input',{ariaLabel:'Event link',value:url}),status=element('p',{role:'status'});input.readOnly=true;
-    const copy=this.#button('Copy event link',()=>{void navigator.clipboard?.writeText(url).then(()=>{if(input.isConnected)status.textContent='Link copied.';}).catch(()=>{if(input.isConnected){status.textContent='Select and copy the link.';input.focus();input.select();}});if(!navigator.clipboard){status.textContent='Select and copy the link.';input.focus();input.select();}});
-    this.#frameDialog(this.#actionsDialog,'Share event',element('div',{className:'kl-ev-dialog-body'},
-      element('p',{className:'kl-ev-dialog-note',text:'This link opens the event in KikiLink on the same Cloud. Access is checked when it is opened.'}),
-      element('label',{className:'kl-ev-dialog-field'},element('span',{text:'Event link'}),input),status),
-      element('footer',{className:'kl-ev-dialog-footer'},this.#button('Close',()=>this.#closeAction()),copy),()=>this.#closeAction());
+    const dialog = this.#actionsDialog;
+    const fields = shareLinkFields('Event link', url,
+      'This link opens the event in KikiLink on the same Cloud. Access is checked when it is opened.',
+      () => dialog.open && this.#actionKind === 'share' && this.#valid(this.#token));
+    const close = () => this.#closeAction();
+    dialog.setAttribute('aria-label', 'Share event');
+    dialog.classList.add('kl-explore-share-dialog');
+    dialog.replaceChildren(
+      element('header', { className: 'kl-explore-share-heading' },
+        element('div', {}, element('span', { className: 'kl-explore-share-eyebrow', text: 'KIKILINK' }), element('h2', { text: 'Share event' })),
+        iconButton('Close dialog', 'close', close)),
+      fields.body,
+      element('footer', { className: 'kl-explore-share-footer' }, this.#button('Close', close),
+        this.#button('Copy event link', fields.copy, undefined, undefined, true)));
     this.#showAction();
+    fields.select();
   }
   #report(e:CalendarEvent):void{
     if(this.#actionKind==='report'){this.#showAction();return;}
     const source=e.recoverySource;if(!source)return;
     this.#actionKind='report';
     const current=()=>!this.#destroyed&&this.options.current()&&this.client.memberNumber===this.#owner&&this.client.origin===this.#origin;
-    const body=element('div',{className:'kl-ev-dialog-body'},element('p',{text:e.title}));
-    const form=reportForm(this.client,'event',e.id,true,id=>{this.#reportState={busy:false,pending:false,dirty:false};body.append(element('p',{role:'status',text:`Report #${id} received.`}));},()=>this.#closeAction(),'/v1/reports',{compact:true,source:{generation:source.generation,current},sourceKey:String(e.revision),current,state:state=>{this.#reportState=state;}});
-    body.append(form);this.#frameDialog(this.#actionsDialog,'Report event',body,undefined,()=>this.#closeAction());this.#showAction();
+    const dialog = this.#actionsDialog;
+    const body = element('div', { className: 'kl-ev-dialog-body' }, element('p', { text: e.title }));
+    const footer = element('footer', { className: 'kl-ev-dialog-footer' });
+    const form = reportForm(this.client, 'event', e.id, true, id => {
+      this.#reportState = { busy: false, pending: false, dirty: false };
+      const message = form.querySelector('p');
+      if (message) message.textContent = `Report #${id} received.`;
+      const close = form.querySelector('button');
+      if (close) {
+        footer.replaceChildren(close);
+        if (dialog.open) close.focus({ preventScroll: true });
+      }
+    }, () => this.#closeAction(), '/v1/reports', {
+      compact: true, source: { generation: source.generation, current }, sourceKey: String(e.revision), current,
+      state: state => {
+        this.#reportState = state;
+        dialog.querySelector<HTMLButtonElement>('header button')?.toggleAttribute('disabled', state.busy);
+      },
+    });
+    const actions = form.querySelector('.kl-cloud-actions')!;
+    const editButtons = Array.from(actions.children);
+    footer.append(...editButtons);
+    actions.remove();
+    body.append(form);
+    this.#reviewReportExit = () => {
+      const existing = body.querySelector('.kl-ev-discard-report');
+      if (existing) { footer.querySelector('button')?.focus(); return; }
+      const message = this.#reportState.pending ? 'Your report may already have been received. Close without retrying?' : 'Discard your unsaved report?';
+      const note = element('p', { className: 'kl-ev-discard-report kl-mod-notice', role: 'alert', text: message });
+      const keep = this.#button('Keep editing', () => {
+        note.remove();
+        form.inert = false;
+        footer.replaceChildren(...editButtons);
+        form.querySelector('textarea')?.focus({ preventScroll: true });
+      }, undefined, undefined, true);
+      const discard = this.#button('Discard report', () => this.#closeAction(true));
+      discard.classList.add('kl-text-button--danger', 'kl-ev-danger');
+      body.append(note);
+      form.inert = true;
+      footer.replaceChildren(keep, discard);
+      keep.focus({ preventScroll: true });
+      note.scrollIntoView({ block: 'nearest' });
+    };
+    this.#frameDialog(dialog, 'Report event', body, footer, () => this.#closeAction());
+    this.#showAction();
   }
   #edit(event?:CalendarEvent,onCancel?:()=>void,personal=false):void{
     if(this.#editor?.source.generation){this.#paintEditor();this.#showDialog();return;}
@@ -1482,7 +1563,7 @@ export class EventsPage {
         if(d.spaceId && !this.#places.some(s=>s.id===d.spaceId))places.push([d.spaceId,ed.event?.linkedSpace?.name ?? 'Previously linked Space · unavailable']);
         const extras = element('details', {className:'kl-ev-schedule-extras'}, element('summary', {text:'Space and outline'}),
           selectField('spaceId','Linked Space',places),
-          this.#placesCursor!==null ? this.#button('More Spaces',()=>void this.#morePlaces(ed)) : undefined,
+          this.#placesCursor!==null ? pageAction(this.#button('Load more spaces',()=>void this.#morePlaces(ed))) : undefined,
           field('outline','Outline · minutes after start and activity','textarea'),
           element('small',{className:'kl-ev-field-note',text:'One activity per line, for example: 0 · Welcome, then 30 · Music. Up to 12 activities. Times move with the start of your event.'}));
         extras.open = ed.scheduleDetailsOpen ?? Boolean(d.spaceId || d.outline.trim());

@@ -1,3 +1,4 @@
+import { pageAction } from '../modules/platform-shell/page-action';
 import { ModerationGeneration, ModerationGenerationError, moderationGenerationConflict, type ModerationAccess } from './moderation-generation';
 import { decisionControls, decisionHistory, newDecisionDraft, type DecisionReview, type DecisionEntry } from './report-decisions';
 import { CloudError, type CloudClient } from './client';
@@ -193,8 +194,8 @@ export class PlatformModerationPanel {
     if (this.#error) return;
     if (this.#view === 'journal') {
       this.element.append(decisionHistory(this.#actions), this.#note('Platform decisions and earlier audit entries · Kept for 30 days.'));
-      if (this.#next !== null) this.element.append(this.#button('Older entries', () => { this.#cursor = this.#next!; void this.refresh(); }));
-      if (this.#cursor) this.element.append(this.#button('Back to latest', () => { this.#cursor = 0; void this.refresh(); }));
+      if (this.#next !== null) this.element.append(pageAction(this.#button('Older entries', () => { this.#cursor = this.#next!; void this.refresh(); }), 'next'));
+      if (this.#cursor) this.element.append(pageAction(this.#button('Back to latest', () => { this.#cursor = 0; void this.refresh(); }), 'previous'));
       return;
     }
     const search = element('input', { type: 'search', ariaLabel: this.#search && this.#view === 'queue' ? 'Search all platform reports' : 'Search this report page', placeholder: 'Search reports…', value: this.#query });
@@ -250,8 +251,8 @@ export class PlatformModerationPanel {
     };
     this.element.append(toolbar, count, rows); renderRows();
     const pagination = element('div', { className: 'kl-mod-actions' });
-    if (this.#next !== null) pagination.append(this.#button('Next page', () => { this.#cursor = this.#next!; void this.refresh(); }));
-    if (this.#cursor) pagination.append(this.#button('Back to first page', () => { this.#cursor = 0; void this.refresh(); }));
+    if (this.#next !== null) pagination.append(pageAction(this.#button('Next page', () => { this.#cursor = this.#next!; void this.refresh(); }), 'next'));
+    if (this.#cursor) pagination.append(pageAction(this.#button('Back to first page', () => { this.#cursor = 0; void this.refresh(); }), 'previous'));
     this.element.append(pagination);
   }
   #detail(): void {
@@ -284,7 +285,7 @@ export class PlatformModerationPanel {
           button: (label, run, primary) => this.#button(label, run, primary), render: () => this.#render(), submit: () => void this.#applyDecision(),
           target: { title: title(report), type: report.target_type, reference: `Report #${report.id}` } }));
         this.element.append(decisionHistory(this.#review.history.items));
-        if (this.#review.history.nextCursor !== null) this.element.append(this.#button('Older decisions', () => void this.#olderDecisions()));
+        if (this.#review.history.nextCursor !== null) this.element.append(pageAction(this.#button('Load more decisions', () => void this.#olderDecisions())));
         return;
       }
       if (report.status !== 'open' || this.#triagePending) return;

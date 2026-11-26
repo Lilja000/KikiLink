@@ -1,3 +1,4 @@
+import { onDialogBackdropClick } from "../utils/dialog-backdrop";
 import { bindContextMenuGesture } from "../utils/context-menu-gesture";
 import { element } from "./dom";
 import { anchorSurface } from "../utils/anchored-surface";
@@ -17,12 +18,7 @@ export class GroupListMenu {
     const rowAt = (event: Event): HTMLElement | null => event.target instanceof Element ? event.target.closest<HTMLElement>("[data-group-id]") : null;
     this.#cancelHold = bindContextMenuGesture(root, rowAt, row => this.open(row), signal);
     this.element.addEventListener("cancel", event => { event.preventDefault(); this.close(); }, { signal });
-    this.element.addEventListener("click", event => {
-      if (event.target !== this.element) return;
-      const bounds = this.element.getBoundingClientRect();
-      if (!compact || event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)
-        this.close();
-    }, { signal });
+    onDialogBackdropClick(this.element, () => this.close(), signal);
     this.element.addEventListener("keydown", event => {
       if (compact) event.stopPropagation();
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.close(); }

@@ -1,3 +1,4 @@
+import { pageAction } from './page-action';
 import { element } from '../../utils/dom';
 import { kikiIcon } from '../link-chat/icons';
 
@@ -141,7 +142,7 @@ export function renderCommunityOwnership(options: OwnershipOptions): LifecyclePa
       button('manager-owner-invitations', 'Open invitations', options.onInvitations));
   }
   if (options.onMore && !options.loading && !options.error) {
-    body.append(button('manager-owner-more', 'More members', options.onMore));
+    body.append(pageAction(button('manager-owner-more', 'Load more members', options.onMore)));
   }
 
   const role = element('input');

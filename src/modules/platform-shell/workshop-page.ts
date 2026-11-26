@@ -1,3 +1,8 @@
+import { focusPageResults, pageResult } from './page-result-focus';
+import { pageAction } from './page-action';
+import { bindSearchEscape } from "./browse-controls";
+import { removableFilter } from './applied-filter';
+import { preserveSelectionFocus } from "./browse-focus";
 import { kikiIcon } from '../link-chat/icons';
 import {workshopEngagementSource} from './workshop-engagement';
 import {workshopSource,workshopAccessAt,requireWorkshopSource,type WorkshopSource} from './workshop-generation';
@@ -77,7 +82,7 @@ export class WorkshopPage {
     this.#bookmarks=options.installation?new WorkshopBookmarks(options.installation.storage,client.memberNumber,client.origin,()=>this.#active()):undefined;
     this.#installSharing=options.installation?new WorkshopInstallSharing(client,options.installation.storage,()=>options.current()&&client.memberNumber===member&&client.origin===origin):undefined;
     this.#sharingPanel=this.#installSharing?new WorkshopInstallSharingPanel(this.#installSharing,()=>this.#localActive()&&this.#scope==='sharing'):undefined;
-    this.#installation=options.installation?new WorkshopInstalled(client,options.installation,()=>this.#active(),this.#installSharing,this.#bookmarks,()=>this.openSection('browse')):undefined;
+    this.#installation=options.installation?new WorkshopInstalled(client,options.installation,()=>this.#active(),this.#installSharing,this.#bookmarks,()=>this.#clearCatalogFilters()):undefined;
     for (const [scope, label, icon] of [
       ['browse', 'Browse', 'brush'], ['installed', 'Installed', 'check'], ['mine', 'My creations', 'profile'],
     ] as const) {
@@ -144,9 +149,16 @@ export class WorkshopPage {
     if(this.#visible)void this.refresh();else this.setVisible(true);
   }
   openSection(scope:'browse'|'mine'|'installed'|'saved'):void {
-    if(this.#editor||this.#retry)return;this.#installation?.cancel();this.#package=undefined;this.#publicPackage=undefined;this.#scope=scope;this.#collection='all';this.#pages=1;this.#resetCatalog();if(this.#visible)void this.refresh();else this.setVisible(true);
+    if(this.#editor||this.#retry)return;this.#installation?.cancel();this.#package=undefined;this.#publicPackage=undefined;this.#scope=scope;this.#collection='all';this.#pages=1;this.#resetCatalog();if(this.#visible)void preserveSelectionFocus(this.#body,()=>this.refresh());else this.setVisible(true);
   }
   #resetCatalog():void{this.#catalogCursors=[''];this.#catalogIndex=0;}
+  #clearCatalogFilters():void {
+    this.#installation?.cancel();
+    this.#query='';this.#type='';this.#filter='all';this.#collection='all';this.#pages=1;
+    if(this.#scope!=='mine')this.#scope='browse';
+    this.#resetCatalog();
+    this.#refreshAndFocus(()=>this.#body.querySelector<HTMLInputElement>('.kl-workshop-search-field input'));
+  }
   #catalogMode():boolean{return this.#catalogSupported&&(this.#scope==='browse'||this.#scope==='mine');}
   #localActive():boolean{return this.#visible&&this.options.current()&&this.client.memberNumber===this.#member&&this.client.origin===this.#origin;}
   #active():boolean{return this.#localActive()&&this.client.connected;}
@@ -281,7 +293,13 @@ export class WorkshopPage {
       }
       this.#busy=false;this.#list({items,nextCursor:cursor||null});
     }catch(error){if(!valid())return;this.#busy=false;
-      this.#catalogContent(note(error instanceof CloudError&&[403,404].includes(error.status)?'This creation is private or no longer available.':'Workshop could not load. Try refreshing.'));}
+      this.#catalogContent(note(error instanceof CloudError&&[403,404].includes(error.status)?'This creation is private or no longer available.':'Workshop could not load. Try refreshing.'));
+      if (!id && this.#catalogMode()) {
+        const retry = this.#button('Retry', () => void focusPageResults(this.#body, () => this.refresh(), true));
+        retry.dataset.pageRetry = '';
+        this.#body.append(retry);
+      }
+    }
   }
   #openCard(id:string,action?:WorkshopCardAction):void {
     if(!this.#active()||this.#busy||this.#editor||this.#retry||this.#package)return;
@@ -324,7 +342,10 @@ export class WorkshopPage {
       if(!this.#active()||this.#busy||!this.element.contains(sort))return;
       this.#sort=sort.value as WorkshopSort;
       if(this.#scope==='browse')this.#browseSort=this.#sort;
-      if(catalog){this.#resetCatalog();void this.refresh();}else this.#list(page);
+      void preserveSelectionFocus(this.#body,()=>{
+        if(!catalog)return this.#list(page);
+        this.#resetCatalog();return this.refresh();
+      });
     });
     const search=element('input',{type:'search',ariaLabel:'Search Workshop',placeholder:'Search creations, creators or tags…',value:this.#query,maxLength:80}),type=element('select',{ariaLabel:'Filter package type'}),status=element('select',{ariaLabel:'Filter creation status'});
     search.autocomplete='off';
@@ -338,7 +359,8 @@ export class WorkshopPage {
       this.#query=search.value.trim();this.#type=type.value;
       this.#filter=this.#body.querySelector<HTMLSelectElement>('[aria-label="Filter creation status"]')?.value??this.#filter;
       this.#pages=1;this.#resetCatalog();
-      void this.refresh(undefined,keepForm?toolbar:undefined);
+      if(keepForm)void this.refresh(undefined,toolbar);
+      else void preserveSelectionFocus(this.#body,()=>this.refresh());
     };
     type.addEventListener('change',()=>filter());
     const searchButton=element('button',{type:'submit',className:'kl-text-button kl-workshop-search-submit',ariaLabel:'Search',title:'Search Workshop'},kikiIcon('search'));
@@ -351,6 +373,7 @@ export class WorkshopPage {
     const updateClear=()=>{clearSearch.hidden=!search.value;};
     updateClear();
     const toolbar=element('form',{className:'kl-workshop-search',ariaLabel:'Filter Workshop'},element('div',{className:'kl-workshop-search-field'},searchButton,search,clearSearch),type);
+    bindSearchEscape(toolbar, search, clearSearch);
     const scheduleSearch=(composing=false)=>{
       if(!this.#active()||!this.#body.contains(toolbar))return;
       updateClear();
@@ -365,7 +388,7 @@ export class WorkshopPage {
       if(!this.#active()||this.#busy||!this.#body.contains(status))return;
       this.#filter=status.value;
       this.#query=this.#body.querySelector<HTMLInputElement>('input[type=search]')?.value.trim()??this.#query;
-      this.#pages=1;this.#resetCatalog();void this.refresh();
+      this.#pages=1;this.#resetCatalog();void preserveSelectionFocus(this.#body,()=>this.refresh());
     });
     const filters=element('div',{className:'kl-workshop-filter-row'});
     if(this.#bookmarks&&(this.#scope==='browse'||this.#scope==='saved')){
@@ -398,14 +421,24 @@ export class WorkshopPage {
     const count=element('p',{className:'kl-workshop-results',role:'status',text:`${page.items.length} ${page.items.length===1?'creation':'creations'}${catalog?` · Page ${this.#catalogIndex+1}`:''}`});
     const activeFilters=element('div',{className:'kl-workshop-active-filters'});
     const filtered=!!(this.#query||this.#type||this.#scope==='mine'&&this.#filter!=='all'||this.#scope==='saved'||this.#collection==='featured');
-    const clearFilters=()=>{
-      this.#query='';this.#type='';this.#filter='all';this.#collection='all';this.#pages=1;this.#resetCatalog();
-      if(this.#scope==='saved')this.openSection('browse');else void this.refresh();
-    };
+    const hasRows=page.items.length>0||this.#unavailable.length>0;
+    const clearFilters=()=>this.#clearCatalogFilters();
     if(filtered){
-      if(this.#collection==='featured')activeFilters.append(element('span',{className:'kl-workshop-tag',text:'Featured'}));
-      if(this.#type)activeFilters.append(element('span',{className:'kl-workshop-tag',text:this.#type}));
-      activeFilters.append(this.#button('Clear filters',clearFilters));
+      const chip = (label: string, unset: () => void) => {
+        const button = removableFilter(this.#button(label, () => {
+          const input = this.#body.querySelector<HTMLInputElement>('.kl-workshop-search-field input');
+          if (input) this.#query = input.value.trim();
+          unset();
+          this.#pages = 1;
+          this.#resetCatalog();
+          this.#refreshAndFocus(() => this.#body.querySelector<HTMLInputElement>('.kl-workshop-search-field input'));
+        }), label);
+        button.classList.add('kl-workshop-tag');
+        activeFilters.append(button);
+      };
+      if(this.#collection==='featured')chip('Featured', () => { this.#collection = 'all'; });
+      if(this.#type)chip(this.#type, () => { this.#type = ''; });
+      if(hasRows)activeFilters.append(this.#button('Clear filters',clearFilters));
     }
     const keptForm=this.#searchForm;
     if(keptForm&&keptForm.parentElement===this.#body){
@@ -415,8 +448,23 @@ export class WorkshopPage {
       this.#catalogContent(filters,activeFilters,count);
     }else this.#body.replaceChildren(toolbar,filters,activeFilters,count);
     const grid=element('div',{className:'kl-workshop-grid'});
-    if(page.items.length||this.#unavailable.length)this.#body.append(grid);
-    else this.#body.append(element('section',{className:'kl-workshop-empty'},kikiIcon('brush'),element('h2',{text:'No creations match just yet'}),note('Try another search, clear a filter, or browse the Workshop.'),filtered?this.#button('Clear filters',clearFilters):undefined));
+    if(hasRows)this.#body.append(grid);
+    else {
+      const savedOnly=this.#scope==='saved'&&!this.#query&&!this.#type;
+      let title='No creations yet';
+      let description=this.#scope==='mine'?'Your creations will appear here.':'Published creations will appear here.';
+      if(savedOnly){
+        title='No saved creations here';
+        description='Save a creation in Workshop to find it here.';
+      }else if(filtered){
+        title='No matching creations';
+        description='Try another search or clear your filters.';
+      }
+      const action=filtered?this.#button(savedOnly?'Browse Workshop':'Clear filters',clearFilters):undefined;
+      action?.classList.add('kl-text-button--primary');
+      this.#body.append(element('section',{className:'kl-workshop-empty kl-explore-empty kl-explore-catalog-empty'},kikiIcon(filtered&&!savedOnly?'search':'brush'),
+        element('h2',{text:title}),note(description),action));
+    }
     const installed = new Map<string,{enabled:boolean;version:string}>();
     let installationAvailable=false;
     if(this.#installation)try{
@@ -426,6 +474,7 @@ export class WorkshopPage {
     for(const item of catalog?page.items:sortWorkshop(page.items,this.#sort)){
       const card=workshopCard(item,()=>this.#openCard(item.id),'Details');
       card.dataset.packageId=item.id;
+      pageResult(card.querySelector<HTMLButtonElement>('.kl-workshop-title')!, item.id);
       const footer=card.querySelector('.kl-workshop-card-footer')!;
       const saved=this.#bookmarks?this.#bookmark(item.id):undefined;
       const own=this.#scope==='mine'&&item.author===this.client.memberNumber&&!!item.revision;
@@ -457,8 +506,24 @@ export class WorkshopPage {
       grid.append(card);
     }
     for(const id of this.#unavailable)grid.append(element('article',{className:'kl-workshop-card kl-workshop-unavailable'},note('Saved creation is private or no longer available.'),note('Package ID: '+id),this.#bookmark(id)));
-    if(catalog){if(this.#catalogIndex>0)this.#body.append(this.#button('Previous creations',()=>{this.#catalogIndex--;void this.refresh();}));const next=page.nextCursor;if(typeof next==='string')this.#body.append(this.#button('More creations',()=>{this.#catalogCursors=this.#catalogCursors.slice(0,this.#catalogIndex+1);this.#catalogCursors.push(next);this.#catalogIndex++;void this.refresh();}));return;}
-    if(page.nextCursor&&this.#pages<10)this.#body.append(this.#button('More creations',()=>{this.#pages++;void this.refresh();}));else if(page.nextCursor)this.#body.append(note('Showing up to 200 packages. Narrow the search to continue.'));
+    const loadPage = () => void focusPageResults(this.#body, () => this.refresh(), catalog);
+    if (catalog) {
+      const navigation = element('nav', { className: 'kl-page-navigation', ariaLabel: 'Workshop pages' });
+      if (this.#catalogIndex > 0) navigation.append(pageAction(this.#button('Previous page', () => {
+        this.#catalogIndex--;
+        loadPage();
+      }), 'previous'));
+      const next = page.nextCursor;
+      if (typeof next === 'string') navigation.append(pageAction(this.#button('Next page', () => {
+        this.#catalogCursors = this.#catalogCursors.slice(0, this.#catalogIndex + 1);
+        this.#catalogCursors.push(next);
+        this.#catalogIndex++;
+        loadPage();
+      }), 'next'));
+      if (navigation.childElementCount) this.#body.append(navigation);
+    } else if (page.nextCursor && this.#pages < 10) {
+      this.#body.append(pageAction(this.#button('Load more creations', () => { this.#pages++; loadPage(); })));
+    } else if (page.nextCursor) this.#body.append(note('Showing up to 200 packages. Narrow the search to continue.'));
   }
   #detail(detail:WorkshopDetail,cardAction?:WorkshopCardAction):void {
     const create=this.element.querySelector<HTMLButtonElement>('.kl-workshop-primary');if(create)create.disabled=!this.client.connected;

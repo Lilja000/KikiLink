@@ -1,3 +1,4 @@
+import { pageAction } from './page-action';
 import type { CloudClient } from '../../cloud/client';
 import { element } from '../../cloud/dom';
 import { ContentDialog } from '../link-chat/content-dialog';
@@ -96,7 +97,7 @@ export class PeopleDiscovery {
       row.disabled=this.#busy;this.#results.append(row);
     }
     const actions=element('div',{className:'kl-setting-tool-buttons'},this.#button('Refresh profiles',()=>void this.#load()));
-    if(this.#next!==null)actions.append(this.#button('More profiles',()=>void this.#load(this.#next!)));
+    if(this.#next!==null)actions.append(pageAction(this.#button('Load more profiles',()=>void this.#load(this.#next!))));
     for(const b of actions.querySelectorAll<HTMLButtonElement>('button'))b.disabled=this.#busy;
     this.#results.append(actions);
   }

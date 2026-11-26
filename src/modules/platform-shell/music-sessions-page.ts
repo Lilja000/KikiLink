@@ -1,3 +1,4 @@
+import { pageAction } from './page-action';
 import {musicAccessAt,sameMusicSource,MusicGenerationError,type MusicSource} from './music-session-generation';
 import type {CloudClient} from '../../cloud/client';
 import type {KeyValueStorage} from '../../core/settings';
@@ -103,7 +104,7 @@ export class MusicSessionsPage{
   }else if(!this.#sessionId){
    this.body.append(note('Sessions use the current Space access rules. Opening a session is silent; join when you want to listen.'));
    for(const s of this.#items)this.body.append(element('article',{className:'kl-music-session-card'},element('h3',{text:s.space.name}),note(`Host: ${s.host.name??'#'+s.host.memberNumber} · ${s.state} · ${s.participantCount}/50 connected`),this.button('Open listening session',()=>{this.#sessionId=s.id;this.#model=undefined;void this.refresh();})));
-   if(!this.#items.length&&!this.#busy)this.body.append(note('No sessions are available in Spaces you can read.'));if(this.#next!==null)this.body.append(this.button('More listening sessions',()=>void this.refresh(true)));
+   if(!this.#items.length&&!this.#busy)this.body.append(note('No sessions are available in Spaces you can read.'));if(this.#next!==null)this.body.append(pageAction(this.button('Load more listening sessions',()=>void this.refresh(true))));
   }
  }
  confirmJoin(m:MusicSession){this.#decision={kind:'join',model:m};this.renderDecision();}

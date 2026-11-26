@@ -1,3 +1,4 @@
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
 import type { SettingsStore } from "../../core/settings";
 import { element } from "../../utils/dom";
 import { kikiIcon } from "./icons";
@@ -26,12 +27,7 @@ export class LauncherMenu {
       event.preventDefault();
       this.close();
     });
-    this.element.addEventListener("click", (event) => {
-      if (event.target !== this.element) return;
-      const rect = this.element.getBoundingClientRect();
-      if (event.clientX < rect.left || event.clientX > rect.right ||
-          event.clientY < rect.top || event.clientY > rect.bottom) this.close();
-    });
+    onDialogBackdropClick(this.element, () => this.close());
   }
 
   open(anchor: HTMLElement): void {

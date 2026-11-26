@@ -45,6 +45,9 @@ export class MediaViewer {
   constructor() {
     this.#title.id = `kl-media-viewer-${crypto.randomUUID()}`;
     this.#menu.element.id = `kl-media-viewer-options-${crypto.randomUUID()}`;
+    this.#more.setAttribute("aria-haspopup", "menu");
+    this.#more.setAttribute("aria-controls", this.#menu.element.id);
+    this.#more.setAttribute("aria-expanded", "false");
     this.element.setAttribute("aria-labelledby", this.#title.id);
     this.#counter.setAttribute("aria-live", "polite");
     this.#stage.setAttribute("aria-live", "polite");

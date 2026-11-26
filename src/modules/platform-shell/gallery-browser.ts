@@ -1,3 +1,4 @@
+import { searchField } from "./browse-controls";
 import type { KeyValueStorage } from "../../core/settings";
 import type { ChatMediaItem } from "../link-chat/chat-service";
 import { element, focusedElement } from "../../utils/dom";
@@ -62,7 +63,7 @@ export class GalleryBrowser {
       try { options.storage?.setItem(preferenceKey, JSON.stringify({ query: this.#query.value, source: this.#source.value, sort: this.#sort.value })); } catch { /* Keep the current session usable. */ }
       this.#render(); options.changed();
     });
-    this.toolbar.append(element("div", { className: "kl-gallery-search" }, kikiIcon("search"), this.#query), this.#source, this.#sort);
+    this.toolbar.append(searchField(this.#query, "Clear Gallery search", { className: "kl-gallery-search" }), this.#source, this.#sort);
     const title = element("h2", { text: "Remove image?" }); title.id = `kl-gallery-remove-${crypto.randomUUID()}`;
     this.dialog.setAttribute("aria-labelledby", title.id);
     this.dialog.append(element("header", { className: "kl-dialog-header" }, title,

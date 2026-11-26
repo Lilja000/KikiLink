@@ -588,12 +588,14 @@ export class CloudPanel {
       this.#tabs.prepend(this.#ui.button("Direct chats", () => this.options.openDirectChats!(), "chat"));
     const accountCurrent=()=>!this.#destroyed&&!this.element.hidden&&operation===this.#renderToken;
     const confirmLogout=async(all:boolean)=>{
-      if(!accountCurrent())return;const accountReview=await reviewAccountControl(this.client,accountCurrent);
-      if(!accountCurrent())return;let box:Element|null=null,attempted=false;
-      this.#ui.confirm(this.#body,all?'Sign out of KikiLink Cloud on every device?':'Disconnect this device from KikiLink Cloud?',async()=>{
+      if(!accountCurrent())return;
+      const opener=this.#ui.confirmationOpener(this.#tabs);
+      const accountReview=await reviewAccountControl(this.client,accountCurrent);
+      if(!accountCurrent())return;let box:HTMLElement|undefined,attempted=false;
+      box=this.#ui.confirm(this.#body,all?'Sign out of KikiLink Cloud on every device?':'Disconnect this device from KikiLink Cloud?',async()=>{
         if(!accountCurrent()||!box?.isConnected||attempted)return;attempted=true;
         await this.client.logout(all,accountReview);
-      },all?'Sign out everywhere':'Disconnect');box=this.#body.querySelector('.kl-social-confirm');
+      },all?'Sign out everywhere':'Disconnect',opener);
     };
     this.#tabs.append(this.#ui.menu("Account options", [
       this.#ui.button("Disconnect", () => confirmLogout(false), "lock"),
@@ -890,9 +892,9 @@ export class CloudPanel {
         this.#button("Report profile", () =>
           this.#report(card, "profile", String(member)),
         ),
-        this.#button("Block in Cloud", () => confirmCloudBlock(this.#ui,card,member,()=>!this.#destroyed,()=>{
+        this.#ui.button("Block in Cloud", () => confirmCloudBlock(this.#ui,card,member,()=>!this.#destroyed,()=>{
           card.replaceChildren(element('p',{text:'User blocked in Cloud.'}));
-        })),
+        }), undefined, "kl-text-button"),
       );
     return card;
   }

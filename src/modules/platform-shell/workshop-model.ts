@@ -44,7 +44,11 @@ export function workshopCard(item:WorkshopSummary,open?:()=>void,detailsLabel='V
   if(item.rating)meta.append(element('span',{},kikiIcon('star'),item.rating.count?`${item.rating.average!.toFixed(1)} / 5 · ${item.rating.count} ${item.rating.count===1?'review':'reviews'}`:'No reviews yet.'));
   if(item.discovery)meta.append(element('span',{text:`${item.discovery.installs} reported installs`}));
   const footer=element('footer',{className:'kl-workshop-card-footer'});
-  if(open){const button=element('button',{type:'button',className:'kl-text-button',text:detailsLabel});button.addEventListener('click',open);footer.append(button);}
+  if (open) {
+    const button = element('button', { type: 'button', className: 'kl-text-button kl-catalog-details' }, detailsLabel, kikiIcon('arrow-right'));
+    button.addEventListener('click', open);
+    footer.append(button);
+  }
   const body=element('div',{className:'kl-workshop-card-body'},element('span',{className:'kl-workshop-sr-only',text:item.type}),element('div',{className:'kl-workshop-card-heading'},title),element('small',{className:'kl-workshop-author',text:`By ${item.authorName} · ${item.version?`v${item.version}`:'Draft'}`}),element('p',{className:'kl-workshop-summary',text:item.summary}),meta,tags,footer);
   return element('article',{className:'kl-workshop-card kl-profile-activity-row'},workshopTypePreview(item.type),body);
 }

@@ -36,6 +36,14 @@ export class ProfileSections {
   }
   select(id: string, focus = false): void {
     if (!this.#items.some(item => item.id === id)) return;
+    const reader = this.element.closest<HTMLElement>(".kl-addon-profile-dialog > .kl-addon-profile-body");
+    if (reader?.scrollTop) {
+      // Keep the visible space below the tabs when the next section is short.
+      const offset = this.tabs.getBoundingClientRect().top - reader.getBoundingClientRect().top;
+      this.element.style.setProperty("--kl-profile-tab-offset", `${Math.max(0, offset)}px`);
+    } else {
+      this.element.style.removeProperty("--kl-profile-tab-offset");
+    }
     for (const item of this.#items) {
       const active = item.id === id;
       item.panel.hidden = !active; item.button.tabIndex = active ? 0 : -1;

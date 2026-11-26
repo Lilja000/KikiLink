@@ -1,3 +1,5 @@
+import { pageAction } from './page-action';
+import { sectionLink } from './section-link';
 import { profileOptions } from './profile-controls';
 import { CloudError, type CloudClient } from '../../cloud/client';
 import { element } from '../../cloud/dom';
@@ -63,7 +65,7 @@ export class ProfileCreations {
   #render(message:string,page:WorkshopPage={items:[],nextCursor:null},retry=false):void {
     this.#busy=false;
     const owner=this.#member===this.client.memberNumber;
-    const mine=owner?this.#button('My creations',()=>this.options.open(undefined,true)):undefined;
+    const mine=owner?sectionLink(this.#button('My creations',()=>this.options.open(undefined,true))):undefined;
     mine?.classList.add('kl-profile-creations-mine');
     this.element.replaceChildren(element('header',{className:'kl-profile-section-heading'},element('h3',{text:'From the Workshop'}),mine,this.#options()));
     if(message)this.element.append(element('p',{role:'status',className:'kl-profile-section-note',text:message}));
@@ -73,7 +75,7 @@ export class ProfileCreations {
       const row=element('button',{type:'button',className:'kl-profile-creation-row',ariaLabel:`View creation: ${item.title}`});
       this.element.append(profileCreationRow(item,this.#guard(row,()=>this.options.open(item.id))));
     }
-    if(page.nextCursor&&this.#pages<10)this.element.append(this.#button('More creations',()=>void this.refresh(this.#pages+1)));
+    if(page.nextCursor&&this.#pages<10)this.element.append(pageAction(this.#button('Load more creations',()=>void this.refresh(this.#pages+1))));
     else if(page.nextCursor)this.element.append(element('p',{className:'kl-profile-section-note',text:'Showing up to 200 creations. Open Workshop to explore more.'}));
   }
 }

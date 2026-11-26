@@ -113,7 +113,10 @@ describe("bounded social feed", () => {
     await view.sync();
     expect(requests).toBe(4); expect(view.element.querySelectorAll(".kl-feed-post")).toHaveLength(100);
     expect(anchor.isConnected).toBe(true);
-    button(view.element, "Load more posts").click();
+    const older = button(view.element, "Continue to older posts");
+    expect(older.getAttribute("aria-label")).toBe(older.textContent);
+    expect(older.dataset.pageAction).toBe("next");
+    older.click();
     await vi.waitFor(() => expect(requests).toBe(5));
     expect(cursors.at(-1)).toBe(102);
     await vi.waitFor(() => expect(view.element.querySelector('[data-post-id="101"]')).not.toBeNull());

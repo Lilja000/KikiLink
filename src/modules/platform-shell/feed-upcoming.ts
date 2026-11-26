@@ -1,3 +1,5 @@
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
+import { sectionLink } from './section-link';
 import type { CloudClient } from '../../cloud/client';
 import { bindClockText } from '../../core/time-format';
 import { element, focusedElement } from '../../utils/dom';
@@ -68,12 +70,7 @@ export class FeedUpcomingDrawer {
     this.element.addEventListener('close', () => {
       if (!this.element.open) this.close(true);
     });
-    this.element.addEventListener('click', event => {
-      if (event.target !== this.element) return;
-      const bounds = this.element.getBoundingClientRect();
-      if (event.clientX < bounds.left || event.clientX >= bounds.right ||
-        event.clientY < bounds.top || event.clientY >= bounds.bottom) this.close(true);
-    });
+    onDialogBackdropClick(this.element, () => this.close(true));
   }
 
   open(anchor: HTMLElement, current: () => boolean = () => true): void {
@@ -94,7 +91,7 @@ export class FeedUpcomingDrawer {
       current: () => this.#opening === opening && this.element.open && valid(),
     };
     this.#opening = opening;
-    this.#actions.prepend(allEvents);
+    this.#actions.prepend(sectionLink(allEvents));
     this.#status(this.#events, 'loading', 'Loading upcoming events…');
     this.#status(this.#communities, 'loading', 'Loading communities…');
     this.element.showModal();

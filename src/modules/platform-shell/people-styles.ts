@@ -279,12 +279,6 @@ export const PEOPLE_STYLES = `
 .kl-roster-results > .kl-people-no-match { position: static; min-height: 0; pointer-events: auto; }
 .kl-roster-results:has(> .kl-people-no-match) { display: block; overflow-y: auto; scrollbar-width: thin; }
 .kl-roster-results:has(> .kl-people-no-match) > .kl-roster-list:empty { display: none; }
-.kl-roster-page:is([data-people-view="people"],[data-people-view="requests"]) .kl-roster-empty h2 { color: var(--kl-text); }
-.kl-panel[data-platform-preview="true"] .kl-people-no-match > p { font-size: 12px; line-height: 1.65; }
-@container kl-panel (width > 900px) or (height > 500px) {
-  .kl-panel[data-platform-preview="true"] .kl-people-no-match { gap: 10px; }
-  .kl-panel[data-platform-preview="true"] .kl-people-no-match > .kl-icon { width: 26px; height: 26px; }
-}
 @container kl-panel (width <= 900px) and (height <= 500px) {
   .kl-roster-results > .kl-people-no-match { justify-items: stretch; }
 }

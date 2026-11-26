@@ -1,3 +1,5 @@
+import { pageAction } from './page-action';
+import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
 import type { CloudClient } from '../../cloud/client';
 import { communityManagementRead, type ModerationAccess } from '../../cloud/moderation-generation';
 import { debounce, element, focusedElement } from '../../utils/dom';
@@ -49,9 +51,9 @@ export function openCommunityInvitations(root: HTMLElement, client: CloudClient,
   let request = 0;
   let closed = false;
   let releaseFit: (() => void) | undefined;
-  const more = button('more-invitations', 'More invitations', () => {
+  const more = pageAction(button('more-invitations', 'Load more invitations', () => {
     if (next !== null && more.getAttribute('aria-disabled') !== 'true') void load(next);
-  });
+  }));
   const current = () => !closed && dialog.open && dialog.isConnected && options.current();
   const searchLater = debounce(() => void load(), 200);
 
@@ -186,11 +188,7 @@ export function openCommunityInvitations(root: HTMLElement, client: CloudClient,
   dialog.addEventListener('keydown', event => event.stopPropagation());
   dialog.addEventListener('cancel', event => { event.preventDefault(); dismiss(); });
   dialog.addEventListener('close', close);
-  dialog.addEventListener('click', event => {
-    if (event.target !== dialog) return;
-    const bounds = dialog.getBoundingClientRect();
-    if (event.clientX < bounds.left || event.clientX >= bounds.right || event.clientY < bounds.top || event.clientY >= bounds.bottom) dismiss();
-  });
+  onDialogBackdropClick(dialog, dismiss);
   dialog.append(form);
   root.append(dialog);
   dialog.showModal();

@@ -1,3 +1,4 @@
+import { pageAction } from '../platform-shell/page-action';
 import type {CloudClient} from '../../cloud/client';
 import type {ThreadHistoryScope} from '../../cloud/thread-history-format';
 import {ThreadHistoryCopyStore,type OpenThreadCopy} from '../../storage/thread-history-copy-store';
@@ -44,7 +45,7 @@ export class ThreadHistoryRestorePanel {
     else actions.append(button('Remove saved batch',()=>{removeAsked=true;render();}));
    }
    const rows=copy.batch.rows,files=new Map(copy.batch.media?.files.map(f=>[f.id,f]));
-   const pagination=element('div',{className:'kl-setting-tool-buttons'}),older=button('Older saved messages',()=>{start=Math.max(0,start-50);render();}),newer=button('Newer saved messages',()=>{start=Math.min(Math.max(0,rows.length-50),start+50);render();});older.disabled=busy||start===0;newer.disabled=busy||start+50>=rows.length;
+   const pagination=element('div',{className:'kl-setting-tool-buttons'}),older=pageAction(button('Older saved messages',()=>{start=Math.max(0,start-50);render();}), 'previous'),newer=pageAction(button('Newer saved messages',()=>{start=Math.min(Math.max(0,rows.length-50),start+50);render();}), 'next');older.disabled=busy||start===0;newer.disabled=busy||start+50>=rows.length;
    pagination.append(older,newer,element('span',{text:rows.length?`Messages ${start+1}–${Math.min(start+50,rows.length)} of ${rows.length}`:'Empty saved batch'}));preview.append(pagination);
    const transcript=element('div',{className:'kl-cm-messages',ariaLabel:'Archived messages'});transcript.style.maxHeight='none';transcript.style.overflow='visible';preview.append(transcript);let hidden=0;
    for(const row of rows.slice(start,start+50)){

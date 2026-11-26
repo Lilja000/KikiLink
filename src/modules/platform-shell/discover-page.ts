@@ -1,3 +1,4 @@
+import { sectionLink } from './section-link';
 import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { spaceAppearance, type SpaceColor, type SpaceIcon } from '../../../cloud/shared/space-appearance.mjs';
 import { bindClockText } from '../../core/time-format';
@@ -94,7 +95,7 @@ export class DiscoverPage {
     this.#plans = element('div', { className: 'kl-discover-note' }, kikiIcon('calendar'),
       element('p', {}, element('strong', { text: 'Your time, made a little easier.' }),
         ' RSVP to keep plans together. Save an event when you want to come back to it.'),
-      this.#control('my-plans', 'Open my plans'));
+      sectionLink(this.#control('my-plans', 'Open my plans')));
     this.#matching = this.#card('A little common ground', 'matches', 'Find matches', this.#matches);
     this.#matching.classList.add('kl-discover-matching');
 
@@ -103,7 +104,7 @@ export class DiscoverPage {
         element('h1', { text: 'Discover' }),
         element('div', { className: 'kl-discover-heading-actions' },
           this.#control('create-event', 'Create event', 'plus', 'kl-text-button--primary'), plans)),
-      this.#card('Coming up', 'events', 'All events', this.#upcoming, 'arrow-right'),
+      this.#card('Coming up', 'events', 'All events', this.#upcoming),
       this.#grid,
       this.#card('Rooms', 'rooms', 'Rooms', this.#rooms),
       this.#matching,
@@ -377,19 +378,19 @@ export class DiscoverPage {
     }
   }
 
-  #card(title: string, action: DiscoverAction, label: string, body?: HTMLElement, icon?: KikiLinkIconName): HTMLElement {
+  #card(title: string, action: DiscoverAction, label: string, body: HTMLElement): HTMLElement {
     const card = element('section', { className: 'kl-discover-section' },
-      element('header', {}, element('h2', { text: title }), this.#control(action, label, icon, 'kl-discover-link')), body);
+      element('header', {}, element('h2', { text: title }), sectionLink(this.#control(action, label, undefined, 'kl-discover-link'))), body);
     this.#cards.set(action, card);
     return card;
   }
 
   #control(action: DiscoverAction, label: string, icon?: KikiLinkIconName, extraClass = ''): HTMLButtonElement {
-    const iconOnly = action === 'plans';
+    const dialogAction = action === 'plans' || action === 'create-event';
     const button = element('button', { type: 'button', className: `kl-text-button ${extraClass}`.trim(), ariaLabel: label },
-      action === 'create-event' && icon ? kikiIcon(icon) : undefined, iconOnly ? undefined : label,
-      action !== 'create-event' && icon ? kikiIcon(icon) : undefined);
-    if (action === 'plans' || action === 'create-event') button.setAttribute('aria-haspopup', 'dialog');
+      icon ? kikiIcon(icon) : undefined, element('span', { text: label }));
+    if (dialogAction) button.setAttribute('aria-haspopup', 'dialog');
+    if (action === 'plans') button.title = label;
     button.addEventListener('click', () => {
       if (button.isConnected && !button.closest('[hidden]')) this.open(action, button);
     });

@@ -374,6 +374,10 @@ export class GroupChatPanel {
     });
 
     this.#groupActionMenu = node("div", "kl-group-menu");
+    this.#groupActionMenu.id = `kl-group-actions-${crypto.randomUUID()}`;
+    this.#paneMenuButton.setAttribute("aria-haspopup", "menu");
+    this.#paneMenuButton.setAttribute("aria-controls", this.#groupActionMenu.id);
+    this.#paneMenuButton.setAttribute("aria-expanded", "false");
     this.#groupActionMenu.setAttribute("role", "menu");
     this.#groupActionMenu.setAttribute("aria-label", "Group actions");
     this.#groupActionMenu.addEventListener("keydown", (event) => this.#onGroupMenuKeyDown(event));
@@ -551,6 +555,7 @@ export class GroupChatPanel {
     if (this.groupActionMenuLayer.open) this.#closeGroupActionMenu(false);
     this.#menuGroupId = groupId;
     this.#menuReturnFocus = returnFocus;
+    if (returnFocus === this.#paneMenuButton) this.#paneMenuButton.setAttribute("aria-expanded", "true");
     this.#renderGroupActionMenu(group);
     openDialog(this.groupActionMenuLayer);
     this.#positionGroupActionMenu(returnFocus, clientX, clientY);
@@ -906,6 +911,7 @@ export class GroupChatPanel {
   #closeGroupActionMenu(restoreFocus: boolean): void {
     const returnFocus = restoreFocus ? this.#menuReturnFocus : undefined;
     this.#menuGroupId = undefined;
+    this.#paneMenuButton.setAttribute("aria-expanded", "false");
     this.#menuReturnFocus = undefined;
     closeDialog(this.groupActionMenuLayer);
     if (restoreFocus) this.#restoreGroupFocus(returnFocus);

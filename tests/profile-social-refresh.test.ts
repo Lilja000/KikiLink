@@ -73,7 +73,7 @@ describe('profile social sections', () => {
     let first=Promise.resolve<unknown>(friends([20,15,10],10));
     const {root,open}=setup('friends',p=>p.endsWith('cursor=0')?first:Promise.resolve(friends([8,6])));
     await vi.advanceTimersByTimeAsync(0);
-    const more=[...root.querySelectorAll('button')].find(x=>x.textContent==='More friends')!;
+    const more=[...root.querySelectorAll('button')].find(x=>x.textContent==='Load more friends')!;
     more.focus();more.click();
     await vi.advanceTimersByTimeAsync(0);
     const kept=root.querySelector<HTMLButtonElement>('[data-member-number="8"]')!;

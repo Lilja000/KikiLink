@@ -302,7 +302,7 @@ export class CloudGroupThread {
     this.#archiveNotice.append(element("span",{text:options.platformPreview ? "This conversation is archived." : "This conversation is archived. Your draft is kept."}),ui.button("Restore conversation",()=>this.options.restoreArchive?.(),"archive"));
     this.#draft.closest(".kl-group-composer")?.before(this.#archiveNotice);
     if(!this.#archiveNotice.isConnected&&!this.element.contains(this.#archiveNotice))this.element.append(this.#archiveNotice);
-    this.#controls = new MessageInteraction(this.element, this.#list, row => this.#contextActions(row), options.platformPreview === true);
+    this.#controls = new MessageInteraction(this.element, this.#list, (row, opener) => this.#contextActions(row, opener), options.platformPreview === true);
     this.#sendState.listeners.add(this.#syncDraft); this.#syncDraft();
     if (options.platformPreview) {
       if (typeof ResizeObserver === "function") {
@@ -842,7 +842,7 @@ export class CloudGroupThread {
       },
     });
   }
-  #contextActions(row: HTMLElement): HTMLElement[] {
+  #contextActions(row: HTMLElement, opener: HTMLElement): HTMLElement[] {
     const message = this.#messages.get(row);
     if (!message || message.text === null || !row.dataset.actionable || this.ui.options.isBlocked(message.sender)) return [];
     const own = this.group.members.find(m => m.memberNumber === this.ui.options.client.memberNumber);
@@ -862,13 +862,13 @@ export class CloudGroupThread {
       this.ui.button('Edit message', () => this.#editLocal(row, message, 'edit'), 'edit'),
       this.ui.button('Delete message…', () => this.#editLocal(row, message, 'delete'), 'trash'));
     if (message.sender === this.ui.options.client.memberNumber || own?.role === "owner" || own?.role === "admin") actions.push(
-      this.ui.button(local ? "Delete from group…" : "Delete message", () => this.ui.confirm(row, local ? "Delete this message for everyone in the group?" : "Delete this message?", async () => {
+      this.ui.button(local ? "Delete from group…" : "Delete message", () => void this.ui.confirm(row, local ? "Delete this message for everyone in the group?" : "Delete this message?", async () => {
         if(!this.#canMutate()||!row.isConnected)return;
         const path=`/v1/conversations/${this.group.conversationId}/messages/${message.id}`;
         let action=this.#sendState.actions.get(path);
         if(!action){action=this.#makeAction('delete',path,message.id,this.#loadedMessages.get(message.id)?.text??'');this.#sendState.actions.set(path,action);}
         await this.#runAction(action);
-      }), "trash"));
+      }, "Delete", opener), "trash"));
     if (message.sender !== this.ui.options.client.memberNumber) actions.push(
       this.ui.button("Report", () => this.options.report(row, message.id), "warning"),
       this.ui.button("Block in Cloud", () => confirmCloudBlock(this.ui,row,message.sender,()=>this.#canMutate()&&row.isConnected,async () => {
@@ -876,7 +876,7 @@ export class CloudGroupThread {
           if (this.#messages.get(node)?.sender === message.sender) { this.#seen.delete(node.dataset.messageId!); node.remove(); this.#count--; }
         }
         this.#controls.close();
-      }), "lock"));
+      }, opener), "lock"));
     return actions;
   }
   #removeMessage(row: HTMLElement): void {

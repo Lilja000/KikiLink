@@ -1,3 +1,4 @@
+import { searchField } from "../platform-shell/browse-controls";
 import type { BCAdapter } from "../../bc/adapter";
 import type { CustomActivityDefinition, CustomActivityTargetMode } from "../../core/types";
 import type { KeyValueStorage, SettingsStore } from "../../core/settings";
@@ -192,7 +193,7 @@ export class CustomActivitiesView {
         ], undefined, true) }, kikiIcon("more"));
       options.setAttribute("aria-haspopup", "menu"); options.setAttribute("aria-expanded", "false");
       const toolbar = element("div", { className: "kl-activity-library-toolbar" },
-        element("div", { className: "kl-activity-search-field" }, kikiIcon("search"), this.#query),
+        searchField(this.#query, "Clear activity search", { className: "kl-activity-search-field" }),
         element("div", { className: "kl-activity-library-actions" },
           element("button", { className: "kl-text-button kl-activity-import", type: "button", onClick: () => file.click() }, kikiIcon("arrow-right"), "Import"),
           element("button", { className: "kl-text-button", type: "button", onClick: () => this.platform?.openWorkshop() }, kikiIcon("brush"),
