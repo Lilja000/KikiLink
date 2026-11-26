@@ -3686,17 +3686,26 @@ export class LinkChatView {
       : this.#workspaceView === "workshop" && this.#workshop ? this.#workshop.navigation
       : shell.secondary.querySelector<HTMLElement>(".kl-platform-links");
     if (!source) return;
+    const routeLinks = this.#workspaceView !== "settings" && this.#workspaceView !== "workshop";
+    const available = () => new Set(shell.sections.map(section => section.id));
+    const usable = (button: HTMLButtonElement, routes: ReadonlySet<PlatformRoute>) =>
+      routeLinks ? routes.has(button.dataset.route as PlatformRoute) : !button.hidden;
+    const routes = available();
     const title = shell.sectionTitle + " sections";
     const list = element("nav", { className: "kl-shell-section-list", ariaLabel: title });
-    for (const original of source.querySelectorAll<HTMLButtonElement>("button:not([hidden])")) {
+    for (const original of source.querySelectorAll<HTMLButtonElement>("button")) {
+      if (!usable(original, routes)) continue;
       const row = element("button", { className: "kl-shell-section-row", type: "button", onClick: () => {
-        if (!this.#contentDialog.body.contains(list) || !original.isConnected || original.hidden || original.disabled ||
+        if (!this.#contentDialog.body.contains(list) || !original.isConnected || !usable(original, available()) || original.disabled ||
             !this.#mounted || this.#panel.hidden || shell.secondary.dataset.area !== area) return;
         this.#contentDialog.close(); original.click();
-        if (original.isConnected && !original.hidden) original.focus({ preventScroll: true });
+        const target = original.hidden ? shell.secondary.querySelector<HTMLButtonElement>('.kl-platform-link[aria-current="page"]') : original;
+        target?.focus({ preventScroll: true });
       } });
       row.disabled = original.disabled;
-      if (original.getAttribute("aria-current") === "page" || original.getAttribute("aria-selected") === "true") row.setAttribute("aria-current", "page");
+      const selected = routeLinks ? original.dataset.route === shell.currentRoute
+        : original.getAttribute("aria-current") === "page" || original.getAttribute("aria-selected") === "true";
+      if (selected) row.setAttribute("aria-current", "page");
       for (const child of original.childNodes) {
         const clone = child.cloneNode(true);
         if (clone instanceof Element) {
@@ -4247,7 +4256,7 @@ export class LinkChatView {
 
   #activateFeature(target: FeatureTarget): void {
     if (target === "cloud") { this.#showWorkspace("cloud"); return; }
-    if (target === "discover") { this.#activatePlatformRoute("discover"); return; }
+    if (target === "discover" || target === "matching") { this.#activatePlatformRoute(target); return; }
     if (target === "home" || target === "chat" || target === "news") {
       this.#showWorkspace(target);
       if (target !== "news") void this.refresh();
@@ -10588,6 +10597,11 @@ export class LinkChatView {
       title: "Discover", detail: "Explore events, communities, people and rooms",
       keywords: "explore coming up plans", priority: 52, action: { kind: "workspace", target: "discover" },
     });
+    if (this.#matching && !platformAreaHidden("explore", settings.ui.hiddenTabs)) results.push({
+      id: "destination-matches", kind: "destination", icon: "heart", category: "Destination",
+      title: "Matches", detail: "Browse shared suggestions and manage your matching profile",
+      keywords: "explore matching people availability connections", priority: 52, action: { kind: "workspace", target: "matching" },
+    });
     return results;
   }
 
@@ -10632,7 +10646,7 @@ export class LinkChatView {
           const icons = { groups: "users", rooms: "door", events: "calendar" } as const;
           this.#finderMatchingResults = rows.map(row => {
             const common = {
-              kind: "matching" as const, category: "Matching",
+              kind: "matching" as const, category: "Matches",
               detail: row.candidate.reasons[0] || "A shared suggestion", keywords: "", priority: 0,
             };
             if (row.kind === "people") return {

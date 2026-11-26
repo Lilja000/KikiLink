@@ -76,8 +76,8 @@ export class PlatformShell {
     const destination = platformDestination(state.route);
     const visible = visiblePlatformDestinations(state);
     const visibleIds = new Set(visible.map(item => item.id));
-    const hasPeople = visibleIds.has("people");
-    this.#activeSection = hasPeople && (state.route === "matching" || state.route === "requests") ? "people" : state.route;
+    const peopleSection = visibleIds.has("matching") ? "matching" : "people";
+    this.#activeSection = state.route === "people" || state.route === "requests" ? peopleSection : state.route;
     this.#lastRoutes.set(destination.area, state.route);
     this.#title.textContent = PLATFORM_AREAS.find(area => area.id === destination.area)!.label;
     this.secondary.dataset.area = destination.area;
@@ -95,8 +95,8 @@ export class PlatformShell {
       else button.removeAttribute("aria-current");
     }
     for (const [route, button] of this.#routeButtons) {
-      const insidePeople = hasPeople && (route === "matching" || route === "requests");
-      button.hidden = insidePeople || !visibleIds.has(route) || platformDestination(route).area !== destination.area;
+      const nested = route === "requests" || route === "people" && peopleSection === "matching";
+      button.hidden = nested || !visibleIds.has(route) || platformDestination(route).area !== destination.area;
       if (route === this.#activeSection) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
@@ -134,6 +134,7 @@ export class PlatformShell {
     this.#links.after(node);
     this.sync(this.#state);
   }
+  get currentRoute(): PlatformRoute { return this.#state.route; }
   get sections() { return visiblePlatformDestinations(this.#state).filter(item => item.area === platformDestination(this.#state.route).area); }
   setConnection(label: string, connected: boolean): void {
     this.#connection.textContent = label; this.#connection.title = `${label} · Cloud & sessions`;

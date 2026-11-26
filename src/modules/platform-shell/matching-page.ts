@@ -2,7 +2,7 @@ import { pageAction } from './page-action';
 import { preserveSelectionFocus } from "./browse-focus";
 import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { ShellActionMenu } from './action-menu';
-import { MatchingSearch, matchConnectionsButton, matchEmptySuggestions, matchFilterButton, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSignalBar, matchSignalStatus, matchSuggestionCount, setMatchConnectionsCount, type MatchingBrowseSelection } from './matching-browse-controls';
+import { MatchingSearch, matchCardReasons, matchWeeklyOverlap, matchConnectionsButton, matchEmptySuggestions, matchFilterButton, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSuggestionCount, setMatchConnectionsCount, type MatchingBrowseSelection } from './matching-browse-controls';
 import { matchingBreakdown } from './matching-breakdown';
 import { matchingCatalogError, matchingCatalogLoading, matchingCatalogReadFailed } from './matching-catalog-state';
 import { MatchingHideSuggestion } from './matching-hide-suggestion';
@@ -12,13 +12,13 @@ import { MatchingInformation, matchingInformationButton } from './matching-infor
 import { fitPanelDialog } from './panel-dialog-layout';
 import {matchingPendingText,matchingReadAt,sameMatchingSource,MatchingGenerationError,type MatchingSource} from './matching-generation';
 import {MatchingResourcesPage} from "./matching-resources-page";
-import { CloudError, type CloudClient } from "../../cloud/client";
+import { CloudError, isTemporaryCloudReadError, type CloudClient } from "../../cloud/client";
 import { catalogById, PREFERENCE_LEVEL_LABELS, type PreferenceLevel } from "../../cloud/preference-model";
 import { bindClockText } from "../../core/time-format";
 import type { KeyValueStorage } from "../../core/settings";
 import { element } from "../../cloud/dom";
 import { kikiIcon } from "../link-chat/icons";
-import { focusedElement } from '../../utils/dom';
+import { focusedElement, reconcileChildren } from '../../utils/dom';
 import {
   DEFAULT_MATCH_FILTERS,
   checkedMatchFilters,
@@ -52,6 +52,7 @@ import {
   MatchingSignalEditor,
   matchingSignalNeededBody,
   matchingSignalNeededTitle,
+  matchSettingsLabel,
   signalWithExpiry,
   type MatchExpiry,
 } from "./matching-signal-editor";
@@ -120,6 +121,12 @@ export class MatchingPage {
   #busy = false;
   #queued = false;
   #refreshAfter = false;
+  #pages = 1;
+  #verifiedAt = 0;
+  #retryTimer: ReturnType<typeof setTimeout> | undefined;
+  #backgroundRead: number | undefined;
+  #recheckQueued = false;
+  #recheckAfter = false;
   #supported = false;
   #storageError = "";
   #message = "";
@@ -206,7 +213,7 @@ export class MatchingPage {
           ?.focus({ preventScroll: true });
       }
     });
-    this.#unsubscribe = client.subscribe((kind) => {
+    this.#unsubscribe = client.subscribe((kind, cause) => {
       if (!options.current() || client.memberNumber!==this.recovery.owner || client.origin!==this.recovery.origin) {
         this.#erase();
         return;
@@ -222,6 +229,14 @@ export class MatchingPage {
         (kind === `profile:${this.#resourceRecommendation.host}` ||
           ["matching", "session", "connection", "privacy", "profiles-cleared", "profile-discovery",
             "relationships", "communities", "spaces", "calendar"].includes(kind))) this.#resourceRecommendation = undefined;
+      if (this.#visible && (kind === "ready" || kind === "profiles-cleared" && cause === "ready" ||
+        kind === "connection" && client.connected || kind === "matching" && !this.#busy &&
+        !this.#dialog.open && !this.#information.element.open && !this.#hideSuggestion.element.open)) {
+        this.#invalidateConnectionSummary(true);
+        if (kind === "matching") this.#hiddenSuggestions.refresh();
+        this.#queueRecheck();
+        return;
+      }
       if (kind === "connection") {
         if (!this.client.connected) this.#openSignalAfterRefresh = false;
         this.#invalidateConnectionSummary();
@@ -301,6 +316,7 @@ export class MatchingPage {
   #erase() {
     this.#search.cancel();
     clearTimeout(this.#timer);
+    clearTimeout(this.#retryTimer);
     this.#clearConnectionSummary();
     this.#connectionsOrigin = undefined;
     this.#page = "people";
@@ -332,6 +348,7 @@ export class MatchingPage {
     this.#epoch++;
     this.#token++;
     clearTimeout(this.#timer);
+    clearTimeout(this.#retryTimer);
     if (value) {
       this.#release = this.client.retainEvents();
       this.#invalidateConnectionSummary();
@@ -467,8 +484,9 @@ export class MatchingPage {
     return this.#visible && this.client.connected && this.options.current() &&
       this.client.memberNumber === this.recovery.owner && this.client.origin === this.recovery.origin;
   }
-  #invalidateConnectionSummary(): void {
-    this.#clearConnectionSummary();
+  #invalidateConnectionSummary(quiet = false): void {
+    if (quiet) this.#summaryRevision++;
+    else this.#clearConnectionSummary();
     if (!this.#summaryCurrent() || this.#summaryQueued) return;
     this.#summaryQueued = true;
     queueMicrotask(() => {
@@ -480,21 +498,39 @@ export class MatchingPage {
     const current = () => revision === this.#summaryRevision && this.#summaryCurrent();
     try {
       const { source, requestSummary } = await this.recovery.peopleCapabilities(current);
-      if (!current() || !requestSummary) return;
+      if (!current()) return;
+      if (!requestSummary) { this.#clearConnectionSummary(); return; }
       const summary = checkedMatchRequestSummary(await this.#read("/v1/matching/requests/summary", source), this.recovery.owner);
       if (!current()) return;
+      clearTimeout(this.#summaryTimer);
       this.#incomingRequestMembers = summary.memberNumbers;
       this.#updateConnectionBadges();
       if (summary.nextExpiresAt !== null) {
         this.#summaryTimer = setTimeout(() => this.#invalidateConnectionSummary(),
           Math.min(2147483647, summary.nextExpiresAt - summary.serverNow));
       }
-    } catch {
-      // The optional count can be absent while the catalog remains usable.
+    } catch (error) {
+      if (current() && !isTemporaryCloudReadError(error)) this.#clearConnectionSummary();
     }
+  }
+  #queueRecheck(): void {
+    if (!this.#current() || this.#recheckQueued) return;
+    this.#recheckQueued = true;
+    queueMicrotask(() => {
+      this.#recheckQueued = false;
+      if (!this.#current() || !this.client.connected) return;
+      if (this.#busy || this.#backgroundRead !== undefined || this.#search.composing || this.#search.pending) {
+        this.#recheckAfter = true;
+        return;
+      }
+      void this.refresh(false, true);
+    });
   }
   #invalidate() {
     if (!this.#visible || this.#type!=="people") return;
+    this.#recheckAfter = false;
+    clearTimeout(this.#retryTimer);
+    if (this.#backgroundRead !== undefined) { this.#token++; this.#backgroundRead = undefined; }
     this.#hideSuggestion.close();
     this.#information.close();
     this.#items = [];
@@ -609,112 +645,152 @@ export class MatchingPage {
     this.#draw();
     this.#dialog.close();
   }
-  async refresh(more = false): Promise<void> {
+  async refresh(more = false, background = false): Promise<void> {
     if (!this.#current()) return;
     if (this.#page === "people") {
-      if (this.#search.composing) return;
-      if (more && this.#search.pending) return;
+      if (this.#search.composing || (more || background) && this.#search.pending) return;
       this.#search.consume();
     }
-    this.#hideSuggestion.close();
-    this.#information.close(false);
-    const token = ++this.#token,
-      valid = this.#valid(),
-      prior = this.#next;
+    const quiet = background && !!this.#own && !this.#catalogState && !this.#message;
+    if (quiet && (this.#items.some(item => !this.#allowed(item.memberNumber)) ||
+      this.#requests.some(request => request.peer && !this.#allowed(request.peer.memberNumber)))) {
+      this.#invalidate();
+      return;
+    }
+    const token = ++this.#token;
+    const current = this.#valid();
+    const valid = () => current() && token === this.#token;
     const searchRevision = this.#search.revision;
     const currentSearch = () => this.#page !== "people" || searchRevision === this.#search.revision;
-    const catalog = !more;
+    const prior = this.#next;
+    const priorPending = JSON.stringify(this.#pending);
+    const priorStorageError = this.#storageError;
+    const pageCount = quiet ? this.#pages : 1;
+    let redraw = !quiet;
     let readingCatalog = false;
     let verifiedOwn: MatchOwn | undefined;
-    this.#busy = true;
-    this.#message = "";
-    this.#catalogState = catalog ? 'loading' : undefined;
+    this.#backgroundRead = quiet ? token : undefined;
+    this.#recheckAfter = false;
     this.#readPending();
-    if (!more) {
-      this.#items = [];
-      this.#requests = [];
-      this.#next = null;
+    if (!quiet) {
+      clearTimeout(this.#retryTimer);
+      this.#busy = true;
+      this.#hideSuggestion.close();
+      this.#information.close(false);
+      this.#message = "";
+      this.#catalogState = more ? undefined : 'loading';
+      if (!more) {
+        this.#items = [];
+        this.#requests = [];
+        this.#pages = 1;
+        this.#next = null;
+      }
+      this.#draw();
     }
-    this.#draw();
     try {
       const { source, activeRequests, suggestions } = await this.recovery.peopleCapabilities(valid);
-      if (!valid() || token !== this.#token) return;
-      if(more&&!sameMatchingSource(source,this.#source))throw new MatchingGenerationError();
+      if (!valid()) return;
       if (!sameMatchingSource(source, this.#source)) {
         this.#hiddenSuggestions.close();
         this.#lastHide = undefined;
+        if (more) throw new MatchingGenerationError();
+        if (quiet) { this.#invalidate(); return; }
       }
-      this.#source=source;
-      if(this.#editorSource&&!sameMatchingSource(source,this.#editorSource))this.#editor?.hold();
+      this.#source = source;
+      if (this.#editorSource && !sameMatchingSource(source, this.#editorSource)) this.#editor?.hold();
       this.#supported = true;
-      const own = checkedMatchOwn(
-        await this.#read("/v1/matching/me"),
-        this.recovery.owner,
-      );
-      if (!valid() || token !== this.#token) return;
-      this.#own = verifiedOwn = this.#bind(own);
-      this.#schedule(own.serverNow);
-      let serverNow = own.serverNow;
-      if (this.#page === "people") {
-        if (!currentSearch()) return;
-        const q = new URLSearchParams({
-          ...Object.fromEntries(
-            Object.entries(this.#filters).map(([k, v]) => [k, String(v)]),
-          ),
-          limit: "20",
-          cursor: more ? String(prior ?? "") : "",
-        });
-        if (suggestions) q.set("suggestions", "1");
-        if (activeRequests) q.set("includeConnection", "1");
-        readingCatalog = catalog;
-        const result = checkedMatchPage(
-          await this.#read("/v1/matching/people?" + q),
-          this.recovery.owner,
-        );
-        readingCatalog = false;
-        if (!valid() || token !== this.#token || !currentSearch()) return;
-        const rows = result.items.filter((c) => this.#allowed(c.memberNumber) && (this.#filters.scope !== "all" || !this.options.known?.(c.memberNumber))).map(c=>this.#bind(c));
-        if (
-          more &&
-          rows.some((c) =>
-            this.#items.some((old) => old.memberNumber === c.memberNumber),
-          )
-        )
-          throw new Error("Suggestions changed. Refresh before continuing.");
-        this.#items = [...(more ? this.#items : []), ...rows];
-        this.#next = result.nextCursor;
-        serverNow = result.serverNow;
-      } else {
-        readingCatalog = catalog;
-        const result = checkedMatchRequests(
-          await this.#read(
-            `/v1/matching/requests?scope=${this.#connectionScope}&state=${this.#connectionState}&limit=20&cursor=${more ? (prior ?? 0) : 0}`,
-          ),
-          this.recovery.owner,
-        );
-        readingCatalog = false;
-        if (!valid() || token !== this.#token) return;
-        this.#requests = [
-          ...(more ? this.#requests : []),
-          ...result.items.map((r) => this.#bind(this.#safeRequest(r))),
-        ];
-        this.#next = result.nextCursor;
-        serverNow = result.serverNow;
+      const own = checkedMatchOwn(await this.#read("/v1/matching/me"), this.recovery.owner);
+      if (!valid() || !currentSearch() || this.#refreshAfter) return;
+      const ownObserved = Date.now();
+      if (!quiet) {
+        this.#own = verifiedOwn = this.#bind(own);
+        this.#schedule(own.serverNow);
       }
+      let serverNow = own.serverNow;
+      let next: number | string | null = more ? prior : null;
+      let pages = more ? this.#pages : 0;
+      const items = more ? this.#items.slice() : [];
+      const requests = more ? this.#requests.slice() : [];
+      for (let page = 0; page < pageCount; page++) {
+        readingCatalog = !more;
+        if (this.#page === "people") {
+          const q = new URLSearchParams({
+            ...Object.fromEntries(Object.entries(this.#filters).map(([key, value]) => [key, String(value)])),
+            limit: "20", cursor: String(next ?? ""),
+          });
+          if (suggestions) q.set("suggestions", "1");
+          if (activeRequests) q.set("includeConnection", "1");
+          const result = checkedMatchPage(await this.#read("/v1/matching/people?" + q), this.recovery.owner);
+          if (!valid() || !currentSearch() || this.#refreshAfter) return;
+          const rows = result.items.filter(c => this.#allowed(c.memberNumber) &&
+            (this.#filters.scope !== "all" || !this.options.known?.(c.memberNumber)));
+          if (rows.some(c => items.some(old => old.memberNumber === c.memberNumber)))
+            throw new Error("Suggestions changed. Refresh before continuing.");
+          items.push(...rows.map(c => this.#bind(c)));
+          next = result.nextCursor;
+          serverNow = result.serverNow;
+        } else {
+          const result = checkedMatchRequests(await this.#read(
+            `/v1/matching/requests?scope=${this.#connectionScope}&state=${this.#connectionState}&limit=20&cursor=${next ?? 0}`),
+            this.recovery.owner);
+          if (!valid() || this.#refreshAfter) return;
+          requests.push(...result.items.map(r => this.#bind(this.#safeRequest(r))));
+          next = result.nextCursor;
+          serverNow = result.serverNow;
+        }
+        readingCatalog = false;
+        pages++;
+        if (next === null) break;
+      }
+      const previous = this.#own;
+      if (quiet && previous && previous.revision === own.revision && previous.active === own.active &&
+        previous.canPublish === own.canPublish && JSON.stringify(previous.signal) === JSON.stringify(own.signal)) {
+        verifiedOwn = previous;
+      } else {
+        this.#own = verifiedOwn = this.#bind(own);
+        redraw = true;
+      }
+      this.#observedAt.set(verifiedOwn, ownObserved - (own.serverNow - verifiedOwn.serverNow));
+      this.#verifiedAt = Date.now();
+      clearTimeout(this.#retryTimer);
+      redraw ||= (next === null) !== (this.#next === null) || priorPending !== JSON.stringify(this.#pending) ||
+        priorStorageError !== this.#storageError;
+      const grid = !redraw && this.#page === 'people' && items.length
+        ? this.#results.querySelector<HTMLElement>('.kl-match-grid') : null;
+      if (grid) this.#updateCards(grid, items, next !== null);
+      else if (!quiet || JSON.stringify(items) !== JSON.stringify(this.#items) ||
+        JSON.stringify(requests) !== JSON.stringify(this.#requests)) {
+        this.#items = items;
+        this.#requests = requests;
+        redraw = true;
+      }
+      this.#next = next;
+      this.#pages = pages;
       this.#schedule(serverNow);
     } catch (e) {
-      if (!valid() || token !== this.#token || !currentSearch()) return;
+      if (!valid() || !currentSearch()) return;
+      // A temporary read failure does not renew the last observation or cancel its original expiry.
+      const remaining = this.#verifiedAt + 60000 - Date.now();
+      if (quiet && remaining > 0 && isTemporaryCloudReadError(e)) {
+        clearTimeout(this.#retryTimer);
+        this.#retryTimer = setTimeout(() => { if (current()) this.#invalidate(); }, remaining);
+        return;
+      }
+      redraw = true;
       this.#items = [];
       this.#requests = [];
       this.#next = null;
+      this.#pages = 1;
       if (readingCatalog && matchingCatalogReadFailed(e)) this.#catalogState = 'error';
       else this.#message = e instanceof Error ? e.message : "Matching could not load.";
     } finally {
-      if (valid() && token === this.#token) {
+      if (this.#backgroundRead === token) this.#backgroundRead = undefined;
+      if (valid()) {
         this.#busy = false;
         if (this.#catalogState === 'loading') this.#catalogState = undefined;
         if (this.#openSignalAfterRefresh) this.#readPending();
-        this.#draw();
+        if (redraw) this.#draw();
+        if (this.#recheckAfter && !this.#refreshAfter) this.#queueRecheck();
         if (this.#refreshAfter) {
           this.#refreshAfter = false;
           this.#invalidate();
@@ -736,6 +812,27 @@ export class MatchingPage {
         }
       }
     }
+  }
+  #updateCards(grid: HTMLElement, rows: MatchCandidate[], hasMore: boolean): void {
+    const previous = new Map(this.#items.map(c => [c.memberNumber, c]));
+    const nodes = new Map([...grid.querySelectorAll<HTMLElement>('[data-member]')].map(node => [Number(node.dataset.member), node]));
+    const active = focusedElement(grid);
+    const menuAnchor = grid.querySelector('[aria-expanded="true"]');
+    const cards = rows.map((candidate, index) => {
+      const old = previous.get(candidate.memberNumber), card = nodes.get(candidate.memberNumber);
+      if (card && old && JSON.stringify(old) === JSON.stringify(candidate)) {
+        rows[index] = old;
+        return card;
+      }
+      return this.#card(candidate);
+    });
+    this.#items = rows;
+    reconcileChildren(grid, cards);
+    if (menuAnchor && !menuAnchor.isConnected) this.#cardMenu.close(false);
+    if (active && grid.contains(active) && focusedElement(grid) !== active) active.focus({ preventScroll: true });
+    const count = this.#results.querySelector('.kl-match-results');
+    const text = matchSuggestionCount(rows.length, hasMore).textContent;
+    if (count && count.textContent !== text) count.textContent = text;
   }
   #schedule(now: number) {
     clearTimeout(this.#timer);
@@ -878,13 +975,12 @@ export class MatchingPage {
       this.#body.replaceChildren(this.#results);
       return;
     }
-    const mySignal = this.#button(this.#editor ? "Resume signal draft" : "My signal",
+    const mySignal = this.#button(matchSettingsLabel(this.#own, !!this.#editor),
       () => this.#openEditor(undefined, ".kl-match-my-signal"), true);
     mySignal.classList.add("kl-match-my-signal");
-    if (this.#own && !this.#own.active) mySignal.classList.add("kl-text-button--primary");
+    if (!this.#own && !this.#editor) mySignal.disabled = true;
+    if (this.#own?.revision === 0) mySignal.classList.add("kl-text-button--primary");
     const options = matchOptionsButton(this.#optionsMenu, () => this.#current() && this.client.connected && !this.#busy, [
-      { label: "My matching signal", icon: "heart", disabled: !this.#own || !!(this.#pending || this.#storageError),
-        run: () => this.#openEditor(this.#own, matchOptionsSelector) },
       { label: "Profile preferences", icon: "settings", run: this.options.preferences },
       ...(this.#page === "people" && this.#own
         ? [{ label: "Hidden suggestions", icon: "eye" as const, run: () => this.#openHiddenSuggestions(matchOptionsSelector) }] : []),
@@ -960,16 +1056,6 @@ export class MatchingPage {
         element("p", { role: "status", text: "Loading Matching…" }),
       );
     const own = this.#own;
-    if (own) {
-      const status = matchSignalStatus(own, this.#observedAt.get(own) ?? Date.now());
-      const signalAction = this.#button(
-        status === "Available" ? "Pause signal" : "Set up my signal",
-        () => (status === "Available" ? void this.#pause() : this.#openEditor(own, ".kl-match-signal-action")),
-        true,
-      );
-      signalAction.classList.add("kl-match-signal-action");
-      this.#body.append(matchSignalBar(own, status, signalAction, this.#button("Preferences", this.options.preferences)));
-    }
     const hide = this.#lastHide;
     if (hide && this.#page === "people" && this.client.connected) {
       this.#body.append(hiddenSuggestionNotice(this.#button("Undo", () => void this.#undoHide(hide), true)));
@@ -1250,11 +1336,8 @@ export class MatchingPage {
       request.disabled = true;
       request.title = "This person is currently unavailable for new requests.";
     }
-    const why = this.#button("Why this match?", () => void this.#why(c.memberNumber, this.#sourceOf(c),
-      `.kl-match-card[data-member="${c.memberNumber}"] .kl-match-card-why`));
-    why.classList.add("kl-match-card-why");
-    const profile = this.#button("Profile", openProfile);
-    profile.classList.add("kl-match-card-link");
+    const profile = this.#button("View profile", openProfile);
+    profile.classList.add(c.signalRevision > 0 ? "kl-match-card-link" : "kl-text-button--primary");
     const score = c.compatibility?.score;
     const presence = c.status === "online" ? "Online" : c.status === "idle" ? "Idle" : c.status === "dnd" ? "Do not disturb" : "";
     const card = element("article", { className: "kl-match-card" });
@@ -1280,19 +1363,14 @@ export class MatchingPage {
       element("div", { className: "kl-match-metrics" },
         score != null ? element("span", {}, element("strong", { text: `${score}%` }), " compatibility")
           : element("span", { text: "Compatibility unavailable" }),
-        element("span", {}, c.availability?.status ?? "Availability not shared"),
-        c.overlapMinutes != null ? element("span", { text: `${c.overlapMinutes} min shared weekly time` }) : undefined,
+        c.availability ? element("span", { text: c.availability.status }) : undefined,
+        matchWeeklyOverlap(c.overlapMinutes),
       ),
-      element(
-        "ul",
-        { className: "kl-match-reasons" },
-        ...c.reasons.slice(0, 3).map(text => element("li", {}, kikiIcon("check"), element("span", { text }))),
-      ),
+      matchCardReasons(c.reasons, c.overlapMinutes),
       element(
         "div",
         { className: "kl-match-actions" },
         ...(c.signalRevision > 0 ? [request] : []),
-        why,
         profile,
       ),
     );
@@ -1325,6 +1403,8 @@ export class MatchingPage {
   async #inspect(run: (valid: () => boolean) => Promise<void>) {
     if (!this.#current() || this.#busy) return;
     const valid = this.#valid();
+    this.#token++;
+    this.#backgroundRead = undefined;
     this.#busy = true;
     this.#message = "";
     this.#draw();
@@ -1349,6 +1429,7 @@ export class MatchingPage {
           this.#refreshAfter = false;
           this.#invalidate();
         } else if (this.#recommendationAction || this.#resourceRecommendation) this.#prepareRecommendationAction();
+        else if (this.#recheckAfter) this.#queueRecheck();
         else this.#search.flush();
       }
     }
@@ -1435,23 +1516,6 @@ export class MatchingPage {
       this.#closeEditor();
       await this.refresh();
     }
-  }
-  async #pause() {
-    await this.#inspect(async (valid) => {
-      const own=this.#own;
-      if (!own || !valid() || matchSignalStatus(own, this.#observedAt.get(own) ?? Date.now()) !== "Available") return;
-      await this.#perform(
-        "PUT",
-        "/v1/matching/me",
-        {
-          operationId: crypto.randomUUID(),
-          revision: own.revision,
-          signal: { ...own.signal, published: false },
-        },
-        valid,this.#sourceOf(own),"Pause your original signal",
-      );
-    });
-    if (this.#current() && !this.#message) await this.refresh();
   }
   async #perform(
     method: "PUT" | "POST",

@@ -1,4 +1,3 @@
-import { sectionLink } from "./section-link";
 import {communityManagementRead} from '../../cloud/moderation-generation';
 import type { CloudClient } from "../../cloud/client";
 import { element } from "../../utils/dom";
@@ -17,7 +16,7 @@ export class CommunityShortcuts {
   #release: (() => void) | undefined;
   readonly #unsubscribe: () => void;
   constructor(private readonly client: CloudClient, private readonly current: () => boolean,
-    private readonly open: (id?: string) => void, private readonly onCreate?: () => void) {
+    private readonly open: (id: string) => void, private readonly onCreate?: () => void) {
     this.element.hidden = true;
     this.#unsubscribe = client.subscribe(kind => {
       if (["session", "connection", "disconnected", "communities", "blocks", "ready", "connected", "reconnected"].includes(kind)) {
@@ -39,7 +38,6 @@ export class CommunityShortcuts {
     const token = ++this.#token; this.#supported = false; this.element.replaceChildren();
     if (!this.#valid(token)) return;
     const heading = element("h3", { text: "Your communities" });
-    const browse = sectionLink(element("button", { type: "button", className: "kl-text-button kl-shell-community-browse", text: "Browse communities", onClick: () => { if (this.#valid(token)) this.open(); } }));
     const create = () => {
       if (this.canCreate) this.element.append(element("button", { type: "button", className: "kl-shell-community-create", onClick: () => { if (this.#valid(token)) this.create(); } },
         kikiIcon("plus"), element("span", { text: "Create a community" })));
@@ -58,12 +56,11 @@ export class CommunityShortcuts {
         button.dataset.community = item.id; this.element.append(button);
       }
       if (!items.length) this.element.append(element("p", { text: "Communities you join appear here." }));
-      this.element.append(browse);
       create();
     } catch {
       if (!this.#valid(token)) return;
       this.element.replaceChildren(heading, element("p", { text: "Could not load your communities." }),
-        element("button", { type: "button", className: "kl-shell-community-browse", text: "Retry", onClick: () => { if (this.#valid(token)) void this.refresh(); } }), browse);
+        element("button", { type: "button", className: "kl-shell-community-retry", text: "Retry", onClick: () => { if (this.#valid(token)) void this.refresh(); } }));
       create();
     }
   }

@@ -13,8 +13,8 @@ ${overflowControl} {
   height: var(--kl-action-square); min-height: var(--kl-action-square); max-height: var(--kl-action-square);
   padding: 0 !important; gap: 0;
   align-items: center; justify-content: center; align-content: center; text-align: center;
-  border: 1px solid var(--kl-border); border-radius: var(--kl-action-radius);
-  background: var(--kl-surface-2); color: var(--kl-text); box-shadow: none;
+  border: 0; border-radius: var(--kl-action-radius);
+  background: transparent; color: var(--kl-muted); box-shadow: none;
   list-style: none; cursor: pointer;
 }
 ${overflowControl}::-webkit-details-marker { display: none; }
@@ -24,7 +24,7 @@ ${overflowControl} > svg[data-icon="more"] {
   color: inherit; fill: currentColor; stroke-width: 1.5; opacity: 1;
 }
 ${overflowControl}:is(:hover, :focus-visible, :active, [aria-expanded=true], details[open] > summary):not(:disabled, [aria-disabled=true]) {
-  color: var(--kl-text); border-color: var(--kl-border-strong); background: var(--kl-surface-hover);
+  color: var(--kl-text); background: transparent;
 }
 ${overflowControl}:focus-visible { outline: 2px solid var(--kl-accent); outline-offset: 2px; }
 ${overflowControl}:is(:disabled, [aria-disabled=true]) { color: var(--kl-muted); cursor: default; }

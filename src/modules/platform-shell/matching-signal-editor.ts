@@ -16,6 +16,11 @@ import {
   type MatchOwn,
 } from "../../../cloud/shared/matching.mjs";
 export type MatchExpiry = "keep" | "none" | "1" | "4";
+export function matchSettingsLabel(own: MatchOwn | undefined, editing = false): string {
+  if (editing) return "Resume editing";
+  return own?.revision === 0 ? "Set up Matches" : "Match settings";
+}
+
 const steps = ["Looking for", "Availability", "Sharing"] as const;
 const noteLimit = 180;
 export const matchingSignalNeededTitle = "Make your matching signal available";
@@ -32,7 +37,7 @@ export function signalWithExpiry(signal: MatchSignal, expiry: MatchExpiry, serve
 
 export class MatchingSignalEditor {
   readonly element = element("div", { className: "kl-match-editor" });
-  readonly #title = element("h2", { text: "Your matching signal" });
+  readonly #title = element("h2");
   readonly #body = element("div", { className: "kl-match-dialog-body" });
   readonly #footer = element("footer");
   readonly #close = element("button", { type: "button", className: "kl-icon-button", ariaLabel: "Close dialog" }, kikiIcon("close"));
@@ -62,7 +67,13 @@ export class MatchingSignalEditor {
     },
   ) {
     this.draft = structuredClone(own.signal);
+    if (own.revision === 0) {
+      // A profile-only suggestion has no saved schedule. Apply the default only to its setup draft.
+      this.draft.share.availability = true;
+      if (!own.canPublish) this.draft.published = false;
+    }
     this.#baseline = JSON.stringify(this.draft);
+    this.#title.textContent = matchSettingsLabel(own);
     this.#title.id = `kl-match-signal-${crypto.randomUUID()}`;
     this.#close.onclick = () => { if (this.#active(this.#close)) this.requestClose(); };
     this.element.append(element("header", { className: "kl-match-dialog-header" },
@@ -329,7 +340,10 @@ export class MatchingSignalEditor {
           ? "Your signal will be saved paused. Your days and times stay saved for when you are looking again." : "";
       };
       fields.append(
-        element("p", { className: "kl-match-meta", text: "Choose the days and times that work for you." }),
+        this.#toggle("Share my availability", d.share.availability, checked => {
+          d.share.availability = checked;
+        }),
+        element("p", { className: "kl-match-meta", text: "Your selected audience can see your availability, usual days and times when sharing is on." }),
         this.#select(
           "Availability",
           ["Available now", "Planning ahead", "Not looking"],
@@ -460,16 +474,15 @@ export class MatchingSignalEditor {
       );
       for (const [key, label] of Object.entries({
         interests: "My signal interests",
-        availability: "My availability",
         connections: "My shared connections",
       }))
         share.append(
           this.#toggle(
             label,
-            d.share[key as "interests" | "availability" | "connections"],
+            d.share[key as "interests" | "connections"],
             (v) => {
-              d.share[key as "interests" | "availability" | "connections"] = v;
-            updatePreview();
+              d.share[key as "interests" | "connections"] = v;
+              updatePreview();
             },
           ),
         );

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.5
+
+- Open Matches directly from Explore. Match settings are available from the page header. The signal banner and the extra Browse communities button have been removed.
+- New Matches setups start with availability sharing selected. You can change it while choosing your availability. Previously saved sharing choices are preserved.
+- Matches and the Current room field in profiles refresh in the background. Three-dot menus keep their click and touch areas and show just the dots.
+
 ## 2.0.4
 
 - Discover links, catalogue actions, search fields, filters and three-dot menus now use consistent controls across the addon. Loading more results keeps keyboard navigation in the list.

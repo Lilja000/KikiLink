@@ -2,7 +2,7 @@ import { pageAction } from './page-action';
 import { preserveSelectionFocus } from "./browse-focus";
 import { markAvatarPresence } from "../link-chat/avatar-presence";
 import { ShellActionMenu, type ShellAction } from './action-menu';
-import { MatchingSearch, matchConnectionsButton, matchEmptySuggestions, matchFilterButton, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSignalBar, matchSignalStatus, matchSuggestionCount, type MatchingBrowseSelection } from './matching-browse-controls';
+import { MatchingSearch, matchCardReasons, matchWeeklyOverlap, matchConnectionsButton, matchEmptySuggestions, matchFilterButton, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSuggestionCount, type MatchingBrowseSelection } from './matching-browse-controls';
 import { matchingBreakdown } from './matching-breakdown';
 import { matchingCatalogError, matchingCatalogLoading, matchingCatalogReadFailed } from './matching-catalog-state';
 import { MatchingInformation, matchingInformationButton } from './matching-information';
@@ -13,7 +13,7 @@ import { focusedElement } from '../../utils/dom';
 import { kikiIcon } from '../link-chat/icons';
 import {matchingReadAt,sameMatchingSource,matchingGroupSource,matchingPendingText,matchingResourceMutation,MatchingGenerationError,type MatchingSource} from './matching-generation';
 import {communityManagementRead} from '../../cloud/moderation-generation';
-import {CloudError,type CloudClient} from '../../cloud/client';
+import {CloudError,isTemporaryCloudReadError,type CloudClient} from '../../cloud/client';
 import {fitPanelDialog} from './panel-dialog-layout';
 import type {KeyValueStorage} from '../../core/settings';
 import {element} from '../../cloud/dom';
@@ -25,7 +25,7 @@ import {checkedMatchOwn} from './matching-model';
 import {checkedResource,checkedResourcePage,checkedOwnedGroup,checkedOwnedGroups,checkedGroupRequest,checkedGroupRequests,checkedResourceChoices} from './matching-resources-model';
 import {MatchingRecovery,type MatchingPending,type MatchingLock} from './matching-recovery';
 import {MatchingGroupEditor} from './matching-group-editor';
-import { MatchingSignalEditor, matchingSignalNeededBody, matchingSignalNeededTitle, signalWithExpiry } from './matching-signal-editor';
+import { MatchingSignalEditor, matchSettingsLabel, matchingSignalNeededBody, matchingSignalNeededTitle, signalWithExpiry } from './matching-signal-editor';
 const note=(text:string)=>element('p',{className:'kl-match-meta',text});
 const groupRequestLimit = 240;
 class MatchingResourceUnavailable extends Error {
@@ -71,6 +71,10 @@ export class MatchingResourcesPage {
  );
  #own:MatchOwn|undefined;
  #ownObservedAt = 0;
+ #pages = 0;
+ #poll: ReturnType<typeof setInterval> | undefined;
+ #background: symbol | undefined;
+ #checkAgain = false;
  #openSignalAfterRefresh = false;
  #signalEditor: { editor: MatchingSignalEditor; source: MatchingSource; returnFocus: string } | undefined;
  #signalFocusAfterRefresh: string | undefined;
@@ -113,7 +117,7 @@ export class MatchingResourcesPage {
      this.#clearResourceDialogLayout();
      if (target && !this.#signalFocusAfterRefresh) this.#focusOpener(target);
    });
-   this.unsubscribe=client.subscribe(kind=>{
+   this.unsubscribe=client.subscribe((kind, cause)=>{
      if(!options.current()||client.memberNumber!==this.recovery.owner||client.origin!==this.recovery.origin){this.clear(true);return;}
      if(!this.#visible)return;
      if (kind === 'connection' && !client.connected) this.#openSignalAfterRefresh = false;
@@ -122,11 +126,16 @@ export class MatchingResourcesPage {
        this.invalidate();
        return;
      }
-     if(kind==='matching'){
-       this.#hiddenSuggestions.refresh();
-       this.invalidate(true);
-     }else if(['session','privacy','profiles-cleared','profile-discovery','profile-friends','profile-communities','relationships','communities','ready','connection'].includes(kind) ||
-       kind==='spaces'&&this.#kind==='rooms' || kind==='calendar'&&this.#kind==='events'){
+     if (kind === 'profiles-cleared' && cause === 'ready') return;
+     const catalogHint = kind === 'matching' || kind === 'spaces' && this.#kind === 'rooms' ||
+       kind === 'calendar' && this.#kind === 'events';
+     const reconnect = kind === 'ready' || kind === 'connection' && client.connected;
+     if (catalogHint || reconnect) {
+       if (kind === 'matching') this.#hiddenSuggestions.refresh();
+       const reviewing = this.dialog.open || this.#hideSuggestion.element.open || this.#information.element.open;
+       if (reviewing || catalogHint && (this.#busy || this.#page !== 'browse')) this.invalidate(kind === 'matching');
+       else void this.#checkBackground();
+     } else if (['session','privacy','profiles-cleared','profile-discovery','profile-friends','profile-communities','relationships','communities','connection'].includes(kind)) {
        this.invalidate();
      }
    });
@@ -166,8 +175,8 @@ export class MatchingResourcesPage {
    const signal = this.#signalEditor?.editor;
    if (signal && this.dialog.contains(signal.element)) return signal;
  }
- clear(own=false){this.#finderRecommendationHost=undefined;this.#openSignalAfterRefresh=false;this.#search.cancel();clearTimeout(this.#timer);this.#epoch++;this.#lastHide=undefined;this.#items=[];this.#requests=[];this.#owned=[];this.#own=undefined;this.#next=null;this.#pending=null;this.#busy=false;this.#catalogState=undefined;this.#refreshAfter=false;this.#restoreFilterFocus=false;this.#signalFocusAfterRefresh=undefined;this.#pendingSignalOpener=undefined;this.dialog.close();this.#information.close();this.#hiddenSuggestions.close(false);this.#hideSuggestion.close();if(own){this.#editor=undefined;this.#editorSource=undefined;this.#draft=undefined;this.#signalEditor=undefined;}if(!this.#openEditor())this.dialog.replaceChildren();this.draw();}
- setVisible(value:boolean){if(value===this.#visible)return;this.#visible=value;this.element.hidden=!value;clearTimeout(this.#timer);if(value){this.#release=this.client.retainEvents();void this.refresh();}else{this.#release?.();this.#release=undefined;this.clear();}}
+ clear(own=false){this.#pages=0;this.#background=undefined;this.#checkAgain=false;this.#finderRecommendationHost=undefined;this.#openSignalAfterRefresh=false;this.#search.cancel();clearTimeout(this.#timer);this.#epoch++;this.#lastHide=undefined;this.#items=[];this.#requests=[];this.#owned=[];this.#own=undefined;this.#next=null;this.#pending=null;this.#busy=false;this.#catalogState=undefined;this.#refreshAfter=false;this.#restoreFilterFocus=false;this.#signalFocusAfterRefresh=undefined;this.#pendingSignalOpener=undefined;this.dialog.close();this.#information.close();this.#hiddenSuggestions.close(false);this.#hideSuggestion.close();if(own){this.#editor=undefined;this.#editorSource=undefined;this.#draft=undefined;this.#signalEditor=undefined;}if(!this.#openEditor())this.dialog.replaceChildren();this.draw();}
+ setVisible(value:boolean){if(value===this.#visible)return;this.#visible=value;this.element.hidden=!value;clearTimeout(this.#timer);if(value){this.#release=this.client.retainEvents();this.#poll=setInterval(()=>void this.#checkBackground(),60000);void this.refresh();}else{clearInterval(this.#poll);this.#release?.();this.#release=undefined;this.clear();}}
  setKind(kind: MatchResourceKind, selection?: MatchingBrowseSelection): void {
    const applied = selection && { ...selection, sort: selection.sort === 'compatibility' ? 'recommended' : selection.sort };
    if (kind !== this.#kind) {
@@ -181,7 +190,7 @@ export class MatchingResourcesPage {
    if (this.current()) void this.refresh();
  }
  destroy(){this.setVisible(false);this.unsubscribe();this.clear(true);this.dialog.remove();this.#information.element.remove();this.#hiddenSuggestions.element.remove();this.#hideSuggestion.element.remove();this.#cardMenu.destroy();this.#optionsMenu.destroy();}
- invalidate(keepHidden=false){this.#hideSuggestion.close();if(!keepHidden)this.#hiddenSuggestions.close(false);this.#information.close();this.#items=[];this.#requests=[];this.#owned=[];this.#own=undefined;this.#next=null;if(!this.#openEditor()){this.dialog.close();this.dialog.replaceChildren();}if(this.#search.composing)this.results.replaceChildren(matchingCatalogLoading());if(this.#busy||this.#search.composing){this.#refreshAfter=true;this.draw();}else void this.refresh();}
+ invalidate(keepHidden=false){this.#background=undefined;this.#pages=0;this.#checkAgain=false;this.#hideSuggestion.close();if(!keepHidden)this.#hiddenSuggestions.close(false);this.#information.close();this.#items=[];this.#requests=[];this.#owned=[];this.#own=undefined;this.#next=null;if(!this.#openEditor()){this.dialog.close();this.dialog.replaceChildren();}if(this.#search.composing)this.results.replaceChildren(matchingCatalogLoading());if(this.#busy||this.#search.composing){this.#refreshAfter=true;this.draw();}else void this.refresh();}
  readPending(){this.#storageError='';try{this.#pending=this.recovery.read();}catch(e){this.#pending=null;this.#storageError=e instanceof Error?e.message:'Saved request unavailable.';}}
  button(text:string,fn:()=>void,write=false){const b=element('button',{type:'button',className:'kl-text-button',text});b.dataset.matchWrite=String(write);b.disabled=this.#busy||write&&!!(this.#pending||this.#storageError);b.onclick=()=>{if(b.isConnected&&this.current()&&!this.#busy&&(!write||!this.#pending&&!this.#storageError))fn();};return b;}
  select(label:string,values:readonly string[],value:string,write:(v:string)=>void,labels?:string[]){const s=element('select',{ariaLabel:label});values.forEach((v,i)=>s.append(element('option',{value:v,text:labels?.[i]??v})));s.value=value;s.disabled=this.#busy;s.onchange=()=>{if(s.isConnected&&this.current()&&!this.#busy)write(s.value);};return s;}
@@ -212,6 +221,83 @@ export class MatchingResourcesPage {
      }
    }
  }
+ #scheduleExpiry(own: MatchOwn): void {
+   clearTimeout(this.#timer);
+   const expires = own.signal.expiresAt;
+   if (own.active && expires !== null && expires > own.serverNow) {
+     const valid = this.valid();
+     this.#timer = setTimeout(() => { if (valid()) this.invalidate(); },
+       Math.max(0, Math.min(2147483647, expires - own.serverNow - (Date.now() - this.#ownObservedAt) + 30)));
+   }
+ }
+ async #readListing(source: MatchingSource, cursor: string | number | null, limit: number, valid: () => boolean) {
+   const items: MatchResource[] = [], requests: GroupMatchRequest[] = [];
+   let owned: OwnedMatchGroup[] = [], limited = false, pages = 0;
+   let next = cursor;
+   do {
+     if (this.#page === 'owned') {
+       owned = checkedOwnedGroups(await this.read('/v1/matching/groups/me', source));
+       next = null;
+     } else if (this.#page === 'requests') {
+       const row = checkedGroupRequests(await this.read(`/v1/matching/group-requests?scope=${this.#scope}&state=${this.#state}&cursor=${next ?? 0}&limit=20`, source));
+       requests.push(...row.items.map(request => this.safeRequest(request)));
+       next = row.nextCursor;
+     } else {
+       const q = new URLSearchParams({
+         ...Object.fromEntries(Object.entries(this.#filters).map(([key, value]) => [key, String(value)])),
+         priority: resourcePriority(this.#filters.priority), limit: '20', cursor: String(next ?? ''),
+       });
+       const row = checkedResourcePage(await this.read(`/v1/matching/resources/${this.#kind}?${q}`, source), this.#kind);
+       items.push(...row.items.filter(resource => this.allowed(resource.host.memberNumber)));
+       next = row.nextCursor;
+       limited = row.poolLimited;
+     }
+     if (!valid()) return;
+     pages++;
+   } while (next !== null && pages < limit);
+   return { items, requests, owned, next, limited, pages };
+ }
+ async #checkBackground(): Promise<void> {
+   if (!this.current() || !this.client.connected || this.#busy || this.#search.pending || this.#search.composing) return;
+   if (!this.#pages || !this.#own) { void this.refresh(); return; }
+   if (this.#background) { this.#checkAgain = true; return; }
+   const token = this.#background = Symbol(), revision = this.#search.revision;
+   const valid = () => this.#background === token && this.current() && this.client.connected &&
+     revision === this.#search.revision && !this.#search.composing && !this.#busy;
+   try {
+     const { resources: source, people } = await this.recovery.resourceSources(valid);
+     if (!valid()) return;
+     if (!sameMatchingSource(this.#source, source) || !sameMatchingSource(this.source(this.#own), people)) { this.invalidate(); return; }
+     const own = checkedMatchOwn(await this.read('/v1/matching/me', people.required ? people : source), this.recovery.owner);
+     if (!valid()) return;
+     const observedAt = Date.now();
+     const listing = await this.#readListing(source, null, this.#pages, valid);
+     if (!listing || !valid() || this.#checkAgain) return;
+     const same = JSON.stringify(this.#items) === JSON.stringify(listing.items) &&
+       JSON.stringify(this.#requests) === JSON.stringify(listing.requests) &&
+       JSON.stringify(this.#owned) === JSON.stringify(listing.owned) &&
+       (this.#next === null) === (listing.next === null) && this.#limited === listing.limited &&
+       JSON.stringify({ ...this.#own, serverNow: own.serverNow }) === JSON.stringify(own);
+     this.#ownObservedAt = observedAt;
+     this.#scheduleExpiry(own);
+     this.#pages = listing.pages;
+     this.#next = listing.next;
+     this.#own = this.bind(own, people);
+     if (same) return;
+     this.#items = listing.items.map(r => this.bind(r, source));
+     this.#requests = listing.requests.map(r => this.bind(r, source));
+     this.#owned = listing.owned.map(r => this.bind(r, source));
+     this.#limited = listing.limited;
+     this.draw();
+   } catch (error) {
+     if (valid() && (!isTemporaryCloudReadError(error) || Date.now() - this.#ownObservedAt >= 60000)) this.invalidate();
+   } finally {
+     if (this.#background === token) {
+       this.#background = undefined;
+       if (this.#checkAgain) { this.#checkAgain = false; void this.#checkBackground(); }
+     }
+   }
+ }
  async refresh(more=false){
  if(!this.current()||this.#busy)return;
  if(this.#page==='browse'){
@@ -223,6 +309,7 @@ export class MatchingResourcesPage {
  this.#hideSuggestion.close();
  const catalogLoading = this.#page === 'browse' && !more;
  this.#catalogState = catalogLoading ? 'loading' : undefined;
+ if(!more)this.#pages=0;
  if(catalogLoading){this.#items=[];this.#next=null;this.#limited=false;}
  const current = this.valid();
  let verifiedOwn: MatchOwn | undefined;
@@ -244,32 +331,20 @@ export class MatchingResourcesPage {
  if (!valid() || this.#refreshAfter) return;
  this.#own = verifiedOwn = this.bind(own, people);
  this.#ownObservedAt = Date.now();
- const expiresAt = own.signal.expiresAt;
- const refreshDelay = own.active && expiresAt !== null && expiresAt > own.serverNow
-   ? Math.min(60000, expiresAt - own.serverNow + 30) : 60000;
- clearTimeout(this.#timer);
- this.#timer = setTimeout(() => { if (valid()) this.invalidate(); }, refreshDelay);
- if(this.#page==='owned'){const rows=checkedOwnedGroups(await this.read('/v1/matching/groups/me'));if(!valid())return;this.#owned=rows.map(r=>this.bind(r));this.#next=null;}
- else if(this.#page==='requests'){const rows=checkedGroupRequests(await this.read(`/v1/matching/group-requests?scope=${this.#scope}&state=${this.#state}&cursor=${more?this.#next??0:0}&limit=20`));if(!valid())return;this.#requests=[...(more?this.#requests:[]),...rows.items.map(r=>this.bind(this.safeRequest(r)))];this.#next=rows.nextCursor;}
- else {
-   if (!currentSearch()) return;
-   const q = new URLSearchParams({
-     ...Object.fromEntries(Object.entries(this.#filters).map(([key, value]) => [key, String(value)])),
-     priority: resourcePriority(this.#filters.priority),
-     limit: '20', cursor: more ? String(this.#next ?? '') : '',
-   });
-   try {
-     const rows = checkedResourcePage(await this.read(`/v1/matching/resources/${this.#kind}?${q}`), this.#kind);
-     if (!valid() || this.#refreshAfter || !currentSearch()) return;
-     this.#items = [...(more ? this.#items : []), ...rows.items.filter(r => this.allowed(r.host.memberNumber)).map(r => this.bind(r))];
-     this.#next = rows.nextCursor;
-     this.#limited = rows.poolLimited;
-   } catch (error) {
-     if (!valid() || this.#refreshAfter || !currentSearch()) return;
-     if (!catalogLoading || !matchingCatalogReadFailed(error)) throw error;
-     if (valid() && !this.#refreshAfter) this.#catalogState = 'error';
-     return;
-   }
+ this.#scheduleExpiry(own);
+ try {
+   const listing = await this.#readListing(source, more ? this.#next : null, 1, () => valid() && !this.#refreshAfter && currentSearch());
+   if (!listing || !valid() || this.#refreshAfter || !currentSearch()) return;
+   this.#items = [...(more ? this.#items : []), ...listing.items.map(r => this.bind(r))];
+   this.#requests = [...(more ? this.#requests : []), ...listing.requests.map(r => this.bind(r))];
+   this.#owned = listing.owned.map(r => this.bind(r));
+   this.#next = listing.next;
+   this.#limited = listing.limited;
+   this.#pages = (more ? this.#pages : 0) + 1;
+ } catch (error) {
+   if (!valid() || this.#refreshAfter || !currentSearch()) return;
+   if (!catalogLoading || !matchingCatalogReadFailed(error)) throw error;
+   this.#catalogState = 'error';
  }
  });
  if (!current() || this.#busy) return;
@@ -300,15 +375,8 @@ export class MatchingResourcesPage {
    this.readPending();
    return pending;
  }
- async #pause(own: MatchOwn): Promise<void> {
-   await this.work(async valid => {
-     if (!valid() || this.#own !== own || matchSignalStatus(own, this.#ownObservedAt) !== 'Available') return;
-     await this.mutate('PUT', '/v1/matching/me', { revision: own.revision, signal: { ...own.signal, published: false } },
-       valid, this.source(own), 'Pause your original signal');
-     if (valid()) this.#refreshAfter = true;
-   });
- }
  draw(){
+ this.#background=undefined;this.#checkAgain=false;
  if (this.#search.composing) return;
  const active = focusedElement(this.body);
  const optionsFocused = !!active && (this.#optionsMenu.element.contains(active) ||
@@ -328,17 +396,18 @@ export class MatchingResourcesPage {
    return;
  }
  if(!this.#openEditor())this.dialog.querySelectorAll<HTMLButtonElement|HTMLSelectElement>('button,select').forEach(b=>{b.disabled=this.#busy||b.dataset.matchUnavailable==='true'||b.dataset.matchWrite==='true'&&!!(this.#pending||this.#storageError);});this.element.setAttribute('aria-busy',String(this.#busy));
- const signal = this.button(this.#signalEditor ? 'Resume signal draft' : 'My signal',
+ const signal = this.button(matchSettingsLabel(this.#own, !!this.#signalEditor),
    () => this.#editOwnSignal('.kl-match-my-signal'), true);
  signal.classList.add('kl-match-my-signal');
  if (!this.#own && !this.#signalEditor) signal.disabled = true;
- if(this.#own&&!this.#own.active)signal.classList.add('kl-text-button--primary');const actions=element('div',{className:'kl-match-actions'},this.button('Browse',()=>{this.#page='browse';void this.refresh();}),signal);
+ if (this.#own?.revision === 0) signal.classList.add('kl-text-button--primary');
+ const actions = element('div', { className: 'kl-match-actions' });
+ if (this.#page !== 'browse') actions.append(this.button('Browse', () => { this.#page = 'browse'; void this.refresh(); }));
+ actions.append(signal);
  const connections = this.options.connections;
  if (this.#page === 'browse' && connections)
    actions.append(matchConnectionsButton(this.button('Connections', connections), this.options.connectionCount?.() ?? 0));
- const menu: ShellAction[] = [
-   { label: 'My matching signal', icon: 'heart', disabled: signal.disabled, run: () => this.#editOwnSignal(matchOptionsSelector) },
- ];
+ const menu: ShellAction[] = [];
  const preferences = this.options.preferences;
  if (preferences) menu.push({ label: 'Profile preferences', icon: 'settings', run: preferences });
  if (this.#page === 'browse')
@@ -385,16 +454,6 @@ export class MatchingResourcesPage {
  if (optionsFocused && this.current()) options.focus({ preventScroll: true });
  if(this.#pending){const p=this.#pending;this.body.append(element('section',{className:'kl-match-pending'},element('strong',{text:p.confirmed?'Confirmed request · finish saving locally':'A Matching request is waiting for recovery'}),note('Reload and reconnect never resend. Retry checks the exact saved request. Forget cannot undo a server action.'),this.button('Review saved request',()=>this.review(p)),this.button(p.confirmed?'Finish local cleanup':'Retry saved request',()=>void this.retry(p))));}
  if(this.#storageError||this.#error)this.body.append(element('p',{role:'alert',text:this.#storageError||this.#error}));if(this.#busy&&this.#catalogState!=='loading')this.body.append(element('p',{role:'status',text:'Loading Matching…'}));
- const own = this.#own;
- if (own) {
-   const status = matchSignalStatus(own, this.#ownObservedAt);
-   const signalAction = status === 'Available'
-     ? this.button('Pause signal', () => void this.#pause(own), true)
-     : this.button('Set up my signal', () => this.#editOwnSignal('.kl-match-signal-action'), true);
-   signalAction.classList.add('kl-match-signal-action');
-   this.body.append(matchSignalBar(own, status, signalAction,
-     this.options.preferences ? this.button('Preferences', this.options.preferences) : undefined));
- }
  const hide = this.#lastHide;
  if (hide && this.#page === 'browse') {
    this.body.append(hiddenSuggestionNotice(this.button('Undo', () => void this.#undoHide(hide), true)));
@@ -602,13 +661,10 @@ export class MatchingResourcesPage {
      : undefined;
    return element('div',{className:'kl-match-metrics'},
      element('span',{text:availability}),
-     c.overlapMinutes!==null?element('span',{text:`${c.overlapMinutes} min shared weekly time`}):undefined,
+     matchWeeklyOverlap(c.overlapMinutes),
      c.kind==='rooms'?element('span',{text:c.capacity===null?'Planned capacity unknown':`${c.capacity} planned places`,title:'Live occupancy unavailable'}):
        c.members!==null&&c.capacity!==null?element('span',{text:`${c.members}/${c.capacity} places`}):undefined,
      date,c.community?element('span',{text:c.community.name}):undefined);
- }
- resourceReasons(c:MatchResource){
-   return element('ul',{className:'kl-match-reasons'},...c.reasons.slice(0,3).map(text=>element('li',{},kikiIcon('check'),element('span',{text}))));
  }
  groupAction(c:MatchResource, returnFocus?: string){
    const membership = c.membership;
@@ -661,7 +717,7 @@ export class MatchingResourcesPage {
          element('div', {}, element('h3', { text: group.title }), note(`Hosted by ${group.host.name}`),
            element('p', { text: group.description }))),
        this.resourceMetrics(group), element('p', { text: group.languages.join(' · ') || 'Language not shared' }),
-       this.resourceReasons(group), note('A request does not join the group or reserve a place.'), links),
+       matchCardReasons(group.reasons, group.overlapMinutes), note('A request does not join the group or reserve a place.'), links),
      element('footer', {}, this.button('Close', () => this.dialog.close()), action), returnFocus, 'group-details');
  }
  #focusGroupDetails(): void {
@@ -740,7 +796,7 @@ export class MatchingResourcesPage {
    const whyButton=this.button('Why this match?',why);
    whyButton.classList.add('kl-match-resource-why');
    const controls=element('div',{className:'kl-match-actions'},primary,whyButton);
-   const card=element('article',{className:'kl-match-card'},heading,element('p',{text:c.description}),this.resourceMetrics(c),this.resourceReasons(c),controls);
+   const card=element('article',{className:'kl-match-card'},heading,element('p',{text:c.description}),this.resourceMetrics(c),matchCardReasons(c.reasons, c.overlapMinutes),controls);
    card.dataset.resourceId=c.id;
    return card;
  }
