@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.9
+
+- Matches displays saved Wardrobe outfits even when the Club skips a missing layer. Previews follow the active renderer, including remapped clothing textures, and can retry when an image host returns.
+- Member lists, search results and conversation controls now show available profile photos. Initials remain visible while a picture loads or when no picture is shared.
+- The sidebar shows the number of registered KikiLink Cloud accounts under the wordmark when the server supplies the count.
+
 ## 2.0.8
 
 - Matches now frames outfits using the Club’s active renderer, including wide clothing and saved position, size and rotation adjustments.

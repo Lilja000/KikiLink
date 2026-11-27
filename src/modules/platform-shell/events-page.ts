@@ -49,7 +49,7 @@ export interface CalendarEvent {
 }
 interface Page<T> {items:T[];nextCursor:string|null}
 interface Host {id:string;name:string;publicAllowed?:boolean}
-interface Options {notify?(text:string):void;embedded?:boolean;browseEvents?():void;openEvent?(id:string):void;current():boolean;name(member:number):string;openProfile(member:number):void;openCommunity(id:string):void;openSpace?(id:string):void;changed():void;image?(id:string):HTMLElement}
+interface Options {notify?(text:string):void;embedded?:boolean;browseEvents?():void;openEvent?(id:string):void;current():boolean;name(member:number):string;openProfile(member:number):void;openCommunity(id:string):void;openSpace?(id:string):void;changed():void;image?(id:string,own:boolean):HTMLElement | undefined}
 interface DiscoverOverlayOptions { anchor: HTMLElement; current(): boolean; openMyPlans(): void; openEvent(id: string): void }
 interface DiscoverOverlay extends DiscoverOverlayOptions { action: 'create' | 'plans' }
 interface EventBrowseState {
@@ -762,9 +762,9 @@ export class EventsPage {
     return person??{memberNumber:member,displayName:this.#discovery?null:this.options.name(member),username:null,avatarId:null,profileVisible:!this.#discovery};
   }
   #avatar(person:EventPerson):HTMLElement{
-    const avatar=element('span',{className:'kl-ev-avatar'});
-    if(person.profileVisible&&person.avatarId&&this.options.image)avatar.append(this.options.image(person.avatarId));
-    else avatar.textContent=(person.displayName||'Member').trim().slice(0,1).toUpperCase();
+    const avatar=element('span',{className:'kl-ev-avatar',text:(person.displayName||'Member').trim().slice(0,1).toUpperCase()});
+    const photo=person.profileVisible && person.avatarId ? this.options.image?.(person.avatarId,person.memberNumber===this.client.memberNumber) : undefined;
+    if(photo)avatar.append(photo);
     avatar.setAttribute('aria-hidden','true');return markAvatarPresence(avatar, person.memberNumber, person.profileVisible ? undefined : null);
   }
   #profile(person:EventPerson,label?:string):HTMLElement{

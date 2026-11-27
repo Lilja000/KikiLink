@@ -1,6 +1,6 @@
 import { pageAction } from './page-action';
 import { preserveSelectionFocus } from "./browse-focus";
-import { markAvatarPresence } from "../link-chat/avatar-presence";
+import { markMemberAvatar } from "../link-chat/avatar-presence";
 import { ShellActionMenu } from './action-menu';
 import { MatchingSearch, matchCardReasons, matchWeeklyOverlap, matchConnectionsButton, matchEmptySuggestions, matchFilterButton, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSuggestionCount, setMatchConnectionsCount, type MatchingBrowseSelection } from './matching-browse-controls';
 import { matchingBreakdown } from './matching-breakdown';
@@ -1298,7 +1298,7 @@ export class MatchingPage {
     return matchFilterButton(this.#button("Filters", () => this.#filtersDialog()), this.#filters, DEFAULT_MATCH_FILTERS);
   }
   #avatar(name: string, member: number, status?: string | null) {
-    return markAvatarPresence(element("span", { className: "kl-match-avatar", ariaHidden: "true", text: Array.from(name.trim()).slice(0, 2).join("").toUpperCase() }), member, status);
+    return markMemberAvatar(element("span", { className: "kl-match-avatar", ariaHidden: "true", text: Array.from(name.trim()).slice(0, 2).join("").toUpperCase() }), member, name, status);
   }
   #card(c: MatchCandidate) {
     const openProfile = () => void this.#openProfile(c);

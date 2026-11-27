@@ -1,4 +1,4 @@
-import { markAvatarPresence } from "../modules/link-chat/avatar-presence";
+import { markAvatarPresence, markMemberAvatar } from "../modules/link-chat/avatar-presence";
 import { ContentDialog } from '../modules/link-chat/content-dialog';
 import { kikiIcon } from '../modules/link-chat/icons';
 import { fitPanelDialog } from '../modules/platform-shell/panel-dialog-layout';
@@ -197,11 +197,11 @@ export function showGroupOptions(dialog: ContentDialog, inbox: CloudGroupInbox, 
         check.checked = invite.has(c.memberNumber); check.disabled = !check.checked && occupied() >= 5;
         check.addEventListener('change', () => { if (check.checked) invite.add(c.memberNumber); else invite.delete(c.memberNumber); update(); });
         const portrait = element('span',{className:'kl-avatar kl-group-candidate-avatar',ariaHidden:'true'},initials(label));
-        markAvatarPresence(portrait, c.memberNumber);
-        if (cached) {
-          applyAvatarAppearance(portrait, cached);
-          if (cached.avatarId) portrait.append(ui.options.image(cached.avatarId, '', 'kl-social-avatar-image', true));
-        }
+        if (cached) applyAvatarAppearance(portrait, cached);
+        if (cached?.avatarId) {
+          markAvatarPresence(portrait, c.memberNumber);
+          portrait.append(ui.options.image(cached.avatarId, '', 'kl-social-avatar-image', true));
+        } else markMemberAvatar(portrait, c.memberNumber, label);
         const identity = element('span',{},element('strong',{text:label}),
           element('small',{text:cached?.username ? '@'+cached.username : '#'+c.memberNumber}));
         nodes.push(element('label',{className:'kl-group-option-candidate'},portrait,identity,check));

@@ -8,6 +8,7 @@ export class PlatformShell {
   readonly secondary = element("nav", { className: "kl-platform-context", ariaLabel: "Home sections" });
   readonly #title = element("h2", { className: "kl-platform-context-title", text: "Home" });
   readonly #links = element("div", { className: "kl-platform-links" });
+  readonly #userCount = element("small", { className: "kl-platform-user-count", text: "Addon users: —", title: "Verified KikiLink accounts" });
   readonly brand = element("button", { className: "kl-platform-brand", type: "button", ariaLabel: "KikiLink home" });
   readonly options = element("button", { className: "kl-platform-options", type: "button", ariaLabel: "Home options" }, kikiIcon("more"));
   readonly #connection = element("button", { className: "kl-platform-connection", type: "button" });
@@ -54,7 +55,7 @@ export class PlatformShell {
       this.#routeButtons.set(route.id, button);
       this.#links.append(button);
     }
-    this.secondary.append(element("div", { className: "kl-platform-wordmark" }, element("strong", { text: "KikiLink" }), element("span", { text: "2.0" })),
+    this.secondary.append(element("div", { className: "kl-platform-wordmark" }, element("strong", { text: "KikiLink" }), element("span", { text: "2.0" }), this.#userCount),
       element("div", { className: "kl-platform-context-heading" }, this.#title, this.options), this.#links, this.#connection);
     this.#bindArrowNavigation(this.primary, ".kl-platform-area");
     this.#bindArrowNavigation(this.secondary, ".kl-platform-link");
@@ -135,6 +136,9 @@ export class PlatformShell {
     this.sync(this.#state);
   }
   get currentRoute(): PlatformRoute { return this.#state.route; }
+  setAddonUsers(count: number): void {
+    this.#userCount.textContent = `Addon users: ${count.toLocaleString("en-US")}`;
+  }
   get sections() { return visiblePlatformDestinations(this.#state).filter(item => item.area === platformDestination(this.#state.route).area); }
   setConnection(label: string, connected: boolean): void {
     this.#connection.textContent = label; this.#connection.title = `${label} · Cloud & sessions`;

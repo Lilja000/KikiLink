@@ -8,8 +8,9 @@ export const PEOPLE_STYLES = `
 .kl-people-discovery-search { display: flex; gap: 8px; flex-wrap: wrap; }
 .kl-people-discovery-search > input { min-width: 0; flex: 1 1 180px; padding: 10px; border: 1px solid var(--kl-border); border-radius: 8px; background: var(--kl-surface); color: var(--kl-text); font: inherit; }
 .kl-people-discovery-results { display: grid; gap: 8px; margin-block: 12px; }
-.kl-people-discovery-person { display: flex; flex-direction: column; align-items: flex-start; width: 100%; min-width: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
-.kl-people-discovery-person > span { color: var(--kl-muted); font-size: 11px; }
+.kl-people-discovery-person { display: grid; grid-template-columns:32px minmax(0,1fr); align-items:center; column-gap:10px; width: 100%; min-width: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.kl-people-discovery-person > .kl-discovery-search-avatar { grid-row:span 2; width:32px; height:32px; }
+.kl-people-discovery-person > span:not(.kl-avatar) { color: var(--kl-muted); font-size: 11px; }
 
 .kl-panel[data-platform-preview="true"] .kl-roster-page { grid-template-rows: auto auto minmax(0, 1fr) auto; background: transparent; }
 .kl-panel[data-platform-preview="true"] .kl-roster-page > .kl-roster-body { grid-row: 3; padding: 10px 16px; }

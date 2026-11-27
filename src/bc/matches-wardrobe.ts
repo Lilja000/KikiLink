@@ -10,7 +10,7 @@ interface ClubCharacter {
   Wardrobe?: Array<Bundle[] | null>; WardrobeCharacterNames?: string[]; Canvas: HTMLCanvasElement;
   IsPlayer?(): boolean; MustDraw: boolean;
   HeightRatio?: number;
-  CharacterID?: string;
+  CharacterID?: string; DrawnAssets?: Set<string>;
 }
 interface WardrobeState {
   selectedCharacter: ClubCharacter | null;
@@ -29,6 +29,14 @@ interface DrawCallbacks {
   drawImage: DrawImageLayer; drawImageColorize: DrawImageLayer;
   clearRectBlink(): void; drawCanvasBlink(): void; drawImageBlink(): void; drawImageColorizeBlink(): void;
 }
+interface ClubCachedImage {
+  url: string; lastUsed: number;
+  isLoaded(): boolean; isFailing(): boolean; unload(): void;
+}
+interface ClubImageCache<T = unknown> {
+  cache?: Map<string, ClubCachedImage>;
+  get(url: string): T;
+}
 interface ClubWardrobe {
   Player?: ClubCharacter; WardrobeSize?: number;
   CanvasUpperOverflow?: number;
@@ -42,15 +50,14 @@ interface ClubWardrobe {
   CharacterAppearanceBuildCanvas?(c: ClubCharacter): void;
   GLVersion?: string;
   GLDrawCanvas?: { GL?: NativeGLContext };
-  GLDrawImageCache?: { get(url: string): HTMLImageElement | { isLoaded(): boolean; isFailing?(): boolean } | undefined };
-  GLDrawLoadImage?(gl: NativeGLContext, url: string): unknown;
+  GLDrawImageCache?: ClubImageCache<HTMLImageElement | { isLoaded(): boolean; isFailing?(): boolean } | undefined>;
   CharacterDelete(c: ClubCharacter, clearCache: boolean): void;
   DrawCharacterSegment(c: ClubCharacter, x: number, y: number, w: number, h: number): HTMLCanvasElement;
   CharacterAppearanceYOffset?(c: ClubCharacter, ratio: number, ignoreUpButton: boolean): number;
   CharacterAppearsInverted?(c: ClubCharacter): boolean;
   CommonDrawAppearanceBuild(c: ClubCharacter, callbacks: DrawCallbacks): void;
   DrawGetImage(url: string): DrawPixels | undefined;
-  DrawImageCache?: { get(url: string): { isFailing?(): boolean } | undefined };
+  DrawImageCache?: ClubImageCache<{ isFailing?(): boolean } | undefined>;
   DrawImageCanvas(source: DrawSource, ctx: CanvasRenderingContext2D, x: number, y: number, options?: DrawOptions): boolean;
   DrawCanvas(source: HTMLCanvasElement, ctx: CanvasRenderingContext2D, x: number, y: number, rects: unknown[], masks: Mask[], transforms?: unknown): boolean;
 }
@@ -115,9 +122,63 @@ function matchesWardrobeAppearance(host: ClubWardrobe, player: ClubCharacter, bu
   return Array.from(groups.values());
 }
 
-// Native WebGL and 2D maintain separate image caches. Preload every visible
-// layer and mask for this particular outfit before compositing its still frame.
-async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter, signal: AbortSignal) {
+// Modern Club caches store the assets actually requested by the active renderer.
+// Includes mapped mod URLs and masks, which can differ from the logical layer names.
+async function buildClubFrame(host: ClubWardrobe, frame: ClubCharacter, cache: ClubImageCache,
+    signal: AbortSignal, retryFailed: boolean): Promise<boolean | 'partial'> {
+  const entries = cache.cache!;
+  const retried = new Set<ClubCachedImage>();
+  const deadline = Date.now() + 20000;
+  let partial = false;
+  function paint() {
+    // Some wide renderers rebuild from a vanilla-width intermediate and only
+    // clear the first 500 pixels of an existing surface. Allocate their own
+    // fresh coordinate system so an earlier frame is never composited twice.
+    if (frame.Canvas?.width > 500) Object.assign(frame, { Canvas: null, CanvasBlink: null });
+    host.CharacterAppearanceBuildCanvas!(frame);
+    frame.MustDraw = false;
+  }
+  for (;;) {
+    if (signal.aborted) return false;
+    const started = Date.now();
+    paint();
+    if (!frame.Canvas?.width || !frame.Canvas.height) return false;
+    const pending: ClubCachedImage[] = [];
+    for (const image of entries.values()) {
+      // get() timestamps every native lookup, including already-loading shared
+      // layers. Merely inspecting entries never starts another image request.
+      if (image.isLoaded()) continue;
+      const referenced = frame.DrawnAssets?.has(image.url);
+      if (!referenced && image.lastUsed < started) continue;
+      if (image.isFailing()) {
+        if (!retryFailed || retried.has(image) || (!referenced && image.lastUsed <= started)) { partial = true; continue; }
+        retried.add(image);
+        image.unload();
+        cache.get(image.url);
+      }
+      pending.push(image);
+    }
+    if (!pending.length) return partial ? 'partial' : true;
+    while (pending.some(image => !image.isLoaded() && !image.isFailing())) {
+      if (signal.aborted) return false;
+      if (Date.now() >= deadline) {
+        paint();
+        return 'partial';
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 60));
+    }
+    // Newly available textures can reveal more dependencies (e.g. alpha
+    // masks). Repaint with those same native hooks until the frame settles.
+  }
+}
+
+// Older builds expose the layer callbacks and loose image elements instead.
+async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter, signal: AbortSignal, retryFailed = false) {
+  const gl = host.GLVersion !== 'No WebGL' ? host.GLDrawCanvas?.GL : undefined;
+  const cache = gl && !gl.isContextLost() ? host.GLDrawImageCache : host.DrawImageCache;
+  if (host.CharacterAppearanceBuildCanvas && cache?.cache) {
+    return buildClubFrame(host, dummy, cache, signal, retryFailed);
+  }
   if (typeof host.CommonDrawAppearanceBuild !== 'function' || typeof host.DrawGetImage !== 'function'
       || typeof host.DrawImageCanvas !== 'function' || typeof host.DrawCanvas !== 'function') return true;
   const sources = new Set<string | DrawPixels>();
@@ -138,8 +199,8 @@ async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter
     drawCanvas: (image, _x, _y, _rects, masks) => { addSource(image); addMasks(masks); }
   });
 
+  let partial = false;
   if (sources.size) {
-    const gl = host.CharacterAppearanceBuildCanvas && host.GLVersion !== 'No WebGL' ? host.GLDrawCanvas?.GL : undefined;
     const textures = gl && !gl.isContextLost() ? host.GLDrawImageCache : undefined;
     const ready = await new Promise<boolean>(resolve => {
       const deadline = Date.now() + 20000;
@@ -154,15 +215,17 @@ async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter
         for (const source of sources) {
           if (typeof source === 'string' && textures && gl) {
             let texture = textures.get(source);
-            // R132's Map does not start a missing texture; R134's ImageCache does.
+            // Old Club versions expose a Map. When an extension remaps the
+            // logical URL inside the draw hook, wait for the real image.
             if (!texture) {
-              host.GLDrawLoadImage?.(gl, source);
-              texture = textures.get(source);
+              const mapped = host.DrawGetImage(source);
+              if (mapped && 'src' in mapped) texture = textures.get(mapped.src) ?? mapped;
             }
             if (texture && ('isLoaded' in texture ? texture.isLoaded() : texture.complete && texture.naturalWidth > 0)) {
               sources.delete(source);
             } else if (texture && ('isLoaded' in texture ? texture.isFailing?.() : 'errorcount' in texture && Number(texture.errorcount) >= 3)) {
-              return false;
+              sources.delete(source);
+              partial = true;
             }
             continue;
           }
@@ -173,15 +236,16 @@ async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter
             sources.delete(source);
           } else if ((pixels && 'errorcount' in pixels && Number(pixels.errorcount) >= 3) ||
                      (!pixels && typeof source === 'string' && host.DrawImageCache?.get(source)?.isFailing?.())) {
-            return false;
+            sources.delete(source);
+            partial = true;
           }
         }
-        return true;
       }
       function check() {
-        if (signal.aborted || Date.now() >= deadline) return finish(false);
+        if (signal.aborted) return finish(false);
+        if (Date.now() >= deadline) { partial = true; return finish(true); }
         try {
-          if (!checkLayers()) return finish(false);
+          checkLayers();
           if (!sources.size) return finish(true);
           timer = setTimeout(check, 60);
         } catch {
@@ -197,14 +261,10 @@ async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter
   }
   if (signal.aborted) return false;
   if (host.CharacterAppearanceBuildCanvas) {
-    // Let the active game renderer allocate and paint its own surfaces. An
-    // extended Wardrobe renderer may translate the native context or use a
-    // wider backing canvas. Replaying its layers on a default 2D context
-    // loses that origin before the Club takes the portrait.
-    Object.assign(dummy, { Canvas: null, CanvasBlink: null });
+    // Keep the active renderer's coordinate system, including wide canvases.
     host.CharacterAppearanceBuildCanvas(dummy);
     dummy.MustDraw = false;
-    return !!dummy.Canvas?.width && !!dummy.Canvas.height;
+    return !!dummy.Canvas?.width && !!dummy.Canvas.height && (partial ? 'partial' : true);
   }
   const canvas = document.createElement('canvas');
   canvas.width = dummy.Canvas.width;
@@ -222,13 +282,12 @@ async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter
       if (host.DrawCanvas(image, ctx, x, y, rects ?? [], masks ?? [], transforms) === false) complete = false;
     }
   });
-  if (!complete) return false;
   dummy.Canvas = canvas;
   dummy.MustDraw = false;
-  return true;
+  return partial || !complete ? 'partial' : true;
 }
 
-export async function renderWardrobeSlot(slot: number, signal: AbortSignal, host: ClubWardrobe = native): Promise<HTMLCanvasElement | null> {
+export async function renderWardrobeSlot(slot: number, signal: AbortSignal, host: ClubWardrobe = native, retryFailed = false): Promise<HTMLCanvasElement | null> {
   let dummy: ClubCharacter | undefined;
   try {
     if (signal.aborted || !Number.isInteger(slot) || slot < 0 ||
@@ -273,15 +332,23 @@ export async function renderWardrobeSlot(slot: number, signal: AbortSignal, host
     return dummy.Appearance.length ? await snapshot(dummy) : null;
 
     async function snapshot(outfit: ClubCharacter) {
-      const frame = Object.assign(Object.create(Object.getPrototypeOf(outfit)) as ClubCharacter, outfit);
-      if (!await matchesDrawWardrobeFrame(host, frame, signal) || !current()) return null;
-      return frameCanvas(host, frame);
+      const frame = outfit === dummy ? outfit : privateFrame(outfit, host);
+      const ready = await matchesDrawWardrobeFrame(host, frame, signal, retryFailed);
+      return ready && current() ? frameCanvas(host, frame, ready === 'partial') : null;
     }
   } catch {
     return null;
   } finally {
     if (dummy) host.CharacterDelete(dummy, false);
   }
+}
+
+function privateFrame(character: ClubCharacter, host: ClubWardrobe): ClubCharacter {
+  // Draw saved dummies by identity. Only gallery/player characters need a
+  // detached target, with the game’s accessors and mod hooks still accessible.
+  const frame = Object.create(character) as ClubCharacter;
+  if (host.CharacterAppearanceBuildCanvas) Object.assign(frame, {Canvas: null, CanvasBlink: null});
+  return frame;
 }
 
 function widePortraitWindow(surface: HTMLCanvasElement, top: number, height: number) {
@@ -315,7 +382,7 @@ function widePortraitWindow(surface: HTMLCanvasElement, top: number, height: num
   } catch { return full; }
 }
 
-function frameCanvas(host: ClubWardrobe, character: ClubCharacter): HTMLCanvasElement | null {
+function frameCanvas(host: ClubWardrobe, character: ClubCharacter, partial = false): HTMLCanvasElement | null {
   // DrawCharacterSegment returns unscaled layers. Native room rendering
   // applies stature, pose height and inversion afterwards, before labels.
   const ratio = character.HeightRatio || 1;
@@ -346,6 +413,19 @@ function frameCanvas(host: ClubWardrobe, character: ClubCharacter): HTMLCanvasEl
     const width = canvas.width * ratio;
     ctx.drawImage(frame, (canvas.width - width) / 2, 0, width, canvas.height);
   }
+  if (partial) {
+    // Native Wardrobe skips unavailable optional layers. Keep what it drew,
+    // but never accept a fully transparent frame as a saved outfit.
+    try {
+      const sample = document.createElement('canvas');
+      sample.width = 20; sample.height = 40;
+      const sampleCtx = sample.getContext('2d', {willReadFrequently: true});
+      if (sampleCtx) {
+        sampleCtx.drawImage(canvas, 0, 0, sample.width, sample.height);
+        if (!sampleCtx.getImageData(0, 0, sample.width, sample.height).data.some((alpha, i) => i % 4 === 3 && alpha > 0)) return null;
+      }
+    } catch { /* Cross-origin layers can be displayed even when readback is blocked. */ }
+  }
   return canvas;
 }
 
@@ -367,9 +447,10 @@ export async function renderCurrentLook(memberNumber: number, signal: AbortSigna
     if (player.MustDraw) host.DrawCharacterSegment(player, 0, 0, 1, 1);
     // Composite into a private canvas. The active character keeps its own
     // normal/blink canvases while cold layers or masks are being loaded.
-    const frame = Object.assign(Object.create(Object.getPrototypeOf(player)) as ClubCharacter, player);
-    if (!await matchesDrawWardrobeFrame(host, frame, signal)) return null;
+    const frame = privateFrame(player, host);
+    const ready = await matchesDrawWardrobeFrame(host, frame, signal);
+    if (!ready) return null;
     if (signal.aborted || host.Player !== player || player.MemberNumber !== memberNumber) return null;
-    return frameCanvas(host, frame);
+    return frameCanvas(host, frame, ready === 'partial');
   } catch { return null; }
 }

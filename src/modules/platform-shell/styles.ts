@@ -315,8 +315,9 @@ export const PLATFORM_SHELL_STYLES = `
   .kl-workspace { --kl-session-inset: 12px; --kl-session-control: 40px; --kl-session-small: 40px; }
 }
 .kl-platform-brand { display: grid; place-items: center; flex: none; width: calc(100% + 16px); height: 64px; align-self: center; margin: 0 0 2px; padding: 0; border: 0; border-bottom: 1px solid var(--kl-border); background: transparent; cursor: pointer; }
-.kl-platform-wordmark { display: flex; align-items: center; gap: 6px; flex: none; min-height: 30px; margin: 0 0 30px; padding: 0 12px; border: 0; background: transparent; font-size: 20px; text-transform: uppercase; letter-spacing: .055em; }
+.kl-platform-wordmark { display: grid; grid-template-columns: max-content max-content; align-content: center; align-items: center; justify-content: start; gap: 1px 6px; flex: none; min-height: 30px; margin: 0 0 30px; padding: 0 12px; border: 0; background: transparent; font-size: 20px; text-transform: uppercase; letter-spacing: .055em; }
 .kl-platform-wordmark > span { border: 1px solid var(--kl-border); border-radius: 4px; padding: 2px 4px; color: var(--kl-muted); font-size: 8px; font-weight: 400; letter-spacing: 0; }
+.kl-platform-user-count { grid-column: 1 / -1; color: var(--kl-muted); font: 400 10px/1.4 var(--kl-font,system-ui); font-variant-numeric: tabular-nums; letter-spacing: normal; text-transform: none; white-space: nowrap; }
 .kl-platform-context > .kl-platform-wordmark { height: 64px; margin: 0 -12px 16px; padding: 0 20px; border-bottom: 1px solid var(--kl-border); background: var(--kl-topbar-bg); font-size: 18px; }
 .kl-platform-context-heading { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 .kl-platform-context-title { color: var(--kl-muted); font-size: 10px; line-height: 17px; text-transform: uppercase; letter-spacing: 1px; margin: 0 12px; }

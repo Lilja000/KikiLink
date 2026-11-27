@@ -149,6 +149,9 @@ export class SocialUI {
         });
       } else avatar.replaceChildren(media);
       if (media.dataset.state === "hidden" || media.dataset.state === "error") fallback();
+      media.addEventListener("cloud-image-ready", () => {
+        if (media.parentElement === avatar) avatar.querySelector(".kl-social-initials")?.remove();
+      }, { once: true });
       media.addEventListener("cloud-image-error", () => { if (!previous?.isConnected) fallback(); }, { once: true });
     } else { avatar.replaceChildren(); fallback(); }
   }

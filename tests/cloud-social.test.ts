@@ -410,6 +410,20 @@ describe("bounded social feed", () => {
     expect(button(view.element, "Post").disabled).toBe(!next);
   });
 
+  it("removes author initials after a failed portrait finishes retrying", () => {
+    const { ui } = setup(async () => ({})); dispose.push(() => ui.destroy());
+    const media = document.createElement("span");
+    media.dataset.state = "loading";
+    vi.spyOn(ui.options, "image").mockReturnValue(media);
+    const author = ui.author({ ...profile(), avatarId: "retry" });
+    document.body.append(author);
+    media.dataset.state = "error"; media.dispatchEvent(new Event("cloud-image-error"));
+    expect(author.querySelector(".kl-social-initials")).not.toBeNull();
+    media.dataset.state = "ready"; media.dispatchEvent(new Event("cloud-image-ready"));
+    expect(author.querySelector(".kl-social-initials")).toBeNull();
+    expect(author.contains(media)).toBe(true);
+  });
+
   it("keeps a decoded avatar during replacement and immediately honors hidden previews", () => {
     const { ui } = setup(async () => ({})); dispose.push(() => ui.destroy());
     const media: HTMLElement[] = [];

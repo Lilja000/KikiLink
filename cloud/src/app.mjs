@@ -259,8 +259,18 @@ export function createApp({
     events.emit("change", { kind: "session" });
     reply.code(204).send();
   });
+  let addonUsers = 0, addonUsersExpiresAt = 0;
+  const getAddonUsers = () => {
+    const at = now();
+    if (at >= addonUsersExpiresAt) {
+      addonUsers = db.get("SELECT COUNT(*) AS n FROM users WHERE disabled=0").n;
+      addonUsersExpiresAt = at + 5 * MINUTE;
+    }
+    return addonUsers;
+  };
   app.get("/v1/me", async (req) => ({
     memberNumber: req.identity.member,
+    addonUsers: getAddonUsers(),
     expiresAt: req.identity.expiresAt,
     moderator: config.moderators.has(req.identity.member),
     apiVersion: 1,

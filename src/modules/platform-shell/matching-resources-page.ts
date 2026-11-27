@@ -1,6 +1,6 @@
 import { pageAction } from './page-action';
 import { preserveSelectionFocus } from "./browse-focus";
-import { markAvatarPresence } from "../link-chat/avatar-presence";
+import { markMemberAvatar } from "../link-chat/avatar-presence";
 import { ShellActionMenu, type ShellAction } from './action-menu';
 import { MatchingSearch, matchCardReasons, matchWeeklyOverlap, matchConnectionsButton, matchEmptySuggestions, matchFilterButton, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSuggestionCount, type MatchingBrowseSelection } from './matching-browse-controls';
 import { matchingBreakdown } from './matching-breakdown';
@@ -648,8 +648,8 @@ export class MatchingResourcesPage {
    if (failure !== undefined) throw failure;
  }
  resourceAvatar(c:MatchResource){
-   return markAvatarPresence(element('span',{className:'kl-match-avatar',ariaHidden:'true',title:c.host.name,
-     text:Array.from(c.host.name.trim()).slice(0,2).join('').toUpperCase()}), c.host.memberNumber);
+   return markMemberAvatar(element('span',{className:'kl-match-avatar',ariaHidden:'true',title:c.host.name,
+     text:Array.from(c.host.name.trim()).slice(0,2).join('').toUpperCase()}), c.host.memberNumber, c.host.name);
  }
  resourceMetrics(c:MatchResource){
    const full=c.members!==null&&c.capacity!==null&&c.members>=c.capacity;

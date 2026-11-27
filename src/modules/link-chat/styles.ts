@@ -5722,6 +5722,11 @@ ${workshopEditorStyles}
 [data-avatar-presence] { position:relative; overflow:visible!important; }
 [data-avatar-presence] > :is(img,.kl-cloud-image-wrap,.kl-social-avatar-media) { border-radius:inherit; }
 [data-avatar-presence] > :is(.kl-cloud-image-wrap,.kl-social-avatar-media) { overflow:hidden; }
+[data-portrait-member] {
+  position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0;
+  background:var(--kl-avatar-bg,var(--kl-surface)); clip-path:inset(0 round 50%);
+}
+[data-portrait-member]:has(> .kl-social-avatar-media[data-state="ready"]) { opacity:1; }
 [data-avatar-presence]::before {
   content:"";position:absolute;z-index:5;right:0;bottom:0;width:clamp(7px,27%,13px);aspect-ratio:1;
   box-sizing:border-box;border:2px solid var(--kl-panel-bg);border-radius:50%;pointer-events:none;
