@@ -1,6 +1,6 @@
 import { element, focusedElement } from '../../utils/dom';
 import { kikiIcon, type KikiLinkIconName } from '../link-chat/icons';
-import { readClubWardrobe, captureWardrobeSlot, captureCurrentLook, encodeMatchesImage, type WardrobeSlot } from '../../bc/matches-wardrobe';
+import { readClubWardrobe, renderWardrobeSlot, renderCurrentLook, encodeMatchesImage, type WardrobeSlot } from '../../bc/matches-wardrobe';
 import type { SwipeCard, SwipeCardDraft } from '../../cloud/matches-swipe';
 import { matchesBackgroundLabel, matchesBackgroundUrl, matchesBackgrounds, randomMatchesBackground } from './matches-swipe-backgrounds';
 
@@ -47,22 +47,22 @@ async function preparePhoto(file: File, signal: AbortSignal): Promise<string> {
 
 // The Cloud re-encodes snapshots. Compare thumbnails at the visible tile size
 // so re-encoding noise is ignored, while a newly saved outfit in the same
-// named slot does not acquire the previous outfit's checkmark.
-async function sameWardrobeThumbnail(a: string, b: string): Promise<boolean> {
-  async function pixels(src: string) {
-    const image = new Image();
-    image.src = src;
-    await image.decode();
+// named slot does not inherit the previous outfit's selected border.
+async function sameWardrobeThumbnail(saved: string, portrait: HTMLCanvasElement): Promise<boolean> {
+  function pixels(source: CanvasImageSource) {
     const canvas = document.createElement('canvas');
     canvas.width = 44; canvas.height = 88;
     const brush = canvas.getContext('2d', {willReadFrequently: true});
     if (!brush) return null;
     brush.fillStyle = '#26222b';
     brush.fillRect(0, 0, canvas.width, canvas.height);
-    brush.drawImage(image, 0, 0, canvas.width, canvas.height);
+    brush.drawImage(source, 0, 0, canvas.width, canvas.height);
     return brush.getImageData(0, 0, canvas.width, canvas.height).data;
   }
-  const [left, right] = await Promise.all([pixels(a), pixels(b)]);
+  const image = new Image();
+  image.src = saved;
+  await image.decode();
+  const left = pixels(image), right = pixels(portrait);
   if (!left || !right) return false;
   let differences = 0;
   for (let i = 0; i < left.length; i += 4) {
@@ -87,7 +87,11 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     wardrobeSlot: card?.wardrobeSlot ?? null,
     wardrobeName: card?.wardrobeName ?? null,
   };
-  const previews = new Map<number, Promise<string | null>>();
+  const rendering = new Map<number, Promise<HTMLCanvasElement | null>>();
+  const thumbnails = new Map<number, HTMLCanvasElement>();
+  let nativeFrame: HTMLCanvasElement | null = null;
+  let failedChoice: WardrobeSlot | undefined;
+  let priorityRender: Promise<HTMLCanvasElement | null> | undefined;
   const tileQueue = new Set<HTMLButtonElement>();
   let tileWorkers = 0;
   let expanded = false;
@@ -116,11 +120,10 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   const shuffle = element('button', { type: 'button', className: 'button', title: 'Random background', ariaLabel: 'Random background' }, icon('shuffle'));
   const room = element('img', { className: 'bg', alt: '' });
   const roomLabel = element('span');
-  const missing = element('div', { className: 'missing-look' }, icon('profile'), element('span', { text: 'Your character' }));
-  const figure = element('img', { className: 'figure', alt: 'Your card portrait' });
+  let figure: HTMLImageElement | HTMLCanvasElement = element('img', { className: 'figure', alt: '' });
   figure.hidden = true;
   room.draggable = figure.draggable = false;
-  const scene = element('div', { className: 'scene' }, room, missing, figure);
+  const scene = element('div', { className: 'scene' }, room, figure);
   const preview = element('div', { className: 'portraitBox card-preview' }, scene, element('div', { className: 'where' }, icon('location'), roomLabel));
   const picks = element('div', { className: 'wardrobe-picks picks', ariaLabel: 'Saved Wardrobe looks' });
   picks.id = 'kl-sw-wardrobe-picks';
@@ -137,8 +140,11 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   file.type = 'file';
   file.hidden = true;
   file.accept = 'image/jpeg,image/png,image/webp';
+  const retryTiles = element('button', { className: 'upload wardrobe-retry', type: 'button', text: 'Retry outfit previews' });
+  retryTiles.hidden = true;
+  retryTiles.id = 'kl-sw-wardrobe-retry';
   const upload = element('button', { type: 'button', className: 'upload' }, icon('image'), 'Upload photo');
-  const current = element('button', { type: 'button', className: 'upload' }, icon('profile'), 'Use current Club look');
+  const current = element('button', { type: 'button', className: 'upload' }, 'Use current Club look');
   current.hidden = !!slots.length;
   const error = element('p', { className: 'error form-error' });
   error.hidden = true;
@@ -162,7 +168,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     element('div', {}, title, element('p', { className: 'intro', text: 'Choose a saved Wardrobe look or upload your own photo.' })),
     labeled('Display name', name),
     element('div', { className: 'field' }, element('span', { className: 'fieldlabel', text: 'Character look' }),
-      strip, hint, selected, element('div', { className: 'looktools' }, current, upload, file)),
+      strip, hint, selected, element('div', { className: 'looktools' }, current, upload, retryTiles, file)),
     bgField, element('label', { className: 'switchrow' }, available, 'Share that I’m open to chat'),
     error, retryPicture, element('div', { className: 'savebar' }, cancel, save), remove, confirmation);
   const panel = element('section', { className: 'panel setupPanel' }, preview, form);
@@ -178,19 +184,25 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     form.inert = saving;
     form.setAttribute('aria-busy', String(saving));
   }
-  function showPicture(source: string) {
-    figure.src = source;
-    figure.hidden = false;
-    missing.hidden = true;
+  function showPicture(source: string | HTMLImageElement | HTMLCanvasElement) {
+    const portrait = typeof source === 'string' ? element('img', { src: source, alt: 'Your card portrait' }) : source;
+    portrait.className = 'figure';
+    portrait.draggable = false;
+    if (portrait instanceof HTMLCanvasElement) {
+      portrait.setAttribute('role', 'img');
+      portrait.setAttribute('aria-label', 'Your card portrait');
+    }
+    if (portrait !== figure) figure.replaceWith(portrait);
+    figure = portrait;
   }
   function syncSelection() {
-    const label = draft.lookSource === 'wardrobe' ? draft.wardrobeName
-      : draft.lookSource === 'photo' ? 'Uploaded photo' : draft.lookSource === 'current' ? 'Current Club look' : '';
-    selected.textContent = label ? 'Selected · ' + label : '';
-    selected.hidden = !label;
+    if (!loadingLook) {
+      selected.hidden = true;
+      selected.textContent = '';
+    }
     for (const button of picks.querySelectorAll('button')) {
-      button.setAttribute('aria-pressed', String(draft.lookSource === 'wardrobe' && (savedSlotMatches || !!draft.image) &&
-        draft.wardrobeSlot === Number(button.dataset.slot) && draft.wardrobeName === button.title));
+      button.setAttribute('aria-pressed', String(draft.lookSource === 'wardrobe' && (savedSlotMatches || !!nativeFrame) &&
+        draft.wardrobeSlot === Number(button.dataset.slot) && draft.wardrobeName === button.getAttribute('aria-label')));
     }
   }
   function setBackground(id: string) {
@@ -198,19 +210,36 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     room.src = matchesBackgroundUrl(id);
     roomLabel.textContent = matchesBackgroundLabel(id);
   }
-  function picture(slot: number): Promise<string | null> {
-    const cached = previews.get(slot);
-    if (cached) return cached;
-    const job = captureWardrobeSlot(slot, signal).catch(() => null).then(image => {
-      if (!image) previews.delete(slot);
-      return image;
-    });
-    previews.set(slot, job);
+  // Coalesce an explicit choice with a thumbnail still being drawn. Settled
+  // presets keep only a small display canvas; the chosen full-size one is
+  // retained separately until the user saves or changes their selection.
+  function picture(slot: number): Promise<HTMLCanvasElement | null> {
+    const pending = rendering.get(slot);
+    if (pending) return pending;
+    const job = renderWardrobeSlot(slot, signal).then(frame => {
+      if (frame && active()) cacheTile(slot, frame);
+      return frame;
+    }).catch(() => null).finally(() => rendering.delete(slot));
+    rendering.set(slot, job);
     return job;
   }
-  async function choose(source: 'wardrobe' | 'current' | 'photo', load: () => Promise<string | null>, slot?: WardrobeSlot) {
+  function chosenPicture(slot: number): Promise<HTMLCanvasElement | null> {
+    const pending = rendering.get(slot);
+    if (pending) return pending;
+    const ticket = artworkRequest;
+    const start = () => {
+      if (!active() || ticket !== artworkRequest) return null;
+      const job = picture(slot);
+      priorityRender = job;
+      void job.then(() => { if (priorityRender === job) priorityRender = undefined; });
+      return job;
+    };
+    return priorityRender ? priorityRender.then(start) : Promise.resolve(start());
+  }
+  async function choose(source: 'wardrobe' | 'current' | 'photo', load: () => Promise<HTMLCanvasElement | string | null>, slot?: WardrobeSlot) {
     if (!active() || saving) return;
     const ticket = ++artworkRequest;
+    failedChoice = undefined;
     loadingLook = true;
     controls();
     setError('');
@@ -219,8 +248,13 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     try {
       const image = await load();
       if (!active() || ticket !== artworkRequest) return;
-      if (!image) throw new Error('This look could not be previewed. Try it again or upload a photo.');
-      draft.image = image;
+      if (!image) {
+        const previous = nativeFrame || draft.image || card?.imageVersion ? ' Your previous picture is still selected.' : '';
+        throw new Error('This look could not be previewed.' + previous + ' Try again or upload a photo.');
+      }
+      nativeFrame = typeof image === 'string' ? null : image;
+      if (typeof image === 'string') draft.image = image;
+      else delete draft.image;
       draft.lookSource = source;
       draft.wardrobeSlot = slot?.slot ?? null;
       draft.wardrobeName = slot?.name ?? null;
@@ -228,12 +262,15 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
       retryPicture.hidden = true;
       setError('');
       showPicture(image);
-      if (slot) {
-        const button = picks.querySelector<HTMLButtonElement>(`[data-slot="${slot.slot}"]`);
-        if (button) paintTile(button, image);
-      }
     } catch (e) {
-      if (active() && ticket === artworkRequest) setError(e instanceof Error && e.name === 'Error' ? e.message : 'This image could not be opened. Try another image.');
+      if (active() && ticket === artworkRequest) {
+        failedChoice = slot;
+        if (slot) {
+          const button = tileAt(slot.slot);
+          if (button && !thumbnails.has(slot.slot)) failedTile(button);
+        }
+        setError(e instanceof Error && e.name === 'Error' ? e.message : 'This image could not be opened. Try another image.');
+      }
     } finally {
       if (active() && ticket === artworkRequest) {
         loadingLook = false;
@@ -242,45 +279,89 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
       }
     }
   }
+  function tileAt(slot: number) { return picks.querySelector<HTMLButtonElement>(`[data-slot="${slot}"]`); }
   function showSlots() {
-    observer?.disconnect();
-    tileQueue.clear();
-    if (typeof IntersectionObserver === 'function') {
-      observer = new IntersectionObserver(entries => {
-        for (const entry of entries) if (entry.isIntersecting) {
-          const button = entry.target as HTMLButtonElement;
-          observer?.unobserve(button);
-          renderTile(button);
-        }
-      }, { rootMargin: '160px' });
+    const count = expanded ? slots.length : Math.min(5, slots.length);
+    while (picks.children.length > count) {
+      const button = picks.lastElementChild as HTMLButtonElement;
+      observer?.unobserve(button);
+      tileQueue.delete(button);
+      button.remove();
     }
-    picks.replaceChildren();
-    for (const [index, slot] of (expanded ? slots : slots.slice(0, 5)).entries()) {
-      const tile = element('button', { className: 'pick', type: 'button', ariaLabel: slot.name, title: slot.name,
-        onClick: () => { void choose('wardrobe', () => picture(slot.slot), slot); } },
-        element('span', { className: 'outfit-image' }, icon('profile')));
+    for (let i = picks.children.length; i < count; i++) {
+      const slot = slots[i]!;
+      const tile = element('button', { className: 'pick', type: 'button', ariaLabel: slot.name,
+        onClick: () => { void choose('wardrobe', () => chosenPicture(slot.slot), slot); } },
+        element('span', { className: 'outfit-image' }));
       tile.dataset.slot = String(slot.slot);
       picks.append(tile);
-      if (index < 5 || !observer) renderTile(tile);
-      else observer.observe(tile);
+      const thumb = thumbnails.get(slot.slot);
+      if (thumb) paintTile(tile, thumb);
+      else if (i < 10 || !observer) renderTile(tile);
+      else {
+        observer.observe(tile);
+        tile.onfocus = () => { if (!tile.dataset.preview) renderTile(tile); };
+      }
     }
     more.hidden = slots.length <= 5;
     more.title = expanded ? 'Show fewer outfits' : 'Show all ' + slots.length + ' outfits';
     more.setAttribute('aria-label', more.title);
     more.setAttribute('aria-expanded', String(expanded));
+    refreshRetry();
     syncSelection();
   }
-  function paintTile(button: HTMLButtonElement, image: string) {
-    const holder = button.firstElementChild;
-    if (holder?.firstElementChild?.getAttribute('src') !== image) holder?.replaceChildren(element('img', {alt: '', src: image}));
+  function refreshRetry() {
+    retryTiles.hidden = !picks.querySelector('[data-preview="failed"]');
+  }
+  function failedTile(button: HTMLButtonElement) {
+    button.dataset.preview = 'failed';
+    button.removeAttribute('aria-busy');
+    button.setAttribute('aria-describedby', retryTiles.id);
+    refreshRetry();
+  }
+  function paintTile(button: HTMLButtonElement, thumbnail: HTMLCanvasElement) {
+    const holder = button.firstElementChild!;
+    if (holder.firstElementChild !== thumbnail) holder.replaceChildren(thumbnail);
+    button.dataset.preview = 'ready';
+    button.removeAttribute('aria-busy');
+    button.removeAttribute('aria-describedby');
+    refreshRetry();
+  }
+  function compareSaved(slot: number, thumbnail: HTMLCanvasElement) {
+    if (!savedUrl || draft.image !== undefined || nativeFrame || card?.lookSource !== 'wardrobe' ||
+        slot !== card.wardrobeSlot || slots.find(item => item.slot === slot)?.name !== card.wardrobeName) return;
+    const original = savedUrl;
+    void sameWardrobeThumbnail(original, thumbnail).catch(() => false).then(matches => {
+      if (!active() || nativeFrame || draft.image !== undefined || savedUrl !== original || thumbnails.get(slot) !== thumbnail) return;
+      savedSlotMatches = matches;
+      if (!loadingLook) syncSelection();
+    });
+  }
+  function cacheTile(slot: number, frame: HTMLCanvasElement) {
+    const thumb = element('canvas');
+    thumb.width = Math.min(128, frame.width);
+    thumb.height = Math.max(1, Math.round(frame.height * thumb.width / frame.width));
+    const brush = thumb.getContext('2d');
+    const button = tileAt(slot);
+    if (!brush) { if (button) failedTile(button); return; }
+    brush.drawImage(frame, 0, 0, thumb.width, thumb.height);
+    thumb.setAttribute('aria-hidden', 'true');
+    thumbnails.set(slot, thumb);
+    if (button) paintTile(button, thumb);
+    compareSaved(slot, thumb);
   }
   function renderTile(button: HTMLButtonElement) {
+    if (button.dataset.preview === 'loading' || button.dataset.preview === 'ready') return;
+    observer?.unobserve(button);
+    button.dataset.preview = 'loading';
+    button.setAttribute('aria-busy', 'true');
+    button.removeAttribute('aria-describedby');
     tileQueue.add(button);
     if (tileWorkers < 2) void drawQueuedTiles();
   }
   // Each cold BC preview allocates several native full-resolution canvases.
   // Bound background rendering even if the player expands every Wardrobe row.
-  // A tapped outfit still starts immediately via choose().
+  // One extra render prioritizes taps; a burst of taps keeps only the last pending choice.
   async function drawQueuedTiles() {
     tileWorkers++;
     try {
@@ -288,11 +369,25 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
         tileQueue.delete(button);
         if (!active()) break;
         if (!picks.contains(button)) continue;
-        const image = await picture(Number(button.dataset.slot));
-        if (image && active() && picks.contains(button)) paintTile(button, image);
+        const slot = Number(button.dataset.slot);
+        if (thumbnails.has(slot)) continue;
+        const frame = await picture(slot);
+        if (!frame && active() && picks.contains(button) && !thumbnails.has(slot)) failedTile(button);
       }
     } finally { tileWorkers--; }
   }
+
+  if (typeof IntersectionObserver === 'function') {
+    observer = new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting && picks.contains(entry.target)) renderTile(entry.target as HTMLButtonElement);
+    }, { rootMargin: '160px' });
+  }
+  retryTiles.onclick = () => {
+    const wanted = failedChoice;
+    for (const button of picks.querySelectorAll<HTMLButtonElement>('[data-preview="failed"]')) renderTile(button);
+    refreshRetry();
+    if (wanted) void choose('wardrobe', () => chosenPicture(wanted.slot), wanted);
+  };
 
   setBackground(draft.background);
   showSlots();
@@ -303,7 +398,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   };
   shuffle.onclick = () => setBackground(randomMatchesBackground(backgrounds, draft.background));
   bgSelect.onchange = () => setBackground(bgSelect.value);
-  current.onclick = () => { void choose('current', () => captureCurrentLook(memberNumber, signal)); };
+  current.onclick = () => { void choose('current', () => renderCurrentLook(memberNumber, signal)); };
   upload.onclick = () => file.click();
   file.onchange = () => {
     const picked = file.files?.[0];
@@ -312,38 +407,42 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   };
 
   async function restorePicture() {
-    if (!card?.imageVersion || !active() || draft.image !== undefined) return;
+    if (!card?.imageVersion || !active() || nativeFrame || draft.image !== undefined) return;
     retryPicture.hidden = true;
     const previousRequest = artworkRequest;
+    let url: string | undefined;
     setError('');
     try {
       const image = await options.loadImage(card);
-      if (!active() || draft.image !== undefined) return;
+      if (!active() || nativeFrame || draft.image !== undefined) return;
       if (!image) throw new Error();
-      savedUrl = URL.createObjectURL(image);
-      showPicture(savedUrl);
-      const slot = slots.find(item => item.slot === card.wardrobeSlot && item.name === card.wardrobeName);
-      if (card.lookSource === 'wardrobe' && slot) {
-        const saved = savedUrl;
-        const thumbnail = await picture(slot.slot);
-        if (thumbnail && active() && draft.image === undefined) {
-          savedSlotMatches = await sameWardrobeThumbnail(saved, thumbnail).catch(() => false);
-          if (active() && !loadingLook && draft.image === undefined) syncSelection();
-        }
+      url = URL.createObjectURL(image);
+      const portrait = element('img', { src: url, alt: 'Your card portrait' });
+      await portrait.decode();
+      if (!active() || nativeFrame || draft.image !== undefined) return;
+      if (savedUrl) URL.revokeObjectURL(savedUrl);
+      savedUrl = url;
+      showPicture(portrait);
+      const slot = card.wardrobeSlot;
+      if (slot !== null) {
+        const thumb = thumbnails.get(slot);
+        if (thumb) compareSaved(slot, thumb);
       }
     } catch {
-      if (active() && draft.image === undefined) {
+      if (active() && !nativeFrame && draft.image === undefined) {
         retryPicture.hidden = false;
         if (previousRequest === artworkRequest) setError('Your saved picture could not be loaded. You can keep it or choose another.');
       }
+    } finally {
+      if (url && url !== savedUrl) URL.revokeObjectURL(url);
     }
   }
   retryPicture.onclick = () => { void restorePicture(); };
   if (card?.imageVersion) void restorePicture();
   else if (!card && active()) {
     const first = slots[0];
-    if (first) void choose('wardrobe', () => picture(first.slot), first);
-    else void choose('current', () => captureCurrentLook(memberNumber, signal));
+    if (first) void choose('wardrobe', () => chosenPicture(first.slot), first);
+    else void choose('current', () => renderCurrentLook(memberNumber, signal));
   }
 
   async function submit(action: () => Promise<unknown>) {
@@ -369,13 +468,19 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     draft.name = name.value.trim(); draft.available = available.checked;
     if (!draft.name) { setError('Enter a display name.'); name.focus(); return; }
     void submit(async () => {
-      if (!card && draft.lookSource === 'current' && !currentLookCapturedForSave) {
-        const image = await captureCurrentLook(memberNumber, signal);
+      if (nativeFrame && draft.image === undefined) {
+        if (!card && draft.lookSource === 'current' && !currentLookCapturedForSave) {
+          const frame = await renderCurrentLook(memberNumber, signal);
+          if (!active()) return;
+          if (!frame) throw new Error('Your current look could not be captured. Try again or upload a photo.');
+          nativeFrame = frame;
+          currentLookCapturedForSave = true;
+          showPicture(frame);
+        }
+        const image = await encodeMatchesImage(nativeFrame).catch(() => null);
         if (!active()) return;
-        if (!image) throw new Error('Your current look could not be captured. Try again or upload a photo.');
+        if (!image) throw new Error('Your look could not be saved as an image. Try again or upload a photo.');
         draft.image = image;
-        currentLookCapturedForSave = true;
-        showPicture(image);
       }
       return options.onSave({ ...draft }, signal);
     });
@@ -390,7 +495,9 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     controller.abort();
     observer?.disconnect();
     tileQueue.clear();
-    previews.clear();
+    rendering.clear();
+    thumbnails.clear();
+    nativeFrame = null;
     if (savedUrl) URL.revokeObjectURL(savedUrl);
     panel.remove();
   };

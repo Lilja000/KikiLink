@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.7
+
+- The Matches outfit picker displays full-length characters from saved Club Wardrobe outfits on R134. Desktop previews are larger, with five outfits per row and a chevron to show more.
+
 ## 2.0.6
 
 - Create a swipe card under Explore → Matches with a saved Club Wardrobe look or an uploaded picture. Choose a vanilla Club background and change the card later.
