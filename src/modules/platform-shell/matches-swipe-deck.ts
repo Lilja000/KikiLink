@@ -3,8 +3,9 @@ import type { SwipeCard, SwipeSnapshot, SwipeVote } from '../../cloud/matches-sw
 import { element } from '../../cloud/dom';
 import { focusedElement } from '../../utils/dom';
 import { kikiIcon, type KikiLinkIconName } from '../link-chat/icons';
-import { matchesBackgroundLabel } from './matches-swipe-backgrounds';
-import { SwipePortraits } from './matches-swipe-deck-art';
+import type { ImagePreviewPreference } from '../../core/types';
+import { matchesBackgroundLabel, type MatchesBackgroundLoader } from './matches-swipe-backgrounds';
+import { SwipePortraits, type BackgroundState } from './matches-swipe-deck-art';
 import { attachSwipeGesture, SwipeRain, type SwipeDirection } from './matches-swipe-deck-motion';
 import { fitPanelDialog } from './panel-dialog-layout';
 
@@ -12,6 +13,8 @@ type View = 'swipe' | 'mutual';
 interface Actions {
   current(): boolean;
   image(card: SwipeCard): Promise<Blob | null>;
+  loadBackground?: MatchesBackgroundLoader;
+  backgroundPolicy?: () => ImagePreviewPreference;
   vote(card: SwipeCard, direction: SwipeDirection, operationId: string): Promise<{matched: boolean}>;
   undo(lastVote: SwipeVote): Promise<void>;
   moreMutuals(cursor: number): Promise<{items:SwipeCard[];nextCursor:number|null}>;
@@ -51,7 +54,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
   const life = new AbortController();
   let screenLife = new AbortController();
   const current = () => !life.signal.aborted && actions.current();
-  const portraits = new SwipePortraits(card => actions.image(card), current);
+  const portraits = new SwipePortraits(card => actions.image(card), current, actions.loadBackground, actions.backgroundPolicy);
   const rain = new SwipeRain();
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   let state: SwipeSnapshot | undefined;
@@ -157,7 +160,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     const mine = state?.self;
     if (!mine || !current() || dialog.open || !listed().some(c => c.memberNumber === card.memberNumber)) return;
     const duet = element('div',{className:'match-duet mini'},
-      element('div',{className:'pair-portrait'},portraits.art(mine,'mini',{small:true})),
+      element('div',{className:'pair-portrait'},portraits.art(mine,'mini',{small:true,own:true})),
       element('div',{className:'pair-portrait'},portraits.art(card,'mini',{small:true})),
       element('span',{className:'pair-heart',ariaHidden:'true'},icon('heart')));
     const names = element('div',{className:'pair-names'},element('span',{text:mine.name,title:mine.name}),element('span',{text:card.name,title:card.name}));
@@ -170,8 +173,25 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     modal('It’s a match',[duet,names,element('p',{className:'dialog-copy match-copy',text:'You both liked each other.'})],[keep,go],card,
       content.querySelector<HTMLButtonElement>('[data-action="like"], [data-action="mutual"]') ?? undefined);
   }
+  function backgroundInfo(card: SwipeCard) {
+    const vanilla = matchesBackgroundLabel(card.background);
+    const label = element('span', {text: vanilla, title: vanilla});
+    const show = button('Show custom background', 'upload matches-show-background', () => portraits.revealBackground(card));
+    show.hidden = true;
+    const where = element('div', {className:'where'}, icon('location'), label, show);
+    const changed = (state: BackgroundState) => {
+      label.textContent = label.title = state === 'custom' ? 'Custom background' : vanilla;
+      show.hidden = state !== 'ask' && state !== 'failed';
+      const action = state === 'failed' ? 'Retry background' : 'Show custom background';
+      show.textContent = action;
+      show.setAttribute('aria-label', action);
+    };
+    return {where, changed};
+  }
   function openPerson(card:SwipeCard, trigger:HTMLButtonElement) {
-    const body = [element('div',{className:'match-profile-portrait'},portraits.art(card,'mini',{small:true}))];
+    const bg = backgroundInfo(card);
+    const body = [element('div',{className:'match-profile-portrait'},portraits.art(card,'mini',{small:true,backgroundChanged:bg.changed}))];
+    if (card.backgroundUrl) body.push(bg.where);
     const meta = profileMeta(card), about = story(card);
     if (meta || about) body.push(element('div',{className:'details'},meta,about));
     modal(card.name,body,[button('Done','button primary',closeModal)],card,trigger);
@@ -232,7 +252,8 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
       return empty('check',snapshot.seen ? 'You’ve seen every card' : 'No cards to show yet',
         snapshot.mutualCount ? `You have ${snapshot.mutualCount} mutual ${snapshot.mutualCount === 1 ? 'like' : 'likes'}.` : 'New cards will appear here when other players share theirs.',mutual,undoButton);
     }
-    const face = portraits.art(card,'swipe-face');
+    const bg = backgroundInfo(card);
+    const face = portraits.art(card,'swipe-face',{backgroundChanged:bg.changed});
     const behind = next ? portraits.art(next,'swipe-under',{upcoming:true}) : undefined;
     behind?.setAttribute('aria-hidden','true');
     face.append(element('span',{className:'flag',ariaHidden:'true'},
@@ -242,9 +263,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     const parts = Math.min(5,total);
     const track = element('span',{className:'deck-track'});
     for (let i=0;i<parts;i++) track.append(element('i',{className:i < Math.ceil(position*parts/total) ? 'filled' : ''}));
-    const label = matchesBackgroundLabel(card.background);
-    const portrait = element('div',{className:'portraitBox'},scene,
-      element('div',{className:'where'},icon('location'),element('span',{text:label,title:label})));
+    const portrait = element('div',{className:'portraitBox'},scene,bg.where);
     const art = element('div',{className:'deck-art'},portrait,element('div',{className:'deck-position',ariaHidden:'true'},track,
       element('span',{className:'deck-number',text:position+' / '+total})));
     const rewind = button('Undo last swipe','button minor undo-button',() => void undo(),'history',true);
@@ -449,5 +468,5 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     portraits.dispose();
     for (const node of [content,live,error,dialog]) node.remove();
   }
-  return {update,celebrate,notify:(message:string) => notify(message),dispose};
+  return {update,celebrate,refreshBackgroundPolicy:() => portraits.refreshBackgroundPolicy(),notify:(message:string) => notify(message),dispose};
 }

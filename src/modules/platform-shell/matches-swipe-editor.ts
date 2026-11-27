@@ -2,12 +2,19 @@ import { element, focusedElement } from '../../utils/dom';
 import { kikiIcon, type KikiLinkIconName } from '../link-chat/icons';
 import { readClubWardrobe, renderWardrobeSlot, renderCurrentLook, encodeMatchesImage, type WardrobeSlot } from '../../bc/matches-wardrobe';
 import type { SwipeCard, SwipeCardDraft } from '../../cloud/matches-swipe';
-import { matchesBackgroundLabel, matchesBackgroundUrl, matchesBackgrounds, randomMatchesBackground } from './matches-swipe-backgrounds';
+import { normalizeMatchesBackgroundUrl } from '../../../cloud/shared/matches-background.mjs';
+import { normalizeRoomMediaUrl } from '../../bc/adapter';
+import { createClubBackgroundPicker } from '../link-chat/club-background-picker';
+import { loadMatchesBackground, matchesBackgroundChoices, matchesBackgroundLabel, matchesBackgroundUrl, randomMatchesBackground, type MatchesBackgroundLoader } from './matches-swipe-backgrounds';
 
 export interface MatchesSwipeEditorOptions {
   memberNumber: number;
   card: SwipeCard | null;
   initialAvailable?: boolean;
+  customBackgrounds?: boolean;
+  loadBackground?: MatchesBackgroundLoader;
+  uploadBackground?: (file: File, signal: AbortSignal) => Promise<string>;
+  pickBackground?: (signal: AbortSignal) => Promise<string | null>;
   loadImage: (card: SwipeCard) => Promise<Blob | null>;
   onSave: (draft: SwipeCardDraft, signal: AbortSignal) => Promise<unknown>;
   onCancel?: () => void;
@@ -77,7 +84,8 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   const controller = new AbortController();
   const signal = controller.signal;
   const active = () => !signal.aborted && typeof Player !== 'undefined' && Player?.MemberNumber === memberNumber;
-  const backgrounds = matchesBackgrounds(card?.background);
+  const backgroundChoices = matchesBackgroundChoices(card?.background);
+  const backgrounds = backgroundChoices.map(item => item.name);
   const slots = active() ? readClubWardrobe() : [];
   const draft: SwipeCardDraft = {
     name: card?.name ?? (active() ? (Player.Nickname?.trim() || Player.Name || '').slice(0, 40) : ''),
@@ -111,12 +119,21 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   const available = element('input');
   available.type = 'checkbox';
   available.checked = draft.available;
-  const bgSelect = element('select', { className: 'bg-select' });
-  for (const id of backgrounds) {
-    const option = element('option', { text: matchesBackgroundLabel(id) });
-    option.value = id;
-    bgSelect.append(option);
-  }
+  const picker = createClubBackgroundPicker(backgroundChoices, draft.background, setNativeBackground);
+  const backgroundLink = element('input', { className: 'kl-input', ariaLabel: 'Background image' });
+  backgroundLink.type = 'url';
+  backgroundLink.maxLength = 250;
+  backgroundLink.placeholder = 'https://…/background.webp';
+  backgroundLink.value = options.customBackgrounds ? card?.backgroundUrl || '' : '';
+  let backgroundPreview: AbortController | undefined;
+  let backgroundOperation: AbortController | undefined;
+  let previewedUrl: string | undefined;
+  const retryBackground = element('button', { type: 'button', className: 'kl-text-button', text: 'Retry preview',
+    onClick: () => updateBackgroundPreview() });
+  retryBackground.hidden = true;
+  const backgroundStatus = element('p', { className: 'kl-room-media-note' });
+  backgroundStatus.setAttribute('role', 'status');
+  backgroundStatus.hidden = true;
   const shuffle = element('button', { type: 'button', className: 'button', title: 'Random background', ariaLabel: 'Random background' }, icon('shuffle'));
   const room = element('img', { className: 'bg', alt: '' });
   const roomLabel = element('span');
@@ -159,11 +176,30 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   confirmation.hidden = true;
   const title = element('h2', { text: card ? 'Edit your card' : 'Set up your card', tabIndex: -1 });
   const labeled = (label: string, control: HTMLElement) => element('label', { className: 'field' }, element('span', { className: 'fieldlabel', text: label }), control);
-  const bgField = element('div', { className: 'field' });
-  bgSelect.id = 'kl-sw-background';
-  const bgLabel = element('label', { className: 'fieldlabel', text: 'Club background' });
-  bgLabel.htmlFor = bgSelect.id;
-  bgField.append(bgLabel, element('div', { className: 'fieldrow' }, bgSelect, shuffle));
+  const backgroundSummary = element('summary', { text: 'Background' });
+  const bgField = element('details', { className: 'kl-room-settings-disclosure matches-background-picker' },
+    backgroundSummary, picker.element,
+    element('div', { className: 'kl-inline-actions' }, shuffle));
+  bgField.open = true;
+  bgField.addEventListener('toggle', syncBackgroundSummary);
+  if (options.customBackgrounds) {
+    const actions = element('div', { className: 'kl-inline-actions' });
+    if (options.pickBackground) actions.append(element('button', { type: 'button', className: 'kl-text-button',
+      text: 'Choose from gallery', onClick: () => { void selectCustomMedia('gallery'); } }));
+    if (options.uploadBackground) {
+      const input = element('input', { ariaLabel: 'Upload background image' });
+      input.type = 'file'; input.accept = 'image/jpeg,image/png,image/webp'; input.hidden = true;
+      input.onchange = () => {
+        const picked = input.files?.[0]; input.value = '';
+        if (picked) void selectCustomMedia('file', picked);
+      };
+      actions.append(element('button', { type: 'button', className: 'kl-text-button', text: 'Upload image', onClick: () => input.click() }), input);
+    }
+    actions.append(retryBackground);
+    bgField.append(element('label', { className: 'kl-room-field' }, element('span', { text: 'Background image' }), backgroundLink), actions);
+    if (options.uploadBackground) bgField.append(element('p', { className: 'kl-room-media-note', text: 'Uploads use the lifetime in Chat settings.' }));
+    bgField.append(backgroundStatus);
+  }
   const form = element('form', { className: 'side' },
     element('div', {}, title, element('p', { className: 'intro', text: 'Choose a saved Wardrobe look or upload your own photo.' })),
     labeled('Display name', name),
@@ -180,7 +216,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     error.hidden = !message;
   }
   function controls() {
-    save.disabled = loadingLook || saving;
+    save.disabled = loadingLook || !!backgroundOperation || saving;
     form.inert = saving;
     form.setAttribute('aria-busy', String(saving));
   }
@@ -205,10 +241,92 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
         draft.wardrobeSlot === Number(button.dataset.slot) && draft.wardrobeName === button.getAttribute('aria-label')));
     }
   }
-  function setBackground(id: string) {
-    draft.background = bgSelect.value = id;
-    room.src = matchesBackgroundUrl(id);
-    roomLabel.textContent = matchesBackgroundLabel(id);
+  function showBackgroundStatus(message: string) {
+    backgroundStatus.textContent = message;
+    backgroundStatus.hidden = !message;
+  }
+  function cancelBackgroundOperation() {
+    backgroundOperation?.abort();
+    backgroundOperation = undefined;
+    controls();
+  }
+  function syncBackgroundSummary() {
+    const name = previewedUrl ? 'Custom background' : matchesBackgroundLabel(draft.background);
+    backgroundSummary.textContent = bgField.open ? 'Background' : 'Background · ' + name;
+  }
+  function updateBackgroundPreview() {
+    backgroundPreview?.abort();
+    backgroundPreview = undefined;
+    const value = normalizeMatchesBackgroundUrl(draft.backgroundUrl === undefined ? card?.backgroundUrl : draft.backgroundUrl);
+    const custom = options.customBackgrounds && value ? value : undefined;
+    previewedUrl = custom;
+    syncBackgroundSummary();
+    retryBackground.hidden = true;
+    const vanilla = matchesBackgroundLabel(draft.background);
+    room.referrerPolicy = 'no-referrer';
+    room.src = matchesBackgroundUrl(draft.background);
+    roomLabel.textContent = vanilla;
+    picker.setValue(custom ? '' : draft.background);
+    showBackgroundStatus('');
+    if (!custom || !options.loadBackground) return;
+    const pending = new AbortController();
+    backgroundPreview = pending;
+    void loadMatchesBackground(room, draft.background, custom, options.loadBackground, pending.signal).then(loaded => {
+      if (!active() || pending.signal.aborted) return;
+      if (loaded) roomLabel.textContent = 'Custom background';
+      else {
+        retryBackground.hidden = false;
+        showBackgroundStatus('This image could not be previewed. Saving keeps the link and uses the Club background if the image cannot load.');
+      }
+    });
+  }
+  function setNativeBackground(id: string) {
+    cancelBackgroundOperation();
+    draft.background = id;
+    if (options.customBackgrounds) draft.backgroundUrl = null;
+    backgroundLink.value = '';
+    backgroundLink.setCustomValidity('');
+    updateBackgroundPreview();
+  }
+  function applyCustomLink(): boolean {
+    if (!options.customBackgrounds) return true;
+    try {
+      const entered = normalizeRoomMediaUrl(backgroundLink.value, 'image');
+      const value = entered ? normalizeMatchesBackgroundUrl(backgroundLink.value) : null;
+      if (entered && !value) throw new Error('Enter a public HTTPS link to a JPG, PNG or WebP image.');
+      backgroundLink.value = value || '';
+      backgroundLink.setCustomValidity('');
+      if (previewedUrl !== (value || undefined)) {
+        draft.backgroundUrl = value;
+        updateBackgroundPreview();
+      }
+      return true;
+    } catch (failure) {
+      const message = failure instanceof Error ? failure.message : 'Enter a valid background image link.';
+      backgroundLink.setCustomValidity(message);
+      showBackgroundStatus(message);
+      return false;
+    }
+  }
+  async function selectCustomMedia(source: 'file' | 'gallery', file?: File) {
+    if (!active() || saving || !options.customBackgrounds) return;
+    cancelBackgroundOperation();
+    const pending = new AbortController();
+    backgroundOperation = pending;
+    controls();
+    showBackgroundStatus(source === 'file' ? 'Uploading background…' : '');
+    try {
+      const link = source === 'file' && file ? await options.uploadBackground?.(file, pending.signal)
+        : await options.pickBackground?.(pending.signal);
+      if (!active() || pending.signal.aborted) return;
+      if (!link) { showBackgroundStatus(''); return; }
+      backgroundLink.value = link;
+      applyCustomLink();
+    } catch (failure) {
+      if (active() && !pending.signal.aborted) showBackgroundStatus(failure instanceof Error ? failure.message : 'The background could not be selected.');
+    } finally {
+      if (active() && backgroundOperation === pending) { backgroundOperation = undefined; controls(); }
+    }
   }
   // Coalesce an explicit choice with a thumbnail still being drawn. Settled
   // presets keep only a small display canvas; the chosen full-size one is
@@ -389,15 +507,19 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     if (wanted) void choose('wardrobe', () => chosenPicture(wanted.slot), wanted);
   };
 
-  setBackground(draft.background);
+  updateBackgroundPreview();
+  backgroundLink.oninput = () => { cancelBackgroundOperation(); retryBackground.hidden = true; backgroundLink.setCustomValidity(''); showBackgroundStatus(''); };
+  backgroundLink.onchange = () => { applyCustomLink(); };
+  backgroundLink.onkeydown = event => {
+    if (event.key === 'Enter') { event.preventDefault(); applyCustomLink(); }
+  };
   showSlots();
   more.onclick = event => {
     expanded = !expanded;
     showSlots();
     if (expanded && !event.detail) picks.querySelectorAll('button')[5]?.focus({ preventScroll: true });
   };
-  shuffle.onclick = () => setBackground(randomMatchesBackground(backgrounds, draft.background));
-  bgSelect.onchange = () => setBackground(bgSelect.value);
+  shuffle.onclick = () => setNativeBackground(randomMatchesBackground(backgrounds, draft.background));
   current.onclick = () => { void choose('current', () => renderCurrentLook(memberNumber, signal)); };
   upload.onclick = () => file.click();
   file.onchange = () => {
@@ -464,7 +586,8 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   }
   form.onsubmit = event => {
     event.preventDefault();
-    if (loadingLook || saving || !active()) return;
+    if (loadingLook || backgroundOperation || saving || !active()) return;
+    if (!applyCustomLink()) { backgroundLink.focus(); return; }
     draft.name = name.value.trim(); draft.available = available.checked;
     if (!draft.name) { setError('Enter a display name.'); name.focus(); return; }
     void submit(async () => {
@@ -493,6 +616,8 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   }
   return () => {
     controller.abort();
+    backgroundPreview?.abort();
+    backgroundOperation?.abort();
     observer?.disconnect();
     tileQueue.clear();
     rendering.clear();

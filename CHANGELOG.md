@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.8
+
+- Matches now frames outfits using the Club’s active renderer, including wide clothing and saved position, size and rotation adjustments.
+- Browse Club backgrounds by name, category and thumbnail with the same picker as Room Settings. On an updated Matches Cloud, cards also support custom image links, gallery images and file uploads. Older clients keep the selected Club backdrop as a fallback.
+
 ## 2.0.7
 
 - The Matches outfit picker displays full-length characters from saved Club Wardrobe outfits on R134. Desktop previews are larger, with five outfits per row and a chevron to show more.

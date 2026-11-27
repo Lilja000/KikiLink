@@ -1,4 +1,4 @@
-import { pageAction } from '../platform-shell/page-action';
+import { createClubBackgroundPicker } from "./club-background-picker";
 import type { BCRoomAdminSnapshot } from "../../bc/adapter";
 import { roomOptions, type RoomChoice, type RoomRoleChoice } from "../../bc/room-options";
 import type { RoomPresetData } from "../../core/types";
@@ -104,7 +104,12 @@ export class RoomManager {
         element("div", { className: "kl-room-form-grid" }, field("Access", access), field("Visibility", visibility)),
         element("label", { className: "kl-sequence-restore" }, element("span", { text: "Locked" }),
           element("span", { className: "kl-switch" }, locked, element("span", { className: "kl-switch-track" })))), true),
-      disclosure("Background", this.#backgroundPicker(room, options.backgrounds, changed), true),
+      disclosure("Background", createClubBackgroundPicker(options.backgrounds, room.background, name => {
+        room.background = name;
+        room.custom.imageUrl = "";
+        room.custom.imageFilter = "";
+        changed();
+      }).element, true),
       disclosure("Block categories", blocks, room.blockCategory.length > 0),
       disclosure("People & permissions", lists, true),
       element("div", { className: "kl-inline-actions" }, submit, reset));
@@ -142,42 +147,6 @@ export class RoomManager {
     draw();
     return element("section", { className: "kl-room-member-editor" }, element("h3", { text: label }), present,
       element("div", { className: "kl-room-member-add" }, input, element("button", { className: "kl-text-button", type: "button", text: "Add", onClick: add })), chips, hint);
-  }
-  #backgroundPicker(room: RoomPresetData, available: ReturnType<typeof roomOptions>["backgrounds"], changed: () => void): HTMLElement {
-    const selected = element("strong", { text: room.background || "No background selected" });
-    const search = element("input", { className: "kl-input", ariaLabel: "Find background" }); search.placeholder = "Find background…";
-    const grid = element("div", { className: "kl-room-background-grid" });
-    const tags = [...new Set(available.flatMap(item => item.tags))].sort();
-    const tag = makeSelect("Background category", [{ value: "", label: "All categories" }, ...tags.map(value => ({ value, label: value }))], "");
-    const all = [...available];
-    if (room.background && !all.some(item => item.name === room.background)) all.unshift({ name: room.background, label: room.background, tags: [] });
-    let page = 0;
-    const prev = pageAction(element("button", { className: "kl-text-button", type: "button", text: "Previous", onClick: () => { page--; draw(); } }), 'previous');
-    const next = pageAction(element("button", { className: "kl-text-button", type: "button", text: "Next", onClick: () => { page++; draw(); } }), 'next');
-    const count = element("span", { className: "kl-room-media-note" });
-    const draw = (): void => {
-      const query = search.value.trim().toLocaleLowerCase();
-      const matches = all.filter(item => (!tag.value || item.tags.includes(tag.value)) && `${item.label} ${item.name}`.toLocaleLowerCase().includes(query));
-      page = Math.max(0, Math.min(page, Math.ceil(matches.length / 12) - 1));
-      grid.replaceChildren(...matches.slice(page * 12, page * 12 + 12).map(item => {
-        const image = element("img", { alt: "", src: `Backgrounds/${encodeURIComponent(item.name)}.jpg` });
-        image.loading = "lazy"; image.decoding = "async"; image.addEventListener("error", () => { image.hidden = true; });
-        const button = tile(item.label, item.name === room.background, () => {
-          room.background = item.name; room.custom.imageUrl = ""; room.custom.imageFilter = "";
-          selected.textContent = item.label; changed();
-          for (const tile of grid.querySelectorAll<HTMLButtonElement>("button")) tile.setAttribute("aria-pressed", String(tile.dataset.background === item.name));
-        });
-        button.classList.add("kl-room-background-choice"); button.dataset.background = item.name;
-        button.prepend(image); return button;
-      }));
-      count.textContent = matches.length ? `${page + 1} / ${Math.ceil(matches.length / 12)} · ${matches.length} backgrounds` : "No matching backgrounds";
-      prev.disabled = page === 0; next.disabled = (page + 1) * 12 >= matches.length;
-    };
-    for (const control of [search, tag]) control.addEventListener(control === search ? "input" : "change", () => { page = 0; draw(); });
-    draw();
-    return element("div", { className: "kl-sequence-options" }, selected,
-      element("div", { className: "kl-room-form-grid" }, search, tag), grid,
-      element("div", { className: "kl-inline-actions" }, prev, count, next));
   }
   async #submit(): Promise<void> {
     if (!this.#room || !this.#snapshot?.isAdmin || this.#busy) return;

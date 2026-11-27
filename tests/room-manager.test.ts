@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RoomPresetData } from "../src/core/types";
 import type { BCRoomAdminSnapshot } from "../src/bc/adapter";
 import { RoomManager } from "../src/modules/link-chat/room-manager";
+import { createClubBackgroundPicker } from "../src/modules/link-chat/club-background-picker";
 
 function snapshot(): BCRoomAdminSnapshot { return { roomName: "Garden", isAdmin: true, players: [{ memberNumber: 202, memberName: "Snowy", isFriend: true, admin: false, whitelisted: false }],
   customization: { imageUrl: "", musicUrl: "", musicSync: false, sizeMode: 1 }, settings: {
@@ -13,6 +14,29 @@ afterEach(() => { document.body.replaceChildren(); vi.unstubAllGlobals(); });
 const control = (root: HTMLElement, label: string) => root.querySelector<HTMLInputElement | HTMLSelectElement>(`[aria-label="${label}"]`)!;
 function change(root: HTMLElement, label: string, value: string, event = "change"): void { const input = control(root, label); input.value = value; input.dispatchEvent(new Event(event)); }
 function click(root: HTMLElement, text: string): void { [...root.querySelectorAll("button")].find(button => button.textContent === text)!.click(); }
+
+it("keeps the background search, pagination and keyboard focus when another control changes the selection", () => {
+  const backgrounds = Array.from({ length: 14 }, (_, i) => ({ name: `Sky${i}`, label: `Sky ${i}`, tags: ["Outdoor"] }));
+  const select = vi.fn();
+  const picker = createClubBackgroundPicker(backgrounds, "Garden", select);
+  document.body.append(picker.element);
+  change(picker.element, "Background category", "Outdoor");
+  change(picker.element, "Find background", "sky", "input");
+  click(picker.element, "Next");
+  const tile = picker.element.querySelector<HTMLButtonElement>('[data-background="Sky13"]')!;
+  tile.focus();
+  picker.setValue("Sky13");
+  expect(tile.getAttribute("aria-pressed")).toBe("true");
+  expect(picker.element.querySelector("strong")?.textContent).toBe("Sky 13");
+  expect(document.activeElement).toBe(tile);
+  expect(select).not.toHaveBeenCalled();
+  click(picker.element, "Sky 12");
+  expect(select).toHaveBeenCalledExactlyOnceWith("Sky12");
+  expect(tile.getAttribute("aria-pressed")).toBe("false");
+  const enter = new KeyboardEvent("keydown", { key: "Enter", cancelable: true });
+  control(picker.element, "Find background").dispatchEvent(enter);
+  expect(enter.defaultPrevented).toBe(true);
+});
 
 describe("Room Manager drafts and permissions", () => {
   it.each(["name", "space"])("ignores a late apply after changing room %s", async key => {

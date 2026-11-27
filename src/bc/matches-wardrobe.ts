@@ -20,6 +20,7 @@ interface WardrobeState {
 interface Mask { Url?: string }
 type DrawPixels = HTMLImageElement | ImageBitmap;
 type DrawSource = string | HTMLCanvasElement | DrawPixels;
+type NativeGLContext = Pick<WebGLRenderingContext, 'isContextLost'>;
 type DrawOptions = { TextureAlphaMask?: Mask[] };
 type DrawImageLayer = (source: DrawSource, x: number, y: number, options?: DrawOptions) => void;
 interface DrawCallbacks {
@@ -30,6 +31,7 @@ interface DrawCallbacks {
 }
 interface ClubWardrobe {
   Player?: ClubCharacter; WardrobeSize?: number;
+  CanvasUpperOverflow?: number;
   Wardrobe?: WardrobeState;
   WardrobeCharacter?: Array<ClubCharacter | null>;
   WardrobeFastLoad?(c: ClubCharacter, slot: number, update: boolean, options: { Appearance: Bundle[] }): void;
@@ -37,6 +39,11 @@ interface ClubWardrobe {
   ServerBundledItemFromAppearanceItem(item: NativeItem): Bundle;
   InventoryAvailable(player: ClubCharacter, name: string, group: string): boolean;
   CharacterLoadSimple(id: string): ClubCharacter; CharacterRefresh(c: ClubCharacter, push: boolean, dialog: boolean): void;
+  CharacterAppearanceBuildCanvas?(c: ClubCharacter): void;
+  GLVersion?: string;
+  GLDrawCanvas?: { GL?: NativeGLContext };
+  GLDrawImageCache?: { get(url: string): HTMLImageElement | { isLoaded(): boolean; isFailing?(): boolean } | undefined };
+  GLDrawLoadImage?(gl: NativeGLContext, url: string): unknown;
   CharacterDelete(c: ClubCharacter, clearCache: boolean): void;
   DrawCharacterSegment(c: ClubCharacter, x: number, y: number, w: number, h: number): HTMLCanvasElement;
   CharacterAppearanceYOffset?(c: ClubCharacter, ratio: number, ignoreUpButton: boolean): number;
@@ -52,11 +59,13 @@ declare const Player: ClubCharacter | undefined;
 declare const Wardrobe: WardrobeState | undefined;
 declare const WardrobeCharacter: Array<ClubCharacter | null> | undefined;
 declare const WardrobeSize: number | undefined;
+declare const CanvasUpperOverflow: number | undefined;
 const native = Object.create(globalThis, {
   Player: { get: () => typeof Player === 'undefined' ? undefined : Player },
   Wardrobe: { get: () => typeof Wardrobe === 'undefined' ? undefined : Wardrobe },
   WardrobeCharacter: { get: () => typeof WardrobeCharacter === 'undefined' ? undefined : WardrobeCharacter },
   WardrobeSize: { get: () => typeof WardrobeSize === 'undefined' ? undefined : WardrobeSize },
+  CanvasUpperOverflow: { get: () => typeof CanvasUpperOverflow === 'undefined' ? undefined : CanvasUpperOverflow },
 }) as ClubWardrobe;
 
 // The Club stores occupied presets as arrays of item bundles. Reading the slots does
@@ -130,6 +139,8 @@ async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter
   });
 
   if (sources.size) {
+    const gl = host.CharacterAppearanceBuildCanvas && host.GLVersion !== 'No WebGL' ? host.GLDrawCanvas?.GL : undefined;
+    const textures = gl && !gl.isContextLost() ? host.GLDrawImageCache : undefined;
     const ready = await new Promise<boolean>(resolve => {
       const deadline = Date.now() + 20000;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -141,6 +152,20 @@ async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter
       function abort() { finish(false); }
       function checkLayers() {
         for (const source of sources) {
+          if (typeof source === 'string' && textures && gl) {
+            let texture = textures.get(source);
+            // R132's Map does not start a missing texture; R134's ImageCache does.
+            if (!texture) {
+              host.GLDrawLoadImage?.(gl, source);
+              texture = textures.get(source);
+            }
+            if (texture && ('isLoaded' in texture ? texture.isLoaded() : texture.complete && texture.naturalWidth > 0)) {
+              sources.delete(source);
+            } else if (texture && ('isLoaded' in texture ? texture.isFailing?.() : 'errorcount' in texture && Number(texture.errorcount) >= 3)) {
+              return false;
+            }
+            continue;
+          }
           // R134 returns an ImageBitmap or undefined. R132 returns an image
           // element while it loads. Re-read by URL on each attempt.
           const pixels = typeof source === 'string' ? host.DrawGetImage(source) : source;
@@ -171,6 +196,16 @@ async function matchesDrawWardrobeFrame(host: ClubWardrobe, dummy: ClubCharacter
     if (!ready) return false;
   }
   if (signal.aborted) return false;
+  if (host.CharacterAppearanceBuildCanvas) {
+    // Let the active game renderer allocate and paint its own surfaces. An
+    // extended Wardrobe renderer may translate the native context or use a
+    // wider backing canvas. Replaying its layers on a default 2D context
+    // loses that origin before the Club takes the portrait.
+    Object.assign(dummy, { Canvas: null, CanvasBlink: null });
+    host.CharacterAppearanceBuildCanvas(dummy);
+    dummy.MustDraw = false;
+    return !!dummy.Canvas?.width && !!dummy.Canvas.height;
+  }
   const canvas = document.createElement('canvas');
   canvas.width = dummy.Canvas.width;
   canvas.height = dummy.Canvas.height;
@@ -249,13 +284,46 @@ export async function renderWardrobeSlot(slot: number, signal: AbortSignal, host
   }
 }
 
+function widePortraitWindow(surface: HTMLCanvasElement, top: number, height: number) {
+  const full = { left: 0, width: surface.width };
+  // An extended native canvas often only adds transparent gutters. Probe a
+  // small thumbnail so an ordinary outfit stays at its native Wardrobe zoom.
+  // Canvas-protected browsers can still display the full surface.
+  try {
+    const probe = document.createElement('canvas');
+    probe.width = 250;
+    probe.height = Math.max(1, Math.min(250, Math.ceil(height * probe.width / surface.width)));
+    const brush = probe.getContext('2d', { willReadFrequently: true });
+    if (!brush) return full;
+    brush.drawImage(surface, 0, top, surface.width, height, 0, 0, probe.width, probe.height);
+    const pixels = brush.getImageData(0, 0, probe.width, probe.height).data;
+    let first = probe.width, last = -1;
+    for (let i = 3; i < pixels.length; i += 4) {
+      if (!pixels[i]) continue;
+      const x = (i >>> 2) % probe.width;
+      first = Math.min(first, x);
+      last = Math.max(last, x);
+    }
+    if (last < first) return full;
+    const unit = surface.width / probe.width;
+    const left = Math.max(0, Math.floor((first - 1) * unit));
+    const right = Math.min(surface.width, Math.ceil((last + 2) * unit));
+    const nativeLeft = (surface.width - 500) / 2;
+    if (left >= nativeLeft && right <= nativeLeft + 500) return {left: nativeLeft, width: 500};
+    const width = Math.min(surface.width, Math.max(500, right - left));
+    return {left: Math.max(0, Math.min(surface.width - width, (left + right - width) / 2)), width};
+  } catch { return full; }
+}
+
 function frameCanvas(host: ClubWardrobe, character: ClubCharacter): HTMLCanvasElement | null {
   // DrawCharacterSegment returns unscaled layers. Native room rendering
   // applies stature, pose height and inversion afterwards, before labels.
   const ratio = character.HeightRatio || 1;
   if (!Number.isFinite(ratio) || ratio < .1 || ratio > 10) return null;
   const y = host.CharacterAppearanceYOffset?.(character, ratio, true) ?? 0;
-  const frame = host.DrawCharacterSegment(character, 0, -y / ratio, 500, 1000 / ratio);
+  const overflow = host.CanvasUpperOverflow;
+  const wide = character.Canvas?.width > 500 && typeof overflow === 'number';
+  const frame = wide ? character.Canvas : host.DrawCharacterSegment(character, 0, -y / ratio, 500, 1000 / ratio);
   if (!frame?.width || !frame.height) return null;
   const canvas = document.createElement('canvas');
   canvas.width = 350;
@@ -266,8 +334,18 @@ function frameCanvas(host: ClubWardrobe, character: ClubCharacter): HTMLCanvasEl
     ctx.translate(canvas.width, canvas.height);
     ctx.scale(-1, -1);
   }
-  const width = canvas.width * ratio;
-  ctx.drawImage(frame, (canvas.width - width) / 2, 0, width, canvas.height);
+  if (wide) {
+    const sourceHeight = 1000 / ratio;
+    const top = overflow - y / ratio;
+    const crop = widePortraitWindow(frame, top, sourceHeight);
+    const scale = Math.min(canvas.width / crop.width, canvas.height / sourceHeight);
+    const width = crop.width * scale, height = sourceHeight * scale;
+    ctx.drawImage(frame, crop.left, top, crop.width, sourceHeight,
+      (canvas.width - width) / 2, canvas.height - height, width, height);
+  } else {
+    const width = canvas.width * ratio;
+    ctx.drawImage(frame, (canvas.width - width) / 2, 0, width, canvas.height);
+  }
   return canvas;
 }
 

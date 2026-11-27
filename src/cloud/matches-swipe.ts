@@ -1,4 +1,5 @@
 import { CloudClient, CloudError } from "./client";
+import { normalizeMatchesBackgroundUrl } from "../../cloud/shared/matches-background.mjs";
 
 export type SwipeChoice = "like" | "pass";
 export type SwipeLookSource = "wardrobe" | "photo" | "current" | "none";
@@ -6,6 +7,8 @@ export type SwipeLookSource = "wardrobe" | "photo" | "current" | "none";
 export interface SwipeCardDraft {
   name: string;
   background: string;
+  /** Omit to keep the saved link; null selects the vanilla background. */
+  backgroundUrl?: string | null;
   available: boolean;
   lookSource: SwipeLookSource;
   wardrobeSlot?: number | null;
@@ -18,6 +21,7 @@ export interface SwipeCard {
   revision: number;
   name: string;
   background: string;
+  backgroundUrl?: string | null;
   available: boolean;
   imageVersion: string | null;
   lookSource: SwipeLookSource;
@@ -42,6 +46,7 @@ export interface SwipeSnapshot {
   remaining: number;
   mutualCount: number;
   initialAvailable?: boolean;
+  customBackgrounds?: boolean;
   discoverability?: "ready" | "private" | "paused";
 }
 
@@ -80,6 +85,7 @@ function card(value: unknown, owner: number, own: boolean): SwipeCard {
   if (slot !== null && slot > 4095) invalid();
   return {
     memberNumber, revision, name: readText(v.name, 40), background,
+    backgroundUrl: normalizeMatchesBackgroundUrl(v.backgroundUrl),
     available: v.available, imageVersion: v.hasImage ? String(revision) : null, lookSource,
     wardrobeSlot: slot, wardrobeName: own && v.wardrobeName != null ? readText(v.wardrobeName, 256) : null,
     languages: list(v.languages, 5), bio: readText(v.bio, 320), tags: list(v.tags, 12),
@@ -110,6 +116,7 @@ function readPage(items: unknown, cursor: unknown, owner: number, maximum: numbe
 const hints = new Set(["matching", "session", "connection", "ready", "profiles-cleared", "privacy", "profile-discovery", "relationships", "preferences"]);
 /** Account-scoped authenticated transport. All object URLs belong to the requesting view. */
 export class SwipeApi {
+  #customBackgrounds = false;
   #retrySave: { body: string; id: string } | null = null;
   #retryUndo: { vote: string; id: string } | null = null;
   #mutualDepth = 1;
@@ -125,7 +132,8 @@ export class SwipeApi {
     const owner = this.client.memberNumber;
     const initialAvailable = value.initialAvailable ?? true;
     const discoverability = value.discoverability ?? "ready";
-    if (typeof initialAvailable !== "boolean" ||
+    const customBackgrounds = value.customBackgrounds ?? false;
+    if (typeof initialAvailable !== "boolean" || typeof customBackgrounds !== "boolean" ||
       (discoverability !== "ready" && discoverability !== "private" && discoverability !== "paused")) invalid();
     const self = value.self === null ? null : card(value.self, owner, true);
     const lastVote = value.lastVote === null ? null : voteReceipt(value.lastVote, owner);
@@ -137,7 +145,8 @@ export class SwipeApi {
     // both against the current native block lists before handing them to the UI.
     const visibleDeck = deck.items.filter(item => !this.#blocked(item.memberNumber));
     const visibleMutuals = mutuals.items.filter(item => !this.#blocked(item.memberNumber));
-    return { self, initialAvailable, discoverability,
+    this.#customBackgrounds = customBackgrounds;
+    return { self, initialAvailable, discoverability, customBackgrounds,
       deck: visibleDeck, deckCursor: deck.nextCursor, mutuals: visibleMutuals, mutualCursor: mutuals.nextCursor,
       mutualPagesLoaded: mutuals.depth,
       lastVote: lastVote && !this.#blocked(lastVote.target) ? lastVote : null, seen: integer(value.seen, 0),
@@ -216,8 +225,15 @@ export class SwipeApi {
   }
   async save(draft: SwipeCardDraft, previous: SwipeCard | null, signal?: AbortSignal): Promise<void> {
     if (previous && previous.memberNumber !== this.client.memberNumber) throw new CloudError("account_changed");
+    let backgroundUrl = draft.backgroundUrl;
+    if (backgroundUrl != null) {
+      if (!this.#customBackgrounds) throw new CloudError("swipe_custom_background_unavailable");
+      backgroundUrl = normalizeMatchesBackgroundUrl(backgroundUrl);
+      if (!backgroundUrl) throw new CloudError("invalid_swipe_background_url");
+    }
     const body = {
       revision: previous?.revision ?? 0, name: draft.name, background: draft.background, available: draft.available,
+      ...(this.#customBackgrounds && backgroundUrl !== undefined ? { backgroundUrl } : {}),
       lookSource: draft.lookSource, wardrobeSlot: draft.lookSource === "wardrobe" ? draft.wardrobeSlot ?? null : null,
       wardrobeName: draft.lookSource === "wardrobe" ? draft.wardrobeName ?? null : null,
       ...(draft.image !== undefined ? { image: draft.image } : {}),
