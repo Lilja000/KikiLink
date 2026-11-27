@@ -3330,7 +3330,7 @@ export class LinkChatView {
       topbar.replaceChildren(element("div", { className: "kl-topbar-identity" }, this.#identityAvatar,
         element("div", { className: "kl-identity-copy" },
           element("div", { className: "kl-identity-line" }, this.#identityName, this.#localClock), this.#presenceTrigger)),
-        dragSpace, element("div", { className: "kl-topbar-actions" }, this.#finderTrigger, this.#mailbox?.button, this.#identityMenu, close));
+        dragSpace, element("div", { className: "kl-topbar-actions" }, this.#identityMenu, this.#finderTrigger, this.#mailbox?.button, close));
     }
     topbar.addEventListener("pointerdown", (event) => this.#startPanelDrag(event));
     topbar.addEventListener("pointermove", (event) => this.#movePanel(event));

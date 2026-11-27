@@ -53,11 +53,41 @@ it('keeps the latest chosen real slot when a slower initial snapshot finishes; f
   const toggle = f.host.querySelector<HTMLButtonElement>('.wardrobe-toggle')!;
   toggle.click(); f.slots()[5]!.click();
   await vi.waitFor(() => expect(f.slots()[5]!.getAttribute('aria-pressed')).toBe('true'));
+  const caption = f.host.querySelector<HTMLElement>('.wardrobe-chosen')!;
+  expect(caption.hidden).toBe(true);
   toggle.click(); finishFirst(portrait('old-image')); await first;
+  expect(caption.hidden).toBe(false);
+  expect(caption.textContent).toBe('Selected · Look 12');
+  toggle.click();
+  expect(caption.hidden).toBe(true);
+  expect(f.slots()[5]!.getAttribute('aria-pressed')).toBe('true');
+  toggle.click();
   f.save();
   await vi.waitFor(() => expect(f.onSave).toHaveBeenCalledOnce());
   expect(f.onSave.mock.calls[0]?.[0]).toMatchObject({ name: 'Kiki', available: true, wardrobeName: 'Look 12', wardrobeSlot: 12, image: 'snapshot-12' });
   expect(f.slots()).toHaveLength(5);
+});
+
+it('compares a restored portrait and its hidden Wardrobe slot at the same thumbnail dimensions', async () => {
+  vi.spyOn(wardrobe, 'readClubWardrobe').mockReturnValue(Array.from({length: 8}, (_, slot) => ({slot, name: 'Look ' + slot})));
+  vi.spyOn(wardrobe, 'renderWardrobeSlot').mockImplementation(async slot => portrait('look-' + slot));
+  vi.spyOn(HTMLImageElement.prototype, 'decode').mockResolvedValue();
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:saved');
+  const comparedSizes: number[][] = [];
+  vi.mocked(HTMLCanvasElement.prototype.getContext).mockImplementation(function(this: HTMLCanvasElement) {
+    const brush = {
+      fillRect() {},
+      drawImage: (source: CanvasImageSource) => {
+        if (this.width === 44) comparedSizes.push(source instanceof HTMLCanvasElement ? [source.width, source.height] : []);
+      },
+      getImageData: () => ({data: new Uint8ClampedArray(4)}),
+    };
+    return brush as unknown as CanvasRenderingContext2D;
+  });
+  const f = editor({...saved, lookSource: 'wardrobe', wardrobeName: 'Look 7', wardrobeSlot: 7}, async () => new Blob());
+  await vi.waitFor(() => expect(f.host.querySelector('.wardrobe-chosen')?.textContent).toBe('Selected · Look 7'));
+  expect(f.slots()).toHaveLength(5);
+  expect(comparedSizes).toEqual([[128, 256], [128, 256]]);
 });
 
 it('retains an existing photo on metadata-only saves and requires confirmation to remove a card', async () => {
@@ -66,10 +96,78 @@ it('retains an existing photo on metadata-only saves and requires confirmation t
   expect(f.onSave.mock.calls[0]?.[0]).toMatchObject({name: 'Existing', available: false, lookSource: 'photo', background: 'ParkNight'});
   expect(f.onSave.mock.calls[0]?.[0]).not.toHaveProperty('image');
   await vi.waitFor(() => expect(f.host.querySelector('form')!.inert).toBe(false));
-  f.host.querySelector<HTMLButtonElement>('.textbtn')!.click();
+  const remove = f.host.querySelector<HTMLButtonElement>('.savebar .editor-remove')!;
+  remove.click();
   expect(f.onRemove).not.toHaveBeenCalled();
-  f.host.querySelector<HTMLButtonElement>('.actions button:last-child')!.click();
+  f.save();
+  expect(f.onSave).toHaveBeenCalledTimes(1);
+  const keep = [...f.host.querySelectorAll('button')].find(button => button.textContent === 'Keep card')!;
+  expect(document.activeElement).toBe(keep);
+  keep.click();
+  expect(document.activeElement).toBe(remove);
+  remove.click();
+  f.host.querySelector<HTMLButtonElement>('.editor-tools .editor-remove')!.click();
   expect(f.onRemove).toHaveBeenCalledOnce();
+});
+
+it('dismisses the inline removal confirmation with Escape and returns focus without closing the outer UI', () => {
+  const f = editor({...saved, imageVersion: null});
+  const remove = f.host.querySelector<HTMLButtonElement>('.savebar .editor-remove')!;
+  const keep = [...f.host.querySelectorAll('button')].find(button => button.textContent === 'Keep card')!;
+  const outer = vi.fn();
+  f.host.addEventListener('keydown', outer);
+  const escape = () => new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  remove.click();
+  const nested = document.createElement('dialog');
+  nested.open = true;
+  keep.parentElement!.append(nested);
+  nested.dispatchEvent(escape());
+  expect(outer).toHaveBeenCalledOnce();
+  nested.remove();
+  expect(keep.dispatchEvent(escape())).toBe(false);
+  expect(outer).toHaveBeenCalledOnce();
+  expect(document.activeElement).toBe(remove);
+  expect(remove.closest<HTMLElement>('.savebar')!.hidden).toBe(false);
+  expect(f.onRemove).not.toHaveBeenCalled();
+  expect(remove.dispatchEvent(escape())).toBe(true);
+  expect(outer).toHaveBeenCalledTimes(2);
+});
+
+it.each([
+  { removing: false, pending: 'Saving…', fallback: 'could not be saved' },
+  { removing: true, pending: 'Removing…', fallback: 'could not be removed' },
+])('shows $pending while busy and restores the action for retry after rejection', async ({ removing, pending, fallback }) => {
+  const f = editor({...saved, imageVersion: null});
+  const form = f.host.querySelector('form')!;
+  const action = removing ? f.onRemove : f.onSave;
+  let fail!: (error: Error) => void;
+  action.mockImplementationOnce(() => new Promise<void>((_, reject) => { fail = reject; }));
+  if (removing) f.host.querySelector<HTMLButtonElement>('.savebar .editor-remove')!.click();
+  const button = f.host.querySelector<HTMLButtonElement>(removing ? '.editor-tools .editor-remove' : '[type="submit"]')!;
+  const status = f.host.querySelector<HTMLElement>('.setupPanel > [role="status"]')!;
+  const label = button.textContent;
+  button.focus();
+  button.click();
+  expect(button.textContent).toBe(pending);
+  expect(button.disabled).toBe(true);
+  expect([...button.parentElement!.querySelectorAll('button')].every(control => control.disabled)).toBe(true);
+  expect(form.inert).toBe(true);
+  expect(status.textContent).toBe(pending);
+  expect(document.activeElement).toBe(status);
+  expect(status.getAttribute('aria-live')).toBe('off');
+  expect(status.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))).toBe(false);
+  button.click();
+  f.save();
+  expect(action).toHaveBeenCalledOnce();
+  fail(new Error('offline'));
+  await vi.waitFor(() => expect(form.inert).toBe(false));
+  expect(status.textContent).toBe('');
+  expect(form.querySelector('[role="alert"]')?.textContent).toContain(fallback);
+  expect(button.textContent).toBe(label);
+  expect(button.disabled).toBe(false);
+  expect(document.activeElement).toBe(button);
+  button.click();
+  await vi.waitFor(() => expect(action).toHaveBeenCalledTimes(2));
 });
 
 it('does not silently attach a picture when editing a saved card with no portrait', async () => {
@@ -102,15 +200,19 @@ it('fills the thumbnail, chosen state and large preview after a cold failed slot
   expect(f.host.querySelector('.form-error')?.textContent).toContain('could not be previewed');
   const tile = f.slots()[0]!;
   expect(tile.dataset.preview).toBe('failed');
-  expect(tile.querySelector('.outfit-image')?.childElementCount).toBe(0);
+  expect(tile.querySelector('.outfit-image [data-icon="refresh"]')).not.toBeNull();
   expect(tile.getAttribute('aria-label')).toBe('Saved');
   const retry = f.host.querySelector<HTMLButtonElement>('.wardrobe-retry')!;
   expect(retry.hidden).toBe(false);
+  retry.focus();
   retry.click();
+  expect(document.activeElement).toBe(tile);
+  expect(tile.querySelector('.outfit-image [data-icon="clock"]')).not.toBeNull();
   await vi.waitFor(() => expect(tile.dataset.preview).toBe('ready'));
   expect(capture).toHaveBeenCalledTimes(2);
   expect(capture.mock.calls.map(call => call[3])).toEqual([false, true]);
   expect(tile.querySelector('canvas')?.dataset.look).toBe('ready');
+  expect(tile.querySelector('svg')).toBeNull();
   expect(f.host.querySelector<HTMLCanvasElement>('canvas.figure')?.dataset.look).toBe('ready');
   expect(retry.hidden).toBe(true);
   expect(f.slots()[0]!.getAttribute('aria-pressed')).toBe('true');
@@ -293,6 +395,22 @@ it('browses tagged native room backgrounds with search and pagination on a nativ
   expect(f.onSave.mock.calls[0]?.[0]).not.toHaveProperty('backgroundUrl');
 });
 
+it('keeps a missing Club background selectable and restores the preview when a working scene is chosen', () => {
+  const f = editor({...saved, imageVersion: null});
+  const tile = f.host.querySelector<HTMLButtonElement>('[data-background="ParkNight"]')!;
+  const room = f.host.querySelector<HTMLImageElement>('.scene .bg')!;
+  tile.querySelector('img')!.dispatchEvent(new Event('error'));
+  room.dispatchEvent(new Event('error'));
+  expect(tile.querySelector('.kl-room-background-placeholder')).not.toBeNull();
+  expect(tile.getAttribute('aria-pressed')).toBe('true');
+  expect(room.hidden).toBe(true);
+  expect(f.host.querySelector('.where')?.textContent).toBe('Park Night · Preview unavailable');
+  f.host.querySelector<HTMLButtonElement>('[data-background="CosyChalet"]')!.click();
+  room.dispatchEvent(new Event('load'));
+  expect(room.hidden).toBe(false);
+  expect(f.host.querySelector('.where')?.textContent).toBe('Cosy Chalet');
+});
+
 it('previews a validated custom link through the media loader and clears it when the player chooses vanilla', async () => {
   const release = vi.fn();
   const loadBackground = vi.fn(async () => ({url:'blob:custom-room', release}));
@@ -326,7 +444,7 @@ it('rejects incompatible links, cancels stale gallery results, and submits only 
   f.save();
   expect(f.onSave).not.toHaveBeenCalled();
   expect(field.validationMessage).toContain('public HTTPS');
-  [...f.host.querySelectorAll('button')].find(b=>b.textContent === 'Choose from gallery')!.click();
+  f.host.querySelector<HTMLButtonElement>('button[aria-label="Choose from gallery"]')!.click();
   const pending = pickBackground.mock.calls[0]![0];
   f.host.querySelector<HTMLButtonElement>('[data-background="BeachSunset"]')!.click();
   expect(pending.aborted).toBe(true);

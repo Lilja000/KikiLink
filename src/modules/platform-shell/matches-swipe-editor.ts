@@ -62,6 +62,7 @@ async function sameWardrobeThumbnail(saved: string, portrait: HTMLCanvasElement)
     canvas.width = 44; canvas.height = 88;
     const brush = canvas.getContext('2d', {willReadFrequently: true});
     if (!brush) return null;
+    brush.imageSmoothingQuality = 'high';
     brush.fillStyle = '#26222b';
     brush.fillRect(0, 0, canvas.width, canvas.height);
     brush.drawImage(source, 0, 0, canvas.width, canvas.height);
@@ -70,7 +71,15 @@ async function sameWardrobeThumbnail(saved: string, portrait: HTMLCanvasElement)
   const image = new Image();
   image.src = saved;
   await image.decode();
-  const left = pixels(image), right = pixels(portrait);
+  // Use the tile's sampling dimensions for both inputs. A single reduction
+  // from the larger saved image samples different edges from the native tile.
+  const tile = document.createElement('canvas');
+  tile.width = portrait.width;
+  tile.height = portrait.height;
+  const brush = tile.getContext('2d');
+  if (!brush) return false;
+  brush.drawImage(image, 0, 0, tile.width, tile.height);
+  const left = pixels(tile), right = pixels(portrait);
   if (!left || !right) return false;
   let differences = 0;
   for (let i = 0; i < left.length; i += 4) {
@@ -130,15 +139,27 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   let backgroundPreview: AbortController | undefined;
   let backgroundOperation: AbortController | undefined;
   let previewedUrl: string | undefined;
-  const retryBackground = element('button', { type: 'button', className: 'kl-text-button', text: 'Retry preview',
-    onClick: () => updateBackgroundPreview() });
+  const retryBackground = element('button', { type: 'button', className: 'button',
+    onClick: () => updateBackgroundPreview() }, icon('refresh'), 'Retry preview');
   retryBackground.hidden = true;
   const backgroundStatus = element('p', { className: 'kl-room-media-note' });
   backgroundStatus.setAttribute('role', 'status');
   backgroundStatus.hidden = true;
-  const shuffle = element('button', { type: 'button', className: 'button', title: 'Random background', ariaLabel: 'Random background' }, icon('shuffle'));
+  const shuffle = element('button', { type: 'button', className: 'button editor-square', title: 'Random background', ariaLabel: 'Random background' }, icon('shuffle'));
   const room = element('img', { className: 'bg', alt: '' });
   const roomLabel = element('span');
+  room.addEventListener('error', () => {
+    room.hidden = true;
+    if (room.getAttribute('src') === matchesBackgroundUrl(draft.background)) {
+      roomLabel.textContent = matchesBackgroundLabel(draft.background) + ' · Preview unavailable';
+    }
+  });
+  room.addEventListener('load', () => {
+    room.hidden = false;
+    if (room.getAttribute('src') === matchesBackgroundUrl(draft.background)) {
+      roomLabel.textContent = matchesBackgroundLabel(draft.background);
+    }
+  });
   let figure: HTMLImageElement | HTMLCanvasElement = element('img', { className: 'figure', alt: '' });
   figure.hidden = true;
   room.draggable = figure.draggable = false;
@@ -147,7 +168,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   const picks = element('div', { className: 'wardrobe-picks picks', ariaLabel: 'Saved Wardrobe looks' });
   picks.id = 'kl-sw-wardrobe-picks';
   picks.setAttribute('role', 'group');
-  const more = element('button', { className: 'wardrobe-toggle', type: 'button' }, icon('chevron-down'));
+  const more = element('button', { className: 'button editor-square wardrobe-toggle', type: 'button' }, icon('chevron-down'));
   more.setAttribute('aria-controls', picks.id);
   const strip = element('div', { className: 'wardrobe-strip' }, picks, more);
   strip.hidden = !slots.length;
@@ -159,32 +180,31 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   file.type = 'file';
   file.hidden = true;
   file.accept = 'image/jpeg,image/png,image/webp';
-  const retryTiles = element('button', { className: 'upload wardrobe-retry', type: 'button', text: 'Retry outfit previews' });
+  const retryTiles = element('button', { className: 'button wardrobe-retry', type: 'button' }, icon('refresh'), 'Retry outfit previews');
   retryTiles.hidden = true;
   retryTiles.id = 'kl-sw-wardrobe-retry';
-  const upload = element('button', { type: 'button', className: 'upload' }, icon('image'), 'Upload photo');
-  const current = element('button', { type: 'button', className: 'upload' }, 'Use current Club look');
+  const upload = element('button', { type: 'button', className: 'button' }, icon('image'), 'Upload photo');
+  const current = element('button', { type: 'button', className: 'button', ariaLabel: 'Use current look from the Club' }, icon('appearance'), 'Current look');
   current.hidden = !!slots.length;
   const error = element('p', { className: 'error form-error' });
   error.hidden = true;
   error.setAttribute('role', 'alert');
-  const retryPicture = element('button', { type: 'button', className: 'upload', text: 'Retry saved picture' });
+  const retryPicture = element('button', { type: 'button', className: 'button' }, icon('refresh'), 'Retry saved picture');
   retryPicture.hidden = true;
-  const save = element('button', { type: 'submit', className: 'button primary' },
-    card ? 'Save changes' : 'Start swiping', icon(card ? 'check' : 'arrow-right'));
-  const cancel = options.onCancel ? element('button', { type: 'button', className: 'button minor', text: 'Cancel', onClick: options.onCancel }) : undefined;
-  const remove = card && options.onRemove ? element('button', { type: 'button', className: 'textbtn', text: 'Remove card' }) : undefined;
+  const save = element('button', { type: 'submit', className: 'button primary', text: card ? 'Save changes' : 'Start swiping' });
+  const cancel = options.onCancel ? element('button', { type: 'button', className: 'button', text: 'Cancel', onClick: options.onCancel }) : undefined;
+  const remove = card && options.onRemove ? element('button', { type: 'button', className: 'button editor-remove', text: 'Remove card' }) : undefined;
+  const savebar = element('div', { className: 'savebar' }, remove, cancel, save);
   const confirmation = element('div', { className: 'field' });
   confirmation.hidden = true;
   const title = element('h2', { text: card ? 'Edit your card' : 'Set up your card', tabIndex: -1 });
   const labeled = (label: string, control: HTMLElement) => element('label', { className: 'field' }, element('span', { className: 'fieldlabel', text: label }), control);
   const bgField = element('section', { className: 'field matches-background-picker', ariaLabel: 'Background' },
-    element('h3', { className: 'fieldlabel', text: 'Background' }), picker.element,
-    element('div', { className: 'kl-inline-actions' }, shuffle));
+    element('div', { className: 'editor-field-heading' }, element('h3', { className: 'fieldlabel', text: 'Background' }), shuffle), picker.element);
   if (options.customBackgrounds) {
-    const actions = element('div', { className: 'kl-inline-actions' });
-    if (options.pickBackground) actions.append(element('button', { type: 'button', className: 'kl-text-button',
-      text: 'Choose from gallery', onClick: () => { void selectCustomMedia('gallery'); } }));
+    const actions = element('div', { className: 'editor-tools' });
+    if (options.pickBackground) actions.append(element('button', { type: 'button', className: 'button', ariaLabel: 'Choose from gallery',
+      onClick: () => { void selectCustomMedia('gallery'); } }, icon('image'), 'From gallery'));
     if (options.uploadBackground) {
       const input = element('input', { ariaLabel: 'Upload background image' });
       input.type = 'file'; input.accept = 'image/jpeg,image/png,image/webp'; input.hidden = true;
@@ -192,10 +212,10 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
         const picked = input.files?.[0]; input.value = '';
         if (picked) void selectCustomMedia('file', picked);
       };
-      actions.append(element('button', { type: 'button', className: 'kl-text-button', text: 'Upload image', onClick: () => input.click() }), input);
+      actions.append(element('button', { type: 'button', className: 'button', onClick: () => input.click() }, icon('plus'), 'Upload image'), input);
     }
     actions.append(retryBackground);
-    bgField.append(element('label', { className: 'kl-room-field' }, element('span', { text: 'Background image' }), backgroundLink), actions);
+    bgField.append(labeled('Background image', backgroundLink), actions);
     if (options.uploadBackground) bgField.append(element('p', { className: 'kl-room-media-note', text: 'Uploads use the lifetime in Chat settings.' }));
     bgField.append(backgroundStatus);
   }
@@ -203,10 +223,18 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     element('div', {}, title, element('p', { className: 'intro', text: 'Choose a saved Wardrobe look or upload your own photo.' })),
     labeled('Display name', name),
     element('div', { className: 'field' }, element('span', { className: 'fieldlabel', text: 'Character look' }),
-      strip, hint, selected, element('div', { className: 'looktools' }, current, upload, retryTiles, file)),
+      strip, hint, selected, element('div', { className: 'editor-tools' }, current, upload, retryTiles, retryPicture, file)),
     bgField, element('label', { className: 'switchrow' }, available, 'Share that I’m open to chat'),
-    error, retryPicture, element('div', { className: 'savebar' }, cancel, save), remove, confirmation);
-  const panel = element('section', { className: 'panel setupPanel' }, preview, form);
+    error, savebar, confirmation);
+  const submissionStatus = element('span', { className: 'sr', tabIndex: -1 });
+  submissionStatus.setAttribute('role', 'status');
+  submissionStatus.onkeydown = event => {
+    if (event.key === 'Escape' && saving) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+  const panel = element('section', { className: 'panel setupPanel' }, preview, form, submissionStatus);
   host.replaceChildren(panel);
   if (card) title.focus({preventScroll: true});
 
@@ -231,13 +259,18 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     figure = portrait;
   }
   function syncSelection() {
-    if (!loadingLook) {
-      selected.hidden = true;
-      selected.textContent = '';
-    }
+    const chosen = draft.lookSource === 'wardrobe' && (savedSlotMatches || nativeFrame)
+      ? slots.find(slot => slot.slot === draft.wardrobeSlot && slot.name === draft.wardrobeName) : undefined;
+    let visible = false;
     for (const button of picks.querySelectorAll('button')) {
-      button.setAttribute('aria-pressed', String(draft.lookSource === 'wardrobe' && (savedSlotMatches || !!nativeFrame) &&
-        draft.wardrobeSlot === Number(button.dataset.slot) && draft.wardrobeName === button.getAttribute('aria-label')));
+      const pressed = chosen?.slot === Number(button.dataset.slot);
+      button.setAttribute('aria-pressed', String(pressed));
+      if (pressed) visible = true;
+    }
+    if (!loadingLook) {
+      const caption = chosen && !visible ? 'Selected · ' + chosen.name : '';
+      if (selected.textContent !== caption) selected.textContent = caption;
+      selected.hidden = !caption;
     }
   }
   function showBackgroundStatus(message: string) {
@@ -444,6 +477,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   }
   function failedTile(button: HTMLButtonElement) {
     button.dataset.preview = 'failed';
+    button.firstElementChild!.replaceChildren(icon('refresh'));
     button.removeAttribute('aria-busy');
     button.setAttribute('aria-describedby', retryTiles.id);
     refreshRetry();
@@ -489,6 +523,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     observer?.unobserve(button);
     const retry = button.dataset.preview === 'failed';
     button.dataset.preview = 'loading';
+    button.firstElementChild!.replaceChildren(icon('clock'));
     button.setAttribute('aria-busy', 'true');
     button.removeAttribute('aria-describedby');
     tileQueue.set(button, retry);
@@ -519,8 +554,13 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   }
   retryTiles.onclick = () => {
     const wanted = failedChoice;
+    const failed = picks.querySelectorAll<HTMLButtonElement>('[data-preview="failed"]');
+    if (focusedElement(form) === retryTiles) {
+      const target = (wanted && tileAt(wanted.slot)) || failed[0] || more;
+      target.focus({preventScroll: true});
+    }
     if (wanted) void choose('wardrobe', () => chosenPicture(wanted.slot, true), wanted);
-    for (const button of picks.querySelectorAll<HTMLButtonElement>('[data-preview="failed"]')) renderTile(button);
+    for (const button of failed) renderTile(button);
     refreshRetry();
   };
 
@@ -566,6 +606,9 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
       if (slot !== null) {
         const thumb = thumbnails.get(slot);
         if (thumb) compareSaved(slot, thumb);
+        else if (card.lookSource === 'wardrobe' && !tileAt(slot) && slots.some(item => item.slot === slot && item.name === card.wardrobeName)) {
+          void picture(slot);
+        }
       }
     } catch {
       if (active() && !nativeFrame && draft.image === undefined) {
@@ -584,30 +627,48 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     else void choose('current', () => renderCurrentLook(memberNumber, signal));
   }
 
-  async function submit(action: () => Promise<unknown>) {
+  async function submit(button: HTMLButtonElement, action: () => Promise<unknown>) {
     if (saving || !active()) return;
     const previousFocus = focusedElement(form);
-    let failed = false;
-    saving = true; controls(); setError('');
+    const focusInside = !!previousFocus && form.contains(previousFocus);
+    const label = button.textContent;
+    const previousError = error.textContent;
+    const deleting = button !== save;
+    const actions = (deleting ? confirmation : savebar).querySelectorAll('button');
+    const pending = deleting ? 'Removing…' : 'Saving…';
+    let failure: string | undefined;
+    saving = true; controls();
+    error.style.visibility = 'hidden';
+    for (const control of actions) control.disabled = true;
+    button.textContent = pending;
+    submissionStatus.setAttribute('aria-live', focusInside ? 'off' : 'polite');
+    submissionStatus.textContent = pending;
+    if (focusInside) submissionStatus.focus({preventScroll: true});
     try { await action(); }
     catch (e) {
-      failed = true;
-      if (active()) setError(e instanceof Error && e.message.includes(' ') ? e.message : 'Your card could not be updated. Check your Cloud connection and try again.');
+      failure = e instanceof Error && e.message.includes(' ') ? e.message :
+        `Your card could not be ${deleting ? 'removed' : 'saved'}. Check your Cloud connection and try again.`;
     } finally {
       if (active()) {
+        submissionStatus.textContent = '';
+        button.textContent = label;
+        for (const control of actions) control.disabled = false;
+        if (error.textContent === previousError) setError('');
+        error.style.removeProperty('visibility');
         saving = false; controls();
+        if (failure) setError(failure);
         const now = focusedElement(form);
-        if (failed && previousFocus && form.contains(previousFocus) && (!now || now === document.body)) previousFocus.focus({preventScroll: true});
+        if (focusInside && (now === submissionStatus || !now || now === document.body)) previousFocus.focus({preventScroll: true});
       }
     }
   }
   form.onsubmit = event => {
     event.preventDefault();
-    if (loadingLook || backgroundOperation || saving || !active()) return;
+    if (!confirmation.hidden || loadingLook || backgroundOperation || saving || !active()) return;
     if (!applyCustomLink()) { backgroundLink.focus(); return; }
     draft.name = name.value.trim(); draft.available = available.checked;
     if (!draft.name) { setError('Enter a display name.'); name.focus(); return; }
-    void submit(async () => {
+    void submit(save, async () => {
       if (nativeFrame && draft.image === undefined) {
         if (!card && draft.lookSource === 'current' && !currentLookCapturedForSave) {
           const frame = await renderCurrentLook(memberNumber, signal);
@@ -626,10 +687,24 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     });
   };
   if (remove && options.onRemove) {
-    const no = element('button', { type: 'button', className: 'button minor', text: 'Keep card', onClick: () => { confirmation.hidden = true; remove.hidden = false; remove.focus(); } });
-    const yes = element('button', { type: 'button', className: 'button', text: 'Remove card', onClick: () => { void submit(() => options.onRemove!(signal)); } });
-    confirmation.append(element('p', { className: 'intro', text: 'Remove your card, swipes and mutual likes from Matches?' }), element('div', { className: 'actions' }, no, yes));
-    remove.onclick = () => { confirmation.hidden = false; remove.hidden = true; no.focus(); };
+    const keepCard = () => {
+      confirmation.hidden = true;
+      savebar.hidden = false;
+      remove.focus();
+    };
+    form.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || confirmation.hidden || saving) return;
+      const nestedDialog = event.target instanceof Element && event.target.closest('dialog, [role="dialog"]');
+      if (nestedDialog && form.contains(nestedDialog)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      keepCard();
+    });
+    const no = element('button', { type: 'button', className: 'button', text: 'Keep card', onClick: keepCard });
+    const yes = element('button', { type: 'button', className: 'button editor-remove', text: 'Remove card' });
+    yes.onclick = () => { void submit(yes, () => options.onRemove!(signal)); };
+    confirmation.append(element('p', { className: 'intro', text: 'Remove your card, swipes and mutual likes from Matches?' }), element('div', { className: 'editor-tools' }, no, yes));
+    remove.onclick = () => { confirmation.hidden = false; savebar.hidden = true; no.focus(); };
   }
   return () => {
     controller.abort();

@@ -1,6 +1,7 @@
 import type { RoomBackground } from "../../bc/room-options";
 import { element } from "../../utils/dom";
 import { pageAction } from "../platform-shell/page-action";
+import { kikiIcon } from "./icons";
 
 /** The Club's built-in backgrounds, browsed by name or category. */
 export function createClubBackgroundPicker(
@@ -50,7 +51,10 @@ export function createClubBackgroundPicker(
       const image = element("img", { alt: "" });
       image.loading = "lazy";
       image.decoding = "async";
-      image.addEventListener("error", () => { image.hidden = true; });
+      image.addEventListener("error", () => {
+        const placeholder = element("span", { className: "kl-room-background-placeholder", title: "Preview unavailable" }, kikiIcon("image"));
+        image.replaceWith(placeholder);
+      }, { once: true });
       image.src = `Backgrounds/${encodeURIComponent(item.name)}.jpg`;
       const button = element("button", {
         className: "kl-activity-choice kl-room-background-choice", type: "button", text: item.label,
