@@ -126,7 +126,7 @@ unencrypted BC `ExtensionSettings` mirror so they can follow that account to ano
 - Administrator-pinned posts, a gold Featured post for 12 hours below pins, and reaction details
 - Preferences covers 225 optional interests. New accounts start with public sharing and an enabled matching
   signal. Edit profile and Preferences let you change visibility and choose which details you publish
-- Bilateral friend requests and automatic offline Direct delivery between eligible confirmed Cloud friends
+- Bilateral friend requests and automatic offline Direct delivery between eligible confirmed Cloud friends or players with a current mutual swipe like
 - Persistent groups with explicit invitations, owner/admin roles, ownership transfer and pinned messages
 - Cached profiles and stable loading states, targeted refresh and bounded requests
 

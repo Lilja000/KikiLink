@@ -5,7 +5,6 @@ import { ShellActionMenu, type ShellAction } from './action-menu';
 import { MatchingSearch, matchCardReasons, matchWeeklyOverlap, matchConnectionsButton, matchEmptySuggestions, matchFilterButton, matchingBrowseSelection, matchOptionsButton, matchOptionsSelector, matchScopeControls, matchSuggestionCount, type MatchingBrowseSelection } from './matching-browse-controls';
 import { matchingBreakdown } from './matching-breakdown';
 import { matchingCatalogError, matchingCatalogLoading, matchingCatalogReadFailed } from './matching-catalog-state';
-import { MatchingInformation, matchingInformationButton } from './matching-information';
 import { MatchingHiddenSuggestions } from './matching-hidden-suggestions';
 import { MatchingHideSuggestion } from './matching-hide-suggestion';
 import { confirmedHide, hiddenSuggestionNotice, hideSuggestionLabel, matchesConfirmedHide, staleHideMessage, type ConfirmedHide } from './matching-hide-undo';
@@ -40,7 +39,7 @@ interface GroupRequestDraft {
  source: MatchingSource;
 }
 type GroupDecision = 'Accepted' | 'Declined' | 'Cancelled';
-type HiddenOpener = 'information' | 'options' | 'empty';
+type HiddenOpener = 'options' | 'empty';
 type ResourceDialogLayout = 'group-request' | 'group-details' | 'resource-why' | 'filters' | 'signal-needed';
 type SheetSelect = 'intent' | 'language' | 'interest' | 'community' | 'timezone' | 'priority';
 type ResourceBrowseFilters = Omit<ResourceFilters, 'priority'> & Pick<MatchingBrowseSelection, 'priority'>;
@@ -65,10 +64,6 @@ export class MatchingResourcesPage {
  readonly #hiddenSuggestions = new MatchingHiddenSuggestions();
  readonly #hideSuggestion = new MatchingHideSuggestion();
  #lastHide: ConfirmedHide | undefined;
- readonly #information = new MatchingInformation(
-   () => this.current() && this.client.connected,
-   () => this.#focusInformationTrigger(),
- );
  #own:MatchOwn|undefined;
  #ownObservedAt = 0;
  #pages = 0;
@@ -99,7 +94,7 @@ export class MatchingResourcesPage {
    this.recovery=new MatchingRecovery(client,storage,options.current,options.lock);
    this.#cardMenu.element.dataset.matchCardMenu='resources';
    this.body.append(this.results);
-   this.element.append(this.body,this.dialog,this.#information.element,this.#cardMenu.element,this.#optionsMenu.element,this.#hiddenSuggestions.element,this.#hideSuggestion.element);
+   this.element.append(this.body,this.dialog,this.#cardMenu.element,this.#optionsMenu.element,this.#hiddenSuggestions.element,this.#hideSuggestion.element);
    this.element.hidden=true;
    this.dialog.oncancel = event => {
      event.preventDefault();
@@ -132,7 +127,7 @@ export class MatchingResourcesPage {
      const reconnect = kind === 'ready' || kind === 'connection' && client.connected;
      if (catalogHint || reconnect) {
        if (kind === 'matching') this.#hiddenSuggestions.refresh();
-       const reviewing = this.dialog.open || this.#hideSuggestion.element.open || this.#information.element.open;
+       const reviewing = this.dialog.open || this.#hideSuggestion.element.open;
        if (reviewing || catalogHint && (this.#busy || this.#page !== 'browse')) this.invalidate(kind === 'matching');
        else void this.#checkBackground();
      } else if (['session','privacy','profiles-cleared','profile-discovery','profile-friends','profile-communities','relationships','communities','connection'].includes(kind)) {
@@ -175,7 +170,7 @@ export class MatchingResourcesPage {
    const signal = this.#signalEditor?.editor;
    if (signal && this.dialog.contains(signal.element)) return signal;
  }
- clear(own=false){this.#pages=0;this.#background=undefined;this.#checkAgain=false;this.#finderRecommendationHost=undefined;this.#openSignalAfterRefresh=false;this.#search.cancel();clearTimeout(this.#timer);this.#epoch++;this.#lastHide=undefined;this.#items=[];this.#requests=[];this.#owned=[];this.#own=undefined;this.#next=null;this.#pending=null;this.#busy=false;this.#catalogState=undefined;this.#refreshAfter=false;this.#restoreFilterFocus=false;this.#signalFocusAfterRefresh=undefined;this.#pendingSignalOpener=undefined;this.dialog.close();this.#information.close();this.#hiddenSuggestions.close(false);this.#hideSuggestion.close();if(own){this.#editor=undefined;this.#editorSource=undefined;this.#draft=undefined;this.#signalEditor=undefined;}if(!this.#openEditor())this.dialog.replaceChildren();this.draw();}
+ clear(own=false){this.#pages=0;this.#background=undefined;this.#checkAgain=false;this.#finderRecommendationHost=undefined;this.#openSignalAfterRefresh=false;this.#search.cancel();clearTimeout(this.#timer);this.#epoch++;this.#lastHide=undefined;this.#items=[];this.#requests=[];this.#owned=[];this.#own=undefined;this.#next=null;this.#pending=null;this.#busy=false;this.#catalogState=undefined;this.#refreshAfter=false;this.#restoreFilterFocus=false;this.#signalFocusAfterRefresh=undefined;this.#pendingSignalOpener=undefined;this.dialog.close();this.#hiddenSuggestions.close(false);this.#hideSuggestion.close();if(own){this.#editor=undefined;this.#editorSource=undefined;this.#draft=undefined;this.#signalEditor=undefined;}if(!this.#openEditor())this.dialog.replaceChildren();this.draw();}
  setVisible(value:boolean){if(value===this.#visible)return;this.#visible=value;this.element.hidden=!value;clearTimeout(this.#timer);if(value){this.#release=this.client.retainEvents();this.#poll=setInterval(()=>void this.#checkBackground(),60000);void this.refresh();}else{clearInterval(this.#poll);this.#release?.();this.#release=undefined;this.clear();}}
  setKind(kind: MatchResourceKind, selection?: MatchingBrowseSelection): void {
    const applied = selection && { ...selection, sort: selection.sort === 'compatibility' ? 'recommended' : selection.sort };
@@ -189,8 +184,8 @@ export class MatchingResourcesPage {
    this.clear();
    if (this.current()) void this.refresh();
  }
- destroy(){this.setVisible(false);this.unsubscribe();this.clear(true);this.dialog.remove();this.#information.element.remove();this.#hiddenSuggestions.element.remove();this.#hideSuggestion.element.remove();this.#cardMenu.destroy();this.#optionsMenu.destroy();}
- invalidate(keepHidden=false){this.#background=undefined;this.#pages=0;this.#checkAgain=false;this.#hideSuggestion.close();if(!keepHidden)this.#hiddenSuggestions.close(false);this.#information.close();this.#items=[];this.#requests=[];this.#owned=[];this.#own=undefined;this.#next=null;if(!this.#openEditor()){this.dialog.close();this.dialog.replaceChildren();}if(this.#search.composing)this.results.replaceChildren(matchingCatalogLoading());if(this.#busy||this.#search.composing){this.#refreshAfter=true;this.draw();}else void this.refresh();}
+ destroy(){this.setVisible(false);this.unsubscribe();this.clear(true);this.dialog.remove();this.#hiddenSuggestions.element.remove();this.#hideSuggestion.element.remove();this.#cardMenu.destroy();this.#optionsMenu.destroy();}
+ invalidate(keepHidden=false){this.#background=undefined;this.#pages=0;this.#checkAgain=false;this.#hideSuggestion.close();if(!keepHidden)this.#hiddenSuggestions.close(false);this.#items=[];this.#requests=[];this.#owned=[];this.#own=undefined;this.#next=null;if(!this.#openEditor()){this.dialog.close();this.dialog.replaceChildren();}if(this.#search.composing)this.results.replaceChildren(matchingCatalogLoading());if(this.#busy||this.#search.composing){this.#refreshAfter=true;this.draw();}else void this.refresh();}
  readPending(){this.#storageError='';try{this.#pending=this.recovery.read();}catch(e){this.#pending=null;this.#storageError=e instanceof Error?e.message:'Saved request unavailable.';}}
  button(text:string,fn:()=>void,write=false){const b=element('button',{type:'button',className:'kl-text-button',text});b.dataset.matchWrite=String(write);b.disabled=this.#busy||write&&!!(this.#pending||this.#storageError);b.onclick=()=>{if(b.isConnected&&this.current()&&!this.#busy&&(!write||!this.#pending&&!this.#storageError))fn();};return b;}
  select(label:string,values:readonly string[],value:string,write:(v:string)=>void,labels?:string[]){const s=element('select',{ariaLabel:label});values.forEach((v,i)=>s.append(element('option',{value:v,text:labels?.[i]??v})));s.value=value;s.disabled=this.#busy;s.onchange=()=>{if(s.isConnected&&this.current()&&!this.#busy)write(s.value);};return s;}
@@ -314,7 +309,6 @@ export class MatchingResourcesPage {
  const current = this.valid();
  let verifiedOwn: MatchOwn | undefined;
  await this.work(async valid => {
- this.#information.close(false);
  if (!more) { this.#items = []; this.#requests = []; this.#owned = []; this.#next = null; }
  this.readPending();
  const { resources: source, people } = await this.recovery.resourceSources(valid);
@@ -437,7 +431,6 @@ export class MatchingResourcesPage {
  }
  const options = matchOptionsButton(this.#optionsMenu, () => this.current() && this.client.connected && !this.#busy, menu);
  actions.append(options);
- if(this.#own)actions.append(matchingInformationButton(this.button('Matching information',()=>this.#showInformation())));
  if(this.#kind==='groups'&&this.#draft){
    const resume=this.button('Resume group request',()=>{
      const draft=this.#draft;
@@ -555,55 +548,6 @@ export class MatchingResourcesPage {
    this.#filters = structuredClone(DEFAULT_RESOURCE_FILTERS);
    this.#applyBrowse();
  }
- #focusInformationTrigger():void { this.body.querySelector<HTMLButtonElement>('.kl-match-information-toggle')?.focus({ preventScroll: true }); }
- #showInformation():void {
-   const own = this.#own;
-   if (!own) return;
-   const kind = this.#kind;
-   const source = this.#source;
-   const connections = kind === 'groups' ? this.button('Group requests', () => {
-     this.#information.close();
-     if (this.#page === 'requests') return;
-     this.#page = 'requests';
-     void this.refresh();
-   }) : this.options.connections ? this.button('Connections', () => {
-     this.#information.close(false);
-     this.options.connections?.();
-   }) : undefined;
-   this.#information.open({
-     own,
-     connections,
-     signal: this.button('My signal', () => {
-       this.#information.close(false);
-       this.#editOwnSignal('.kl-match-information-toggle');
-     }, true),
-     hidden: this.#hiddenTrigger('information'),
-     detail: kind === 'rooms'
-       ? 'Rooms use current Space permissions. Planned capacity is known only when supplied. Live occupancy and free places are unavailable.'
-       : kind === 'events'
-         ? 'Events use current Calendar access and RSVP. Dates use your device time zone. The original time zone is unavailable.'
-         : undefined,
-     saved: async () => {
-       const choices = checkedResourceChoices(await this.read('/v1/matching/resource-choices', source));
-       if (!this.current() || this.#kind !== kind || !sameMatchingSource(source, this.#source)) return [];
-       const rows = [];
-       for (const choice of choices) {
-         if (choice.kind !== kind || !choice.saved || choice.hidden || !choice.title ||
-           choice.host === null || !this.allowed(choice.host)) continue;
-         const loaded = this.#items.find(candidate => candidate.kind === kind && candidate.id === choice.id &&
-           candidate.host.memberNumber === choice.host && candidate.title === choice.title &&
-           candidate.saved && !candidate.hidden && candidate.choiceRevision === choice.revision &&
-           sameMatchingSource(this.source(candidate), source));
-         rows.push({
-           title: choice.title, icon: resourceIcon[kind], reason: loaded?.reasons[0],
-           open: () => void this.why(choice.id, source, 'information'),
-         });
-         if (rows.length === 3) break;
-       }
-       return rows;
-     },
-   });
- }
  #hiddenTrigger(opener: HiddenOpener): HTMLButtonElement {
    const button = this.button('Hidden suggestions', () => this.#openHiddenSuggestions(opener));
    button.setAttribute('aria-haspopup', 'dialog');
@@ -614,13 +558,11 @@ export class MatchingResourcesPage {
    const kind = this.#kind, source = this.#source, valid = this.valid();
    const current = () => valid() && this.client.connected && this.#kind === kind && sameMatchingSource(this.#source, source);
    if (!current() || this.dialog.open || this.#hiddenSuggestions.element.open) return;
-   this.#information.close(false);
    this.#hiddenSuggestions.open({
      current,
      focus: () => {
        const options = this.body.querySelector<HTMLElement>(matchOptionsSelector);
-       const trigger = opener === 'empty' ? this.body.querySelector<HTMLButtonElement>('[data-match-hidden-opener="empty"]') :
-         opener === 'information' ? this.body.querySelector<HTMLButtonElement>('.kl-match-information-toggle') : options;
+       const trigger = opener === 'empty' ? this.body.querySelector<HTMLButtonElement>('[data-match-hidden-opener="empty"]') : options;
        (trigger instanceof HTMLButtonElement && trigger.disabled ? options : trigger ?? options)?.focus({ preventScroll: true });
      },
      load: async active => {
@@ -853,7 +795,7 @@ export class MatchingResourcesPage {
        note('Availability and time zone filters use shared data. Community choices come from loaded results.')),
      element('footer', {}, reset, this.button('Close', () => this.dialog.close()), apply), returnFocus, 'filters');
  }
- async why(id: string, source = this.#source, returnTo: 'why' | 'options' | 'information' | 'finder' = 'why', finderHost?: number): Promise<void> {
+ async why(id: string, source = this.#source, returnTo: 'why' | 'options' | 'finder' = 'why', finderHost?: number): Promise<void> {
    const kind = this.#kind;
    await this.work(async valid => {
      const current = () => valid() && !this.#refreshAfter && this.client.connected &&
@@ -864,7 +806,7 @@ export class MatchingResourcesPage {
 
      const control = returnTo === 'options' ? '.kl-match-card-options' : '.kl-match-resource-why';
      const returnFocus = returnTo === 'finder' ? matchOptionsSelector :
-       returnTo === 'information' ? '.kl-match-information-toggle' : `[data-resource-id="${CSS.escape(id)}"] ${control}`;
+       `[data-resource-id="${CSS.escape(id)}"] ${control}`;
      const profile = this.button('Host profile', () => void this.#openResourceLink(resource, 'host', 'resource-why'));
      profile.classList.add('kl-match-why-profile');
      this.#showResourceDialog('Why this suggestion?',
@@ -879,8 +821,6 @@ export class MatchingResourcesPage {
    });
    if (this.dialog.open && this.dialog.dataset.layout === 'resource-why') {
      this.dialog.querySelector<HTMLButtonElement>('footer button')?.focus({ preventScroll: true });
-   } else if (returnTo === 'information' && this.current() && this.client.connected && !this.#busy) {
-     this.#focusInformationTrigger();
    }
  }
  #confirmHide(candidate: MatchResource): void {

@@ -14,6 +14,7 @@ export interface RelationshipControlOptions {
   requestRow?: boolean;
   cloudOnly?: boolean;
   directoryCard?: boolean;
+  matchCard?: boolean;
   directoryMenu?: (trigger: HTMLButtonElement, friendship: DirectoryFriendship) => void;
   review?: () => void;
   onSettled?: (error?: unknown) => void;
@@ -54,7 +55,7 @@ export function renderRelationshipControls(root: HTMLElement, peer: number, serv
   if (options) callbacks.set(root, options);
   if (root.dataset.busy === "true" || root.querySelector('[data-busy="true"]')) return;
   const cardOptions = callbacks.get(root);
-  const directoryCard = cardOptions?.directoryCard === true;
+  const directoryCard = cardOptions?.directoryCard === true || cardOptions?.matchCard === true;
   const relation = service?.relationships.get(peer), native = (adapter.isKnownFriend?.(peer) ?? false);
   const saved=service?.friendActions?.().find(e=>e.memberNumber===peer);
   const signature = JSON.stringify([peer, relation, service?.friendSource, service?.friendReadError, saved, service?.friendActionHeld?.(peer), service?.friendActionBusy?.(peer), native, service?.client.connected]);
@@ -75,14 +76,14 @@ export function renderRelationshipControls(root: HTMLElement, peer: number, serv
     };
     void Promise.resolve().then(() => { if(visible(root)) return work(); }).then(() => finish(), error => finish(error));
   };
-  const action = (title: string, work: () => void | Promise<void>, icon: "group-add" | "check" | "close" | "direct-add" | null = "group-add") => {
-    const button = element("button", { type: "button", className: "kl-text-button kl-friend-action", text: title });
+  const action = (title: string, work: () => void | Promise<void>, icon: "group-add" | "check" | "close" | "direct-add" | "clock" | null = "group-add") => {
+    const button = element("button", { type: "button", className: cardOptions?.matchCard ? "button" : "kl-text-button kl-friend-action", text: title });
     if (icon) button.prepend(kikiIcon(icon));
     button.disabled = Boolean(relation?.supported && service && !service.client.connected);
     button.addEventListener("click", () => start(button, work));
     return button;
   };
-  if (directoryCard && (saved || service?.friendReadError || service?.supported && !relation)) {
+  if (!cardOptions?.matchCard && directoryCard && (saved || service?.friendReadError || service?.supported && !relation)) {
     const review = element('button', { type:'button', className:'kl-text-button kl-friend-action',
       text:saved ? 'Review friend action' : native ? 'BC friend' : 'Add friend' });
     if (!saved) {
@@ -113,6 +114,10 @@ export function renderRelationshipControls(root: HTMLElement, peer: number, serv
     const sent = relation.state === "sent", inlineCancel = sent && callbacks.get(root)?.requestRow;
     const label = relation.state === "sent" ? "Pending Request" : relation.canMessage ? "Friends" : "Friend sync pending";
     const needsSync = !native || relation.nativeSyncRequired;
+    if (cardOptions?.matchCard) {
+      const state = action(sent ? 'Requested' : 'Friends', () => {}, sent ? 'clock' : 'check');
+      state.disabled = true; root.append(state); return;
+    }
     if (directoryCard && cardOptions?.directoryMenu) {
       const trigger = element('button', { type: 'button', className: 'kl-text-button kl-friend-action kl-people-friend-trigger' },
         kikiIcon(sent ? 'clock' : 'check'), sent ? 'Requested' : label, kikiIcon('chevron-down'));

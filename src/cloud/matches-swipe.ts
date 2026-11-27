@@ -31,6 +31,13 @@ export interface SwipeCard {
   bio: string;
   tags: string[];
 }
+export interface SwipeCommonGround {
+  score: number | null;
+  intents: string[];
+  interests: string[];
+  preferences: string[];
+  expiresAt: number | null;
+}
 export interface SwipeVote { id: string; target: number; type: SwipeChoice; recoveryGeneration?: string }
 export interface SwipePage { items: SwipeCard[]; nextCursor: number | null }
 export interface SwipeSnapshot {
@@ -117,6 +124,7 @@ const hints = new Set(["matching", "session", "connection", "ready", "profiles-c
 /** Account-scoped authenticated transport. All object URLs belong to the requesting view. */
 export class SwipeApi {
   #customBackgrounds = false;
+  #commonGround = false;
   #retrySave: { body: string; id: string } | null = null;
   #retryUndo: { vote: string; id: string } | null = null;
   #mutualDepth = 1;
@@ -146,6 +154,7 @@ export class SwipeApi {
     const visibleDeck = deck.items.filter(item => !this.#blocked(item.memberNumber));
     const visibleMutuals = mutuals.items.filter(item => !this.#blocked(item.memberNumber));
     this.#customBackgrounds = customBackgrounds;
+    this.#commonGround = value.commonGround === true;
     return { self, initialAvailable, discoverability, customBackgrounds,
       deck: visibleDeck, deckCursor: deck.nextCursor, mutuals: visibleMutuals, mutualCursor: mutuals.nextCursor,
       mutualPagesLoaded: mutuals.depth,
@@ -215,6 +224,20 @@ export class SwipeApi {
   }
   async moreDeck(cursor: number, signal?: AbortSignal): Promise<SwipePage> {
     return this.#visiblePage("deck", await this.#readPage("deck", cursor, signal), signal);
+  }
+  async commonGround(item: SwipeCard, signal: AbortSignal): Promise<SwipeCommonGround | undefined> {
+    const owner = this.client.memberNumber;
+    if (!this.#commonGround || item.memberNumber === owner || this.#blocked(item.memberNumber)) return;
+    const path = `${prefix}/cards/${item.memberNumber}/common-ground?revision=${item.revision}`;
+    const value = record(await this.client.request("GET", path, undefined, true, signal));
+    if (signal.aborted || owner !== this.client.memberNumber || this.#blocked(item.memberNumber)) return;
+    if (value.memberNumber !== item.memberNumber || value.revision !== item.revision) invalid();
+    const score = value.score === null ? null : integer(value.score, 0);
+    if (score !== null && score > 100) invalid();
+    const expiresAt = value.expiresAt === null ? null : integer(value.expiresAt, 1);
+    if (expiresAt !== null && expiresAt <= Date.now()) return;
+    return { score, expiresAt, intents: list(value.intents, 7), interests: list(value.interests, 12),
+      preferences: list(value.preferences, 3) };
   }
   async image(item: SwipeCard): Promise<Blob | null> {
     if (item.memberNumber !== this.client.memberNumber && this.#blocked(item.memberNumber)) throw new CloudError("profile_blocked", 403);

@@ -1,5 +1,7 @@
 import { CloudError } from '../../cloud/client';
-import type { SwipeCard, SwipeSnapshot, SwipeVote } from '../../cloud/matches-swipe';
+import type { SwipeCard, SwipeCommonGround, SwipeSnapshot, SwipeVote } from '../../cloud/matches-swipe';
+import { catalogById } from '../../cloud/preference-model';
+import { MATCH_INTERESTS } from '../../../cloud/shared/matching.mjs';
 import { element } from '../../cloud/dom';
 import { focusedElement } from '../../utils/dom';
 import { kikiIcon, type KikiLinkIconName } from '../link-chat/icons';
@@ -10,8 +12,13 @@ import { attachSwipeGesture, SwipeRain, type SwipeDirection } from './matches-sw
 import { fitPanelDialog } from './panel-dialog-layout';
 
 type View = 'swipe' | 'mutual';
-interface Actions {
+export interface MatchContactActions {
+  message?(member: number, name: string, current: () => boolean): Promise<void>;
+  friendControls?(root: HTMLElement, member: number, signal: AbortSignal): void;
+}
+interface Actions extends MatchContactActions {
   current(): boolean;
+  commonGround?(card: SwipeCard, signal: AbortSignal): Promise<SwipeCommonGround | undefined>;
   image(card: SwipeCard): Promise<Blob | null>;
   loadBackground?: MatchesBackgroundLoader;
   backgroundPolicy?: () => ImagePreviewPreference;
@@ -28,16 +35,34 @@ function button(label:string, classes:string, run:() => void, glyph?:KikiLinkIco
   b.onclick = run;
   return b;
 }
-function profileMeta(card:SwipeCard) {
+const interestLabels = new Map(MATCH_INTERESTS.map(item => [item.id,item.label]));
+function profileMeta(card: SwipeCard, mine?: SwipeCard | null) {
   if (!card.languages.length && !card.available) return undefined;
-  const languageText = card.languages.join(' · ');
-  const label = [languageText, card.available ? 'Open to chat' : ''].filter(Boolean).join(' · ');
-  return element('div', {className:'meta'}, icon(languageText ? 'globe' : 'chat'), element('span',{text:label}));
+  const text = element('span');
+  for (const lang of card.languages) {
+    if (text.childNodes.length) text.append(' · ');
+    if (mine?.languages.includes(lang)) {
+      const shared = element('span', {className:'shared-language', title:'You both speak '+lang},lang);
+      shared.append(element('span',{className:'sr',text:' (shared language)'}));
+      text.append(shared);
+    } else text.append(lang);
+  }
+  if (card.available) text.append((card.languages.length ? ' · ' : '')+'Open to chat');
+  return element('div', {className:'meta'}, icon(card.languages.length ? 'globe' : 'chat'),text);
 }
-function story(card:SwipeCard) {
-  if (!card.bio && !card.tags.length) return undefined;
-  const tags = card.tags.length ? element('div', {className:'tagset'}, ...card.tags.map(text => element('span', {text}))) : undefined;
-  return element('div', {className:'card-story'}, card.bio ? element('p',{className:'bio', text:card.bio}) : undefined, tags);
+function story(card: SwipeCard, common?: SwipeCommonGround) {
+  const shared = new Set([...(common?.intents ?? []),...(common?.interests ?? [])]);
+  const tags = [...new Set([...shared,...card.tags])].slice(0,12);
+  const sharedLikes = (common?.preferences ?? []).flatMap(id => catalogById.get(id)?.label ?? []);
+  if (!card.bio && !tags.length && !sharedLikes.length) return undefined;
+  return element('div', {className:'card-story'},
+    card.bio ? element('p',{className:'bio',text:card.bio}) : undefined,
+    tags.length ? element('div',{className:'tagset'}, ...tags.map(tag => {
+      const label = interestLabels.get(tag) ?? tag;
+      return shared.has(tag) ? element('span',{className:'shared-setting',title:'Shared match setting'},
+        icon('check'),label,element('span',{className:'sr',text:' (shared match setting)'})) : element('span',{text:label});
+    })) : undefined,
+    sharedLikes.length ? element('p',{className:'both-like'},element('strong',{text:'Both like'}),sharedLikes.join(' · ')) : undefined);
 }
 function empty(glyph:KikiLinkIconName, title:string, text:string, ...actions:(HTMLButtonElement|undefined)[]) {
   return element('section', {className:'empty matches-empty'}, element('span',{className:'empty-emblem'},icon(glyph)),
@@ -67,8 +92,11 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
   let awaiting: SwipeCard | undefined;
   let displayed: SwipeCard[] = [];
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  let commonForCard: { clear(): void; refresh(): void } | undefined;
   let motion: ReturnType<typeof attachSwipeGesture> | undefined;
   let modalTarget: SwipeCard | undefined;
+  let revalidatingTitle: string | undefined;
+  let contactLife: AbortController | undefined;
   let restoring: HTMLElement | undefined;
   let fitCleanup: (() => void) | undefined;
   let extraMutuals: SwipeCard[] = [];
@@ -116,7 +144,38 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
   function rainHost() {
     rain.place(dialog.open ? dialog.querySelector<HTMLElement>('.match-duet') : stage() ?? content.querySelector<HTMLElement>('.empty'));
   }
+  function suspendContact(): boolean {
+    if (!modalTarget || !dialog.open) return false;
+    if (revalidatingTitle !== undefined) return true;
+    revalidatingTitle = dialog.getAttribute('aria-label') ?? '';
+    const heading = dialog.querySelector('h2');
+    if (heading) heading.textContent = 'Checking match…';
+    dialog.setAttribute('aria-label','Checking match');
+    dialog.setAttribute('aria-busy','true');
+    content.hidden = true;
+    for (const child of Array.from(dialog.children).slice(1) as HTMLElement[]) {
+      child.inert = true;
+      child.style.visibility = 'hidden';
+    }
+    return true;
+  }
+  function finishRevalidation() {
+    if (revalidatingTitle === undefined) return;
+    content.hidden = false;
+    dialog.removeAttribute('aria-busy');
+    if (dialog.open) {
+      dialog.setAttribute('aria-label',revalidatingTitle);
+      const heading = dialog.querySelector('h2');
+      if (heading) heading.textContent = revalidatingTitle;
+      for (const child of Array.from(dialog.children).slice(1) as HTMLElement[]) {
+        child.inert = false;
+        child.style.removeProperty('visibility');
+      }
+    }
+    revalidatingTitle = undefined;
+  }
   function closeModal() {
+    contactLife?.abort();
     if (dialog.open) dialog.close();
   }
   dialog.addEventListener('keydown', event => {
@@ -127,7 +186,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
       closeModal();
     }
   });
-  function modal(title:string, body:HTMLElement[], buttons:HTMLButtonElement[], card:SwipeCard, target?:HTMLElement) {
+  function modal(title:string, body:HTMLElement[], buttons:HTMLElement[], card:SwipeCard, target?:HTMLElement) {
     if (dialog.open || !current()) return;
     restoring = target ?? focusedElement(host);
     modalTarget = card;
@@ -147,6 +206,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
   });
   dialog.addEventListener('close', () => {
     if (dialog.open) return;
+    contactLife?.abort();
     modalTarget = undefined;
     fitCleanup?.();
     dialog.replaceChildren();
@@ -164,14 +224,30 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
       element('div',{className:'pair-portrait'},portraits.art(card,'mini',{small:true})),
       element('span',{className:'pair-heart',ariaHidden:'true'},icon('heart')));
     const names = element('div',{className:'pair-names'},element('span',{text:mine.name,title:mine.name}),element('span',{text:card.name,title:card.name}));
-    const go = button('Mutual likes','button',() => {
-      restoring = undefined;
-      closeModal(); actions.navigate('mutual');
-      content.querySelector<HTMLButtonElement>(`[data-member="${card.memberNumber}"]`)?.focus({preventScroll:true});
-    },'heart');
-    const keep = button(view === 'swipe' && activeDeck().length ? 'Keep swiping' : 'Done','button primary',closeModal);
-    modal('It’s a match',[duet,names,element('p',{className:'dialog-copy match-copy',text:'You both liked each other.'})],[keep,go],card,
-      content.querySelector<HTMLButtonElement>('[data-action="like"], [data-action="mutual"]') ?? undefined);
+    contactModal('It’s a match', [duet,names,element('p',{className:'dialog-copy match-copy',text:'You both liked each other.'})],
+      card, content.querySelector<HTMLButtonElement>('[data-action="like"], [data-action="mutual"]') ?? undefined);
+  }
+  function contactModal(title:string, body:HTMLElement[], card:SwipeCard, trigger?:HTMLElement) {
+    if (dialog.open || !current()) return;
+    const controller = new AbortController();
+    contactLife = controller;
+    const active = () => !controller.signal.aborted && current() && dialog.open && revalidatingTitle === undefined && modalTarget === card;
+    const feedback = element('p',{className:'swipe-feedback error',role:'alert',hidden:true});
+    const message = button('Message','button primary',() => {
+      if (!active() || !actions.message || message.disabled) return;
+      message.disabled = true; feedback.hidden = true;
+      void actions.message(card.memberNumber,card.name,active).then(() => {
+        if (active()) closeModal();
+      }).catch(error => {
+        if (active()) { feedback.textContent = error instanceof Error ? error.message : 'Could not open this chat.'; feedback.hidden = false; }
+      }).finally(() => { if (active()) message.disabled = false; });
+    },'chat');
+    const friend = element('div',{className:'match-friend-action'});
+    const buttons = actions.message ? [message] as HTMLElement[] : [];
+    if (actions.friendControls) buttons.push(friend);
+    if (!buttons.length) buttons.push(button('Done','button primary',closeModal));
+    modal(title,[...body,feedback],buttons,card,trigger);
+    actions.friendControls?.(friend,card.memberNumber,controller.signal);
   }
   function backgroundInfo(card: SwipeCard) {
     const vanilla = matchesBackgroundLabel(card.background);
@@ -194,7 +270,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     if (card.backgroundUrl) body.push(bg.where);
     const meta = profileMeta(card), about = story(card);
     if (meta || about) body.push(element('div',{className:'details'},meta,about));
-    modal(card.name,body,[button('Done','button primary',closeModal)],card,trigger);
+    contactModal(card.name,body,card,trigger);
   }
   async function more() {
     if (nextCursor === null || !current() || busy) return;
@@ -257,7 +333,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     const behind = next ? portraits.art(next,'swipe-under',{upcoming:true}) : undefined;
     behind?.setAttribute('aria-hidden','true');
     face.append(element('span',{className:'flag',ariaHidden:'true'},
-      element('span',{className:'swipe-like'},icon('heart'),'Like'),element('span',{className:'swipe-pass'},icon('close'),'Pass')));
+      element('span',{className:'swipe-like'},icon('heart')),element('span',{className:'swipe-pass'},icon('close'))));
     const scene = element('div',{className:'scene swipable',tabIndex:0,ariaLabel:card.name+'’s card. Left arrow to pass, right arrow to like.'},behind,face);
     const position = snapshot.seen + 1, total = snapshot.seen + Math.max(cards.length,snapshot.remaining);
     const parts = Math.min(5,total);
@@ -277,10 +353,47 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
       b.setAttribute('aria-keyshortcuts',key);
       b.append(element('kbd',{ariaHidden:'true',text:arrow}));
     }
-    const about = story(card);
-    const side = element('div',{className:about ? 'side' : 'side no-story'},
-      element('div',{className:'details card-identity'},element('h2',{className:'name',text:card.name}),profileMeta(card)),
-      about,element('div',{className:'decisions'},element('div',{className:'actions'},rewind,pass,like)));
+    const score = element('span',{className:'swipe-compatibility',hidden:true});
+    const identity = element('div',{className:'details card-identity'},
+      element('div',{className:'name-line'},element('h2',{className:'name',text:card.name}),score),profileMeta(card,snapshot.self));
+    const decisions = element('div',{className:'decisions'},element('div',{className:'actions'},rewind,pass,like));
+    const side = element('div',{className:'side'},identity,decisions);
+    function showCommon(info?: SwipeCommonGround) {
+      score.hidden = info?.score == null;
+      score.replaceChildren(...(info?.score != null ? [icon('heart'),info.score+'% compatibility'] : []));
+      side.querySelector('.card-story')?.remove();
+      const about = story(card!,info);
+      side.classList.toggle('no-story',!about);
+      if (about) side.insertBefore(about,decisions);
+    }
+    showCommon();
+    const life = screenLife.signal;
+    let checked = -Infinity;
+    let pending: AbortController | undefined;
+    let expiry: ReturnType<typeof setTimeout> | undefined;
+    const clear = () => {
+      pending?.abort(); pending = undefined;
+      clearTimeout(expiry);
+      checked = -Infinity;
+      if (!life.aborted) showCommon();
+    };
+    life.addEventListener('abort',clear,{once:true});
+    commonForCard = { clear, refresh() {
+      if (!actions.commonGround || life.aborted || pending || Date.now()-checked < 30_000) return;
+      const read = new AbortController();
+      pending = read;
+      checked = Date.now();
+      void actions.commonGround(card,read.signal).then(info => {
+        if (read.signal.aborted || !current()) return;
+        clearTimeout(expiry);
+        if (info?.expiresAt != null && info.expiresAt <= Date.now()) { showCommon(); return; }
+        showCommon(info);
+        // Permissions can change while a tab is offline and misses Cloud hints.
+        if (info) expiry = setTimeout(clear,Math.min(60_000,(info.expiresAt ?? Infinity)-Date.now()));
+      }).catch(() => { if (!read.signal.aborted && current()) showCommon(); })
+        .finally(() => { if (pending === read) pending = undefined; });
+    }};
+    commonForCard.refresh();
     motion = attachSwipeGesture(scene,d => void vote(d),() => busy || !current(),screenLife.signal,
       () => { if (!busy && !motion?.dragging()) render(); });
     return element('section',{className:'panel swipePanel',ariaLabel:card.name},art,side);
@@ -290,7 +403,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     if (!snapshot || !current()) return;
     const cards = activeDeck(snapshot);
     const key = view === 'mutual' ? JSON.stringify([view,listed(),nextCursor,!snapshot.remaining,snapshot.lastVote?.id]) :
-      JSON.stringify([view,...cards.slice(0,2),snapshot.seen,snapshot.remaining,snapshot.lastVote?.id,!cards.length && snapshot.mutualCount]);
+      JSON.stringify([view,snapshot.self?.languages,...cards.slice(0,2),snapshot.seen,snapshot.remaining,snapshot.lastVote?.id,!cards.length && snapshot.mutualCount]);
     if (!force && key === rendered) return;
     // A change further down the queue must not detach the element that owns a pointer.
     // Withdrawn or changed visible cards, however, no longer represent the current data.
@@ -300,7 +413,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     const focused = focusedElement(content);
     const restore = focused && content.contains(focused) ? focused.dataset : undefined;
     screenLife.abort(); screenLife = new AbortController();
-    motion = undefined;
+    motion = undefined; commonForCard = undefined;
     displayed = view === 'swipe' ? cards.slice(0,2) : [];
     picked = cards[0]?.memberNumber;
     content.replaceChildren(view === 'mutual' ? drawMutuals(snapshot) : drawSwipe(snapshot,cards));
@@ -344,6 +457,8 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     }
     if (modalTarget && !listed().some(c => c.memberNumber === modalTarget?.memberNumber && c.revision === modalTarget.revision)) closeModal();
     if (changedView || !busy) render();
+    finishRevalidation();
+    commonForCard?.refresh();
     portraits.retryFailed();
     if (busy && changedView) enable(false);
   }
@@ -468,5 +583,5 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     portraits.dispose();
     for (const node of [content,live,error,dialog]) node.remove();
   }
-  return {update,celebrate,refreshBackgroundPolicy:() => portraits.refreshBackgroundPolicy(),notify:(message:string) => notify(message),dispose};
+  return {update,celebrate,suspendContact,contactSuspended:() => revalidatingTitle !== undefined,clearCommonGround:() => commonForCard?.clear(),refreshBackgroundPolicy:() => portraits.refreshBackgroundPolicy(),notify:(message:string) => notify(message),dispose};
 }

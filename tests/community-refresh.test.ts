@@ -204,3 +204,15 @@ it("marks only the captured Feed notifications and leaves invitations and new ar
   expect(h.request).toHaveBeenCalledWith('POST', '/v1/mailbox/read', { id: 1 });
   expect(h.request).toHaveBeenCalledWith('POST', '/v1/mailbox/read', { id: 2 });
 });
+
+it("opens an acknowledged notification despite an unrelated social refresh failure", async () => {
+  const h = setup(true); await h.service.start();
+  const base = h.request.getMockImplementation()!;
+  h.request.mockImplementation(async (method, path) => {
+    if (path.startsWith("/v1/relationships?")) throw new Error("Relationship service unavailable");
+    return base(method, path);
+  });
+  await expect(h.service.refresh()).rejects.toThrow("Relationship service unavailable");
+  await expect(h.service.readMail(1)).resolves.toBeUndefined();
+  expect(h.request).toHaveBeenCalledWith("POST", "/v1/mailbox/read", {id: 1});
+});

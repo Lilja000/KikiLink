@@ -220,3 +220,77 @@ it('protects mutual detail previews and falls back to the assigned Club room if 
   expect(btn.hidden).toBe(false);
   expect(host.querySelector('dialog img.thumbbg')?.getAttribute('src')).not.toContain('https://');
 });
+
+it('highlights shared choices on the visible card and clears withdrawn, late and expired comparisons', async () => {
+  vi.useFakeTimers();
+  const info = {score:87,intents:['Long-term partner'],interests:['writing'],preferences:['interest.praise'],expiresAt:null as number|null};
+  type Common = typeof info;
+  const requests: {member:number; signal:AbortSignal; reply:(value:Common)=>void}[] = [];
+  const {host, deck} = mount(async()=>({matched:false}), {commonGround:(c,signal)=>new Promise<Common>(reply => requests.push({member:c.memberNumber,signal,reply}))});
+  const s=snapshot();
+  s.self!.languages=['English']; s.deck[0]!.languages=['English','Portuguese'];
+  s.deck[0]!.tags=['Long-term partner','writing'];
+  deck.update(s,'swipe'); deck.update(s,'swipe');
+  expect(requests.map(item=>item.member)).toEqual([2]);
+  expect(host.querySelector('.shared-language')?.textContent).toContain('English');
+  expect(host.querySelector('.shared-language')?.textContent).not.toContain('Portuguese');
+  requests[0]!.reply(info); await vi.advanceTimersByTimeAsync(0);
+  expect(host.querySelector('.swipe-compatibility')?.textContent).toBe('87% compatibility');
+  expect([...host.querySelectorAll('.shared-setting')].map(el=>el.textContent)).toEqual(['Long-term partner (shared match setting)','Writing & stories (shared match setting)']);
+  expect(host.querySelector('.both-like')?.textContent).toContain('Praise');
+  deck.clearCommonGround();
+  expect(host.querySelector('.both-like')).toBeNull();
+  expect(host.querySelector('.swipe-compatibility')?.hasAttribute('hidden')).toBe(true);
+  deck.update(s,'swipe');
+  s.deck=s.deck.slice(1);
+  deck.update(s,'swipe');
+  expect(requests[1]?.signal.aborted).toBe(true);
+  requests[1]!.reply(info); await vi.advanceTimersByTimeAsync(0);
+  expect(host.querySelector('.both-like')).toBeNull();
+  requests[2]!.reply({...info,preferences:[],expiresAt:Date.now()+20}); await vi.advanceTimersByTimeAsync(0);
+  expect(host.querySelector('.both-like')).toBeNull();
+  expect(host.querySelector('.swipe-compatibility')?.textContent).toBe('87% compatibility');
+  await vi.advanceTimersByTimeAsync(20);
+  expect(host.querySelector('.swipe-compatibility')?.hasAttribute('hidden')).toBe(true);
+});
+
+it('opens a mutual chat before a friend request and releases controls when the match is withdrawn', async () => {
+  let allowed: (() => boolean) | undefined, listener: AbortSignal | undefined;
+  const friend = vi.fn();
+  const message = vi.fn(async (_member: number,_name: string,current: () => boolean) => {
+    allowed = current;
+    expect(current()).toBe(true);
+    throw new Error('Cloud unavailable');
+  });
+  const {host,deck} = mount(async()=>({matched:true}), {message, friendControls(root,member,signal) {
+    listener = signal;
+    const button=document.createElement('button');
+    button.textContent='Add friend'; button.onclick=()=>friend(member); root.append(button);
+  }});
+  const s=snapshot(), peer=card(2);
+  deck.update({...s,mutuals:[peer],mutualCount:1},'mutual');
+  deck.celebrate(peer);
+  const dialog=host.querySelector('dialog')!;
+  expect(dialog.open).toBe(true);
+  const messageButton=dialog.querySelector<HTMLButtonElement>('[aria-label="Message"]')!;
+  messageButton.click();
+  await vi.waitFor(()=>expect(messageButton.disabled).toBe(false));
+  expect(dialog.querySelector('[role="alert"]')?.textContent).toBe('Cloud unavailable');
+  expect(friend).not.toHaveBeenCalled();
+  const addFriend = dialog.querySelector<HTMLButtonElement>('.match-friend-action button')!;
+  addFriend.click();
+  expect(friend).toHaveBeenCalledWith(2);
+  expect(deck.suspendContact()).toBe(true);
+  expect(dialog.getAttribute('aria-label')).toBe('Checking match');
+  expect(allowed?.()).toBe(false);
+  expect((dialog.querySelector('.dialogbuttons') as HTMLElement).inert).toBe(true);
+  deck.update({...s,mutuals:[peer],mutualCount:1},'mutual');
+  expect(dialog.querySelector('.match-friend-action button')).toBe(addFriend);
+  expect(allowed?.()).toBe(true);
+  expect(dialog.getAttribute('aria-label')).toBe('It’s a match');
+  deck.suspendContact();
+  deck.update(s,'mutual');
+  expect(dialog.open).toBe(false);
+  expect(allowed?.()).toBe(false);
+  expect(listener?.aborted).toBe(true);
+});

@@ -18,3 +18,19 @@ test("the shell count includes each enabled verified account once, independent o
   f.advance(300_000);
   assert.equal(await count(), 2);
 });
+
+
+test("an allowed Club origin can read only the aggregate before signing in", async t => {
+  const f = await fixture(t);
+  const route = "/v1/stats/users";
+  const count = () => f.request("GET", route);
+  assert.deepEqual((await count()).json(), { addonUsers: 0 });
+  assert.equal((await f.request("GET", route, undefined, undefined, { origin: "https://untrusted.example" })).statusCode, 403);
+  assert.equal((await f.request("GET", "/v1/me")).statusCode, 401);
+  await f.login(101);
+  f.advance(300_000);
+  const updated = await count();
+  assert.equal(updated.statusCode, 200);
+  assert.equal(updated.headers["access-control-allow-origin"], "https://bondageprojects.elementfx.com");
+  assert.deepEqual(updated.json(), { addonUsers: 1 });
+});

@@ -19,7 +19,8 @@ export function attachSwipeGesture(stage: HTMLElement, commit: (direction: Swipe
       under.style.opacity = String(.78 + .22 * fraction);
     }
     stage.dataset.intent = dx >= 0 ? 'like' : 'pass';
-    flag.style.opacity = String(Math.min(1, Math.abs(dx) / drag.threshold));
+    const commitTurn = -15 * Math.expm1(-drag.threshold / width);
+    flag.style.opacity = String(Math.min(1, Math.abs(turn) / commitTurn));
   }
   function reset() {
     const wasDragging = !!drag;

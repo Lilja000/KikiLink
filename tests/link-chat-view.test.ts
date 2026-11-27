@@ -201,10 +201,11 @@ describe("LinkChatView", () => {
       ".kl-brand-emblem .kl-emblem-image",
     );
     const launcherEmblem = shadow?.querySelector<HTMLImageElement>(
-      ".kl-launcher-emblem .kl-emblem-image",
+      ".kl-launcher .kl-launcher-emblem",
     );
     expect(brandEmblem?.src).toContain("design/branding/kikilink-emblem.webp");
-    expect(launcherEmblem?.src).toContain("design/branding/kikilink-emblem.webp");
+    expect(launcherEmblem?.src).toContain("design/branding/kikilink-orbit.webp");
+    expect(launcherEmblem?.draggable).toBe(false);
     expect(shadow?.querySelector(".kl-panel")?.hasAttribute("hidden")).toBe(false);
     expect(shadow?.querySelector(".kl-chat-name")?.textContent).toBe("Reina");
     expect((shadow?.querySelector(".kl-panel") as HTMLElement | null)?.dataset.mobileView).toBe(

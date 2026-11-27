@@ -141,7 +141,8 @@ export function createApp({
       "/v1/auth/device-challenges",
       "/v1/auth/device-exchange",
     ].includes(route);
-    if (!publicAuth) {
+    const publicUserCount = route === "/v1/stats/users" && (req.method === "GET" || req.method === "HEAD");
+    if (!publicAuth && !publicUserCount) {
       req.identity = auth.authenticate(req.headers.authorization, origin);
       if (!config.communityEnabled && (/^\/v1\/(capabilities|relationships|mailbox|direct|read-cursors|preferences|compatibility)(?:\/|$)/u.test(route ?? "") || route === "/v1/feed/unread"))
         requireThat(false, 404, "community_unavailable");
@@ -268,6 +269,7 @@ export function createApp({
     }
     return addonUsers;
   };
+  app.get("/v1/stats/users", async () => ({ addonUsers: getAddonUsers() }));
   app.get("/v1/me", async (req) => ({
     memberNumber: req.identity.member,
     addonUsers: getAddonUsers(),

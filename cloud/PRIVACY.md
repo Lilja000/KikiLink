@@ -97,8 +97,8 @@ revocation invalidate pending delivery. Native and Cloud synchronization can fai
 separately; the UI offers retry and does not report both steps as successful prematurely.
 
 Offline Direct is **enabled automatically** when the authenticated client connects to a
-compatible Cloud server. Both accounts must advertise support and have confirmed bilateral
-friendship grants. The old development opt-out value is no longer a delivery switch;
+compatible Cloud server. Both accounts must advertise support. Confirmed bilateral friendship grants allow delivery.
+On the updated Matches server, an eligible mutual swipe like also allows Direct messaging. The old development opt-out value is no longer a delivery switch;
 signing out pauses Cloud on that browser. Only newly sent messages on an eligible route
 use Cloud, whether either user is online or offline. No old history is imported.
 The message body and optional, explicitly

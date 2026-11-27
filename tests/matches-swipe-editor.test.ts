@@ -274,9 +274,10 @@ it('browses tagged native room backgrounds with search and pagination on a nativ
   const grid = f.host.querySelector('.kl-room-background-grid')!;
   expect(grid.children).toHaveLength(12);
   expect([...grid.querySelectorAll('img')].every(image => image.loading === 'lazy')).toBe(true);
-  const details = f.host.querySelector<HTMLDetailsElement>('details.matches-background-picker')!;
-  const summary = details.querySelector('summary')!;
-  expect(details.open).toBe(true);
+  const section = f.host.querySelector('section[aria-label="Background"]')!;
+  expect(section.querySelector('h3')?.textContent).toBe('Background');
+  expect(section.contains(search)).toBe(true);
+  expect(search.closest('details')).toBeNull();
   expect(f.host.querySelector('[aria-label="Background image"]')).toBeNull();
   search.value = 'Room14';
   search.dispatchEvent(new Event('input'));
@@ -284,12 +285,6 @@ it('browses tagged native room backgrounds with search and pagination on a nativ
   expect(target.querySelector('img')?.getAttribute('src')).toBe('Backgrounds/Room14.jpg');
   target.click();
   expect(target.getAttribute('aria-pressed')).toBe('true');
-  summary.focus();
-  details.open = false; details.dispatchEvent(new Event('toggle'));
-  expect(summary.textContent).toBe('Background · Room14');
-  details.open = true; details.dispatchEvent(new Event('toggle'));
-  expect(summary.textContent).toBe('Background');
-  expect(document.activeElement).toBe(summary);
   expect(search.value).toBe('Room14');
   expect(grid.querySelector('button')).toBe(target);
   expect(f.host.querySelector('img.bg')?.getAttribute('src')).toBe('Backgrounds/Room14.jpg');

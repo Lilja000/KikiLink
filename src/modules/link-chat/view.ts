@@ -271,6 +271,7 @@ import type {
   GroupChatUpdate,
 } from "./group-chat-service";
 import KIKILINK_EMBLEM_DATA_URL from "../../../design/branding/kikilink-emblem.webp";
+import KIKILINK_ORBIT_DATA_URL from "../../../design/branding/kikilink-orbit.webp";
 import KIKILINK_BLOSSOM_DATA_URL from "../../../design/branding/kikilink-blossom.png";
 import { CloudClient } from "../../cloud/client";
 import { ShellActionMenu, type ShellAction } from "../platform-shell/action-menu";
@@ -677,6 +678,10 @@ export class LinkChatView {
         },
         known: member => this.#knownDiscoveryMember(member),
         blocked:member=>{try{return client.isProfileBlocked(member)||this.adapter.getPlayerRelationships(member).some(kind=>kind==='blacklist'||kind==='ghosted');}catch{return true;}},
+        matchContact: {
+          message: (member, name, current) => this.#openMatchingChat(client, member, name, current, true),
+          friendControls: (root, member, signal) => this.#mountMatchFriend(root, client, member, signal),
+        },
         canMessage: member => this.#canMessageMatchingPeer(client, member),
         message: (member, name, current) => this.#openMatchingChat(client, member, name, current),
         community: id => {
@@ -961,6 +966,10 @@ export class LinkChatView {
       if (item.targetType === "space" && this.#spaces) { this.#showWorkspace("spaces"); this.#spaces.open(item.targetId); return; }
       if (item.targetType === "calendar_event" && this.#calendar) { this.#showWorkspace("events"); this.#calendar.open(item.targetId); return; }
       if (item.targetType === "community" && this.#communities) { this.#showWorkspace("communities"); this.#communities.open(item.targetId); return; }
+      if (item.kind === "swipe_mutual" && item.targetType === "swipe_match") {
+        if (this.#matching) { this.#activatePlatformRoute("matching"); this.#matching.openMutualLikes(); }
+        return;
+      }
       if (item.kind === "release") { this.#activateFeature("news"); return; }
       if (item.targetType === "profile" && item.actor) { await this.#openAddonProfile(item.actor, this.adapter.getMemberName(item.actor)); return; }
       if (item.kind === "mention" && item.peer) { await this.openDirectMessage(item.peer, item.targetId); return; }
@@ -3005,6 +3014,7 @@ export class LinkChatView {
     if (this.#panel.hidden) this.#motionRoute = undefined;
     this.#launcherMenu.close(false);
     this.#panel.hidden = false;
+    this.#refreshVisibleUserCount();
     this.#positionPanel();
     this.#launcher.setAttribute("aria-expanded", "true");
     if (view === "settings") this.#openSettings();
@@ -3190,7 +3200,9 @@ export class LinkChatView {
 
   #buildLauncher(): void {
     this.#badge.hidden = true;
-    this.#launcher.append(this.#emblem("kl-launcher-emblem"), this.#badge);
+    const orbit = element("img", { className: "kl-launcher-emblem", src: KIKILINK_ORBIT_DATA_URL, alt: "" });
+    orbit.draggable = false;
+    this.#launcher.append(orbit, this.#badge);
     this.#launcher.setAttribute("aria-expanded", "false");
     this.#launcher.addEventListener("click", () => {
       if (this.#ignoreLauncherClick) { this.#ignoreLauncherClick = false; return; }
@@ -3318,7 +3330,7 @@ export class LinkChatView {
       topbar.replaceChildren(element("div", { className: "kl-topbar-identity" }, this.#identityAvatar,
         element("div", { className: "kl-identity-copy" },
           element("div", { className: "kl-identity-line" }, this.#identityName, this.#localClock), this.#presenceTrigger)),
-        dragSpace, element("div", { className: "kl-topbar-actions" }, close, this.#finderTrigger, this.#mailbox?.button, this.#identityMenu));
+        dragSpace, element("div", { className: "kl-topbar-actions" }, this.#finderTrigger, this.#mailbox?.button, this.#identityMenu, close));
     }
     topbar.addEventListener("pointerdown", (event) => this.#startPanelDrag(event));
     topbar.addEventListener("pointermove", (event) => this.#movePanel(event));
@@ -5076,7 +5088,7 @@ export class LinkChatView {
     this.#attachAudioButton.addEventListener("click", () => {
       const peer = this.#activePeer, name = this.#activeNativeName;
       if (!this.#directSendingEnabled || peer === undefined || this.#directArchived(peer) || this.#directArchiveBusy || !this.#community?.messageAudio || !this.#cloudDirect?.canUse(peer)) {
-        this.#toast("Audio messages require a confirmed Cloud friendship.", "error"); return;
+        this.#toast("Audio messages require an available Cloud conversation.", "error"); return;
       }
       this.#messageAudio?.open(name, async id => {
         if (!this.#cloudDirect) throw new Error("Cloud unavailable");
@@ -9716,7 +9728,7 @@ export class LinkChatView {
 
     if (cloud && !cloudReady) {
       this.#localImageStatus.replaceChildren(element("strong", { text: "Private images unavailable" }),
-        element("small", { text: "Connect to Cloud with Direct image support and a confirmed friendship, then retry." }));
+        element("small", { text: "Reconnect to Cloud and check that Direct images are available for this conversation." }));
       this.#localImageStatus.dataset.state = "empty";
       return;
     }
@@ -10075,7 +10087,7 @@ export class LinkChatView {
     if(this.#directArchived(destination.peerNumber)||this.#directArchiveBusy)return;
     if (!image || !client || this.#imageUploadBusy) return;
     if (!this.#community?.directMessageMedia || !client.connected || !this.#cloudDirect?.canUse(destination.peerNumber)) {
-      this.#localImageError = "Private images require a connected Cloud server with image support and a confirmed friendship.";
+      this.#localImageError = "Private images require an available Cloud conversation with image support.";
       this.#renderLocalImageComposeState(); return;
     }
     const token = ++this.#imageUploadToken, controller = new AbortController();
@@ -15957,28 +15969,56 @@ export class LinkChatView {
     return this.adapter.canSendBeep() && !(this.adapter.getPlayerRelationships?.(member) ?? []).some(value => value === "blacklist" || value === "ghosted");
   }
 
-  #canMessageMatchingPeer(client: CloudClient, member: number): boolean {
+  #mountMatchFriend(root: HTMLElement, client: CloudClient, member: number, signal: AbortSignal): void {
+    const community = this.#community;
+    const current = () => !signal.aborted && root.isConnected && this.#cloud?.client === client &&
+      !client.isProfileBlocked(member) && !(this.adapter.getPlayerRelationships?.(member) ?? []).some(kind => kind === "blacklist" || kind === "ghosted") &&
+      this.adapter.getOwnMemberNumber() === client.memberNumber;
+    const render = () => {
+      if (current()) renderRelationshipControls(root, member, community, this.adapter, { matchCard:true });
+    };
+    const load = async () => {
+      const pending = element("button", {className:"button", type:"button", text:"Add friend"});
+      pending.disabled = true;
+      root.replaceChildren(pending);
+      try {
+        if (!community?.supported || !await community.get(member)) throw new Error();
+        if (!current()) return;
+        render();
+        const stop = community.subscribe(render);
+        signal.addEventListener("abort", stop, {once:true});
+      } catch {
+        if (!current()) return;
+        pending.disabled = false;
+        pending.textContent = "Retry friend details";
+        pending.onclick = () => { if (current()) void load(); };
+      }
+    };
+    void load();
+  }
+
+  #canMessageMatchingPeer(client: CloudClient, member: number, requireCloud = false): boolean {
     try {
       return this.#mounted && !this.#panel.hidden &&
         client.connected && this.#cloud?.client === client && this.adapter.getOwnMemberNumber() === client.memberNumber &&
         !client.isProfileBlocked(member) && this.#canMessageRosterPlayer(member) &&
-        (!this.#cloudDirect?.shouldUse(member) || this.#cloudDirect.canUse(member));
+        (!(requireCloud || this.#cloudDirect?.shouldUse(member)) || this.#cloudDirect?.canUse(member) === true);
     } catch {
       return false;
     }
   }
 
-  async #openMatchingChat(client: CloudClient, member: number, name: string, current: () => boolean): Promise<void> {
+  async #openMatchingChat(client: CloudClient, member: number, name: string, current: () => boolean, requireCloud = false): Promise<void> {
     if (!current()) return;
     if (this.#community?.supported) {
       const relationship = await this.#community.get(member);
       if (!relationship || relationship.memberNumber !== member) throw new Error("Messaging is unavailable for this person.");
     }
-    if (!current() || !this.#canMessageMatchingPeer(client, member))
+    if (!current() || !this.#canMessageMatchingPeer(client, member, requireCloud))
       throw new Error("Messaging is unavailable for this person.");
     await this.openChat(member, name, true, undefined, {
       canOpen: () => current() && this.#workspaceView === "matching",
-      canSelect: () => this.#workspaceView === "chat" && this.#canMessageMatchingPeer(client, member),
+      canSelect: () => this.#workspaceView === "chat" && this.#canMessageMatchingPeer(client, member, requireCloud),
     });
   }
 
@@ -16307,7 +16347,13 @@ export class LinkChatView {
     this.#homePresence.title = this.#presenceTrigger.title;
   }
 
+  #refreshVisibleUserCount(): void {
+    if (this.#platformShell && !this.#panel.hidden && document.visibilityState !== "hidden")
+      void this.#cloud?.client.refreshAddonUsers?.();
+  }
+
   #scheduleClockUpdate(): void {
+    this.#refreshVisibleUserCount();
     if (this.#clockTimer !== undefined) clearTimeout(this.#clockTimer);
     const now = new Date();
     if (this.#addonProfileVisible) refreshProfileClocks(this.#addonProfileBody, now.getTime());
@@ -17281,6 +17327,12 @@ export class LinkChatView {
       this.#cloudDirect?.releaseHistory(this.#activePeer);
       this.#stopLocalTyping();
     }
+    // Restored Direct conversations can belong to a mutual like outside the friend list.
+    if (!canSelect && this.#community?.supported && this.#cloudDirect?.shouldUse(peerNumber) &&
+        !this.#community.relationships.get(peerNumber)?.canMessage) {
+      await this.#community.get(peerNumber).catch(() => {});
+      if (!current()) return;
+    }
     const nativeName = this.adapter.getMemberNickname(peerNumber) ?? peerName;
     const conversation = await this.service.ensureConversation(peerNumber, nativeName);
     if (!current()) return;
@@ -17969,7 +18021,9 @@ export class LinkChatView {
     this.#attachImageButton.disabled = true;
     let sent = false;
     try {
-      if (this.#community?.supported && !this.#community.relationships.has(peerNumber)) {
+      const knownRecipient = this.#community?.relationships.get(peerNumber);
+      if (this.#community?.supported && (!knownRecipient ||
+          knownRecipient.directMessages && !knownRecipient.canMessage && knownRecipient.canMessageMatch !== true)) {
         try { await this.#community.get(peerNumber); } catch (error) {
           if (!(error instanceof CloudError && error.status === 404)) throw new Error("Cannot confirm the delivery route. Your draft is kept; retry when connected.");
         }
@@ -20274,7 +20328,7 @@ export class LinkChatView {
     const position = isFlower ? ui.roomBadge.position ?? DEFAULT_ROOM_BADGE_POSITION : (isWindow ? ui.panelPosition : ui.launcherPosition) ?? defaults;
     openLayoutPositionEditor(this.#contentDialog, this.#panel, {
       title: isFlower ? "Move Blossom" : isWindow ? "Window position" : "Launcher position",
-      icon: isWindow ? kikiIcon("settings") : element("img", { src: isFlower ? KIKILINK_BLOSSOM_DATA_URL : KIKILINK_EMBLEM_DATA_URL, alt: "" }),
+      icon: isWindow ? kikiIcon("settings") : element("img", { src: isFlower ? KIKILINK_BLOSSOM_DATA_URL : KIKILINK_ORBIT_DATA_URL, alt: "" }),
       position, windowMarker: isWindow,
       note: isFlower ? "Position within each character’s frame." : isWindow ? "Applies when the window has room to move on desktop." : "Position within the game window.",
       placeInRoom: isFlower ? () => this.#beginRoomBadgePlacement() : undefined,

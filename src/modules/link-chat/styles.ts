@@ -187,29 +187,28 @@ button { color: inherit; }
   width: var(--kl-launcher-size, 58px);
   height: var(--kl-launcher-size, 58px);
   padding: 0;
-  border: 1px solid var(--kl-border-strong);
-  border-radius: calc(var(--kl-launcher-size, 58px) * .33);
-  background: #030304;
-  box-shadow:
-    0 14px 38px color-mix(in srgb, var(--kl-accent), transparent 62%),
-    0 0 0 1px rgba(0, 0, 0, 0.75),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  appearance: none;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+  -webkit-tap-highlight-color: transparent;
   cursor: pointer;
   touch-action: none;
   user-select: none;
-  transition: transform 160ms ease, filter 160ms ease, border-color 160ms ease;
+  transition: transform 160ms ease;
 }
 
 .kl-launcher[data-side="right"] { right: max(20px, env(safe-area-inset-right)); }
 .kl-launcher[data-side="left"] { left: max(20px, env(safe-area-inset-left)); }
-.kl-launcher:hover { border-color: var(--kl-gold); filter: brightness(1.08); transform: translateY(-2px); }
-.kl-launcher:active { transform: translateY(0) scale(0.97); }
-.kl-launcher[data-dragging="true"] { cursor: grabbing; filter: brightness(1.1); transform: scale(1.03); transition: none; }
+.kl-launcher:active { transform: scale(0.97); }
+.kl-launcher[data-dragging="true"] { cursor: grabbing; transform: none; transition: none; }
 
 .kl-launcher-emblem {
-  position: absolute;
-  inset: 3px;
-  border-radius: calc(var(--kl-launcher-size, 58px) * .26);
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .kl-launcher[data-muted="true"]::after {

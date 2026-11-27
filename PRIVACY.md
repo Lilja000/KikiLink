@@ -21,7 +21,7 @@ availability setting and chosen image. Wardrobe previews are rendered in your br
 Only the selected snapshot is uploaded. Worn items and the other Wardrobe slots stay in the game.
 The slot number and name are private to the card owner. Eligible players can see the card
 while your profile and matching settings allow discovery. A mutual like appears after both
-players choose Like. Passing and one-sided likes are private to the player making the choice.
+players choose Like. On an updated Matches server, either player can then send a Direct message. Undoing a like or removing a card ends that permission unless the players also have confirmed friendship grants. Passing and one-sided likes are private to the player making the choice.
 Removing your card also removes its portrait, swipes involving that card and mutual likes.
 
 If you choose a custom background, eligible players also receive its image URL. Their external
@@ -151,8 +151,7 @@ Ordinary documentation questions may use the project's public repository.
 
 ## Offline Direct and optional Preferences
 
-KikiLink 1.0 automatically enables Cloud delivery for new Direct messages between
-eligible confirmed Cloud friends. Signing out pauses Cloud on that browser. Its local
+Cloud delivers new Direct messages between eligible confirmed Cloud friends. Servers supporting mutual-match messaging also allow delivery between two players with a current mutual like. Signing out pauses Cloud on that browser. Its local
 retry queue is distinct from Save message history and may briefly persist message text
 until delivery, expiry processing or explicit clearing. Remove chat and Clear history
 stop local retries; they cannot recall a message already stored by Cloud. Existing local
