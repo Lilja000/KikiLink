@@ -5,13 +5,14 @@ import { element } from '../../cloud/dom';
 import { focusedElement } from '../../utils/dom';
 import { kikiIcon, type KikiLinkIconName } from '../link-chat/icons';
 import { MatchingPage } from './matching-page';
-import { createMatchesSwipeDeck } from './matches-swipe-deck';
+import { createMatchesSwipeDeck, type MatchContactActions } from './matches-swipe-deck';
 import { mountMatchesSwipeEditor } from './matches-swipe-editor';
 import type { ImagePreviewPreference } from '../../core/types';
 import type { RemoteImageLease } from '../link-chat/remote-image-loader';
 
 type View = 'swipe' | 'mutual';
 type Options = ConstructorParameters<typeof MatchingPage>[2] & {
+  matchContact?: MatchContactActions;
   backgroundPolicy?: () => ImagePreviewPreference;
   loadBackground?: (url: string, signal: AbortSignal) => Promise<RemoteImageLease>;
   uploadBackground?: (file: File, signal: AbortSignal) => Promise<string>;
@@ -34,7 +35,9 @@ export class MatchesWorkspace {
   readonly #scroll = element('section', {className:'kl-matches-scroll'});
   readonly #section = element('div', {className:'kl-matches-swipe'});
   readonly #browse = action('Browse', 'search', 'button minor', () => this.#showCatalog());
-  readonly #edit = action('Edit card', 'edit', 'button minor', event => this.#editCard(event.detail === 0));
+  readonly #settings = action('Match Settings', 'settings', 'button minor', () => this.openOwnSignal());
+  readonly #preferences = action('Preferences', 'heart', 'button minor', () => this.options.preferences());
+  readonly #edit = action('Edit Card', 'edit', 'button minor', event => this.#editCard(event.detail === 0));
   readonly #swipe = action('Swipe', 'appearance', 'tab', () => this.#navigate('swipe'));
   readonly #mutual = action('Mutual likes', 'heart', 'tab', () => this.#navigate('mutual'));
   readonly #count = element('span', {className:'count', text:'0'});
@@ -64,7 +67,7 @@ export class MatchesWorkspace {
     this.#catalogArea.append(this.#back, this.#catalog.element);
     this.#browse.title = 'Browse people, groups, rooms and events';
     this.#section.append(element('header', {className:'heading'}, element('h1',{text:'Matches'}),
-      element('div',{className:'actions'}, this.#browse, this.#edit)), this.#tabs, this.#notice, this.#content);
+      element('div',{className:'actions'}, this.#browse, this.#settings, this.#preferences, this.#edit)), this.#tabs, this.#notice, this.#content);
     this.#scroll.append(this.#section);
     this.element.append(this.#scroll, this.#catalogArea);
     this.#chrome();
@@ -81,6 +84,7 @@ export class MatchesWorkspace {
   #chrome() {
     this.#edit.hidden = !this.#state?.self || !!this.#editor;
     this.#tabs.hidden = this.#edit.hidden;
+    this.#settings.hidden = this.#preferences.hidden = !!this.#editor;
     for (const [name, tab] of [['swipe',this.#swipe],['mutual',this.#mutual]] as const) {
       if (name === this.#view) tab.setAttribute('aria-current','page');
       else tab.removeAttribute('aria-current');
@@ -103,7 +107,7 @@ export class MatchesWorkspace {
         {label:'Privacy settings', run:this.options.privacy});
     } else if (snapshot.discoverability === 'paused') {
       this.#message('Your match settings are paused or have expired. Update them to see and share cards.', false,
-        {label:'Match settings', run:() => this.openOwnSignal()});
+        snapshot.self ? undefined : {label:'Match Settings', run:() => this.openOwnSignal()});
     } else this.#message();
   }
   #discardView() {
@@ -139,11 +143,14 @@ export class MatchesWorkspace {
       }
       if (document.hidden) return;
       const accessChanged = ['relationships', 'privacy', 'profile-discovery', 'profiles-cleared'].some(k => reasons.has(k));
+      if (reasons.has('preferences') || reasons.has('matching') || reasons.has('ready') || reasons.has('visible')) this.#deck?.clearCommonGround();
       if (this.#state && accessChanged) {
         // Stop showing a withdrawn or newly blocked profile while permissions are being checked.
         this.#pending?.abort(); this.#pending = undefined;
         this.#state = {...this.#state, deck: [], mutuals: [], mutualCount: 0, lastVote: null};
-        if (!this.#editor) { this.#deck?.dispose(); this.#deck = undefined; this.#content.replaceChildren(); }
+        if (!this.#editor && !this.#deck?.suspendContact()) {
+          this.#deck?.dispose(); this.#deck = undefined; this.#content.replaceChildren();
+        }
         this.#chrome();
       }
       void this.#read(!accessChanged);
@@ -153,6 +160,13 @@ export class MatchesWorkspace {
     }, 45000);
     if (this.#catalogSelected) this.#showCatalog();
     else this.openBrowse();
+  }
+  openMutualLikes() {
+    if (!this.#owner() || this.#writing) return;
+    this.#editor?.(); this.#editor = undefined;
+    this.#view = 'mutual';
+    this.openBrowse();
+    if (this.#active() && this.#state) this.#render();
   }
   openBrowse() {
     this.#catalogSelected = false;
@@ -215,7 +229,7 @@ export class MatchesWorkspace {
       }
     } catch (error) {
       if (!current()) return;
-      if (error instanceof CloudError && (error.status === 401 || error.status === 403)) this.#discardView();
+      if (this.#deck?.contactSuspended() || error instanceof CloudError && (error.status === 401 || error.status === 403)) this.#discardView();
       this.#message('Matches could not be loaded. Check your Cloud connection and try again.', true);
     } finally {
       if (this.#pending === request) {
@@ -297,10 +311,12 @@ export class MatchesWorkspace {
     if (!state || !this.#active()) return;
     if (!state.self) { this.#editCard(); return; }
     if (!this.#deck) this.#deck = createMatchesSwipeDeck(this.#content, {
+      ...this.options.matchContact,
       ...(this.options.backgroundPolicy && { backgroundPolicy: this.options.backgroundPolicy }),
       ...(this.options.loadBackground && { loadBackground: this.options.loadBackground }),
       current: () => this.#active() && this.client.connected && !this.#editor,
       image: card => this.#api.image(card),
+      commonGround: (card, signal) => this.#api.commonGround(card, signal),
       moreMutuals: cursor => this.#api.moreMutuals(cursor, this.#lifetime.signal),
       navigate: view => this.#navigate(view),
       vote: (card, type, id) => this.#write(signal => this.#api.vote(card, type, id, signal)),

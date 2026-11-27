@@ -194,3 +194,21 @@ it("coalesces SSE hints and unregisters callbacks on section close", async () =>
   expect(hints).toHaveBeenCalledTimes(2);
   expect(unsubscribe).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
 });
+
+it("requests comparison only for a current visible card on a capable server and discards a late block", async () => {
+  let block = false, enabled = false;
+  const req = vi.fn(async (_method, path) => {
+    if (path.endsWith("/state")) return {...state, commonGround:enabled};
+    block = true;
+    return {memberNumber:2, revision:2, score:80, intents:[], interests:[], preferences:["interest.praise"], expiresAt:null};
+  });
+  const {api} = fixture(req, () => block);
+  const {deck} = await api.load();
+  const signal = new AbortController().signal;
+  expect(await api.commonGround(deck[0]!,signal)).toBeUndefined();
+  expect(req).toHaveBeenCalledTimes(1);
+  enabled = true;
+  await api.load();
+  expect(await api.commonGround(deck[0]!,signal)).toBeUndefined();
+  expect(req.mock.calls.at(-1)?.[1]).toBe(prefix+"/cards/2/common-ground?revision=2");
+});

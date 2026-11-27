@@ -116,7 +116,8 @@ export const MATCHES_SWIPE_STYLES = `
   border: 1px solid var(--kl-border); border-radius: var(--kl-action-radius,8px); background-color: var(--kl-input-bg); color: var(--kl-text); font: inherit;
 }
 .kl-matches-swipe .matches-background-picker .kl-select { height: var(--kl-action-height,36px); }
-.kl-matches-swipe .matches-background-picker[open] > :not(summary) + :not(:empty) { margin-top: 10px; }
+.kl-matches-swipe .matches-background-picker { gap: 10px; }
+.kl-matches-swipe .matches-background-picker h3 { margin: 0; }
 .kl-matches-swipe .wardrobe-strip {
   --outfit-toggle: max(32px,var(--kl-action-square,32px));
   container: kl-outfits / inline-size; display: grid; grid-template-columns: minmax(0,1fr) var(--outfit-toggle);
@@ -167,12 +168,19 @@ export const MATCHES_SWIPE_STYLES = `
 .kl-matches-swipe .swipable.dragging :is(.swipe-face,.swipe-under) { transition: none; will-change: transform; }
 .kl-matches-swipe .swipe-leaving .swipe-face { transition: transform 235ms cubic-bezier(.32,.08,.66,.52); }
 .kl-matches-swipe .swipe-leaving .swipe-under { transition-duration: 205ms; }
-.kl-matches-swipe .flag { position: absolute; inset: 50% auto auto 15px; z-index: 1; transform: translateY(-50%); opacity: 0; pointer-events: none; transition: opacity 100ms ease-out; }
-.kl-matches-swipe .flag > span { display: none; align-items: center; gap: 6px; padding: 7px 11px; border: 1px solid; border-radius: 8px; font-weight: 700; font-size: 14px; line-height: 1.2; box-shadow: 0 3px 14px #17111438; }
-.kl-matches-swipe .swipable[data-intent="like"] .swipe-like { display: inline-flex; color: #ffeaf0; border-color: #e07992; background: #5c2034f5; }
+.kl-matches-swipe .flag {
+  position: absolute; inset: 47% auto auto 50%; z-index: 1; transform: translate(-50%,-50%);
+  pointer-events: none; opacity: 0; transition: opacity 110ms ease-out;
+}
+.kl-matches-swipe .swipable.dragging .flag { transition: none; }
+.kl-matches-swipe .flag > span {
+  display: none; width: clamp(56px,8cqi,78px); aspect-ratio: 1; align-items: center; justify-content: center;
+  border: 1px solid; border-radius: 50%; box-shadow: 0 4px 16px #19111759;
+}
+.kl-matches-swipe .flag .ico { width: 54%; height: 54%; stroke-width: 2.3; }
+.kl-matches-swipe [data-intent="like"] .swipe-like { display: flex; color: #ffeaf0; border-color: #e88da3; background: #70263de8; }
 .kl-matches-swipe .swipe-like .ico { fill: currentColor; }
-.kl-matches-swipe .swipable[data-intent="pass"] .flag { inset-inline: auto 15px; }
-.kl-matches-swipe .swipable[data-intent="pass"] .swipe-pass { display: inline-flex; color: #f2eff2; border-color: #929197; background: #302e35f5; }
+.kl-matches-swipe [data-intent="pass"] .swipe-pass { display: flex; color: #f6f2f6; border-color: #aeabae; background: #302e35e8; }
 /* The card and its actions stay put while the server confirms a swipe. */
 .kl-matches-swipe .swipe-toast {
   position: absolute; inset: auto 12px 12px; z-index: 3; pointer-events: none;
@@ -214,12 +222,30 @@ export const MATCHES_SWIPE_STYLES = `
 .kl-matches-swipe .side h2.name { font-size: clamp(33px,min(5cqi,6.25cqh),48px); font-weight: 670; letter-spacing: -.04em; line-height: 1.05; }
 .kl-matches-swipe .meta { display: flex; align-items: center; gap: 7px; color: color-mix(in srgb,var(--kl-text) 39%,var(--kl-muted)); font-size: calc(var(--kl-type-body) + 1px); }
 .kl-matches-swipe .meta .ico { width: 15px; height: 15px; color: var(--kl-gold); }
+.kl-matches-swipe .name-line { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; min-width: 0; }
+.kl-matches-swipe .name-line .name { min-width: 0; overflow-wrap: anywhere; }
+.kl-matches-swipe .swipe-compatibility:not([hidden]) {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 6px;
+  border: 1px solid color-mix(in srgb,var(--kl-gold) 38%,var(--kl-border));
+  background: color-mix(in srgb,var(--kl-gold) 8%,var(--kl-surface-2)); color: var(--kl-gold);
+  font-size: var(--kl-type-sm); font-weight: 620; white-space: nowrap;
+}
+.kl-matches-swipe .swipe-compatibility .ico { width: 13px; height: 13px; }
+.kl-matches-swipe .shared-language { color: var(--kl-gold); font-weight: 600; }
+.kl-matches-swipe .both-like { font-size: var(--kl-type-body); color: var(--kl-text); line-height: 1.45; overflow-wrap: anywhere; }
+.kl-matches-swipe .both-like strong { margin-inline-end: 7px; font-size: var(--kl-type-sm); color: var(--kl-muted); }
 .kl-matches-swipe .swipePanel .side.no-story { grid-template-areas: "identity" "actions"; }
 .kl-matches-swipe .card-story { grid-area: story; display: grid; justify-items: start; align-content: start; gap: 15px; }
 .kl-matches-swipe .bio { font-size: var(--kl-type-md); line-height: 1.5; }
 .kl-matches-swipe .card-story .bio { max-width: 40ch; color: color-mix(in srgb,var(--kl-text) 89%,var(--kl-muted)); font-size: calc(var(--kl-type-md) + 1px); }
 .kl-matches-swipe .tagset { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
-.kl-matches-swipe .tagset span { max-width: 100%; overflow-wrap: anywhere; padding: 4px 8px; border: 1px solid var(--kl-border); border-radius: 6px; background: color-mix(in srgb,var(--kl-surface-2) 94%,var(--kl-muted)); color: color-mix(in srgb,var(--kl-text) 54%,color-mix(in srgb,var(--kl-gold),var(--kl-muted))); font-size: var(--kl-type-sm); }
+.kl-matches-swipe .tagset > span { max-width: 100%; overflow-wrap: anywhere; padding: 4px 8px; border: 1px solid var(--kl-border); border-radius: 6px; background: color-mix(in srgb,var(--kl-surface-2) 94%,var(--kl-muted)); color: color-mix(in srgb,var(--kl-text) 54%,color-mix(in srgb,var(--kl-gold),var(--kl-muted))); font-size: var(--kl-type-sm); }
+.kl-matches-swipe .tagset .shared-setting {
+  display: inline-flex; align-items: center; gap: 4px; color: var(--kl-gold);
+  border-color: color-mix(in srgb,var(--kl-gold) 38%,var(--kl-border));
+  background: color-mix(in srgb,var(--kl-gold) 8%,var(--kl-surface-2));
+}
+.kl-matches-swipe .shared-setting .ico { width: 12px; height: 12px; flex: none; }
 .kl-matches-swipe .decisions { grid-area: actions; padding-top: 18px; }
 .kl-matches-swipe .decisions .actions { display: grid; grid-template-columns: auto minmax(0,1fr) minmax(0,1fr); gap: 7px; }
 .kl-matches-swipe .decisions .button { min-height: max(40px,var(--kl-action-height,36px)); }
@@ -265,7 +291,8 @@ export const MATCHES_SWIPE_STYLES = `
 .kl-matches-swipe .dialoghead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
 .kl-matches-swipe .dialoghead h2 { font-size: calc(var(--kl-type-xl) + 4px); font-weight: 660; letter-spacing: -.8px; line-height: 1.2; }
 .kl-matches-swipe .dialogbuttons { margin-top: 18px; align-items: stretch; }
-.kl-matches-swipe .dialogbuttons .button { flex: 1; }
+.kl-matches-swipe .dialogbuttons .button, .kl-matches-swipe .dialogbuttons .match-friend-action { flex: 1; }
+.kl-matches-swipe .match-friend-action { display:flex; align-items:stretch; min-width:0; }
 .kl-matches-swipe .match-duet { background: transparent; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin: 15px 0 0; }
 .kl-matches-swipe .pair-portrait { min-width: 0; }
 .kl-matches-swipe .pair-portrait .mini { height: clamp(126px,24svh,184px); border: 1px solid var(--kl-border); border-radius: 8px; }
@@ -345,6 +372,11 @@ export const MATCHES_SWIPE_STYLES = `
   .kl-matches-swipe .tile { grid-template-columns: 64px minmax(0,1fr) auto; gap: 11px; }
   .kl-matches-swipe .tile .mini { height: 72px; }
 }
+@container kl-swipe (max-width: 475px) {
+  .kl-matches-swipe .heading:has(+ .tabs:not([hidden])) .actions {
+    display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); width: 100%;
+  }
+}
 @container kl-swipe (max-width: 340px) {
   .kl-matches-swipe .heading { gap: 5px; margin-bottom: 4px; }
   .kl-matches-swipe .heading .actions { gap: 4px; }
@@ -375,7 +407,7 @@ export const MATCHES_SWIPE_STYLES = `
 }
 /* On a landscape phone, the Club shell already uses enough height to put
    the first Like below the scrollport. Keep the deck navigation in one row. */
-@container kl-workspace (orientation: landscape) and (max-height: 260px) and (min-width: 610px) {
+@container kl-workspace (orientation: landscape) and (max-height: 260px) and (min-width: 840px) {
   .kl-matches-swipe:has(> .tabs:not([hidden])) {
     display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 4px 8px;
   }

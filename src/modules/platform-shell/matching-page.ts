@@ -8,7 +8,6 @@ import { matchingCatalogError, matchingCatalogLoading, matchingCatalogReadFailed
 import { MatchingHideSuggestion } from './matching-hide-suggestion';
 import { confirmedHide, hiddenSuggestionNotice, hideSuggestionLabel, matchesConfirmedHide, staleHideMessage, type ConfirmedHide } from './matching-hide-undo';
 import { MatchingHiddenSuggestions } from './matching-hidden-suggestions';
-import { MatchingInformation, matchingInformationButton } from './matching-information';
 import { fitPanelDialog } from './panel-dialog-layout';
 import {matchingPendingText,matchingReadAt,sameMatchingSource,MatchingGenerationError,type MatchingSource} from './matching-generation';
 import {MatchingResourcesPage} from "./matching-resources-page";
@@ -104,10 +103,6 @@ export class MatchingPage {
   readonly #hiddenSuggestions = new MatchingHiddenSuggestions();
   readonly #cardMenu = new ShellActionMenu("explore");
   readonly #optionsMenu = new ShellActionMenu("explore");
-  readonly #information = new MatchingInformation(
-    () => this.#current() && this.client.connected,
-    () => this.#body.querySelector<HTMLButtonElement>(".kl-match-information-toggle")?.focus({ preventScroll: true }),
-  );
   readonly #dialogTitleId = `kl-match-title-${crypto.randomUUID()}`;
   #releaseDialogFit: (() => void) | undefined;
   #dialogReturnFocus: string | undefined;
@@ -191,7 +186,7 @@ export class MatchingPage {
     this.#setupTypeTabs();
     this.#restoreBrowse();
     this.#cardMenu.element.dataset.matchCardMenu = "people";
-    this.element.append(this.#body,this.#dialog,this.#information.element,this.#resources.element,this.#cardMenu.element,this.#optionsMenu.element,this.#hiddenSuggestions.element,this.#hideSuggestion.element);
+    this.element.append(this.#body,this.#dialog,this.#resources.element,this.#cardMenu.element,this.#optionsMenu.element,this.#hiddenSuggestions.element,this.#hideSuggestion.element);
     this.#dialog.addEventListener("keydown", event => {
       if (event.key === "Escape") event.stopPropagation();
     });
@@ -231,7 +226,7 @@ export class MatchingPage {
             "relationships", "communities", "spaces", "calendar"].includes(kind))) this.#resourceRecommendation = undefined;
       if (this.#visible && (kind === "ready" || kind === "profiles-cleared" && cause === "ready" ||
         kind === "connection" && client.connected || kind === "matching" && !this.#busy &&
-        !this.#dialog.open && !this.#information.element.open && !this.#hideSuggestion.element.open)) {
+        !this.#dialog.open && !this.#hideSuggestion.element.open)) {
         this.#invalidateConnectionSummary(true);
         if (kind === "matching") this.#hiddenSuggestions.refresh();
         this.#queueRecheck();
@@ -333,7 +328,6 @@ export class MatchingPage {
     this.#editorSource = undefined;
     this.#requestDraft = undefined;
     this.#dialog.close();
-    this.#information.close();
     this.#hiddenSuggestions.close();
     this.#hideSuggestion.close();
     this.#dialog.replaceChildren();
@@ -370,7 +364,6 @@ export class MatchingPage {
       this.#busy = false;
       this.#catalogState = undefined;
       this.#dialog.close();
-      this.#information.close();
       this.#hiddenSuggestions.close();
       this.#hideSuggestion.close();
       if (!this.#editor) this.#dialog.replaceChildren();
@@ -462,7 +455,6 @@ export class MatchingPage {
     this.#erase();
     this.#clearDialogLayout();
     this.#dialog.remove();
-    this.#information.element.remove();
     this.#hiddenSuggestions.element.remove();
     this.#hideSuggestion.element.remove();
   }
@@ -532,7 +524,6 @@ export class MatchingPage {
     clearTimeout(this.#retryTimer);
     if (this.#backgroundRead !== undefined) { this.#token++; this.#backgroundRead = undefined; }
     this.#hideSuggestion.close();
-    this.#information.close();
     this.#items = [];
     this.#requests = [];
     this.#next = null;
@@ -676,7 +667,6 @@ export class MatchingPage {
       clearTimeout(this.#retryTimer);
       this.#busy = true;
       this.#hideSuggestion.close();
-      this.#information.close(false);
       this.#message = "";
       this.#catalogState = more ? undefined : 'loading';
       if (!more) {
@@ -942,7 +932,6 @@ export class MatchingPage {
     this.#requests = [];
     this.#next = null;
     this.#dialog.close();
-    this.#information.close();
     this.#hiddenSuggestions.close();
     this.#hideSuggestion.close();
     if (!this.#editor) this.#dialog.replaceChildren();
@@ -999,7 +988,6 @@ export class MatchingPage {
         : this.#button("Find matches", () => this.#findMatches()),
       options,
     );
-    if (this.#own) actions.append(matchingInformationButton(this.#button("Matching information", () => this.#showInformation())));
     if (this.#requestDraft) {
       const resume = this.#button("Resume connection draft", () => {
         const draft = this.#requestDraft;
@@ -1259,40 +1247,6 @@ export class MatchingPage {
     if (scope === this.#filters.scope) return;
     this.#filters.scope = scope;
     this.#applyBrowse();
-  }
-  #showInformation(): void {
-    const own = this.#own;
-    if (!own || !this.#supported) return;
-    const source = this.#source;
-    this.#information.open({
-      own,
-      signal: this.#button("My signal", () => {
-        this.#information.close(false);
-        this.#openEditor(own, ".kl-match-information-toggle");
-      }, true),
-      connections: this.#button("Connections", () => {
-        this.#information.close(this.#page === "connections");
-        this.#openConnections();
-      }),
-      hidden: this.#hiddenButton(".kl-match-information-toggle"),
-      saved: async () => {
-        const choices = checkedMatchChoices(await this.#read("/v1/matching/choices", source), this.recovery.owner);
-        if (!this.#current() || !sameMatchingSource(source, this.#source)) return [];
-        return choices.flatMap(({ saved, hidden, peer, revision, target }) => {
-          if (!saved || hidden || !peer || !this.#allowed(target)) return [];
-          const candidate = this.#items.find(row => row.memberNumber === target && row.name === peer.name &&
-            row.saved && !row.hidden && row.choiceRevision === revision &&
-            sameMatchingSource(source, this.#sourceOf(row)));
-          return [{
-            title: peer.name,
-            icon: "profile" as const,
-            avatar: this.#avatar(peer.name, peer.memberNumber),
-            reason: candidate?.reasons[0],
-            open: () => void this.#why(target, source, ".kl-match-information-toggle"),
-          }];
-        }).slice(0, 3);
-      },
-    });
   }
   #filterButton() {
     return matchFilterButton(this.#button("Filters", () => this.#filtersDialog()), this.#filters, DEFAULT_MATCH_FILTERS);
@@ -1682,7 +1636,6 @@ export class MatchingPage {
     const valid = this.#valid();
     const current = () => valid() && this.client.connected && sameMatchingSource(source, this.#source);
     if (!current() || this.#dialog.open || this.#hiddenSuggestions.element.open) return;
-    this.#information.close(false);
     this.#hiddenSuggestions.open({
       current,
       focus: () => (this.#body.querySelector<HTMLElement>(returnFocus) ??

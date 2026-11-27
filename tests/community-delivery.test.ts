@@ -528,3 +528,25 @@ it("holds a previously queued Direct while sending is disabled and resumes with 
   expect(sends()).toHaveLength(1);
   expect(sends()[0]?.[2]).toMatchObject({ clientMessageId: queuedId });
 });
+
+it("uses Cloud delivery for a mutual swipe match without friendship and stops when it is withdrawn", async () => {
+  const { direct, community, request } = setup();
+  const relation = community.relationships.get(202)!;
+  Object.assign(relation, {state:"none",canMessage:false,canMessageMatch:true});
+  expect(direct.shouldUse(202)).toBe(true);
+  expect(direct.canUse(202)).toBe(true);
+  const received = vi.fn();
+  request.mockImplementation(async (method,path,payload) => {
+    if (method === "POST" && path === "/v1/direct/202/messages") {
+      received(payload); return {id:crypto.randomUUID(),sequence:1,state:"sent"};
+    }
+    return {items:[],cursor:0,nextCursor:null};
+  });
+  await direct.send(202,"Match","Hello");
+  await vi.waitFor(()=>expect(received).toHaveBeenCalledOnce());
+  expect(relation.state).toBe("none");
+  relation.canMessageMatch = false;
+  expect(direct.canUse(202)).toBe(false);
+  await expect(direct.send(202,"Match","Follow-up")).rejects.toThrow(/mutual like/i);
+  expect(received).toHaveBeenCalledOnce();
+});

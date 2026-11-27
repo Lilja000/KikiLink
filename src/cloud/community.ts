@@ -12,7 +12,7 @@ export interface Relationship {
   friendSource?:RelationshipSource;
   memberNumber: number; supported: boolean; directMessages: boolean;
   state: "none" | "sent" | "received" | "accepted" | "declined" | "cancelled" | "revoked";
-  revision: number; updatedAt: number; canMessage: boolean; nativeSyncRequired: boolean;
+  revision: number; updatedAt: number; canMessage: boolean; canMessageMatch?: boolean; nativeSyncRequired: boolean;
 }
 export interface MailItem {
   friendSource?:RelationshipSource;friendRevision?:number;
@@ -216,6 +216,10 @@ export class CommunityService {
         this.relationshipsLoaded = false; this.relationshipsLoading = false; this.relationshipsError = "";
         this.#releaseEvents?.(); this.#releaseEvents = undefined;
         this.#changed(); if (client.connected) void this.start();
+      } else if (["matching", "privacy", "profile-discovery"].includes(kind) && this.mailbox.items.some(item => item.kind === "swipe_mutual")) {
+        // Match access can change without altering the mailbox's newest row.
+        this.#mailRevision++;
+        this.#resume();
       } else if (["spaces", "calendar", "channel-read", "communities", "channel-messages", "ready", "relationships", "mailbox", "feed", "feed-read", "groups", "read", "profiles-cleared"].includes(kind)) {
         if (this.personalMail && ["ready", "relationships", "profiles-cleared", "mailbox"].includes(kind)) this.#invalidateLetters();
         if (["spaces", "calendar", "channel-read", "communities", "channel-messages", "ready", "mailbox", "read", "profiles-cleared", "groups"].includes(kind)) this.#mailRevision++;
@@ -645,9 +649,13 @@ export class CommunityService {
       this.mailbox.items = this.mailbox.items.map(item => affected(item) ? { ...item, read:true } : item);
       this.mailbox.unread = id === undefined && !scope ? 0 : Math.max(0, this.mailbox.unread - changed); this.#changed();
       if (this.#refresh) await this.#refresh.catch(() => {});
-      if (!this.#mailCurrent(access, epoch)) throw new MailboxRecoveryError();
-      await this.refresh();
-      if (!this.#mailCurrent(access, epoch)) throw new MailboxRecoveryError();
+      const current = () => this.#mailCurrent(access, epoch);
+      if (!current()) throw new MailboxRecoveryError();
+      // An acknowledged Inbox action only depends on this mailbox. Channel or Feed
+      // outages must not prevent opening an independently verified notification.
+      this.#mailRevision++;
+      await this.#loadMail(current, access.generation ? this.client.request("GET", "/v1/me") : undefined);
+      if (!current()) throw new MailboxRecoveryError();
     } catch (error) { this.#mailFailed(error, epoch); }
   }
   async changeLetter(item: MailItem, action: 'unread' | 'remove'): Promise<void> {

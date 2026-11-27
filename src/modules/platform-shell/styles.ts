@@ -554,7 +554,9 @@ export const PLATFORM_SHELL_STYLES = `
   .kl-panel[data-platform-preview="true"] .kl-shell > .kl-topbar { grid-column: 1; grid-row: 1; padding: 8px 12px; gap: 8px; }
   .kl-panel[data-platform-preview="true"] .kl-platform-context { grid-column: 1; grid-row: 2; display: flex; flex-direction: row; align-items: center; padding: 0 8px 0 0; overflow: hidden; background: var(--kl-surface); }
   .kl-panel[data-platform-preview="true"] .kl-platform-context[hidden] { display: none; }
-  .kl-platform-wordmark, .kl-platform-brand, .kl-platform-connection, .kl-platform-context-title { display: none; }
+  .kl-platform-brand, .kl-platform-connection, .kl-platform-context-title { display: none; }
+  .kl-platform-context > .kl-platform-wordmark { align-self: stretch; height: auto; margin: 0; padding: 3px 8px; font-size: 11px; line-height: 1.2; border: 0; border-inline-end: 1px solid var(--kl-border); background: transparent; }
+  .kl-platform-wordmark > span { display: none; }
   .kl-platform-options { position: static; width: 40px; height: 40px; border-inline-start: 1px solid var(--kl-border); border-radius: 0; }
   .kl-platform-options > svg { width: 18px; height: 18px; }
   .kl-platform-context-heading { order: 2; margin: 0; padding-left: 4px; flex: none; }

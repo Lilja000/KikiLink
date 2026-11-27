@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.10
+
+- The round Orbit launcher frames the wolf and crescent with a flat gold border. The glow behind the button has been removed.
+- Swipe cards fade in a heart or a cross as you drag. Cards highlight shared languages, relationship goals and the preference details both people share.
+- Matches now links directly to Browse, Match Settings, Preferences and Edit Card. The background picker stays open in Edit Card, and the Browse information menu has been removed.
+- Both people receive a notification for a new mutual like. A match can start a direct conversation or send a friend request from the match dialog.
+- The window close button is at the top right. The registered user count also loads when signed out and is visible in compact layouts with the updated Cloud service.
+
 ## 2.0.9
 
 - Matches displays saved Wardrobe outfits even when the Club skips a missing layer. Previews follow the active renderer, including remapped clothing textures, and can retry when an image host returns.

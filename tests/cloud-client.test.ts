@@ -63,6 +63,28 @@ describe("Cloud client account and migration boundaries", () => {
       expect(changed.mock.calls).toEqual([["addon-users"]]);
     } finally { client.destroy(); }
   });
+  it("reads the old server count with the active session when the public route is unavailable", async () => {
+    const calls: string[] = [];
+    const { client } = setup(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      calls.push(path);
+      if (path === "/v1/auth/challenges") return response({ challengeId: crypto.randomUUID(), proof: "a".repeat(43), exchange: "b".repeat(43), verifierMember: 909, expiresAt: Date.now() + 60000 });
+      if (path === "/v1/auth/exchange") return response({ memberNumber: 101, token: "t".repeat(43), expiresAt: Date.now() + 3600000 });
+      if (path === "/v1/stats/users") {
+        expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+        return response({ error: "authentication_required" }, 401);
+      }
+      if (path === "/v1/me") return response({ memberNumber: 101, addonUsers: 1234 });
+      throw new Error(path);
+    });
+    try {
+      await client.connect(); calls.length = 0;
+      await client.refreshAddonUsers(); await client.refreshAddonUsers();
+      expect(client.addonUsers).toBe(1234);
+      expect(calls).toEqual(["/v1/stats/users", "/v1/me"]);
+      expect(client.connected).toBe(true);
+    } finally { client.destroy(); }
+  });
   it("remote revocation during proactive renewal invalidates pending private reads and never sends a new automatic proof", async () => {
     const key = await createDeviceKey();
     key.device = { id: crypto.randomUUID(), expiresAt: Date.now() + 86400000 };

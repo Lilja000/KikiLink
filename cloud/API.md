@@ -1,6 +1,6 @@
 # KikiLink Cloud API v1
 
-All `/v1` calls require one exact allowed BC `Origin`. Except for BC/device identity
+All `/v1` calls require one exact allowed BC `Origin`. Except for the aggregate user count and BC/device identity
 challenge and exchange, calls require `Authorization: Bearer <opaque session>`. No cookies,
 refresh token, token-bearing query strings or wildcard CORS. JSON writes require
 `application/json`; uploads require a raw supported image with a declared bounded
@@ -14,8 +14,9 @@ exception internals. Common statuses: 400 validation, 401 session, 403 permissio
 404 unavailable/hidden, 409 revision or membership conflict, 413/415 image size/type,
 429 throttle, 503 dependency/capacity. Auth-hidden resources use 404.
 
-The authenticated `GET /v1/me` response includes `addonUsers`, the number of verified
-accounts that are enabled, irrespective of presence. Cloud caches the total for five minutes.
+`GET /v1/stats/users` returns only `addonUsers`, the aggregate number of enabled verified
+accounts. It accepts requests from allowed origins before Cloud sign-in, with the normal
+IP and global rate limits. The same five-minute cached count is included in `GET /v1/me`.
 
 | Area | Routes |
 | --- | --- |

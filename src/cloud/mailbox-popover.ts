@@ -372,16 +372,18 @@ export class MailboxPopover {
       mention: `${who} mentioned you in ${item.targetType === "community_message" ? "a community channel" : item.targetType === "group_message" ? "a group" : item.targetType === "direct_message" ? "Direct" : item.targetType === "comment" ? "a comment" : "a post"}`,
       comment: `${who} commented on your post`, reaction: `${item.count} reaction${item.count === 1 ? "" : "s"} on your ${item.targetType}`,
       comment_reply: `${who} replied to your comment`, post_comment: item.count > 1 ? `${item.count} new comments on a post you follow` : `${who} commented on a post you follow`,
+      swipe_mutual: `You and ${who} liked each other`,
       friend_request: `${who} sent a friend request`, friend_accepted: `${who} accepted your friend request`, group_invitation: `${who} invited you to a group`,
       space_invitation: `${who} invited you to ${item.spaceName ?? "a space"}`, space_request: `${who} requested to join ${item.spaceName ?? "your space"}`, space_approved: `Your request to join ${item.spaceName ?? "a space"} was approved`,
       event_reminder: `Starting soon: ${item.eventTitle ?? "Your event"}`, event_place: `Your place is ready: ${item.eventTitle ?? "Your event"}`, event_updated: `Event updated: ${item.eventTitle ?? "Your event"}`, event_cancelled: `Event cancelled: ${item.eventTitle ?? "Your event"}`,
       community_invitation: `${who} invited you to a community`, community_request: `${who} requested to join your community`, community_approved: "Your community join request was approved",
       report: "New report for review", release: `KikiLink ${item.targetId} is available`,
     };
-    const icons: Record<string, KikiLinkIconName> = { space_invitation: "group-add", space_request: "requests", space_approved: "location", event_reminder: "calendar", event_place: "calendar", event_updated: "calendar", event_cancelled: "calendar", community_invitation: "group-add", community_request: "requests", community_approved: "users", friend_request: "requests", friend_accepted: "users", group_invitation: "group-add", reaction: "heart", report: "shield", release: "note" };
+    const icons: Record<string, KikiLinkIconName> = { swipe_mutual: "heart", space_invitation: "group-add", space_request: "requests", space_approved: "location", event_reminder: "calendar", event_place: "calendar", event_updated: "calendar", event_cancelled: "calendar", community_invitation: "group-add", community_request: "requests", community_approved: "users", friend_request: "requests", friend_accepted: "users", group_invitation: "group-add", reaction: "heart", report: "shield", release: "note" };
     const sources: Record<string, string> = {
       mention: `${mentionSource} · Mention`, comment: "Feed · Comment", reaction: "Feed · Reaction",
       comment_reply: "Feed · Reply", post_comment: "Feed · Followed post",
+      swipe_mutual: "Matches · Mutual like",
       friend_request: "Friend request", friend_accepted: "Friends", group_invitation: "Group invitation",
       space_invitation: "Space invitation", space_request: "Space request", space_approved: "Spaces",
       event_reminder: "Event reminder", event_place: "Events", event_updated: "Events", event_cancelled: "Events",

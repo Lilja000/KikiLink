@@ -178,12 +178,9 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   confirmation.hidden = true;
   const title = element('h2', { text: card ? 'Edit your card' : 'Set up your card', tabIndex: -1 });
   const labeled = (label: string, control: HTMLElement) => element('label', { className: 'field' }, element('span', { className: 'fieldlabel', text: label }), control);
-  const backgroundSummary = element('summary', { text: 'Background' });
-  const bgField = element('details', { className: 'kl-room-settings-disclosure matches-background-picker' },
-    backgroundSummary, picker.element,
+  const bgField = element('section', { className: 'field matches-background-picker', ariaLabel: 'Background' },
+    element('h3', { className: 'fieldlabel', text: 'Background' }), picker.element,
     element('div', { className: 'kl-inline-actions' }, shuffle));
-  bgField.open = true;
-  bgField.addEventListener('toggle', syncBackgroundSummary);
   if (options.customBackgrounds) {
     const actions = element('div', { className: 'kl-inline-actions' });
     if (options.pickBackground) actions.append(element('button', { type: 'button', className: 'kl-text-button',
@@ -252,17 +249,12 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     backgroundOperation = undefined;
     controls();
   }
-  function syncBackgroundSummary() {
-    const name = previewedUrl ? 'Custom background' : matchesBackgroundLabel(draft.background);
-    backgroundSummary.textContent = bgField.open ? 'Background' : 'Background · ' + name;
-  }
   function updateBackgroundPreview() {
     backgroundPreview?.abort();
     backgroundPreview = undefined;
     const value = normalizeMatchesBackgroundUrl(draft.backgroundUrl === undefined ? card?.backgroundUrl : draft.backgroundUrl);
     const custom = options.customBackgrounds && value ? value : undefined;
     previewedUrl = custom;
-    syncBackgroundSummary();
     retryBackground.hidden = true;
     const vanilla = matchesBackgroundLabel(draft.background);
     room.referrerPolicy = 'no-referrer';

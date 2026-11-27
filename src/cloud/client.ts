@@ -77,6 +77,8 @@ export class CloudClient {
   readonly #now: () => number;
   #session: CloudSession | undefined;
   #addonUsers: number | undefined;
+  #addonUsersRefreshAt = 0;
+  #addonUsersRead: Promise<void> | undefined;
   #sessionVersion=0;
   #pending: PendingIdentity | undefined;
   #closed = false;
@@ -157,6 +159,31 @@ export class CloudClient {
   /** Public base URL only; authentication credentials stay inside this client. */
   get origin(): string { return this.#origin; }
   get addonUsers(): number | undefined { return this.#addonUsers; }
+  #rememberAddonUsers(count: unknown): void {
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return;
+    this.#addonUsersRefreshAt = this.#now() + 300_000;
+    if (count === this.#addonUsers) return;
+    this.#addonUsers = count;
+    this.#notify("addon-users");
+  }
+  /** Requested by the visible shell. Reading the aggregate never starts enrollment. */
+  async refreshAddonUsers(): Promise<void> {
+    if (this.#addonUsersRead) return this.#addonUsersRead;
+    if (this.#closed || this.#now() < this.#addonUsersRefreshAt) return;
+    this.#addonUsersRefreshAt = this.#now() + 60_000;
+    this.#addonUsersRead = this.request<{ addonUsers?: number }>("GET", "/v1/stats/users", undefined, false)
+      .then(value => this.#rememberAddonUsers(value?.addonUsers))
+      .catch(async (error: unknown) => {
+        if (!(error instanceof CloudError)) return;
+        if ((error.status === 401 || error.status === 404) && this.connected) {
+          // 2.0.9 servers already return the same aggregate in session metadata.
+          await this.request("GET", "/v1/me").catch(() => {});
+        } else if (error.retryAfterMs) {
+          this.#addonUsersRefreshAt = Math.max(this.#addonUsersRefreshAt, this.#now() + error.retryAfterMs);
+        }
+      }).finally(() => { this.#addonUsersRead = undefined; });
+    return this.#addonUsersRead;
+  }
   get verifying(): boolean {
     return !!this.#pending && this.#pending.expiresAt > this.#now();
   }
@@ -554,11 +581,7 @@ export class CloudClient {
     } else value = undefined as T;
     if (authenticated && method === "GET" && path === "/v1/me" && value && typeof value === "object" &&
       "memberNumber" in value && value.memberNumber === this.memberNumber && "addonUsers" in value) {
-      const count = value.addonUsers;
-      if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0 && count !== this.#addonUsers) {
-        this.#addonUsers = count;
-        this.#notify("addon-users");
-      }
+      this.#rememberAddonUsers(value.addonUsers);
     }
     // Keep the last complete profile visible until the complete save response is ready.
     const boundProfile=path==='/v1/profiles/me'&&!!body&&typeof body==='object'&&'recoveryGeneration' in body;

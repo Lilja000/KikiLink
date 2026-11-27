@@ -22,7 +22,7 @@ const validMediaIds = (ids: unknown): ids is string[] => Array.isArray(ids) && i
   ids.every(id => typeof id === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(id)) && new Set(ids).size === ids.length;
 const empty = (): DirectState => ({ inbox: 0, receipts: 0, outgoing: [], cloudPeers: [], reads: {} });
 
-/** Delivery for confirmed Cloud friends, separate from the historical chat import path. */
+/** Delivery for confirmed Cloud friends and mutually matched peers, separate from the historical chat import path. */
 export class CloudDirect {
   #state = empty();
   #key: string;
@@ -285,7 +285,7 @@ export class CloudDirect {
       !validMediaIds([envelope.id]) || !validMediaIds([envelope.clientMessageId]) || !['sent', 'delivered'].includes(envelope.state) ||
       envelope.mediaIds !== undefined && !validMediaIds(envelope.mediaIds) || envelope.audioIds !== undefined && (!validMediaIds(envelope.audioIds) || envelope.audioIds.length > 1))
       throw new Error("Invalid Direct history envelope");
-    if (!current() || envelope.createdAt <= Math.max(this.#state.historyClearedAt ?? 0, this.#state.historyHidden?.[peer] ?? 0)) return;
+    if (!current() || this.#restricted(peer) || envelope.createdAt <= Math.max(this.#state.historyClearedAt ?? 0, this.#state.historyHidden?.[peer] ?? 0)) return;
     const delivery = envelope.state === "delivered" ? envelope.sequence <= peerReadCursor ? "read" : "delivered" : "sent";
     const result = await this.chat.restoreCloud({ direction: outgoing ? "outgoing" : "incoming", peerNumber: peer,
       peerName: this.community.adapter.getMemberName(peer), content: envelope.text, sentAt: envelope.createdAt,
@@ -400,14 +400,19 @@ export class CloudDirect {
   shouldUse(peer: number): boolean {
     return this.#state.cloudPeers.includes(peer) || this.community.supported && this.community.directEnabled && !!this.community.relationships.get(peer)?.directMessages;
   }
+  #restricted(peer: number): boolean {
+    return this.community.client.isProfileBlocked?.(peer) === true ||
+      (this.community.adapter.getPlayerRelationships?.(peer) ?? []).some(kind => kind === "blacklist" || kind === "ghosted");
+  }
   canUse(peer: number): boolean {
     const relation = this.community.relationships.get(peer);
-    return this.community.supported && this.community.directEnabled && !!relation?.directMessages && relation.canMessage;
+    if (!this.community.supported || !this.community.directEnabled || !relation?.directMessages) return false;
+    return !this.#restricted(peer) && (relation.canMessage || relation.canMessageMatch === true);
   }
   async send(peer: number, name: string, text: string, roomName?: string, mediaIds: string[] = [], audioIds: string[] = []): Promise<LinkMessage> {
     this.#prepareRecovery();
     if (this.options.sendingEnabled?.() === false) throw new Error("Direct chat is turned off in your settings.");
-    if (!this.canUse(peer)) throw new Error("Offline Direct delivery requires a confirmed Cloud friendship.");
+    if (!this.canUse(peer)) throw new Error("Direct messaging requires a confirmed Cloud friendship or a current mutual like.");
     if (!validMediaIds(mediaIds) || (!text.trim() && !mediaIds.length && !audioIds.length) || !validMediaIds(audioIds) || audioIds.length > 1) throw new Error("Choose an attachment or write a message.");
     if (audioIds.length && !this.community.messageAudio) throw new Error("Audio messages require the updated Cloud server.");
     if (mediaIds.length && !this.community.directMessageMedia) throw new Error("Private Direct images require the updated Cloud server.");
@@ -469,6 +474,7 @@ export class CloudDirect {
       }
       let updated: LinkMessage | undefined;
       try {
+        if (this.#restricted(queued.peer)) throw new CloudError("direct_recipient_unavailable", 403);
         await this.#captureOutgoing(queued);
         if (this.#closed || !this.#state.outgoing.includes(queued) || this.options.sendingEnabled?.() === false) return;
         const result = await this.#request<Envelope>("POST", `/v1/direct/${queued.peer}/messages`, {
@@ -487,7 +493,7 @@ export class CloudDirect {
         if (!definiteFailure) this.#scheduleRetry(error);
         queued.failed = definiteFailure; this.#save();
         updated = await this.chat.updateDelivery(queued.peer, queued.localId, { delivery: definiteFailure ? "failed" : "waiting",
-          deliveryError: error instanceof CloudError && error.code === "too_many_mentions" ? "Use up to 10 different usernames and 40 mentions in one message." : definiteFailure ? "Delivery is not permitted. Check friendship and retry." : "Not confirmed. Retry with the same message ID when connected." });
+          deliveryError: error instanceof CloudError && error.code === "too_many_mentions" ? "Use up to 10 different usernames and 40 mentions in one message." : definiteFailure ? "Delivery is unavailable. Check your friendship or mutual like and retry." : "Not confirmed. Retry with the same message ID when connected." });
         if (updated) this.#changed(queued.peer, updated);
         return;
       }
@@ -541,7 +547,8 @@ export class CloudDirect {
       const useHistory = this.community.directHistory, inboxCurrent = this.#historyCurrent();
       const page = await this.#request<{ items: Envelope[]; cursor: number; nextCursor: number | null }>("GET", `/v1/direct/inbox?limit=40&cursor=${this.#state.inbox}`);
       if (this.#closed || useHistory && !inboxCurrent()) return;
-      for (const envelope of page.items) {
+      const visible = page.items.filter(envelope => !this.#restricted(envelope.sender));
+      for (const envelope of visible) {
         if (envelope.recipient !== client.memberNumber || typeof envelope.text !== "string" || (envelope.mediaIds !== undefined && !validMediaIds(envelope.mediaIds)) || (envelope.audioIds !== undefined && (!validMediaIds(envelope.audioIds) || envelope.audioIds.length > 1))) throw new Error("Invalid Direct envelope");
         if (useHistory) {
           const guard = this.#historyCurrent(envelope.sender), current = () => inboxCurrent() && guard();
@@ -565,7 +572,7 @@ export class CloudDirect {
       // A parallel receipt request may have established a server cooldown.
       if (Date.now() < this.#retryNotBefore) return;
       // Acknowledge only after local capture, never when the server merely saved it.
-      if (page.items.length) await this.#request("POST", "/v1/direct/acknowledge", { ids: page.items.map(item => item.id) });
+      if (visible.length) await this.#request("POST", "/v1/direct/acknowledge", { ids: visible.map(item => item.id) });
       if (this.#closed || epoch !== this.#recoveryEpoch) return;
       this.#state.inbox = page.cursor; this.#save();
       if (page.nextCursor === null) break;
