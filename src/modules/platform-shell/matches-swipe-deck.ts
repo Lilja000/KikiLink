@@ -47,21 +47,27 @@ function profileMeta(card: SwipeCard, mine?: SwipeCard | null) {
       text.append(shared);
     } else text.append(lang);
   }
-  if (card.available) text.append((card.languages.length ? ' · ' : '')+'Open to chat');
-  return element('div', {className:'meta'}, icon(card.languages.length ? 'globe' : 'chat'),text);
+  const separator = card.languages.length && card.available ? element('span',{className:'meta-separator',text:' · '}) : undefined;
+  const status = card.available ? element('span',{className:'meta-status',text:'Open to chat'}) : undefined;
+  return element('div', {className:'meta'}, icon(card.languages.length ? 'globe' : 'chat'),
+    element('span',{className:'meta-copy'},card.languages.length ? text : undefined,separator,status));
+}
+function tagList(card: SwipeCard, shared = new Set<string>()) {
+  const tags = [...new Set([...shared,...card.tags])].slice(0,12);
+  if (!tags.length) return undefined;
+  return element('div',{className:'tagset'}, ...tags.map(tag => {
+    const label = interestLabels.get(tag) ?? tag;
+    return shared.has(tag) ? element('span',{className:'shared-setting',title:'Shared match setting'},
+      icon('check'),label,element('span',{className:'sr',text:' (shared match setting)'})) : element('span',{text:label});
+  }));
 }
 function story(card: SwipeCard, common?: SwipeCommonGround) {
   const shared = new Set([...(common?.intents ?? []),...(common?.interests ?? [])]);
-  const tags = [...new Set([...shared,...card.tags])].slice(0,12);
+  const tags = tagList(card,shared);
   const sharedLikes = (common?.preferences ?? []).flatMap(id => catalogById.get(id)?.label ?? []);
-  if (!card.bio && !tags.length && !sharedLikes.length) return undefined;
+  if (!card.bio && !tags && !sharedLikes.length) return undefined;
   return element('div', {className:'card-story'},
-    card.bio ? element('p',{className:'bio',text:card.bio}) : undefined,
-    tags.length ? element('div',{className:'tagset'}, ...tags.map(tag => {
-      const label = interestLabels.get(tag) ?? tag;
-      return shared.has(tag) ? element('span',{className:'shared-setting',title:'Shared match setting'},
-        icon('check'),label,element('span',{className:'sr',text:' (shared match setting)'})) : element('span',{text:label});
-    })) : undefined,
+    card.bio ? element('p',{className:'bio',text:card.bio}) : undefined,tags,
     sharedLikes.length ? element('p',{className:'both-like'},element('strong',{text:'Both like'}),sharedLikes.join(' · ')) : undefined);
 }
 function empty(glyph:KikiLinkIconName, title:string, text:string, ...actions:(HTMLButtonElement|undefined)[]) {
@@ -268,8 +274,10 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     const bg = backgroundInfo(card);
     const body = [element('div',{className:'match-profile-portrait'},portraits.art(card,'mini',{small:true,backgroundChanged:bg.changed}))];
     if (card.backgroundUrl) body.push(bg.where);
-    const meta = profileMeta(card), about = story(card);
-    if (meta || about) body.push(element('div',{className:'details'},meta,about));
+    const meta = profileMeta(card), tags = tagList(card);
+    if (meta || card.bio || tags) body.push(element('div',{className:'match-profile-details'},meta,
+      card.bio ? element('p',{className:'bio',text:card.bio}) : undefined,
+      tags ? element('div',{className:'match-profile-interests'},element('h3',{text:'Interests & goals'}),tags) : undefined));
     contactModal(card.name,body,card,trigger);
   }
   async function more() {

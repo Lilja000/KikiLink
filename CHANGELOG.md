@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.11
+
+- The profile menu sits to the left of search. Unread counts are centered inside their notification badges.
+- Mutual Matches cards give the portrait, bio, languages and interest tags room to fit the available width.
+- Edit Card keeps the full portrait visible beside the form as you scroll. Background controls, page buttons and save actions have consistent sizes on desktop and touch screens.
+- The collapsed Wardrobe names the selected outfit when it is outside the first row. Saved outfits are recognized when reopening a card, and failed previews can be retried.
+- Saving and removing a card show progress and support retry after a failed request. Escape dismisses the removal confirmation and keeps your draft.
+
 ## 2.0.10
 
 - The round Orbit launcher frames the wolf and crescent with a flat gold border. The glow behind the button has been removed.

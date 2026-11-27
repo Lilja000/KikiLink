@@ -263,6 +263,12 @@ button { color: inherit; }
 .kl-group-avatar-stack-item .kl-addon-badge { width: 9px; height: 9px; top: -1px; right: -1px; }
 .kl-addon-profile-avatar .kl-addon-badge { width: 20px; height: 20px; top: -3px; right: -3px; }
 
+/* Small counters must not inherit the taller line box of a navigation button. */
+.kl-badge, .kl-roster-count, .kl-unread, .kl-group-sidebar-count, .kl-group-sidebar-unread, .kl-group-list-unread {
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
 .kl-badge {
   position: absolute;
   z-index: 2;
@@ -4384,8 +4390,8 @@ select:focus-visible {
 .kl-room-member-chip:disabled { color: var(--kl-muted); cursor: default; }
 .kl-room-background-grid { min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 112px), 1fr)); gap: 8px; }
 .kl-room-background-choice { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
-.kl-room-background-choice img { display: block; width: 100%; min-width: 0; aspect-ratio: 2; object-fit: cover; border-radius: 6px; background: var(--kl-surface-2); }
-.kl-room-background-choice img[hidden] { display: none; }
+.kl-room-background-choice :is(img, .kl-room-background-placeholder) { display: block; width: 100%; min-width: 0; aspect-ratio: 2; object-fit: cover; border-radius: 6px; background: var(--kl-surface-2); }
+.kl-room-background-choice .kl-room-background-placeholder { display: grid; place-items: center; color: var(--kl-muted); }
 .kl-lobby-indicators { --kl-lobby-indicator-size: 30px; position: relative; display: grid; grid-template-columns: var(--kl-lobby-indicator-size); justify-items: center; align-self: start; }
 .kl-lobby-indicators > .kl-lobby-favorite, .kl-lobby-locked { width: var(--kl-lobby-indicator-size); height: var(--kl-lobby-indicator-size); margin: 0; }
 /* Fit both 16px glyphs with a 4px gap in the existing header/padding area.

@@ -1,5 +1,15 @@
 // This view shares the normal Explore scroll area. The content pane, not the
 // browser viewport, determines when the two card columns need to stack.
+const splitEditorLayout = `
+.kl-matches-swipe .setupPanel {
+  grid-template-columns: minmax(0,.8fr) minmax(0,1.2fr); overflow: clip;
+}
+.kl-matches-swipe .setupPanel .card-preview {
+  position: sticky; top: 0; align-self: start; height: clamp(96px,calc(100cqh - var(--kl-editor-preview-inset,90px)),740px);
+}
+.kl-matches-swipe .setupPanel .card-preview .scene { flex: 1; height: auto; min-height: 0; }
+`;
+
 export const MATCHES_SWIPE_STYLES = `
 .kl-matching-host > .kl-matches-workspace, .kl-matches-workspace > .kl-matches-scroll,
 .kl-matches-workspace > .kl-matches-catalog { box-sizing: border-box; height: 100%; min-height: 0; min-width: 0; }
@@ -36,8 +46,8 @@ export const MATCHES_SWIPE_STYLES = `
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
 }
 .kl-matches-swipe .ico { flex: none; width: 16px; height: 16px; vertical-align: middle; }
-.kl-matches-swipe .heading, .kl-matches-swipe .actions, .kl-matches-swipe .looktools,
-.kl-matches-swipe .savebar, .kl-matches-swipe .dialogbuttons { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.kl-matches-swipe .heading, .kl-matches-swipe .actions,
+.kl-matches-swipe .dialogbuttons { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .kl-matches-swipe .heading { justify-content: space-between; margin-bottom: 10px; }
 .kl-matches-swipe .heading h1 { font-size: var(--kl-type-xl); line-height: 1.3; }
 .kl-matches-swipe .tabs {
@@ -56,18 +66,18 @@ export const MATCHES_SWIPE_STYLES = `
   min-width: 18px; padding: 1px 5px; border: 1px solid var(--kl-border); border-radius: 6px;
   background: var(--kl-surface-2); color: var(--kl-muted); font-size: var(--kl-type-xs); font-variant-numeric: tabular-nums;
 }
-.kl-matches-swipe :is(.button,.upload,.iconbtn) {
+.kl-matches-swipe :is(.button,.iconbtn) {
   display: inline-flex; justify-content: center; align-items: center; gap: 6px;
   min-height: var(--kl-action-height,36px); min-width: 0; max-width: 100%; padding: 5px 12px;
   border: 1px solid var(--kl-border); border-radius: var(--kl-action-radius,8px);
   background: var(--kl-surface-2); color: var(--kl-text); box-shadow: none;
   font-size: var(--kl-type-body,12px); font-weight: 550; line-height: 1.4; overflow-wrap: anywhere;
 }
-.kl-matches-swipe :is(.button.minor,.upload,.dialogbuttons .button:not(.primary)) { background: transparent; }
+.kl-matches-swipe :is(.button.minor,.dialogbuttons .button:not(.primary)) { background: transparent; }
 .kl-matches-swipe .button.primary {
   background: var(--kl-accent); color: var(--kl-accent-foreground); border-color: var(--kl-accent); font-weight: 650;
 }
-.kl-matches-swipe .matches-background-picker .button, .kl-matches-swipe .iconbtn {
+.kl-matches-swipe .editor-square, .kl-matches-swipe .iconbtn {
   flex: none; width: var(--kl-action-height,36px); height: var(--kl-action-height,36px); padding: 0;
 }
 .kl-matches-swipe .iconbtn { width: var(--kl-action-square,32px); min-height: var(--kl-action-square,32px); height: var(--kl-action-square,32px); }
@@ -107,8 +117,33 @@ export const MATCHES_SWIPE_STYLES = `
 }
 .kl-matches-swipe .missing-look .ico { background: #171419c4; border: 1px solid #ffffff58; border-radius: 50%; padding: 14px; width: 56px; height: 56px; }
 
-/* A snapshot occupies the entire thumbnail, with room for the native character's feet. */
-.kl-matches-swipe .setupPanel form { margin: 0; }
+.kl-matches-swipe .setupPanel form { container: kl-card-form / inline-size; margin: 0; }
+.kl-matches-swipe .editor-tools, .kl-matches-swipe .savebar {
+  display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px;
+}
+.kl-matches-swipe .editor-tools:not(:has(> button:not([hidden]))) { display: none; }
+.kl-matches-swipe .savebar { grid-template-columns: none; grid-auto-columns: minmax(0,1fr); grid-auto-flow: column; }
+.kl-matches-swipe .editor-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kl-matches-swipe .setupPanel .editor-remove { color: var(--kl-danger); }
+.kl-matches-swipe .matches-background-picker .kl-club-background-picker > .kl-inline-actions {
+  display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); align-items: center; gap: 8px;
+}
+.kl-matches-swipe .matches-background-picker .kl-inline-actions > .kl-room-media-note { text-align: center; }
+:host(#kikilink-root) .kl-matches-swipe .matches-background-picker button.kl-page-action {
+  align-self: stretch; width: 100%; min-width: 0; font-weight: 550;
+}
+@container kl-card-form (max-width: 384px) {
+  .kl-matches-swipe .matches-background-picker .kl-club-background-picker > .kl-inline-actions { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .kl-matches-swipe .matches-background-picker .kl-inline-actions > .kl-room-media-note { grid-area: 1 / 1 / auto / -1; }
+}
+@container kl-card-form (max-width: 360px) {
+  .kl-matches-swipe :is(.editor-tools,.savebar) > .button { padding-inline: 8px; }
+}
+@container kl-card-form (max-width: 310px) {
+  .kl-matches-swipe .editor-tools > .button { padding-inline: 6px; gap: 4px; }
+  .kl-matches-swipe .savebar:has(> :nth-child(3)) { grid-auto-flow: row; grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .kl-matches-swipe .savebar:has(> :nth-child(3)) > :nth-child(2) { grid-column: 1; }
+}
 .kl-matches-swipe .field { display: grid; gap: 7px; min-width: 0; }
 .kl-matches-swipe .fieldlabel { font-size: calc(var(--kl-type-body) + 1px); font-weight: 620; color: var(--kl-text); }
 .kl-matches-swipe .input, .kl-matches-swipe .matches-background-picker :is(.kl-input,.kl-select) {
@@ -119,7 +154,7 @@ export const MATCHES_SWIPE_STYLES = `
 .kl-matches-swipe .matches-background-picker { gap: 10px; }
 .kl-matches-swipe .matches-background-picker h3 { margin: 0; }
 .kl-matches-swipe .wardrobe-strip {
-  --outfit-toggle: max(32px,var(--kl-action-square,32px));
+  --outfit-toggle: var(--kl-action-height,36px);
   container: kl-outfits / inline-size; display: grid; grid-template-columns: minmax(0,1fr) var(--outfit-toggle);
   align-items: start; gap: 6px; width: 100%; max-width: 670px; min-width: 0;
 }
@@ -131,25 +166,19 @@ export const MATCHES_SWIPE_STYLES = `
 }
 .kl-matches-swipe .outfit-image { position: absolute; inset: 1px; }
 .kl-matches-swipe .outfit-image :is(img,canvas) { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; }
+.kl-matches-swipe .outfit-image .ico { position: absolute; inset: 0; margin: auto; width: 18px; height: 18px; color: var(--kl-muted); }
 .kl-matches-swipe .pick[aria-pressed="true"] { border-color: var(--kl-accent); box-shadow: inset 0 0 0 1px var(--kl-accent); }
 .kl-matches-swipe .wardrobe-toggle {
-  width: var(--outfit-toggle); height: var(--outfit-toggle); display: grid; place-items: center; padding: 0;
   /* Half the native 1:2 portrait height is its width. Five gaps separate the six columns. */
   margin-top: max(0px,calc((100cqi - var(--outfit-toggle) - 30px) / 5 - var(--outfit-toggle) / 2));
-  border: 0; border-radius: var(--kl-action-radius,8px); background: transparent; color: var(--kl-muted);
 }
 .kl-matches-swipe .wardrobe-toggle[aria-expanded="true"] .ico { transform: rotate(180deg); }
 .kl-matches-swipe .wardrobe-caption, .kl-matches-swipe .swipe-feedback { font-size: var(--kl-type-body); color: var(--kl-muted); }
+.kl-matches-swipe .wardrobe-chosen { overflow-wrap: anywhere; }
 .kl-matches-swipe .swipe-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-block: 8px; }
 .kl-matches-swipe .switchrow { display: flex; align-items: center; gap: 9px; font-size: calc(var(--kl-type-body) + 1px); min-height: var(--kl-action-square,32px); cursor: pointer; }
 .kl-matches-swipe .switchrow input { flex: 0 0 16px; width: 16px; height: 16px; margin: 0; accent-color: var(--kl-accent); }
 .kl-matches-swipe .savebar, .kl-matches-swipe .decisions { padding-top: 14px; border-top: 1px solid var(--kl-border); }
-.kl-matches-swipe .savebar .primary { flex: 1; }
-.kl-matches-swipe .textbtn {
-  align-self: flex-start; min-height: var(--kl-action-square,32px); margin: 0; padding: 3px 6px;
-  border: 0; border-radius: var(--kl-action-radius,8px); background: transparent; color: var(--kl-muted);
-  font-size: var(--kl-type-body); font-weight: 550;
-}
 .kl-matches-swipe :is(.error,.swipe-feedback[role="alert"]) { color: var(--kl-danger); font-size: var(--kl-type-body); line-height: 1.5; }
 
 /* The gesture target stays stationary. Only the top card follows the pointer. */
@@ -306,10 +335,32 @@ export const MATCHES_SWIPE_STYLES = `
 .kl-matches-swipe .pair-names span { font-weight: 640; line-height: normal; }
 .kl-matches-swipe .match-monogram { display: grid; place-items: center; background: var(--kl-avatar-bg); }
 .kl-matches-swipe .match-monogram span { width: 52px; height: 52px; font-size: 20px; font-weight: 640; }
-.kl-matches-swipe .match-profile-portrait .mini { height: clamp(145px,30svh,224px); margin: 0 0 13px; border: 1px solid var(--kl-border); }
+.kl-matches-swipe .match-profile-portrait .mini {
+  aspect-ratio: 20 / 13; max-height: max(120px,calc(var(--kl-dialog-viewport-height,100svh) - 200px));
+  margin: 0 0 13px; border: 1px solid var(--kl-border);
+}
+.kl-matches-swipe .swipe-dialog:has(.match-profile-portrait) {
+  width: min(460px,calc(100vw - 24px)); padding: clamp(14px,2.5cqi,22px);
+}
+.kl-matches-swipe .swipe-dialog:has(.match-profile-portrait) .dialoghead { align-items: center; }
+.kl-matches-swipe .match-profile-details {
+  display: grid; grid-template-columns: minmax(0,1fr); gap: 12px; text-align: start;
+}
+.kl-matches-swipe .match-profile-details .meta-copy { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.kl-matches-swipe .match-profile-details .meta-separator { display: none; }
+.kl-matches-swipe .match-profile-details .meta-status:not(:first-child) { margin-inline-start: auto; }
+.kl-matches-swipe .match-profile-details .meta-status { display: inline-flex; align-items: center; gap: 6px; color: var(--kl-text); }
+.kl-matches-swipe .match-profile-details .meta-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--kl-success); }
+.kl-matches-swipe .match-profile-details .bio { margin: 0; color: var(--kl-text); line-height: 1.5; }
+.kl-matches-swipe .match-profile-interests { display: grid; gap: 7px; }
+.kl-matches-swipe .match-profile-interests h3 { font-size: var(--kl-type-sm); font-weight: 650; color: var(--kl-muted); }
+.kl-matches-swipe .match-profile-interests .tagset { justify-content: flex-start; }
+.kl-matches-swipe .swipe-dialog:has(.match-profile-portrait) .dialogbuttons {
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--kl-border);
+}
 
 @media (hover: hover) {
-  .kl-matches-swipe :is(.button,.upload,.tile,.iconbtn,.wardrobe-toggle,.textbtn):enabled:hover {
+  .kl-matches-swipe :is(.button,.tile,.iconbtn):enabled:hover {
     background: var(--kl-surface-hover); border-color: var(--kl-border-strong); color: var(--kl-text);
   }
   .kl-matches-swipe .button.primary:enabled:hover { background: color-mix(in srgb,var(--kl-accent) 96%,white); border-color: var(--kl-accent); color: var(--kl-accent-foreground); }
@@ -317,7 +368,7 @@ export const MATCHES_SWIPE_STYLES = `
   .kl-matches-swipe .tab:hover { color: var(--kl-text); }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .kl-matches-swipe :is(.button,.tile,.upload,.wardrobe-toggle,.tab) { transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out; }
+  .kl-matches-swipe :is(.button,.tile,.tab) { transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out; }
   .kl-matches-swipe .swipe-advanced .details, .kl-matches-swipe .swipe-dialog[open] .pair-portrait { animation: kl-matches-appear 220ms ease-out both; }
   .kl-matches-swipe .swipe-dialog[open] .pair-portrait:nth-child(2) { animation-delay: 35ms; }
   .kl-matches-swipe .swipe-dialog[open] .pair-heart .ico { animation: kl-matches-heart 360ms cubic-bezier(.2,.72,.24,1) 90ms both; }
@@ -337,14 +388,7 @@ export const MATCHES_SWIPE_STYLES = `
   @container kl-swipe (min-width: 740px) { .kl-matches-swipe .actions kbd { display: inline-block; } }
 }
 @container kl-swipe (min-width: 701px) {
-  .kl-matches-swipe .setupPanel:has(.picks .pick) {
-    grid-template-columns: minmax(0,.8fr) minmax(0,1.2fr); overflow: clip;
-  }
-  /* Keep the full character visible while the expanded Wardrobe scrolls beside it. */
-  .kl-matches-swipe .setupPanel:has(.picks .pick) .portraitBox {
-    position: sticky; top: 0; align-self: start; height: clamp(160px,calc(100cqh - 90px),740px);
-  }
-  .kl-matches-swipe .setupPanel:has(.picks .pick) .scene { height: auto; min-height: 0; flex: 1; }
+  ${splitEditorLayout}
 }
 @container kl-swipe (max-width: 700px) {
   .kl-matches-swipe .panel { grid-template-columns: minmax(0,1fr); }
@@ -430,12 +474,12 @@ export const MATCHES_SWIPE_STYLES = `
 }
 @container kl-workspace (max-height: 540px) {
   @container kl-swipe (min-width: 650px) {
-    .kl-matches-swipe .setupPanel { grid-template-columns: minmax(0,1.05fr) minmax(0,1fr); }
-    .kl-matches-swipe .setupPanel .scene { flex: 1; height: auto; min-height: 250px; }
+    ${splitEditorLayout}
+    .kl-matches-swipe .setupPanel { --kl-editor-preview-inset: 72px; }
     .kl-matches-swipe .setupPanel .side { padding: 15px; gap: 10px; }
     .kl-matches-swipe .setupPanel .side h2 { font-size: 23px; }
     .kl-matches-swipe .setupPanel .intro { font-size: calc(var(--kl-type-body) + 1px); }
-    .kl-matches-swipe .setupPanel .where { padding: 9px 14px; }
+    .kl-matches-swipe .setupPanel .where { padding: 3px 10px; }
     .kl-matches-swipe .setupPanel .savebar { padding-top: 14px; }
   }
 }
@@ -443,7 +487,7 @@ export const MATCHES_SWIPE_STYLES = `
   .kl-matches-swipe .pair-portrait .mini { height: 96px; }
 }
 @media (forced-colors: active) {
-  .kl-matches-swipe :is(.button,.upload,.pick,.tagset span) { border-color: ButtonText; }
+  .kl-matches-swipe :is(.button,.pick,.tagset span) { border-color: ButtonText; }
   .kl-matches-swipe .tab[aria-current="page"]::after { border-bottom: 2px solid Highlight; }
   .kl-matches-swipe .pick[aria-pressed="true"] { border: 2px solid Highlight; }
 }
