@@ -44,6 +44,20 @@ it("preserves availability consent and excludes local blocks from loaded mutual 
   expect(await api.load()).toMatchObject({ initialAvailable: false, discoverability: "paused", mutuals: [], mutualCount: 0, lastVote: null });
 });
 
+it("rechecks native blocks when another list needs an additional page", async () => {
+  const blocked = new Set([3]);
+  const request = vi.fn(async (_method: string, path: string) => {
+    if (path.endsWith("/state")) return { ...state, mutuals: [wireCard(3)], mutualCount: 2, mutualCursor: 3 };
+    // The first deck page has already resolved while the same user blocks its candidate in BC.
+    blocked.add(2);
+    return { items: [wireCard(4)], nextCursor: null };
+  });
+  const api = new SwipeApi({ memberNumber: 1, request, isProfileBlocked: (member: number) => blocked.has(member) } as unknown as CloudClient);
+  const result = await api.load();
+  expect(result).toMatchObject({ deck: [], remaining: 0, mutualCount: 1 });
+  expect(result.mutuals.map(item => item.memberNumber)).toEqual([4]);
+});
+
 it("preserves the operation id and expected revision on retry and omits unchanged art", async () => {
   const saves: Record<string, unknown>[] = [];
   const api = fixture(async (method, _path, body) => {
@@ -71,18 +85,69 @@ it("never loads or votes on a newly local-blocked character and rejects a wrong 
   await expect(api.vote(candidate, "like", crypto.randomUUID())).rejects.toThrow("profile_blocked");
 });
 
+it("binds a retry to the reviewed vote's recovery generation, even if its numeric id is reused", async () => {
+  const before = "a".repeat(32), after = "b".repeat(32);
+  let generation = before;
+  const attempts: Record<string, unknown>[] = [];
+  const { api } = fixture(async (method, _path, body) => {
+    if (method === "GET") return { ...state, lastVote: { id: 7, memberNumber: 2, type: "like", recoveryGeneration: generation } };
+    attempts.push(body as Record<string, unknown>);
+    if (attempts.length < 3) throw new CloudError("swipe_vote_changed", 409);
+    return { undone: true };
+  });
+  const oldVote = (await api.load()).lastVote!;
+  generation = after;
+  await expect(api.undo(oldVote)).rejects.toThrow();
+  await expect(api.undo(oldVote)).rejects.toThrow();
+  await api.undo((await api.load()).lastVote!);
+  expect(attempts[0]).toEqual(attempts[1]);
+  expect(attempts[0]).toMatchObject({ voteId: 7, recoveryGeneration: before });
+  expect(attempts[2]).toMatchObject({ voteId: 7, recoveryGeneration: after });
+  expect(attempts[0]!.operationId).not.toBe(attempts[2]!.operationId);
+});
+
+it("quietly revalidates just the expanded mutual pages, including withdrawals and edits beyond page one", async () => {
+  let second = [wireCard(90), wireCard(91)];
+  const request = vi.fn(async (_method: string, path: string) => {
+    if (path === prefix + "/state") return { ...state, mutuals: [wireCard(2)], mutualCursor: 2, mutualCount: 3 };
+    return { items: second, nextCursor: null };
+  });
+  const api = fixture(request).api;
+  const first = await api.load();
+  expect(first.mutualPagesLoaded).toBe(1);
+  expect(request).toHaveBeenCalledTimes(1);
+  await api.moreMutuals(first.mutualCursor!);
+  second = [{ ...wireCard(90), name: "Updated card" }, wireCard(92)];
+  const fresh = await api.load();
+  expect(fresh.mutualPagesLoaded).toBe(2);
+  expect(fresh.mutuals.map(c => [c.memberNumber, c.name])).toEqual([[2, "Player 2"], [90, "Updated card"], [92, "Player 92"]]);
+  expect(request).toHaveBeenCalledTimes(4);
+  const collapsed = api.collapseMutualPages(fresh);
+  expect(collapsed).toMatchObject({mutualCursor: 2, mutualPagesLoaded: 1});
+  expect(collapsed.mutuals.map(c => c.memberNumber)).toEqual([2]);
+  // Navigating away and back without an intervening network read must preserve More.
+  await api.moreMutuals(collapsed.mutualCursor!);
+  expect((await api.load()).mutuals.map(c => c.memberNumber)).toEqual([2, 90, 92]);
+  api.resetMutualPages();
+  expect((await api.load()).mutuals).toHaveLength(1);
+  expect(request).toHaveBeenCalledTimes(8);
+});
+
 it("coalesces SSE hints and unregisters callbacks on section close", async () => {
-  let event: ((kind: string) => void) | undefined;
+  let event: ((kind: string, cause?: string) => void) | undefined;
   const release = vi.fn(), unsubscribe = vi.fn();
-  const client = { subscribe(cb: (kind: string) => void) { event = cb; return unsubscribe; }, retainEvents: () => release };
+  const client = { subscribe(cb: (kind: string, cause?: string) => void) { event = cb; return unsubscribe; }, retainEvents: () => release };
   const api = new SwipeApi(client as unknown as CloudClient);
   const hints = vi.fn();
   const close = api.watch(hints);
-  event!("feed"); event!("matching"); event!("ready"); event!("matching");
+  event!("feed"); event!("matching"); event!("profiles-cleared", "ready"); event!("ready"); event!("matching");
   await Promise.resolve();
   expect(hints.mock.calls).toEqual([[new Set(["matching", "ready"])]]);
+  event!("profiles-cleared", "relationships"); event!("relationships");
+  await Promise.resolve();
+  expect(hints.mock.calls[1]).toEqual([new Set(["profiles-cleared", "relationships"])]);
   event!("matching"); close(); close();
   await Promise.resolve();
-  expect(hints).toHaveBeenCalledTimes(1);
+  expect(hints).toHaveBeenCalledTimes(2);
   expect(unsubscribe).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
 });

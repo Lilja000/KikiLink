@@ -1,4 +1,4 @@
-import { element } from '../../utils/dom';
+import { element, focusedElement } from '../../utils/dom';
 import { kikiIcon, type KikiLinkIconName } from '../link-chat/icons';
 import { readClubWardrobe, captureWardrobeSlot, captureCurrentLook, encodeMatchesImage, type WardrobeSlot } from '../../bc/matches-wardrobe';
 import type { SwipeCard, SwipeCardDraft } from '../../cloud/matches-swipe';
@@ -20,8 +20,10 @@ const uploadTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 async function preparePhoto(file: File, signal: AbortSignal): Promise<string> {
   if (!uploadTypes.has(file.type) || file.size > 12 * 1024 * 1024) throw new Error('Choose a PNG, JPEG or WebP image under 12 MB.');
   const url = URL.createObjectURL(file);
+  const photo = new Image();
+  const cancel = () => photo.removeAttribute('src');
+  signal.addEventListener('abort', cancel, {once: true});
   try {
-    const photo = new Image();
     photo.src = url;
     await photo.decode();
     if (!photo.naturalWidth || !photo.naturalHeight) throw new Error();
@@ -39,7 +41,7 @@ async function preparePhoto(file: File, signal: AbortSignal): Promise<string> {
       if (result) return result;
       scale *= .74;
     }
-  } finally { URL.revokeObjectURL(url); }
+  } finally { signal.removeEventListener('abort', cancel); URL.revokeObjectURL(url); }
   throw new Error('This photo could not be prepared. Choose another image.');
 }
 
@@ -86,10 +88,13 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     wardrobeName: card?.wardrobeName ?? null,
   };
   const previews = new Map<number, Promise<string | null>>();
+  const tileQueue = new Set<HTMLButtonElement>();
+  let tileWorkers = 0;
   let expanded = false;
   let artworkRequest = 0;
   let loadingLook = false;
   let saving = false;
+  let currentLookCapturedForSave = false;
   let savedUrl: string | undefined;
   let savedSlotMatches = false;
   let observer: IntersectionObserver | undefined;
@@ -138,6 +143,8 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   const error = element('p', { className: 'error form-error' });
   error.hidden = true;
   error.setAttribute('role', 'alert');
+  const retryPicture = element('button', { type: 'button', className: 'upload', text: 'Retry saved picture' });
+  retryPicture.hidden = true;
   const save = element('button', { type: 'submit', className: 'button primary' },
     card ? 'Save changes' : 'Start swiping', icon(card ? 'check' : 'arrow-right'));
   const cancel = options.onCancel ? element('button', { type: 'button', className: 'button minor', text: 'Cancel', onClick: options.onCancel }) : undefined;
@@ -152,14 +159,15 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   bgLabel.htmlFor = bgSelect.id;
   bgField.append(bgLabel, element('div', { className: 'fieldrow' }, bgSelect, shuffle));
   const form = element('form', { className: 'side' },
-    element('div', {}, title, element('p', { className: 'intro', text: 'Choose a Wardrobe look or upload a photo to show on your Matches card.' })),
+    element('div', {}, title, element('p', { className: 'intro', text: 'Choose a saved Wardrobe look or upload your own photo.' })),
     labeled('Display name', name),
     element('div', { className: 'field' }, element('span', { className: 'fieldlabel', text: 'Character look' }),
       strip, hint, selected, element('div', { className: 'looktools' }, current, upload, file)),
     bgField, element('label', { className: 'switchrow' }, available, 'Share that I’m open to chat'),
-    error, element('div', { className: 'savebar' }, cancel, save), remove, confirmation);
+    error, retryPicture, element('div', { className: 'savebar' }, cancel, save), remove, confirmation);
   const panel = element('section', { className: 'panel setupPanel' }, preview, form);
   host.replaceChildren(panel);
+  if (card) title.focus({preventScroll: true});
 
   function setError(message: string) {
     error.textContent = message;
@@ -193,7 +201,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   function picture(slot: number): Promise<string | null> {
     const cached = previews.get(slot);
     if (cached) return cached;
-    const job = captureWardrobeSlot(slot, signal).then(image => {
+    const job = captureWardrobeSlot(slot, signal).catch(() => null).then(image => {
       if (!image) previews.delete(slot);
       return image;
     });
@@ -216,7 +224,14 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
       draft.lookSource = source;
       draft.wardrobeSlot = slot?.slot ?? null;
       draft.wardrobeName = slot?.name ?? null;
+      currentLookCapturedForSave = false;
+      retryPicture.hidden = true;
+      setError('');
       showPicture(image);
+      if (slot) {
+        const button = picks.querySelector<HTMLButtonElement>(`[data-slot="${slot.slot}"]`);
+        if (button) paintTile(button, image);
+      }
     } catch (e) {
       if (active() && ticket === artworkRequest) setError(e instanceof Error && e.name === 'Error' ? e.message : 'This image could not be opened. Try another image.');
     } finally {
@@ -229,6 +244,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   }
   function showSlots() {
     observer?.disconnect();
+    tileQueue.clear();
     if (typeof IntersectionObserver === 'function') {
       observer = new IntersectionObserver(entries => {
         for (const entry of entries) if (entry.isIntersecting) {
@@ -254,10 +270,28 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     more.setAttribute('aria-expanded', String(expanded));
     syncSelection();
   }
+  function paintTile(button: HTMLButtonElement, image: string) {
+    const holder = button.firstElementChild;
+    if (holder?.firstElementChild?.getAttribute('src') !== image) holder?.replaceChildren(element('img', {alt: '', src: image}));
+  }
   function renderTile(button: HTMLButtonElement) {
-    void picture(Number(button.dataset.slot)).then(image => {
-      if (image && active() && picks.contains(button)) button.firstElementChild?.replaceChildren(element('img', { alt: '', src: image }));
-    });
+    tileQueue.add(button);
+    if (tileWorkers < 2) void drawQueuedTiles();
+  }
+  // Each cold BC preview allocates several native full-resolution canvases.
+  // Bound background rendering even if the player expands every Wardrobe row.
+  // A tapped outfit still starts immediately via choose().
+  async function drawQueuedTiles() {
+    tileWorkers++;
+    try {
+      for (const button of tileQueue) {
+        tileQueue.delete(button);
+        if (!active()) break;
+        if (!picks.contains(button)) continue;
+        const image = await picture(Number(button.dataset.slot));
+        if (image && active() && picks.contains(button)) paintTile(button, image);
+      }
+    } finally { tileWorkers--; }
   }
 
   setBackground(draft.background);
@@ -277,9 +311,15 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     if (picked) void choose('photo', () => preparePhoto(picked, signal));
   };
 
-  if (card?.imageVersion) {
-    void options.loadImage(card).then(async image => {
-      if (!image || !active() || draft.image !== undefined) return;
+  async function restorePicture() {
+    if (!card?.imageVersion || !active() || draft.image !== undefined) return;
+    retryPicture.hidden = true;
+    const previousRequest = artworkRequest;
+    setError('');
+    try {
+      const image = await options.loadImage(card);
+      if (!active() || draft.image !== undefined) return;
+      if (!image) throw new Error();
       savedUrl = URL.createObjectURL(image);
       showPicture(savedUrl);
       const slot = slots.find(item => item.slot === card.wardrobeSlot && item.name === card.wardrobeName);
@@ -291,10 +331,16 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
           if (active() && !loadingLook && draft.image === undefined) syncSelection();
         }
       }
-    }).catch(() => {
-      if (active() && draft.image === undefined) setError('Your saved picture could not be loaded. You can keep it or choose another.');
-    });
-  } else if (active()) {
+    } catch {
+      if (active() && draft.image === undefined) {
+        retryPicture.hidden = false;
+        if (previousRequest === artworkRequest) setError('Your saved picture could not be loaded. You can keep it or choose another.');
+      }
+    }
+  }
+  retryPicture.onclick = () => { void restorePicture(); };
+  if (card?.imageVersion) void restorePicture();
+  else if (!card && active()) {
     const first = slots[0];
     if (first) void choose('wardrobe', () => picture(first.slot), first);
     else void choose('current', () => captureCurrentLook(memberNumber, signal));
@@ -302,18 +348,37 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
 
   async function submit(action: () => Promise<unknown>) {
     if (saving || !active()) return;
+    const previousFocus = focusedElement(form);
+    let failed = false;
     saving = true; controls(); setError('');
     try { await action(); }
     catch (e) {
+      failed = true;
       if (active()) setError(e instanceof Error && e.message.includes(' ') ? e.message : 'Your card could not be updated. Check your Cloud connection and try again.');
-    } finally { if (active()) { saving = false; controls(); } }
+    } finally {
+      if (active()) {
+        saving = false; controls();
+        const now = focusedElement(form);
+        if (failed && previousFocus && form.contains(previousFocus) && (!now || now === document.body)) previousFocus.focus({preventScroll: true});
+      }
+    }
   }
   form.onsubmit = event => {
     event.preventDefault();
     if (loadingLook || saving || !active()) return;
     draft.name = name.value.trim(); draft.available = available.checked;
     if (!draft.name) { setError('Enter a display name.'); name.focus(); return; }
-    void submit(() => options.onSave({ ...draft }, signal));
+    void submit(async () => {
+      if (!card && draft.lookSource === 'current' && !currentLookCapturedForSave) {
+        const image = await captureCurrentLook(memberNumber, signal);
+        if (!active()) return;
+        if (!image) throw new Error('Your current look could not be captured. Try again or upload a photo.');
+        draft.image = image;
+        currentLookCapturedForSave = true;
+        showPicture(image);
+      }
+      return options.onSave({ ...draft }, signal);
+    });
   };
   if (remove && options.onRemove) {
     const no = element('button', { type: 'button', className: 'button minor', text: 'Keep card', onClick: () => { confirmation.hidden = true; remove.hidden = false; remove.focus(); } });
@@ -324,6 +389,8 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   return () => {
     controller.abort();
     observer?.disconnect();
+    tileQueue.clear();
+    previews.clear();
     if (savedUrl) URL.revokeObjectURL(savedUrl);
     panel.remove();
   };

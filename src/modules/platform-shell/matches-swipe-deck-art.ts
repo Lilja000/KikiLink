@@ -15,6 +15,7 @@ export function portraitKey(card: SwipeCard) {
 export class SwipePortraits {
   private readonly entries = new Map<string, Entry>();
   private readonly lazy = new Map<Element, () => void>();
+  private readonly failed = new Map<HTMLElement, {retryAt:number; load:()=>void}>();
   private readonly observer: IntersectionObserver | undefined;
 
   constructor(private readonly load: (card:SwipeCard) => Promise<Blob|null>, private readonly current: () => boolean) {
@@ -33,7 +34,8 @@ export class SwipePortraits {
     const cached = this.entries.get(key);
     if (cached) return cached.promise;
     const entry: Entry = {promise: this.load(card).then(blob => {
-      if (!blob || this.entries.get(key) !== entry || !this.current()) return null;
+      if (this.entries.get(key) !== entry || !this.current()) return null;
+      if (!blob) { this.entries.delete(key); return null; }
       return entry.url = URL.createObjectURL(blob);
     }).catch(() => { if (this.entries.get(key) === entry) this.entries.delete(key); return null; })};
     this.entries.set(key, entry);
@@ -47,17 +49,32 @@ export class SwipePortraits {
     const fallback = element('div', {className:'missing-look match-monogram', ariaHidden:'true'}, element('span',{text:initial(card.name)}));
     layer.append(bg, fallback);
     if (!card.imageVersion) return layer;
+    const key = portraitKey(card);
+    const retry = () => {
+      if (layer.isConnected && this.current()) this.failed.set(layer, {retryAt:Date.now()+5000, load:attach});
+    };
     const paint = (url: string) => {
       const image = element('img', {className:options.upcoming ? 'upcoming-figure' : 'figure', alt: options.upcoming ? '' : card.name + '’s card image'});
       image.draggable = false;
-      image.onerror = () => image.replaceWith(fallback);
+      image.onerror = () => {
+        image.replaceWith(fallback);
+        if (this.entries.get(key)?.url === url) {
+          this.entries.delete(key);
+          URL.revokeObjectURL(url);
+        }
+        retry();
+      };
       image.src = url;
       fallback.replaceWith(image);
     };
     const attach = () => {
-      void this.picture(card).then(url => { if (url && this.current() && layer.isConnected) paint(url); });
+      void this.picture(card).then(url => {
+        if (!this.current() || !layer.isConnected) return;
+        if (url) paint(url);
+        else retry();
+      });
     };
-    const cached = this.entries.get(portraitKey(card))?.url;
+    const cached = this.entries.get(key)?.url;
     if (cached) paint(cached);
     else if (options.lazy && this.observer) {
       this.lazy.set(layer, attach);
@@ -76,7 +93,17 @@ export class SwipePortraits {
       this.lazy.delete(target);
       this.observer?.unobserve(target);
     }
+    for (const layer of this.failed.keys()) if (!layer.isConnected) this.failed.delete(layer);
   }
 
-  dispose() { this.retain([]); this.observer?.disconnect(); this.lazy.clear(); }
+  retryFailed() {
+    for (const [layer, entry] of this.failed) {
+      if (!layer.isConnected) { this.failed.delete(layer); continue; }
+      if (Date.now() < entry.retryAt) continue;
+      this.failed.delete(layer);
+      entry.load();
+    }
+  }
+
+  dispose() { this.retain([]); this.observer?.disconnect(); this.lazy.clear(); this.failed.clear(); }
 }

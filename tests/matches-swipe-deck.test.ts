@@ -14,11 +14,12 @@ const snapshot = (): SwipeSnapshot => ({
 const cleanups: (()=>void)[] = [];
 afterEach(() => { cleanups.splice(0).forEach(fn => fn()); document.body.replaceChildren(); vi.useRealTimers(); });
 
-function mount(vote:(target:SwipeCard,type:'pass'|'like',op:string)=>Promise<{matched:boolean}>) {
+type DeckActions = Parameters<typeof createMatchesSwipeDeck>[1];
+function mount(vote:(target:SwipeCard,type:'pass'|'like',op:string)=>Promise<{matched:boolean}>, options:Partial<DeckActions> = {}) {
   const host = document.createElement('div');
   document.body.append(host);
   const image = vi.fn(async (_c:SwipeCard) => null);
-  const deck = createMatchesSwipeDeck(host, {vote, image, current:()=>true, undo:async()=>{}, moreMutuals:async()=>({items:[],nextCursor:null}), navigate:()=>{}});
+  const deck = createMatchesSwipeDeck(host, {vote, image, current:()=>true, undo:async()=>{}, moreMutuals:async()=>({items:[],nextCursor:null}), navigate:()=>{},...options});
   cleanups.push(deck.dispose);
   return {host, deck, image};
 }
@@ -28,7 +29,7 @@ it('keeps the live stage and preloads public portraits even though private Wardr
   deck.update(snapshot(),'swipe');
   const stage = host.querySelector('.swipable');
   expect(stage).not.toBeNull();
-  expect(image.mock.calls.map(([p])=>p.memberNumber)).toEqual([3,2]);
+  expect(image.mock.calls.map(([p])=>p.memberNumber)).toEqual([2,3]);
   deck.update(snapshot(),'swipe');
   expect(host.querySelector('.swipable')).toBe(stage);
   expect(image).toHaveBeenCalledTimes(2);
@@ -96,4 +97,78 @@ it('closes a mutual card with Escape without activating panel shortcuts, and ret
   await vi.waitFor(()=>expect(document.activeElement).toBe(tile));
   tile.click();
   expect(dialog.open).toBe(true);
+});
+
+it('retries missing portraits on a later successful poll without replacing a stationary card', async () => {
+  vi.useFakeTimers();
+  const image = vi.fn(async (_c:SwipeCard) => null);
+  const {host,deck} = mount(async()=>({matched:false}), {image});
+  deck.update(snapshot(),'swipe');
+  const stage = host.querySelector('.scene');
+  await vi.advanceTimersByTimeAsync(100);
+  deck.update(snapshot(),'swipe');
+  expect(image).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(5100);
+  deck.update(snapshot(),'swipe');
+  expect(host.querySelector('.scene')).toBe(stage);
+  expect(image).toHaveBeenCalledTimes(4);
+});
+
+it('shows the next profile coherently while waiting and restores the previous profile if the vote fails', async () => {
+  vi.useFakeTimers();
+  let reject!: (e:Error)=>void;
+  const {host,deck} = mount(()=>new Promise((_resolve,no)=>{ reject=no; }));
+  deck.update(snapshot(),'swipe');
+  host.querySelector<HTMLButtonElement>('[data-action="pass"]')!.click();
+  await vi.advanceTimersByTimeAsync(236);
+  expect(host.querySelector('.name')?.textContent).toBe('Member 3');
+  expect(host.querySelector('.deck-number')?.textContent).toBe('2 / 2');
+  expect(host.querySelector('.swipe-toast')?.textContent).toBe('Saving swipe…');
+  expect(host.querySelector<HTMLButtonElement>('[data-action="like"]')?.disabled).toBe(true);
+  reject(new Error('unavailable'));
+  await vi.advanceTimersByTimeAsync(1);
+  expect(host.querySelector('.name')?.textContent).toBe('Member 2');
+  expect(host.querySelector('.deck-number')?.textContent).toBe('1 / 2');
+  expect(host.querySelector<HTMLButtonElement>('[data-action="like"]')?.disabled).toBe(false);
+});
+
+it('uses the authoritative vote receipt when the write response is lost, and allocates a new operation after undo', async () => {
+  vi.useFakeTimers();
+  let state = snapshot();
+  const ids: string[] = [];
+  const {host,deck} = mount(async (target,type,id) => {
+    ids.push(id);
+    state = {...state,deck:state.deck.filter(c=>c.memberNumber !== target.memberNumber),
+      lastVote:{id:String(ids.length), target:target.memberNumber,type},seen:1,remaining:1};
+    deck.update(state,'swipe');
+    if (ids.length === 1) throw new Error('response lost');
+    return {matched:false};
+  },{undo: async () => {state=snapshot(); deck.update(state,'swipe');}});
+  deck.update(state,'swipe');
+  host.querySelector<HTMLButtonElement>('[data-action="pass"]')!.click();
+  await vi.advanceTimersByTimeAsync(240);
+  expect(host.querySelector('.swipe-toast')?.textContent).toBe('Passed Member 2');
+  expect(host.querySelector<HTMLElement>('[role="alert"]')?.hidden).toBe(true);
+  host.querySelector<HTMLButtonElement>('[data-action="undo"]')!.click();
+  await vi.advanceTimersByTimeAsync(1);
+  host.querySelector<HTMLButtonElement>('[data-action="pass"]')!.click();
+  await vi.advanceTimersByTimeAsync(240);
+  expect(ids).toHaveLength(2);
+  expect(ids[1]).not.toEqual(ids[0]);
+});
+
+it('retains a newly expanded mutual page through a late shallow refresh and removes withdrawn cards on revalidation', async () => {
+  const {host,deck} = mount(async()=>({matched:false}),{moreMutuals:async()=>({items:[card(8)],nextCursor:null})});
+  const first = {...snapshot(),mutuals:[card(5)],mutualCount:2,mutualCursor:5,mutualPagesLoaded:1};
+  deck.update(first,'mutual');
+  host.querySelector<HTMLButtonElement>('[data-action="more"]')!.click();
+  await vi.waitFor(()=>expect(host.querySelectorAll('.tile').length).toBe(2));
+  deck.update({...first},'mutual');
+  const added = host.querySelector<HTMLButtonElement>('[data-member="8"]')!;
+  added.click();
+  expect(host.querySelector('dialog')?.open).toBe(true);
+  deck.update({...first,mutuals:[card(5),card(12)],mutualCount:2,mutualCursor:null,mutualPagesLoaded:2},'mutual');
+  expect(host.querySelector('dialog')?.open).toBe(false);
+  expect(host.querySelector('[data-member="8"]')).toBeNull();
+  expect(host.querySelector('[data-member="12"]')).not.toBeNull();
 });

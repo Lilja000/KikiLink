@@ -1,3 +1,4 @@
+import { CloudError } from '../../cloud/client';
 import type { SwipeCard, SwipeSnapshot, SwipeVote } from '../../cloud/matches-swipe';
 import { element } from '../../cloud/dom';
 import { focusedElement } from '../../utils/dom';
@@ -43,6 +44,7 @@ function empty(glyph:KikiLinkIconName, title:string, text:string, ...actions:(HT
 export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
   const content = element('div',{className:'swipe-content'});
   const live = element('p',{className:'sr',role:'status'});
+  const toast = element('div',{className:'swipe-toast',ariaHidden:'true'});
   const error = element('p',{className:'swipe-feedback error',role:'alert',hidden:true});
   const dialog = element('dialog',{className:'swipe-dialog'});
   host.replaceChildren(content,live,error,dialog);
@@ -58,21 +60,45 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
   let busy = false;
   let actionToken = 0;
   let picked: number | undefined;
-  let retry: {member:number;direction:SwipeDirection;id:string} | undefined;
+  let retry: {member:number;revision:number;direction:SwipeDirection;id:string} | undefined;
+  let awaiting: SwipeCard | undefined;
+  let displayed: SwipeCard[] = [];
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let motion: ReturnType<typeof attachSwipeGesture> | undefined;
   let modalTarget: SwipeCard | undefined;
   let restoring: HTMLElement | undefined;
   let fitCleanup: (() => void) | undefined;
   let extraMutuals: SwipeCard[] = [];
   let nextCursor: number|null = null;
+  let shownPages = 1;
   let pageTicket = 0;
-  const activeDeck = () => {
-    const cards = state?.deck ?? [];
+  const presentation = () => {
+    if (!state || !awaiting || !state.deck.some(c => c.memberNumber === awaiting?.memberNumber)) return state;
+    return {...state, deck:state.deck.filter(c => c.memberNumber !== awaiting?.memberNumber),
+      seen:state.seen+1, remaining:Math.max(0,state.remaining-1), lastVote:null};
+  };
+  const activeDeck = (snapshot = presentation()) => {
+    const cards = snapshot?.deck ?? [];
     const first = cards.find(c => c.memberNumber === picked);
     return first && first !== cards[0] ? [first,...cards.filter(c => c !== first)] : cards;
   };
   const listed = () => [...(state?.mutuals ?? []),...extraMutuals];
   const stage = () => content.querySelector<HTMLElement>('.scene');
+  function clearNotice() {
+    clearTimeout(noticeTimer);
+    toast.remove();
+    toast.textContent = '';
+  }
+  function placeNotice() {
+    const area = stage() ?? content.querySelector<HTMLElement>('.empty');
+    if (area && toast.textContent && !dialog.open && toast.parentElement !== area) area.append(toast);
+  }
+  function notify(message:string, pending = false) {
+    clearNotice();
+    live.textContent = toast.textContent = message;
+    placeNotice();
+    if (!pending) noticeTimer = setTimeout(clearNotice,2200);
+  }
   function showError(message:string) {
     error.textContent = message;
     error.hidden = false;
@@ -80,6 +106,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
   function keepImages() {
     const cards = view === 'mutual' ? listed() : activeDeck().slice(0,2);
     if (modalTarget) cards.push(modalTarget);
+    if (awaiting) cards.push(awaiting);
     if (state?.self && dialog.open) cards.push(state.self);
     portraits.retain(cards);
   }
@@ -162,6 +189,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
       const seen = new Set(listed().map(c => c.memberNumber));
       const newCards = result.items.filter(c => !seen.has(c.memberNumber));
       extraMutuals.push(...newCards);
+      ++shownPages;
       nextCursor = result.nextCursor !== cursor ? result.nextCursor : null;
       error.hidden = true;
       render();
@@ -204,9 +232,9 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
       return empty('check',snapshot.seen ? 'You’ve seen every card' : 'No cards to show yet',
         snapshot.mutualCount ? `You have ${snapshot.mutualCount} mutual ${snapshot.mutualCount === 1 ? 'like' : 'likes'}.` : 'New cards will appear here when other players share theirs.',mutual,undoButton);
     }
+    const face = portraits.art(card,'swipe-face');
     const behind = next ? portraits.art(next,'swipe-under',{upcoming:true}) : undefined;
     behind?.setAttribute('aria-hidden','true');
-    const face = portraits.art(card,'swipe-face');
     face.append(element('span',{className:'flag',ariaHidden:'true'},
       element('span',{className:'swipe-like'},icon('heart'),'Like'),element('span',{className:'swipe-pass'},icon('close'),'Pass')));
     const scene = element('div',{className:'scene swipable',tabIndex:0,ariaLabel:card.name+'’s card. Left arrow to pass, right arrow to like.'},behind,face);
@@ -234,28 +262,32 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     const side = element('div',{className:about ? 'side' : 'side no-story'},
       element('div',{className:'details card-identity'},element('h2',{className:'name',text:card.name}),profileMeta(card)),
       about,element('div',{className:'decisions'},element('div',{className:'actions'},rewind,pass,like)));
-    motion = attachSwipeGesture(scene,d => void vote(d),() => busy || !current(),screenLife.signal);
+    motion = attachSwipeGesture(scene,d => void vote(d),() => busy || !current(),screenLife.signal,
+      () => { if (!busy && !motion?.dragging()) render(); });
     return element('section',{className:'panel swipePanel',ariaLabel:card.name},art,side);
   }
-  function drawKey() {
-    if (!state) return '';
-    return view === 'mutual' ? JSON.stringify([view,listed(),nextCursor,!state.remaining,state.lastVote?.id]) :
-      JSON.stringify([view,...activeDeck().slice(0,2),state.seen,state.remaining,state.lastVote?.id,activeDeck().length === 0 && state.mutualCount]);
-  }
   function render(force = false) {
-    if (!state || !current()) return;
-    const key = drawKey();
+    const snapshot = presentation();
+    if (!snapshot || !current()) return;
+    const cards = activeDeck(snapshot);
+    const key = view === 'mutual' ? JSON.stringify([view,listed(),nextCursor,!snapshot.remaining,snapshot.lastVote?.id]) :
+      JSON.stringify([view,...cards.slice(0,2),snapshot.seen,snapshot.remaining,snapshot.lastVote?.id,!cards.length && snapshot.mutualCount]);
     if (!force && key === rendered) return;
+    // A change further down the queue must not detach the element that owns a pointer.
+    // Withdrawn or changed visible cards, however, no longer represent the current data.
+    if (!force && view === 'swipe' && motion?.dragging() && displayed.every(old =>
+      cards.some(c => c.memberNumber === old.memberNumber && JSON.stringify(c) === JSON.stringify(old)))) return;
     rendered = key;
     const focused = focusedElement(content);
     const restore = focused && content.contains(focused) ? focused.dataset : undefined;
     screenLife.abort(); screenLife = new AbortController();
     motion = undefined;
-    const cards = activeDeck();
+    displayed = view === 'swipe' ? cards.slice(0,2) : [];
     picked = cards[0]?.memberNumber;
-    content.replaceChildren(view === 'mutual' ? drawMutuals(state) : drawSwipe(state,cards));
+    content.replaceChildren(view === 'mutual' ? drawMutuals(snapshot) : drawSwipe(snapshot,cards));
     keepImages();
     rainHost();
+    placeNotice();
     if (restore?.action) content.querySelector<HTMLButtonElement>(`[data-action="${restore.action}"]:enabled`)?.focus({preventScroll:true});
     else if (restore?.member) content.querySelector<HTMLButtonElement>(`[data-member="${restore.member}"]`)?.focus({preventScroll:true});
   }
@@ -268,15 +300,24 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
   function update(snapshot:SwipeSnapshot, nextView:View) {
     if (!current()) return;
     const changedView = view !== nextView;
-    if (changedView || snapshot.mutualCount !== state?.mutualCount || snapshot.mutualCursor !== state?.mutualCursor ||
-        snapshot.mutuals.some((c,i) => state?.mutuals[i]?.memberNumber !== c.memberNumber)) {
-      ++pageTicket;
+    const depth = snapshot.mutualPagesLoaded ?? 1;
+    const previousList = listed();
+    const sameHead = snapshot.mutualCount === state?.mutualCount &&
+      snapshot.mutuals.every((c,i) => previousList[i]?.memberNumber === c.memberNumber);
+    if (changedView || !sameHead || depth >= shownPages || snapshot.mutualCursor === null) {
+      // An authoritative refresh includes earlier expanded pages, including
+      // edits and withdrawals. A late shallow read must not collapse newer pages.
+      if (changedView || !sameHead || nextCursor !== snapshot.mutualCursor) ++pageTicket;
       extraMutuals = [];
+      shownPages = depth;
       nextCursor = snapshot.mutualCursor;
+    } else {
+      extraMutuals = previousList.filter(c => c.memberNumber > snapshot.mutualCursor!);
     }
     state = snapshot;
     view = nextView;
     if (changedView) {
+      clearNotice();
       error.hidden = true;
       rain.clear();
       restoring = undefined;
@@ -284,6 +325,7 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     }
     if (modalTarget && !listed().some(c => c.memberNumber === modalTarget?.memberNumber && c.revision === modalTarget.revision)) closeModal();
     if (changedView || !busy) render();
+    portraits.retryFailed();
     if (busy && changedView) enable(false);
   }
   async function vote(direction:SwipeDirection) {
@@ -291,18 +333,42 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     const s = stage();
     if (!state || busy || !current() || view !== 'swipe' || dialog.open || !card || !s) return;
     const token = ++actionToken;
-    if (!retry || retry.member !== card.memberNumber || retry.direction !== direction) retry = {member:card.memberNumber, direction,id:crypto.randomUUID()};
+    if (!retry || retry.member !== card.memberNumber || retry.revision !== card.revision || retry.direction !== direction)
+      retry = {member:card.memberNumber, revision:card.revision, direction,id:crypto.randomUUID()};
     const id = retry.id;
     const focused = focusedElement(content);
+    const previousVote = state.lastVote?.id;
     busy = true;
+    clearNotice();
     error.hidden = true;
     enable(false);
     motion?.leave(direction);
     rain.start(direction,s);
     try {
-      const [result] = await Promise.all([actions.vote(card,direction,id),
-        new Promise<void>(resolve => setTimeout(resolve,reduced.matches ? 0 : 235))]);
+      let settled = false;
+      const request = actions.vote(card,direction,id).catch((failure:unknown) => {
+        // A write response can get lost after commit. The workspace always rereads
+        // Cloud before returning an error; use only a newly confirmed receipt.
+        const last = state?.lastVote;
+        if (state && last && last.id !== previousVote && last.target === card.memberNumber &&
+            last.type === direction && !state.deck.some(c => c.memberNumber === last.target)) {
+          return {matched:direction === 'like' && state.mutuals.some(c => c.memberNumber === last.target)};
+        }
+        throw failure;
+      }).finally(() => { settled = true; });
+      const transition = new Promise<void>(resolve => setTimeout(() => {
+        if (!settled && current() && token === actionToken && view === 'swipe') {
+          awaiting = card;
+          render();
+          enable(false);
+          notify('Saving swipe…',true);
+        }
+        resolve();
+      },reduced.matches ? 0 : 235));
+      const [result] = await Promise.all([request,transition]);
       if (!current() || token !== actionToken || !state) return;
+      awaiting = undefined;
+      clearNotice();
       retry = undefined;
       // A slow follow-up read must not show the just-voted card a second time.
       if (state.deck.some(c => c.memberNumber === card.memberNumber)) {
@@ -313,14 +379,20 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
       }
       picked = undefined;
       busy = false;
-      render(true);
+      render();
       if (view !== 'swipe') return;
       content.firstElementChild?.classList.add('swipe-advanced');
-      live.textContent = (direction === 'like' ? 'Liked ' : 'Passed ')+card.name;
       if (result.matched) celebrate(card);
-      else if (focused && !focused.isConnected) content.querySelector<HTMLButtonElement>(`[data-action="${direction}"],[data-action="mutual"]`)?.focus({preventScroll:true});
-    } catch {
+      else {
+        notify((direction === 'like' ? 'Liked ' : 'Passed ')+card.name);
+        if (focused && !focused.isConnected) content.querySelector<HTMLButtonElement>(`[data-action="${direction}"],[data-action="mutual"]`)?.focus({preventScroll:true});
+      }
+    } catch (failure) {
       if (!current() || token !== actionToken) return;
+      if (failure instanceof CloudError && [403,404,409].includes(failure.status)) retry = undefined;
+      awaiting = undefined;
+      clearNotice();
+      picked = card.memberNumber;
       rain.clear(); motion?.reset();
       busy = false;
       render();
@@ -332,16 +404,21 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     if (!last || busy || !current() || dialog.open) return;
     const token = ++actionToken;
     busy = true;
+    clearNotice();
     error.hidden = true;
     enable(false); rain.clear();
     try {
-      await actions.undo(last);
+      await actions.undo(last).catch((failure:unknown) => {
+        if (state?.lastVote?.id !== last.id && state?.deck.some(c => c.memberNumber === last.target)) return;
+        throw failure;
+      });
       if (!current() || token !== actionToken) return;
+      retry = undefined;
       picked = last.target;
       busy = false;
       if (view !== 'swipe') actions.navigate('swipe');
       render(true);
-      live.textContent = 'Last swipe undone';
+      notify('Last swipe undone');
       content.querySelector<HTMLButtonElement>('[data-action="pass"]')?.focus({preventScroll:true});
     } catch {
       if (!current() || token !== actionToken) return;
@@ -368,8 +445,9 @@ export function createMatchesSwipeDeck(host: HTMLElement, actions: Actions) {
     fitCleanup?.();
     closeModal();
     rain.clear();
+    clearNotice();
     portraits.dispose();
     for (const node of [content,live,error,dialog]) node.remove();
   }
-  return {update,celebrate,dispose};
+  return {update,celebrate,notify:(message:string) => notify(message),dispose};
 }

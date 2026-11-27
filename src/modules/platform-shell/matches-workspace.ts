@@ -2,6 +2,7 @@ import { CloudError, type CloudClient } from '../../cloud/client';
 import { SwipeApi, type SwipeSnapshot } from '../../cloud/matches-swipe';
 import type { KeyValueStorage } from '../../core/settings';
 import { element } from '../../cloud/dom';
+import { focusedElement } from '../../utils/dom';
 import { kikiIcon, type KikiLinkIconName } from '../link-chat/icons';
 import { MatchingPage } from './matching-page';
 import { createMatchesSwipeDeck } from './matches-swipe-deck';
@@ -10,7 +11,7 @@ import { mountMatchesSwipeEditor } from './matches-swipe-editor';
 type View = 'swipe' | 'mutual';
 type Options = ConstructorParameters<typeof MatchingPage>[2];
 
-function action(label: string, icon: KikiLinkIconName, className: string, run: () => void) {
+function action(label: string, icon: KikiLinkIconName, className: string, run: (event: MouseEvent) => void) {
   const button = element('button', {type: 'button', className}, kikiIcon(icon, 'ico'), label);
   button.onclick = run;
   return button;
@@ -26,7 +27,7 @@ export class MatchesWorkspace {
   readonly #scroll = element('section', {className:'kl-matches-scroll'});
   readonly #section = element('div', {className:'kl-matches-swipe'});
   readonly #browse = action('Browse', 'search', 'button minor', () => this.#showCatalog());
-  readonly #edit = action('Edit card', 'edit', 'button minor', () => this.#editCard());
+  readonly #edit = action('Edit card', 'edit', 'button minor', event => this.#editCard(event.detail === 0));
   readonly #swipe = action('Swipe', 'appearance', 'tab', () => this.#navigate('swipe'));
   readonly #mutual = action('Mutual likes', 'heart', 'tab', () => this.#navigate('mutual'));
   readonly #count = element('span', {className:'count', text:'0'});
@@ -76,7 +77,8 @@ export class MatchesWorkspace {
       if (name === this.#view) tab.setAttribute('aria-current','page');
       else tab.removeAttribute('aria-current');
     }
-    this.#count.textContent = String(this.#state?.mutualCount || 0);
+    const count = String(this.#state?.mutualCount ?? 0);
+    if (this.#count.textContent !== count) this.#count.textContent = count;
   }
   #message(text = '', retry = false, link?: {label: string; run: () => void}) {
     const key = JSON.stringify([text, retry, link?.label]);
@@ -215,20 +217,26 @@ export class MatchesWorkspace {
     }
   }
   #navigate(view: View) {
-    if (!this.#active() || !this.#state?.self || this.#writing) return;
+    if (!this.#active() || !this.#state?.self || this.#writing || view === this.#view) return;
+    if (this.#view === 'mutual') this.#state = this.#api.collapseMutualPages(this.#state);
+    this.#scroll.scrollTop = 0;
     this.#view = view; this.#render();
   }
-  async #write<T>(perform: (signal: AbortSignal) => Promise<T>, closeEditor = false): Promise<T> {
+  async #write<T>(perform: (signal: AbortSignal) => Promise<T>, cardAction?: 'create' | 'update' | 'remove'): Promise<T> {
     if (!this.#active() || !this.client.connected || this.#writing) throw new Error('Matches is unavailable.');
     const signal = this.#lifetime.signal;
     this.#pending?.abort(); this.#pending = undefined;
     this.#refreshAgain = false; this.#writing = true;
+    let updated = false;
     try {
       const result = await perform(signal);
       if (signal.aborted || !this.#active()) throw new Error('Account or view changed.');
-      if (closeEditor) {
+      if (cardAction) {
         this.#editor?.(); this.#editor = undefined;
-        this.#view = 'swipe'; this.#state = undefined; this.#content.replaceChildren();
+        updated = cardAction === 'update';
+        if (!updated) this.#view = 'swipe';
+        this.#state = undefined; this.#content.replaceChildren();
+        this.#scroll.scrollTop = 0;
         this.#message('Loading your cards…'); this.#chrome();
       }
       return result;
@@ -236,19 +244,26 @@ export class MatchesWorkspace {
       if (!signal.aborted && this.#active()) {
         this.#writing = false;
         await this.#read(false);
+        if (updated && !signal.aborted && this.#active() && !this.#edit.hidden) {
+          this.#deck?.notify('Card updated');
+          const focused = focusedElement(this.#section);
+          if (!focused || focused === document.body) this.#edit.focus({preventScroll:true});
+        }
       }
     }
   }
-  #editCard() {
+  #editCard(focusHeading = false) {
     if (!this.#active() || this.#editor || !this.#state) return;
     const card = this.#state.self;
+    this.#state = this.#api.collapseMutualPages(this.#state);
+    this.#scroll.scrollTop = 0;
     this.#deck?.dispose(); this.#deck = undefined;
     this.#editor = mountMatchesSwipeEditor(this.#content, {
       memberNumber: this.recovery.owner, card,
       initialAvailable: this.#state.initialAvailable ?? true,
       loadImage: target => this.#api.image(target),
       onSave: async (draft, signal) => {
-        try { await this.#write(() => this.#api.save(draft, card, signal), true); }
+        try { await this.#write(() => this.#api.save(draft, card, signal), card ? 'update' : 'create'); }
         catch (error) {
           if (error instanceof CloudError && error.code === 'matching_discovery_required') {
             throw new Error('Enable profile discovery in Privacy settings to share your card.');
@@ -258,10 +273,12 @@ export class MatchesWorkspace {
       },
       ...(card ? { onCancel: () => {
         this.#api.clearPending();
-        this.#editor?.(); this.#editor = undefined; this.#render(); this.#edit.focus({preventScroll:true});
-      }, onRemove: (signal:AbortSignal) => this.#write(() => this.#api.remove(card, signal), true) } : {}),
+        this.#editor?.(); this.#editor = undefined; this.#scroll.scrollTop = 0;
+        this.#render(); this.#edit.focus({preventScroll:true});
+      }, onRemove: (signal:AbortSignal) => this.#write(() => this.#api.remove(card, signal), 'remove') } : {}),
     });
     this.#chrome();
+    if (focusHeading) this.#content.querySelector<HTMLElement>('h2')?.focus({preventScroll:true});
   }
   #render() {
     const state = this.#state;

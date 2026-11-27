@@ -9,6 +9,7 @@ interface ClubCharacter {
   Name: string; Nickname?: string; MemberNumber: number; AssetFamily?: string; Appearance: NativeItem[];
   Wardrobe?: Array<Bundle[] | null>; WardrobeCharacterNames?: string[]; Canvas: HTMLCanvasElement;
   IsPlayer?(): boolean; MustDraw: boolean;
+  HeightRatio?: number;
 }
 interface Mask { Url?: string }
 type DrawSource = string | HTMLCanvasElement | HTMLImageElement;
@@ -28,6 +29,8 @@ interface ClubWardrobe {
   CharacterLoadSimple(id: string): ClubCharacter; CharacterRefresh(c: ClubCharacter, push: boolean, dialog: boolean): void;
   CharacterDelete(c: ClubCharacter, clearCache: boolean): void;
   DrawCharacterSegment(c: ClubCharacter, x: number, y: number, w: number, h: number): HTMLCanvasElement;
+  CharacterAppearanceYOffset?(c: ClubCharacter, ratio: number, ignoreUpButton: boolean): number;
+  CharacterAppearsInverted?(c: ClubCharacter): boolean;
   CommonDrawAppearanceBuild(c: ClubCharacter, callbacks: DrawCallbacks): void;
   DrawGetImage(url: string): HTMLImageElement;
   DrawImageCanvas(source: DrawSource, ctx: CanvasRenderingContext2D, x: number, y: number, options?: DrawOptions): boolean;
@@ -174,8 +177,7 @@ export async function captureWardrobeSlot(slot: number, signal: AbortSignal, hos
     host.CharacterRefresh(dummy, false, false);
     if (!await matchesDrawWardrobeFrame(host, dummy, signal)) return null;
     if (!current()) return null;
-    const frame = host.DrawCharacterSegment(dummy, 0, 0, 500, 1000);
-    const image = await encodeSnapshot(frame);
+    const image = await encodeSnapshot(host, dummy);
     return current() ? image : null;
   } catch {
     return null;
@@ -184,14 +186,25 @@ export async function captureWardrobeSlot(slot: number, signal: AbortSignal, hos
   }
 }
 
-async function encodeSnapshot(frame: HTMLCanvasElement): Promise<string | null> {
+async function encodeSnapshot(host: ClubWardrobe, character: ClubCharacter): Promise<string | null> {
+  // DrawCharacterSegment returns unscaled layers. Native room rendering
+  // applies stature, pose height and inversion afterwards, before labels.
+  const ratio = character.HeightRatio || 1;
+  if (!Number.isFinite(ratio) || ratio < .1 || ratio > 10) return null;
+  const y = host.CharacterAppearanceYOffset?.(character, ratio, true) ?? 0;
+  const frame = host.DrawCharacterSegment(character, 0, -y / ratio, 500, 1000 / ratio);
   if (!frame?.width || !frame.height) return null;
   const canvas = document.createElement('canvas');
   canvas.width = 350;
   canvas.height = 700;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return null;
-  ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+  if (host.CharacterAppearsInverted?.(character)) {
+    ctx.translate(canvas.width, canvas.height);
+    ctx.scale(-1, -1);
+  }
+  const width = canvas.width * ratio;
+  ctx.drawImage(frame, (canvas.width - width) / 2, 0, width, canvas.height);
   const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
   for (let alpha = 3; alpha < pixels.length; alpha += 4) {
     if (pixels[alpha]) return encodeMatchesImage(canvas);
@@ -214,8 +227,13 @@ export async function captureCurrentLook(memberNumber: number, signal: AbortSign
   const player = host.Player;
   if (!player || player.MemberNumber !== memberNumber || signal.aborted) return null;
   try {
-    const frame = host.DrawCharacterSegment(player, 0, 0, 500, 1000);
-    const image = await encodeSnapshot(frame);
+    if (player.MustDraw) host.DrawCharacterSegment(player, 0, 0, 1, 1);
+    // Composite into a private canvas. The active character keeps its own
+    // normal/blink canvases while cold layers or masks are being loaded.
+    const frame = Object.assign(Object.create(Object.getPrototypeOf(player)) as ClubCharacter, player);
+    if (!await matchesDrawWardrobeFrame(host, frame, signal)) return null;
+    if (signal.aborted || host.Player !== player || player.MemberNumber !== memberNumber) return null;
+    const image = await encodeSnapshot(host, frame);
     return !signal.aborted && host.Player === player && player.MemberNumber === memberNumber ? image : null;
   } catch { return null; }
 }

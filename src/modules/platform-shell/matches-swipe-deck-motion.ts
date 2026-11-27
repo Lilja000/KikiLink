@@ -1,6 +1,6 @@
 export type SwipeDirection = 'pass' | 'like';
 
-export function attachSwipeGesture(stage: HTMLElement, commit: (direction: SwipeDirection) => void, busy: () => boolean, signal: AbortSignal) {
+export function attachSwipeGesture(stage: HTMLElement, commit: (direction: SwipeDirection) => void, busy: () => boolean, signal: AbortSignal, settled: () => void) {
   const face = stage.querySelector<HTMLElement>('.swipe-face')!;
   const under = stage.querySelector<HTMLElement>('.swipe-under');
   const flag = stage.querySelector<HTMLElement>('.flag')!;
@@ -22,6 +22,7 @@ export function attachSwipeGesture(stage: HTMLElement, commit: (direction: Swipe
     flag.style.opacity = String(Math.min(1, Math.abs(dx) / drag.threshold));
   }
   function reset() {
+    const wasDragging = !!drag;
     drag = undefined;
     cancelAnimationFrame(frame);
     frame = 0;
@@ -30,6 +31,7 @@ export function attachSwipeGesture(stage: HTMLElement, commit: (direction: Swipe
     if (under) { under.style.opacity = ''; under.style.transform = ''; }
     flag.style.opacity = '0';
     delete stage.dataset.intent;
+    if (wasDragging && !signal.aborted) queueMicrotask(settled);
   }
   stage.addEventListener('pointerdown', event => {
     if (busy() || event.button !== 0) return;
@@ -76,8 +78,14 @@ export function attachSwipeGesture(stage: HTMLElement, commit: (direction: Swipe
   signal.addEventListener('abort', reset, {once:true});
   return {
     reset,
+    dragging: () => !!drag,
     leave(direction: SwipeDirection) {
-      reset();
+      // Continue the exit from the release point; clearing the transform here
+      // can flash the card back to its origin in a throttled animation frame.
+      drag = undefined;
+      cancelAnimationFrame(frame);
+      frame = 0;
+      stage.classList.remove('dragging');
       stage.dataset.intent = direction;
       stage.classList.add('swipe-leaving');
       face.style.transform = `translate3d(${direction === 'like' ? 112 : -112}%,6px,0) rotate(${direction === 'like' ? 12 : -12}deg)`;
