@@ -28,7 +28,10 @@ function appearance(control) {
 async function navigate(page, area, route) {
   await page.locator(`.kl-platform-area[data-area="${area}"]:visible`).click();
   const link = page.locator(`.kl-platform-link[data-route="${route}"]:visible`);
-  if (area !== 'create') await link.click(); // Workshop supplies its own section navigation.
+  if (area === 'explore' && route === 'people') {
+    await page.locator('.kl-platform-link[data-route="discover"]:visible').click();
+    await page.getByRole('button', {name: 'People', exact: true}).click();
+  } else if (area !== 'create') await link.click(); // Workshop supplies its own section navigation.
   await page.mouse.move(2, 2);
 }
 
@@ -72,6 +75,8 @@ async function review(page, touch) {
     const square = touch ? 44 : 32;
     assert.deepEqual(style.size, [square, square], `${route} overflow target`);
     assert.deepEqual(style.icon, [16, 16], `${route} overflow glyph`);
+    assert.equal(style.fill, 'rgba(0, 0, 0, 0)', `${route} should show unboxed dots`);
+    assert.match(style.border, /^0px none /);
     const buttonColors = [style.fill, style.border, style.radius, style.ink];
     firstTrigger ??= buttonColors;
     assert.deepEqual(buttonColors, firstTrigger, `${route} overflow colors or outline`);

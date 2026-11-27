@@ -49,6 +49,29 @@ describe("platform shell integration with real workspaces", () => {
     } finally { f.view.destroy(); cloud.destroy(); }
   });
 
+  it("opens Matches from Explore and keeps the People directory and requests in the section list", async () => {
+    const cloud = new CloudClient({ origin: "https://cloud.example.test", memberNumber: 72385,
+      getMemberNumber: () => 72385, isBlocked: () => false, sendProof: vi.fn(), fetchImpl: vi.fn() });
+    const f = await setup(undefined, [], undefined, cloud);
+    try {
+      f.area("explore").click();
+      expect(f.route("matching").hidden).toBe(false);
+      expect(f.route("matching").textContent).toBe("Matches");
+      expect(f.route("people").hidden).toBe(true);
+      f.route("matching").click();
+      expect(f.root.querySelector(".kl-panel")?.getAttribute("data-workspace")).toBe("matching");
+      f.root.querySelector<HTMLButtonElement>(".kl-platform-options")!.click();
+      const browse = [...f.root.querySelectorAll<HTMLButtonElement>(".kl-shell-menu-item")]
+        .find(item => item.textContent?.includes("Browse all sections"))!;
+      browse.click();
+      const rows = [...f.root.querySelectorAll<HTMLButtonElement>(".kl-shell-section-row")];
+      expect(rows.some(row => row.textContent?.startsWith("Requests"))).toBe(true);
+      rows.find(row => row.textContent?.startsWith("People"))!.click();
+      expect(f.root.querySelector(".kl-panel")?.getAttribute("data-workspace")).toBe("roster");
+      expect(f.route("matching").getAttribute("aria-current")).toBe("page");
+    } finally { f.view.destroy(); cloud.destroy(); }
+  });
+
   it("reveals the selected People scope after using its filter dialog or clearing filters without moving focus", async () => {
     const cloud = new CloudClient({ origin: "https://cloud.example.test", memberNumber: 72385,
       getMemberNumber: () => 72385, isBlocked: () => false, sendProof: vi.fn(), fetchImpl: vi.fn() });
@@ -944,7 +967,7 @@ describe("platform shell integration with real workspaces", () => {
       expect(f.profileReads(f.first.memberNumber).length).toBeGreaterThan(previousReads);
       dialog.close();
       section.querySelector<HTMLButtonElement>('button[aria-label="People"]')!.click();
-      expect(f.route("people").getAttribute("aria-current")).toBe("page");
+      expect(f.route("matching").getAttribute("aria-current")).toBe("page");
       expect(f.rows()).toHaveLength(0);
     } finally { f.view.destroy(); f.cloud.destroy(); }
   });
@@ -1677,7 +1700,7 @@ describe("platform shell integration with real workspaces", () => {
     const group = rankResource({ kind: 'groups', id: groupId, title: 'Garden group', description: 'A small group for tea.',
       host: { memberNumber: 202, name: 'Host', username: null }, revision: 1,
       community: { id: communityId, name: community.name, joined: false }, intents: ['Friends'], languages: ['English'],
-      interests: [], capacity: 5, members: 1, available: true, availability: 'Planning ahead', overlapMinutes: null,
+      interests: [], capacity: 5, members: 1, available: true, availability: 'Planning ahead', overlapMinutes: 2100,
       utcOffset: 3, startsAt: null, endsAt: null, saved: false, hidden: false, choiceRevision: 0, canRequest: true, membership: 'none' },
     DEFAULT_MATCH_SIGNAL);
     const cloud = new CloudClient({ origin: 'https://cloud.example.test', memberNumber: owner, getMemberNumber: () => owner,
@@ -1690,7 +1713,10 @@ describe("platform shell integration with real workspaces", () => {
       if (path === '/v1/matching/me') return { owner, revision: 1, signal: { ...DEFAULT_MATCH_SIGNAL, published: true }, active: true, canPublish: true, serverNow: 1000 };
       if (path.startsWith(`/v1/matching/resources/groups/${groupId}?`)) return group;
       if (path.startsWith('/v1/matching/resources/groups?')) return { items: [group], nextCursor: null, poolLimited: false, serverNow: 1000 };
-      if (path.startsWith('/v1/matching/candidates?')) return { items: [], nextCursor: null, poolLimited: false, serverNow: 1000 };
+      if (path.startsWith('/v1/matching/people?')) return { items: [{
+        ...finderCandidate(675321, 'Evening player'), overlapMinutes: 150,
+        reasons: ['Shared interests: Quiet company', '150 minutes of shared weekly time'],
+      }], nextCursor: null, poolLimited: false, serverNow: 1000 };
       if (path === `/v1/communities/${communityId}`) return community;
       throw new CloudError('fixture_unavailable', 503);
     });
@@ -1700,12 +1726,22 @@ describe("platform shell integration with real workspaces", () => {
       f.route('people').click();
       f.root.querySelector<HTMLButtonElement>('.kl-people-matches')!.click();
       const matching = f.root.querySelector<HTMLElement>('.kl-matching-page')!;
+      const person = () => matching.querySelector<HTMLElement>('[data-member="675321"]');
+      await vi.waitFor(() => expect(person()?.textContent).toContain('2h 30m weekly overlap'));
+      expect(person()?.textContent).not.toContain('150 minutes');
+      expect(person()?.textContent).toContain('Shared interests: Quiet company');
       const groupsTab = () => Array.from(matching.querySelectorAll<HTMLButtonElement>('.kl-match-type-tabs [role="tab"]'))
         .find(button => button.textContent === 'Groups');
       await vi.waitFor(() => expect(groupsTab()?.matches(':not([aria-disabled="true"])')).toBe(true));
+      expect(matching.querySelector('.kl-match-signal')).toBeNull();
+      expect(matching.querySelector('.kl-match-my-signal')?.textContent).toBe('Match settings');
       groupsTab()!.click();
       const title = () => matching.querySelector<HTMLButtonElement>(`[data-resource-id="${groupId}"] .kl-match-name`);
       await vi.waitFor(() => expect(title()?.disabled).toBe(false));
+      expect(matching.querySelector('.kl-match-signal')).toBeNull();
+      const groupCard = title()!.closest('.kl-match-card')!;
+      expect(groupCard.textContent).toContain('35h weekly overlap');
+      expect(groupCard.textContent).not.toContain('2100 minutes');
       title()!.click();
       const dialog = matching.querySelector<HTMLDialogElement>('.kl-match-resources .kl-match-dialog')!;
       const link = () => Array.from(dialog.querySelectorAll('button')).find(button => button.textContent === 'View community');
@@ -1970,7 +2006,7 @@ describe("platform shell integration with real workspaces", () => {
       const row = f.rows()[0]!;
       expect(row.querySelector(".kl-finder-result-title")?.textContent).toBe(peer.name);
       expect(row.querySelector(".kl-finder-result-detail")?.textContent).toBe(peer.reasons[0]);
-      expect(row.querySelector(".kl-finder-result-category")?.textContent).toBe("Matching");
+      expect(row.querySelector(".kl-finder-result-category")?.textContent).toBe("Matches");
       expect(row.querySelector("b")).toBeNull();
       expect(row.querySelector("i")).toBeNull();
       expect(row.textContent).not.toContain(peer.note);
@@ -2046,7 +2082,7 @@ describe("platform shell integration with real workspaces", () => {
         ["Another friend", "heart"],
       ]);
       expect(f.rows().map(row => row.querySelector(".kl-finder-result-category")?.textContent))
-        .toEqual(Array(6).fill("Matching"));
+        .toEqual(Array(6).fill("Matches"));
       const resourceReads = f.request.mock.calls.filter(([, path]) => /^\/v1\/matching\/resources\/(groups|rooms|events)\?/.test(path))
         .map(([, path]) => new URL(path, f.cloud.origin));
       expect(resourceReads.map(url => url.pathname.split("/").pop()).sort()).toEqual(["events", "groups", "rooms"]);
@@ -2624,7 +2660,7 @@ describe("platform shell integration with real workspaces", () => {
       card()!.querySelector("button")!.click();
       const matching = f.root.querySelector<HTMLElement>(".kl-matching-page")!;
       await vi.waitFor(() => expect(matching.querySelector('dialog[open][data-layout="signal-editor"] h2')?.textContent)
-        .toBe("Your matching signal"));
+        .toBe("Match settings"));
       expect(f.root.querySelector<HTMLElement>(".kl-panel")!.dataset.workspace).toBe("matching");
       expect(matching.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Rooms");
       expect(storage.getItem(key)).toBe(browse);

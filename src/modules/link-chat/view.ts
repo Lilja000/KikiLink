@@ -15,7 +15,8 @@ import { ConversationArchive } from "./conversation-archive";
 import { CloudHistoryArchivePanel } from './cloud-history-archive-panel';
 import { MusicSessionsPage } from "../platform-shell/music-sessions-page";
 import { renderRestoredChatAttachments } from './restored-chat-attachments';
-import {MatchingPage} from '../platform-shell/matching-page';
+import {MatchesWorkspace} from '../platform-shell/matches-workspace';
+import {MATCHES_SWIPE_STYLES} from '../platform-shell/matches-swipe-styles';
 import { loadDiscoverMatchingPeople, searchMatching } from '../platform-shell/matching-finder';
 import { DiscoverPage, type DiscoverAction } from '../platform-shell/discover-page';
 import { loadDiscoverCommunities } from '../platform-shell/discover-communities';
@@ -621,7 +622,7 @@ export class LinkChatView {
   #workshop: WorkshopPage | undefined;
   #profileLocation: ProfileLocation | undefined;
   #profileCommunities: ProfileCommunities | undefined;
-  #matching: MatchingPage | undefined;
+  #matching: MatchesWorkspace | undefined;
   #profileMatchingSignal: ProfileMatchingSignal | undefined;
   #profileMatchingCommonGround: ProfileMatchingCommonGround | undefined;
   #peerMatchingAction = 0;
@@ -662,7 +663,7 @@ export class LinkChatView {
       this.#peopleDiscovery=new PeopleDiscovery(client,{current:options.current,
         profile:(member,name)=>{void this.#openAddonProfile(member,name);},privacy:()=>this.#openSettings("privacy")});
       this.#shadow.append(this.#peopleDiscovery.element);
-      this.#matching=new MatchingPage(client,storage,{current:options.current,
+      this.#matching=new MatchesWorkspace(client,storage,{current:options.current,
         known: member => this.#knownDiscoveryMember(member),
         blocked:member=>{try{return client.isProfileBlocked(member)||this.adapter.getPlayerRelationships(member).some(kind=>kind==='blacklist'||kind==='ghosted');}catch{return true;}},
         canMessage: member => this.#canMessageMatchingPeer(client, member),
@@ -2466,7 +2467,7 @@ export class LinkChatView {
 
     const style = document.createElement("style");
     style.textContent = LINK_CHAT_STYLES + MESSAGE_AUDIO_STYLES + (this.#cloud ? CLOUD_STYLES : "") + (this.#platformUi
-      ? PLATFORM_SHELL_STYLES + MATCHING_STYLES + DISCOVER_STYLES + BROWSE_STYLES + ALBUMS_STYLES + SPACES_STYLES + EVENTS_STYLES + FEED_UPCOMING_STYLES + COMMUNITIES_STYLES
+      ? PLATFORM_SHELL_STYLES + MATCHING_STYLES + MATCHES_SWIPE_STYLES + DISCOVER_STYLES + BROWSE_STYLES + ALBUMS_STYLES + SPACES_STYLES + EVENTS_STYLES + FEED_UPCOMING_STYLES + COMMUNITIES_STYLES
         + INBOX_STYLES + AUDIO_STYLES + PEOPLE_STYLES + PROFILE_STYLES + SETTINGS_STYLES + SETTINGS_CONTENT_STYLES + MODERATION_STYLES
         + REPORT_STYLES + ROOM_STYLES + PLAYERS_STYLES + ACTIVITIES_STYLES + MUSIC_STYLES + GALLERY_STYLES
       : "");
@@ -3686,17 +3687,26 @@ export class LinkChatView {
       : this.#workspaceView === "workshop" && this.#workshop ? this.#workshop.navigation
       : shell.secondary.querySelector<HTMLElement>(".kl-platform-links");
     if (!source) return;
+    const routeLinks = this.#workspaceView !== "settings" && this.#workspaceView !== "workshop";
+    const available = () => new Set(shell.sections.map(section => section.id));
+    const usable = (button: HTMLButtonElement, routes: ReadonlySet<PlatformRoute>) =>
+      routeLinks ? routes.has(button.dataset.route as PlatformRoute) : !button.hidden;
+    const routes = available();
     const title = shell.sectionTitle + " sections";
     const list = element("nav", { className: "kl-shell-section-list", ariaLabel: title });
-    for (const original of source.querySelectorAll<HTMLButtonElement>("button:not([hidden])")) {
+    for (const original of source.querySelectorAll<HTMLButtonElement>("button")) {
+      if (!usable(original, routes)) continue;
       const row = element("button", { className: "kl-shell-section-row", type: "button", onClick: () => {
-        if (!this.#contentDialog.body.contains(list) || !original.isConnected || original.hidden || original.disabled ||
+        if (!this.#contentDialog.body.contains(list) || !original.isConnected || !usable(original, available()) || original.disabled ||
             !this.#mounted || this.#panel.hidden || shell.secondary.dataset.area !== area) return;
         this.#contentDialog.close(); original.click();
-        if (original.isConnected && !original.hidden) original.focus({ preventScroll: true });
+        const target = original.hidden ? shell.secondary.querySelector<HTMLButtonElement>('.kl-platform-link[aria-current="page"]') : original;
+        target?.focus({ preventScroll: true });
       } });
       row.disabled = original.disabled;
-      if (original.getAttribute("aria-current") === "page" || original.getAttribute("aria-selected") === "true") row.setAttribute("aria-current", "page");
+      const selected = routeLinks ? original.dataset.route === shell.currentRoute
+        : original.getAttribute("aria-current") === "page" || original.getAttribute("aria-selected") === "true";
+      if (selected) row.setAttribute("aria-current", "page");
       for (const child of original.childNodes) {
         const clone = child.cloneNode(true);
         if (clone instanceof Element) {
@@ -4247,7 +4257,7 @@ export class LinkChatView {
 
   #activateFeature(target: FeatureTarget): void {
     if (target === "cloud") { this.#showWorkspace("cloud"); return; }
-    if (target === "discover") { this.#activatePlatformRoute("discover"); return; }
+    if (target === "discover" || target === "matching") { this.#activatePlatformRoute(target); return; }
     if (target === "home" || target === "chat" || target === "news") {
       this.#showWorkspace(target);
       if (target !== "news") void this.refresh();
@@ -10588,6 +10598,11 @@ export class LinkChatView {
       title: "Discover", detail: "Explore events, communities, people and rooms",
       keywords: "explore coming up plans", priority: 52, action: { kind: "workspace", target: "discover" },
     });
+    if (this.#matching && !platformAreaHidden("explore", settings.ui.hiddenTabs)) results.push({
+      id: "destination-matches", kind: "destination", icon: "heart", category: "Destination",
+      title: "Matches", detail: "Browse shared suggestions and manage your matching profile",
+      keywords: "explore matching people availability connections", priority: 52, action: { kind: "workspace", target: "matching" },
+    });
     return results;
   }
 
@@ -10598,7 +10613,7 @@ export class LinkChatView {
     this.#finderMatchingResults = [];
   }
 
-  #finderMatchingCurrent(matching: MatchingPage): boolean {
+  #finderMatchingCurrent(matching: MatchesWorkspace): boolean {
     const { client, recovery } = matching;
     if (!this.#mounted || this.#panel.hidden || !this.#finderDialog.open || this.#finderComposing ||
       this.#matching !== matching || this.#cloud?.client !== client || !client.connected ||
@@ -10632,7 +10647,7 @@ export class LinkChatView {
           const icons = { groups: "users", rooms: "door", events: "calendar" } as const;
           this.#finderMatchingResults = rows.map(row => {
             const common = {
-              kind: "matching" as const, category: "Matching",
+              kind: "matching" as const, category: "Matches",
               detail: row.candidate.reasons[0] || "A shared suggestion", keywords: "", priority: 0,
             };
             if (row.kind === "people") return {

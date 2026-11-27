@@ -537,9 +537,10 @@ export class CloudClient {
     path: string,
     body?: unknown,
     authenticated = true,
+    signal?: AbortSignal,
   ): Promise<T> {
     const epoch = this.#epoch;
-    const response = await this.#response(method, path, body, authenticated);
+    const response = await this.#response(method, path, body, authenticated, signal);
     this.#check();
     if (epoch !== this.#epoch) throw new CloudError("session_changed");
     let value: T;
@@ -686,8 +687,10 @@ export class CloudClient {
     path: string,
     body: unknown,
     authenticated: boolean,
+    callerSignal?: AbortSignal,
   ): Promise<Response> {
     this.#check();
+    if (callerSignal?.aborted) throw new CloudError("request_cancelled");
     if (
       !path.startsWith("/v1/") ||
       path.includes("\\") ||
@@ -715,8 +718,9 @@ export class CloudClient {
     const signal = AbortSignal.any([
       this.#lifetime.signal,
       AbortSignal.timeout(raw ? 20000 : 8000),
+      ...(callerSignal ? [callerSignal] : []),
     ]);
-    const waiting = this.#acquireRequest();
+    const waiting = this.#acquireRequest(callerSignal ? signal : this.#lifetime.signal);
     if (waiting) await waiting;
     try {
       this.#checkEpoch(requestEpoch);
@@ -762,6 +766,7 @@ export class CloudClient {
       if (authenticated) this.#authenticated(path);
       return response;
     } catch (error) {
+      if (callerSignal?.aborted) throw new CloudError("request_cancelled");
       if (error instanceof CloudError) throw error;
       this.#failure();
       throw new CloudError("cloud_temporarily_unavailable", 503);
@@ -925,6 +930,15 @@ export class CloudClient {
   async historicalInvitationAvatar(mailboxId: number, assetId: string, invitedAt: number, generation?: string): Promise<Blob> {
     if (!Number.isSafeInteger(mailboxId) || mailboxId <= 0) throw new CloudError("invalid_invitation");
     return this.#invitationImage(`/v1/mailbox/${mailboxId}/group-avatar/${encodeURIComponent(assetId)}`, invitedAt, generation);
+  }
+  /** Card art is readable only with the current viewer's grant for this card revision. */
+  async swipeCardImage(member: number, revision: number): Promise<Blob> {
+    if (!Number.isSafeInteger(member) || member < 1 || !Number.isSafeInteger(revision) || revision < 1)
+      throw new CloudError("invalid_card");
+    if (member !== this.memberNumber && this.isProfileBlocked(member)) throw new CloudError("profile_blocked", 403);
+    const image = await this.#readImage(`/v1/matching/swipe/cards/${member}/image?revision=${revision}`);
+    if (member !== this.memberNumber && this.isProfileBlocked(member)) throw new CloudError("profile_blocked", 403);
+    return image;
   }
   async #invitationImage(path: string, invitedAt: number, generation?: string): Promise<Blob> {
     this.#check();

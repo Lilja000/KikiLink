@@ -14,6 +14,16 @@ People and Match can suggest members who have filled in public details, even if 
 have not filled in your own signal. A new account starts with its basic signal enabled. Interests,
 languages and availability appear only when entered. Blocking and visibility settings apply to discovery.
 
+### Matches swipe cards
+
+When you save a Matches card, KikiLink Cloud receives the display name, Club background,
+availability setting and chosen image. Wardrobe previews are rendered in your browser.
+Only the selected snapshot is uploaded. Worn items and the other Wardrobe slots stay in the game.
+The slot number and name are private to the card owner. Eligible players can see the card
+while your profile and matching settings allow discovery. A mutual like appears after both
+players choose Like. Passing and one-sided likes are private to the player making the choice.
+Removing your card also removes its portrait, swipes involving that card and mutual likes.
+
 KikiLink data is not secret from the hosting service or trusted page code. KikiLink runs inside
 Bondage Club, stores readable browser/account data, and uses external media hosts for selected features.
 See [Cloud data and retention](cloud/PRIVACY.md) for authentication, published data, deletion and limits.

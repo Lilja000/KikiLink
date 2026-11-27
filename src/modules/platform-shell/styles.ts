@@ -660,12 +660,12 @@ export const PLATFORM_SHELL_STYLES = `
 .kl-shell-community > span:last-child { min-width: 0; }
 .kl-shell-community strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 500; }
 .kl-shell-community small { display: block; margin-top: 3px; font-size: 10px; }
-.kl-shell-community-browse { margin: 8px; padding: 4px 0; border: 0; background: none; color: var(--kl-muted); text-align: left; font-size: 11px; cursor: pointer; }
+.kl-shell-community-retry { margin: 8px; padding: 4px 0; border: 0; background: none; color: var(--kl-muted); text-align: left; font-size: 11px; cursor: pointer; }
 .kl-shell-community-create { display: flex; align-items: center; gap: 8px; width: calc(100% - 16px); margin: 8px; padding: 6px 0; border: 0; background: none; color: var(--kl-muted); text-align: left; font-size: var(--kl-type-sm); cursor: pointer; }
 .kl-shell-community-create svg { width: 14px; height: 14px; flex: none; }
 .kl-shell-community-create:hover { color: var(--kl-text); }
 .kl-shell-community-create:focus-visible { outline: 2px solid var(--kl-accent); outline-offset: 3px; border-radius: 4px; }
-.kl-shell-community:focus-visible, .kl-shell-community-browse:focus-visible { outline: 2px solid var(--kl-accent); outline-offset: -2px; }
+.kl-shell-community:focus-visible, .kl-shell-community-retry:focus-visible { outline: 2px solid var(--kl-accent); outline-offset: -2px; }
 @container kl-panel (width <= 700px) or ((width <= 900px) and (height <= 500px)) { .kl-shell-communities { display: none; } }
 
 @media (max-width: 900px), (max-height: 500px) {

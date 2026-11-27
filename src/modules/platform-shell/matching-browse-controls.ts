@@ -1,7 +1,6 @@
 import { bindSearchEscape } from "./browse-controls";
 import type { MatchFilters, MatchOwn } from '../../../cloud/shared/matching.mjs';
 import { element } from '../../cloud/dom';
-import { bindClockText } from '../../core/time-format';
 import { debounce } from '../../utils/dom';
 import { kikiIcon } from '../link-chat/icons';
 import type { ShellAction, ShellActionMenu } from './action-menu';
@@ -48,8 +47,8 @@ export function setMatchConnectionsCount(button: HTMLButtonElement, count: numbe
   const countText = String(count);
   const description = `${count} incoming pending request${count === 1 ? '' : 's'}`;
   if (badge && accessible) {
-    badge.textContent = countText;
-    accessible.textContent = description;
+    if (badge.textContent !== countText) badge.textContent = countText;
+    if (accessible.textContent !== description) accessible.textContent = description;
     return;
   }
   const added = element('span', { className: 'kl-match-connections-count', text: countText, ariaHidden: 'true' });
@@ -60,7 +59,7 @@ export function setMatchConnectionsCount(button: HTMLButtonElement, count: numbe
 }
 
 export function matchOptionsButton(menu: ShellActionMenu, current: () => boolean, actions: readonly ShellAction[]): HTMLButtonElement {
-  const label = 'Matching options';
+  const label = 'Match options';
   const button = element('button', {
     type: 'button', className: 'kl-icon-button kl-match-options', ariaLabel: label, title: label,
   }, kikiIcon('more'));
@@ -176,6 +175,22 @@ export function matchSuggestionCount(count: number, hasMore: boolean): HTMLEleme
   return element('p', { className: 'kl-match-results', role: 'status', text });
 }
 
+export function matchWeeklyOverlap(minutes: number | null): HTMLElement | undefined {
+  if (minutes === null) return;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  const duration = hours === 0 ? `${minutes}m` : remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
+  return element('span', { text: `${duration} weekly overlap` });
+}
+
+export function matchCardReasons(reasons: readonly string[], overlapMinutes: number | null): HTMLElement {
+  // The people and resource APIs each include the overlap metric in their reasons.
+  const shown = reasons.filter(reason => overlapMinutes === null ||
+    reason !== `${overlapMinutes} minutes of shared weekly time` && reason !== `${overlapMinutes} minutes of shared time`).slice(0, 3);
+  return element('ul', { className: 'kl-match-reasons', hidden: shown.length === 0 },
+    ...shown.map(text => element('li', {}, kikiIcon('check'), element('span', { text }))));
+}
+
 export function matchEmptySuggestions(reset: HTMLButtonElement, hidden: HTMLButtonElement): HTMLElement {
   return element('section', { className: 'kl-match-empty' }, kikiIcon('heart'),
     element('h2', { text: 'No suggestions fit these filters' }),
@@ -191,21 +206,4 @@ export function matchSignalStatus(own: MatchOwn, observedAt: number): 'Available
   const now = own.serverNow + Math.max(0, Date.now() - observedAt);
   if (own.signal.published && expiry !== null && expiry <= now) return 'Expired';
   return own.active ? 'Available' : 'Paused';
-}
-
-export function matchSignalBar(own: MatchOwn, status: ReturnType<typeof matchSignalStatus>, edit: HTMLButtonElement,
-  preferences?: HTMLButtonElement): HTMLElement {
-  const expiry = own.signal.expiresAt;
-  const detail = element('p', { className: 'kl-match-meta' });
-  if (status === 'Available' && own.revision === 0) {
-    detail.textContent = 'Your public profile is used for suggestions.';
-  } else if (status === 'Available') {
-    detail.append(own.signal.intents.join(' · '), ' · Until ',
-      expiry === null ? 'you pause it' : bindClockText(element('time'), expiry, 'medium-date-time'));
-  } else {
-    detail.textContent = 'Browse privately. Make your signal available before sending or accepting a connection request.';
-  }
-  preferences?.classList.add('kl-match-link');
-  return element('section', { className: 'kl-match-signal' }, element('div', {},
-    element('strong', { text: `Your signal · ${status}` }), detail), edit, preferences);
 }

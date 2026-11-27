@@ -59,8 +59,7 @@ export const MATCHING_STYLES = `
 
 .kl-match-header,
 .kl-match-toolbar,
-.kl-match-actions,
-.kl-match-signal { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.kl-match-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .kl-match-header { justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .kl-match-header h1 { min-width: 0; margin: 0; font-size: var(--kl-type-xl, 20px); line-height: 1.3; letter-spacing: -.3px; }
 .kl-match-header > .kl-match-actions { justify-content: flex-end; gap: 6px; }
@@ -84,20 +83,6 @@ export const MATCHING_STYLES = `
   display: grid; place-items: center; flex: none; width: 42px; padding: 0;
 }
 .kl-match-information-toggle > svg { width: 16px; height: 16px; }
-
-.kl-match-signal {
-  padding: 10px 12px;
-  margin-bottom: 12px;
-  border: 1px solid color-mix(in srgb, var(--kl-gold) 22%, transparent);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--kl-gold) 4%, transparent);
-  color: color-mix(in srgb, var(--kl-gold), var(--kl-text) 55%);
-}
-.kl-match-signal > div:first-child { flex: 1 1 140px; min-width: 0; }
-.kl-match-signal strong { display: block; font-size: 11px; line-height: 1.5; }
-.kl-match-signal p { margin: 3px 0 0; }
-.kl-matching-page .kl-match-signal .kl-match-link { min-height: 0; padding: 0; border: 0; color: var(--kl-muted); }
-.kl-matching-page .kl-match-signal .kl-match-link:hover { color: var(--kl-text); background: transparent; text-decoration: underline; }
 
 .kl-match-toolbar { margin-bottom: 12px; }
 .kl-match-search {
@@ -489,13 +474,14 @@ export const MATCHING_STYLES = `
   .kl-matching-page { padding: 12px 12px 20px; }
   .kl-match-header { flex-direction: column; align-items: flex-start; gap: 10px; }
   .kl-match-header > .kl-match-actions { justify-content: flex-start; }
-  .kl-match-search, .kl-match-signal > div:first-child { flex-basis: 100%; }
+  .kl-match-search { flex-basis: 100%; }
   .kl-match-toolbar select { flex: 1 1 auto; }
   .kl-match-type-tabs { justify-content: space-between; gap: 12px; }
   .kl-match-card { padding: 12px; }
 }
 @container kl-panel (width <= 700px) or ((width <= 900px) and (height <= 500px)) {
   .kl-match-grid { grid-template-columns: minmax(0, 1fr); }
+  .kl-match-grid > .kl-match-card > p { min-height: 0; }
   .kl-match-grid > .kl-match-card { --kl-match-card-control: 44px; }
   .kl-matching-page .kl-match-type-tabs > .kl-text-button { min-height: 40px; }
   .kl-match-dialog[data-layout="filters"] .kl-match-field select { height: 40px; }
