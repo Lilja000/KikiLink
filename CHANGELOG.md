@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.6
+
+- Create a swipe card under Explore → Matches with a saved Club Wardrobe look or an uploaded picture. Choose a vanilla Club background and change the card later.
+- Swipe or use Pass and Like to meet other players who have shared a card. Mutual likes appear in the same tab. Undo is available for the last swipe.
+- Browse still opens the existing people, group, room and event catalogs. Servers without swipe support continue to use these catalogs.
+
 ## 2.0.5
 
 - Open Matches directly from Explore. Match settings are available from the page header. The signal banner and the extra Browse communities button have been removed.

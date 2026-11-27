@@ -15,7 +15,8 @@ import { ConversationArchive } from "./conversation-archive";
 import { CloudHistoryArchivePanel } from './cloud-history-archive-panel';
 import { MusicSessionsPage } from "../platform-shell/music-sessions-page";
 import { renderRestoredChatAttachments } from './restored-chat-attachments';
-import {MatchingPage} from '../platform-shell/matching-page';
+import {MatchesWorkspace} from '../platform-shell/matches-workspace';
+import {MATCHES_SWIPE_STYLES} from '../platform-shell/matches-swipe-styles';
 import { loadDiscoverMatchingPeople, searchMatching } from '../platform-shell/matching-finder';
 import { DiscoverPage, type DiscoverAction } from '../platform-shell/discover-page';
 import { loadDiscoverCommunities } from '../platform-shell/discover-communities';
@@ -621,7 +622,7 @@ export class LinkChatView {
   #workshop: WorkshopPage | undefined;
   #profileLocation: ProfileLocation | undefined;
   #profileCommunities: ProfileCommunities | undefined;
-  #matching: MatchingPage | undefined;
+  #matching: MatchesWorkspace | undefined;
   #profileMatchingSignal: ProfileMatchingSignal | undefined;
   #profileMatchingCommonGround: ProfileMatchingCommonGround | undefined;
   #peerMatchingAction = 0;
@@ -662,7 +663,7 @@ export class LinkChatView {
       this.#peopleDiscovery=new PeopleDiscovery(client,{current:options.current,
         profile:(member,name)=>{void this.#openAddonProfile(member,name);},privacy:()=>this.#openSettings("privacy")});
       this.#shadow.append(this.#peopleDiscovery.element);
-      this.#matching=new MatchingPage(client,storage,{current:options.current,
+      this.#matching=new MatchesWorkspace(client,storage,{current:options.current,
         known: member => this.#knownDiscoveryMember(member),
         blocked:member=>{try{return client.isProfileBlocked(member)||this.adapter.getPlayerRelationships(member).some(kind=>kind==='blacklist'||kind==='ghosted');}catch{return true;}},
         canMessage: member => this.#canMessageMatchingPeer(client, member),
@@ -2466,7 +2467,7 @@ export class LinkChatView {
 
     const style = document.createElement("style");
     style.textContent = LINK_CHAT_STYLES + MESSAGE_AUDIO_STYLES + (this.#cloud ? CLOUD_STYLES : "") + (this.#platformUi
-      ? PLATFORM_SHELL_STYLES + MATCHING_STYLES + DISCOVER_STYLES + BROWSE_STYLES + ALBUMS_STYLES + SPACES_STYLES + EVENTS_STYLES + FEED_UPCOMING_STYLES + COMMUNITIES_STYLES
+      ? PLATFORM_SHELL_STYLES + MATCHING_STYLES + MATCHES_SWIPE_STYLES + DISCOVER_STYLES + BROWSE_STYLES + ALBUMS_STYLES + SPACES_STYLES + EVENTS_STYLES + FEED_UPCOMING_STYLES + COMMUNITIES_STYLES
         + INBOX_STYLES + AUDIO_STYLES + PEOPLE_STYLES + PROFILE_STYLES + SETTINGS_STYLES + SETTINGS_CONTENT_STYLES + MODERATION_STYLES
         + REPORT_STYLES + ROOM_STYLES + PLAYERS_STYLES + ACTIVITIES_STYLES + MUSIC_STYLES + GALLERY_STYLES
       : "");
@@ -10612,7 +10613,7 @@ export class LinkChatView {
     this.#finderMatchingResults = [];
   }
 
-  #finderMatchingCurrent(matching: MatchingPage): boolean {
+  #finderMatchingCurrent(matching: MatchesWorkspace): boolean {
     const { client, recovery } = matching;
     if (!this.#mounted || this.#panel.hidden || !this.#finderDialog.open || this.#finderComposing ||
       this.#matching !== matching || this.#cloud?.client !== client || !client.connected ||
