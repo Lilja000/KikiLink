@@ -67,7 +67,7 @@ export const MATCHES_SWIPE_STYLES = `
 .kl-matches-swipe .button.primary {
   background: var(--kl-accent); color: var(--kl-accent-foreground); border-color: var(--kl-accent); font-weight: 650;
 }
-.kl-matches-swipe .fieldrow .button, .kl-matches-swipe .iconbtn {
+.kl-matches-swipe .matches-background-picker .button, .kl-matches-swipe .iconbtn {
   flex: none; width: var(--kl-action-height,36px); height: var(--kl-action-height,36px); padding: 0;
 }
 .kl-matches-swipe .iconbtn { width: var(--kl-action-square,32px); min-height: var(--kl-action-square,32px); height: var(--kl-action-square,32px); }
@@ -111,19 +111,12 @@ export const MATCHES_SWIPE_STYLES = `
 .kl-matches-swipe .setupPanel form { margin: 0; }
 .kl-matches-swipe .field { display: grid; gap: 7px; min-width: 0; }
 .kl-matches-swipe .fieldlabel { font-size: calc(var(--kl-type-body) + 1px); font-weight: 620; color: var(--kl-text); }
-.kl-matches-swipe .fieldrow { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.kl-matches-swipe .fieldrow select { flex: 1 1 0; width: 0; }
-.kl-matches-swipe :is(.input,.bg-select) {
+.kl-matches-swipe .input, .kl-matches-swipe .matches-background-picker :is(.kl-input,.kl-select) {
   display: block; width: 100%; min-width: 0; min-height: var(--kl-action-height,36px); padding: 7px 10px;
   border: 1px solid var(--kl-border); border-radius: var(--kl-action-radius,8px); background-color: var(--kl-input-bg); color: var(--kl-text); font: inherit;
 }
-.kl-matches-swipe .bg-select {
-  appearance: none; padding-inline-end: 32px;
-  background-image: linear-gradient(45deg,transparent 38%,var(--kl-muted) 42% 58%,transparent 62%),
-    linear-gradient(-45deg,transparent 38%,var(--kl-muted) 42% 58%,transparent 62%);
-  background-size: 5px 5px; background-position: right 15px center,right 10px center; background-repeat: no-repeat;
-}
-.kl-matches-swipe .bg-select option { background: var(--kl-input-bg); color: var(--kl-text); }
+.kl-matches-swipe .matches-background-picker .kl-select { height: var(--kl-action-height,36px); }
+.kl-matches-swipe .matches-background-picker[open] > :not(summary) + :not(:empty) { margin-top: 10px; }
 .kl-matches-swipe .wardrobe-strip {
   --outfit-toggle: max(32px,var(--kl-action-square,32px));
   container: kl-outfits / inline-size; display: grid; grid-template-columns: minmax(0,1fr) var(--outfit-toggle);
@@ -311,7 +304,7 @@ export const MATCHES_SWIPE_STYLES = `
 }
 @media (pointer: coarse) {
   .kl-matches-swipe .tab { min-height: 44px; }
-  .kl-matches-swipe :is(.input,.bg-select) { font-size: 16px; }
+  .kl-matches-swipe .input, .kl-matches-swipe .matches-background-picker :is(.kl-input,.kl-select) { font-size: 16px; }
 }
 @media (hover: hover) and (pointer: fine) {
   @container kl-swipe (min-width: 740px) { .kl-matches-swipe .actions kbd { display: inline-block; } }
@@ -421,6 +414,5 @@ export const MATCHES_SWIPE_STYLES = `
   .kl-matches-swipe :is(.button,.upload,.pick,.tagset span) { border-color: ButtonText; }
   .kl-matches-swipe .tab[aria-current="page"]::after { border-bottom: 2px solid Highlight; }
   .kl-matches-swipe .pick[aria-pressed="true"] { border: 2px solid Highlight; }
-  .kl-matches-swipe .bg-select { appearance: auto; background-image: none; }
 }
 `;

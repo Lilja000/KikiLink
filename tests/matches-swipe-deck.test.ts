@@ -172,3 +172,51 @@ it('retains a newly expanded mutual page through a late shallow refresh and remo
   expect(host.querySelector('[data-member="8"]')).toBeNull();
   expect(host.querySelector('[data-member="12"]')).not.toBeNull();
 });
+
+it('requires explicit preview permission for peer backgrounds and restores vanilla immediately on policy change', async () => {
+  const release = vi.fn();
+  const url = 'https://pictures.example.org/beach.jpg';
+  let policy: 'always' | 'ask' | 'never' = 'ask';
+  const loadBackground = vi.fn(async (_url:string,_signal:AbortSignal) => ({url:'blob:leased-beach',release}));
+  const {host,deck} = mount(async()=>({matched:false}), {loadBackground, backgroundPolicy:()=>policy});
+  const s = snapshot(); s.deck[0]!.backgroundUrl = url;
+  deck.update(s,'swipe');
+  const bg = host.querySelector<HTMLImageElement>('.swipe-face .bg')!;
+  const show = host.querySelector<HTMLButtonElement>('.matches-show-background')!;
+  expect(bg.getAttribute('src')).toBe('Backgrounds/CosyChalet.jpg');
+  expect(show.hidden).toBe(false);
+  expect(loadBackground).not.toHaveBeenCalled();
+  show.click();
+  await vi.waitFor(()=>expect(bg.getAttribute('src')).toBe('blob:leased-beach'));
+  bg.dispatchEvent(new Event('load'));
+  await vi.waitFor(()=>expect(host.querySelector('.where')?.textContent).toContain('Custom background'));
+  expect(release).toHaveBeenCalledOnce();
+  expect(bg.referrerPolicy).toBe('no-referrer');
+  policy='never'; deck.refreshBackgroundPolicy();
+  expect(bg.getAttribute('src')).toBe('Backgrounds/CosyChalet.jpg');
+  expect(show.hidden).toBe(true);
+  policy='always'; deck.refreshBackgroundPolicy();
+  expect(loadBackground).toHaveBeenCalledTimes(2);
+  policy='ask'; deck.refreshBackgroundPolicy();
+  expect(loadBackground.mock.calls[1]![1].aborted).toBe(true);
+  await vi.waitFor(()=>expect(release).toHaveBeenCalledTimes(2));
+  expect(bg.getAttribute('src')).toBe('Backgrounds/CosyChalet.jpg');
+  expect(show.hidden).toBe(false);
+});
+
+it('protects mutual detail previews and falls back to the assigned Club room if a custom background fails', async () => {
+  const url='https://images.example.org/scene.webp';
+  const loadBackground=vi.fn(async()=>{ throw new Error('expired'); });
+  const {host,deck}=mount(async()=>({matched:false}),{loadBackground,backgroundPolicy:()=> 'ask'});
+  const s=snapshot();
+  s.mutuals=[{...card(2),backgroundUrl:url}]; s.mutualCount=1;
+  deck.update(s,'mutual');
+  host.querySelector<HTMLButtonElement>('.tile')!.click();
+  const btn=host.querySelector<HTMLButtonElement>('dialog .matches-show-background')!;
+  expect(loadBackground).not.toHaveBeenCalled();
+  btn.click();
+  await vi.waitFor(()=>expect(btn.textContent).toBe('Retry background'));
+  expect(host.querySelector('dialog img.thumbbg')?.getAttribute('src')).toBe('Backgrounds/CosyChalet.jpg');
+  expect(btn.hidden).toBe(false);
+  expect(host.querySelector('dialog img.thumbbg')?.getAttribute('src')).not.toContain('https://');
+});

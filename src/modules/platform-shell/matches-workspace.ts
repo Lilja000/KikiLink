@@ -7,9 +7,16 @@ import { kikiIcon, type KikiLinkIconName } from '../link-chat/icons';
 import { MatchingPage } from './matching-page';
 import { createMatchesSwipeDeck } from './matches-swipe-deck';
 import { mountMatchesSwipeEditor } from './matches-swipe-editor';
+import type { ImagePreviewPreference } from '../../core/types';
+import type { RemoteImageLease } from '../link-chat/remote-image-loader';
 
 type View = 'swipe' | 'mutual';
-type Options = ConstructorParameters<typeof MatchingPage>[2];
+type Options = ConstructorParameters<typeof MatchingPage>[2] & {
+  backgroundPolicy?: () => ImagePreviewPreference;
+  loadBackground?: (url: string, signal: AbortSignal) => Promise<RemoteImageLease>;
+  uploadBackground?: (file: File, signal: AbortSignal) => Promise<string>;
+  pickBackground?: (signal: AbortSignal) => Promise<string | null>;
+};
 
 function action(label: string, icon: KikiLinkIconName, className: string, run: (event: MouseEvent) => void) {
   const button = element('button', {type: 'button', className}, kikiIcon(icon, 'ico'), label);
@@ -65,6 +72,7 @@ export class MatchesWorkspace {
 
   get recovery() { return this.#catalog.recovery; }
   get recommendationPriority() { return this.#catalog.recommendationPriority; }
+  notifyMediaPolicyChanged() { this.#deck?.refreshBackgroundPolicy(); }
   #owner() {
     return !this.#destroyed && this.options.current() && this.client.memberNumber === this.recovery.owner &&
       this.client.origin === this.recovery.origin;
@@ -260,6 +268,10 @@ export class MatchesWorkspace {
     this.#deck?.dispose(); this.#deck = undefined;
     this.#editor = mountMatchesSwipeEditor(this.#content, {
       memberNumber: this.recovery.owner, card,
+      customBackgrounds: this.#state.customBackgrounds === true,
+      ...(this.options.uploadBackground && { uploadBackground: this.options.uploadBackground }),
+      ...(this.options.pickBackground && { pickBackground: this.options.pickBackground }),
+      ...(this.options.loadBackground && { loadBackground: this.options.loadBackground }),
       initialAvailable: this.#state.initialAvailable ?? true,
       loadImage: target => this.#api.image(target),
       onSave: async (draft, signal) => {
@@ -285,6 +297,8 @@ export class MatchesWorkspace {
     if (!state || !this.#active()) return;
     if (!state.self) { this.#editCard(); return; }
     if (!this.#deck) this.#deck = createMatchesSwipeDeck(this.#content, {
+      ...(this.options.backgroundPolicy && { backgroundPolicy: this.options.backgroundPolicy }),
+      ...(this.options.loadBackground && { loadBackground: this.options.loadBackground }),
       current: () => this.#active() && this.client.connected && !this.#editor,
       image: card => this.#api.image(card),
       moreMutuals: cursor => this.#api.moreMutuals(cursor, this.#lifetime.signal),

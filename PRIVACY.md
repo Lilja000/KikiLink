@@ -24,6 +24,11 @@ while your profile and matching settings allow discovery. A mutual like appears 
 players choose Like. Passing and one-sided likes are private to the player making the choice.
 Removing your card also removes its portrait, swipes involving that card and mutual likes.
 
+If you choose a custom background, eligible players also receive its image URL. Their external
+image preview preference controls whether their browser contacts the image host. A background
+uploaded from a file or device gallery uses the same file host and lifetime as room background
+uploads. The Club background is used if the external image expires or cannot load.
+
 KikiLink data is not secret from the hosting service or trusted page code. KikiLink runs inside
 Bondage Club, stores readable browser/account data, and uses external media hosts for selected features.
 See [Cloud data and retention](cloud/PRIVACY.md) for authentication, published data, deletion and limits.

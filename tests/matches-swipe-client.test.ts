@@ -17,6 +17,49 @@ function fixture(request: (method: string, path: string, body?: unknown) => Prom
   return { api: new SwipeApi(client as unknown as CloudClient, block), client };
 }
 
+it("reads custom links alongside the native fallback and sends only intentional changes", async () => {
+  const backgroundUrl = "https://images.example.org/art/scene.WEBP?version=5";
+  const draft: SwipeCardDraft = { name: "Kiki", available: true, lookSource: "current", background: "CosyChalet" };
+  const saves: Record<string, unknown>[] = [];
+  const api = fixture(async (method, _path, body) => {
+    if (method === "GET") return { ...state, customBackgrounds: true,
+      self: { ...own, backgroundUrl }, deck: [{ ...wireCard(2), backgroundUrl }, { ...wireCard(3), backgroundUrl: "file:///art.webp" }] };
+    saves.push(body as Record<string, unknown>);
+    return { card: own };
+  }).api;
+  const data = await api.load();
+  expect(data.customBackgrounds).toBe(true);
+  expect(data.self?.backgroundUrl).toBe(backgroundUrl);
+  expect(data.deck.map(c => [c.background, c.backgroundUrl])).toEqual([["CosyChalet", backgroundUrl], ["CosyChalet", null]]);
+  await api.save(draft, data.self);
+  await api.save({ ...draft, backgroundUrl: backgroundUrl + "#display" }, data.self);
+  await api.save({ ...draft, backgroundUrl: null }, data.self);
+  expect(saves[0]).not.toHaveProperty("backgroundUrl");
+  expect(saves[1]).toMatchObject({ background: "CosyChalet", backgroundUrl });
+  expect(saves[2]).toHaveProperty("backgroundUrl", null);
+  for (const url of ["http://images.example.org/a.jpg", "https://127.1/a.jpg", "https://user@images.example.org/a.webp", "https://images.example.org/a.svg"]) {
+    await expect(api.save({ ...draft, backgroundUrl: url }, data.self)).rejects.toThrow("invalid_swipe_background_url");
+  }
+  expect(saves).toHaveLength(3);
+});
+
+it("keeps native saves compatible with the original strict schema 78 server", async () => {
+  const draft: SwipeCardDraft = { name: "Kiki", available: true, lookSource: "current", background: "Library" };
+  const saves: unknown[] = [];
+  const api = fixture(async (method, _path, body) => {
+    if (method === "GET") return state;
+    saves.push(body);
+    return { card: own };
+  }).api;
+  const data = await api.load();
+  expect(data.customBackgrounds).toBe(false);
+  await api.save({ ...draft, backgroundUrl: null }, data.self);
+  expect(saves[0]).not.toHaveProperty("backgroundUrl");
+  await expect(api.save({ ...draft, backgroundUrl: "https://images.example.org/a.jpg" }, data.self))
+    .rejects.toThrow("swipe_custom_background_unavailable");
+  expect(saves).toHaveLength(1);
+});
+
 it("follows locally blocked pages without sending block lists and preserves own outfit metadata", async () => {
   const request = vi.fn(async (_method: string, path: string) => {
     if (path === prefix + "/state") return { ...state, deckCursor: 2 };

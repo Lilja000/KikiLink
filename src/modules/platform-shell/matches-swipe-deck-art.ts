@@ -1,6 +1,14 @@
 import type { SwipeCard } from '../../cloud/matches-swipe';
 import { element } from '../../cloud/dom';
-import { matchesBackgroundUrl } from './matches-swipe-backgrounds';
+import { normalizeMatchesBackgroundUrl } from '../../../cloud/shared/matches-background.mjs';
+import type { ImagePreviewPreference } from '../../core/types';
+import { loadMatchesBackground, matchesBackgroundUrl, type MatchesBackgroundLoader } from './matches-swipe-backgrounds';
+
+export type BackgroundState = 'native' | 'ask' | 'loading' | 'custom' | 'failed';
+type Background = {
+  image: HTMLImageElement; card: SwipeCard; url: string; own: boolean; visible: boolean; pending?: AbortController;
+  state: BackgroundState; changed: ((state: BackgroundState) => void) | undefined;
+};
 
 type Entry = {promise: Promise<string | null>; url?: string};
 
@@ -18,7 +26,13 @@ export class SwipePortraits {
   private readonly failed = new Map<HTMLElement, {retryAt:number; load:()=>void}>();
   private readonly observer: IntersectionObserver | undefined;
 
-  constructor(private readonly load: (card:SwipeCard) => Promise<Blob|null>, private readonly current: () => boolean) {
+  private readonly backgrounds = new Map<HTMLImageElement, Background>();
+  private readonly revealed = new Map<number, string>();
+  private policy: ImagePreviewPreference;
+
+  constructor(private readonly load: (card:SwipeCard) => Promise<Blob|null>, private readonly current: () => boolean,
+    private readonly loadBackground?: MatchesBackgroundLoader, private readonly backgroundPolicy?: () => ImagePreviewPreference) {
+    this.policy = backgroundPolicy?.() ?? 'never';
     this.observer = typeof IntersectionObserver !== 'function' ? undefined : new IntersectionObserver(records => {
       for (const record of records) {
         if (!record.isIntersecting) continue;
@@ -42,10 +56,56 @@ export class SwipePortraits {
     return entry.promise;
   }
 
-  art(card: SwipeCard, wrap: string, options: {small?:boolean; upcoming?:boolean; lazy?:boolean} = {}) {
+  private showBackground(bg: Background) {
+    bg.pending?.abort();
+    delete bg.pending;
+    bg.image.src = matchesBackgroundUrl(bg.card.background);
+    const set = (state: BackgroundState) => { bg.state = state; bg.changed?.(state); };
+    const policy = bg.own ? 'always' : this.policy;
+    if (!bg.visible || policy === 'never' || !this.loadBackground) { set('native'); return; }
+    if (policy === 'ask' && this.revealed.get(bg.card.memberNumber) !== bg.url) { set('ask'); return; }
+    const pending = new AbortController();
+    bg.pending = pending;
+    set('loading');
+    void loadMatchesBackground(bg.image, bg.card.background, bg.url, this.loadBackground, pending.signal).then(loaded => {
+      if (this.current() && !pending.signal.aborted) set(loaded ? 'custom' : 'failed');
+    });
+  }
+
+  revealBackground(card: SwipeCard) {
+    const url = normalizeMatchesBackgroundUrl(card.backgroundUrl);
+    if (!url || this.policy === 'never' || !this.current()) return;
+    this.revealed.set(card.memberNumber, url);
+    for (const bg of this.backgrounds.values()) {
+      if (bg.card.memberNumber === card.memberNumber && bg.url === url && bg.state !== 'custom' && bg.state !== 'loading') this.showBackground(bg);
+    }
+  }
+
+  refreshBackgroundPolicy() {
+    const next = this.backgroundPolicy?.() ?? 'never';
+    if (next === this.policy) return;
+    this.policy = next;
+    this.revealed.clear();
+    for (const bg of this.backgrounds.values()) if (!bg.own) this.showBackground(bg);
+  }
+
+  art(card: SwipeCard, wrap: string, options: {small?:boolean; upcoming?:boolean; lazy?:boolean; own?:boolean;
+    backgroundChanged?:(state:BackgroundState)=>void} = {}) {
     const layer = element('div', {className:wrap});
-    const bg = element('img', {className:options.small ? 'thumbbg' : 'bg', alt:'', src:matchesBackgroundUrl(card.background)});
+    const bg = element('img', {className:options.small ? 'thumbbg' : 'bg', alt:''});
+    bg.referrerPolicy = 'no-referrer';
     bg.draggable = false;
+    const custom = normalizeMatchesBackgroundUrl(card.backgroundUrl);
+    if (custom && this.loadBackground) {
+      const background: Background = {image:bg, card, url:custom, own:!!options.own, visible:!options.lazy || !this.observer,
+        state:'native', changed:options.backgroundChanged};
+      this.backgrounds.set(bg, background);
+      this.showBackground(background);
+      if (!background.visible) {
+        this.lazy.set(bg, () => { background.visible = true; this.showBackground(background); });
+        this.observer?.observe(bg);
+      }
+    } else bg.src = matchesBackgroundUrl(card.background);
     const fallback = element('div', {className:'missing-look match-monogram', ariaHidden:'true'}, element('span',{text:initial(card.name)}));
     layer.append(bg, fallback);
     if (!card.imageVersion) return layer;
@@ -84,6 +144,11 @@ export class SwipePortraits {
   }
 
   retain(cards: SwipeCard[]) {
+    for (const [image, bg] of this.backgrounds) if (!image.isConnected || !cards.length) {
+      bg.pending?.abort();
+      this.backgrounds.delete(image);
+    }
+    for (const member of this.revealed.keys()) if (!cards.some(card => card.memberNumber === member)) this.revealed.delete(member);
     const keys = new Set(cards.map(portraitKey));
     for (const [key,entry] of this.entries) if (!keys.has(key)) {
       this.entries.delete(key);

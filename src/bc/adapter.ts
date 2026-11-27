@@ -2380,7 +2380,7 @@ function normalizeRoomSearchSpace(value: unknown): BCRoomSearchSpace {
   return value === "X" || value === "M" ? value : "";
 }
 
-function normalizeRoomMediaUrl(value: string, kind: "image" | "audio"): string | undefined {
+export function normalizeRoomMediaUrl(value: string, kind: "image" | "audio"): string | undefined {
   const candidate = value.trim();
   if (!candidate) return undefined;
   if (candidate.length > 250) throw new Error("Room media links can be at most 250 characters");

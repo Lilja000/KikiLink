@@ -16,6 +16,7 @@ import { CloudHistoryArchivePanel } from './cloud-history-archive-panel';
 import { MusicSessionsPage } from "../platform-shell/music-sessions-page";
 import { renderRestoredChatAttachments } from './restored-chat-attachments';
 import {MatchesWorkspace} from '../platform-shell/matches-workspace';
+import { pickMatchesBackground } from "../platform-shell/matches-background-gallery";
 import {MATCHES_SWIPE_STYLES} from '../platform-shell/matches-swipe-styles';
 import { loadDiscoverMatchingPeople, searchMatching } from '../platform-shell/matching-finder';
 import { DiscoverPage, type DiscoverAction } from '../platform-shell/discover-page';
@@ -664,6 +665,16 @@ export class LinkChatView {
         profile:(member,name)=>{void this.#openAddonProfile(member,name);},privacy:()=>this.#openSettings("privacy")});
       this.#shadow.append(this.#peopleDiscovery.element);
       this.#matching=new MatchesWorkspace(client,storage,{current:options.current,
+        backgroundPolicy: options.policy,
+        loadBackground: (url, signal) => this.#acquireRemoteImage(url, signal),
+        uploadBackground: (file, signal) => this.#uploadMatchesBackground(file, signal, options.current),
+        pickBackground: async signal => {
+          if (signal.aborted || !options.current()) return null;
+          const gallery = this.settings.getSection("linkChat").gallery;
+          const image = await pickMatchesBackground(this.#contentDialog, this.galleryStore, gallery.saved, gallery.hiddenUrls, signal);
+          if (signal.aborted || !options.current() || image === null) return null;
+          return typeof image === "string" ? image : this.#uploadMatchesBackground(image, signal, options.current);
+        },
         known: member => this.#knownDiscoveryMember(member),
         blocked:member=>{try{return client.isProfileBlocked(member)||this.adapter.getPlayerRelationships(member).some(kind=>kind==='blacklist'||kind==='ghosted');}catch{return true;}},
         canMessage: member => this.#canMessageMatchingPeer(client, member),
@@ -2579,6 +2590,7 @@ export class LinkChatView {
         albumPreviewPolicy = settings.linkChat.imagePreviews;
         this.#profileAlbums?.notifyPolicyChanged();
         this.#spaces?.notifyMediaPolicyChanged();
+        this.#matching?.notifyMediaPolicyChanged();
       }
       if (settings.linkRoster.enabled !== discoverPeopleEnabled || settings.linkPresence.profileImagePreviews !== profilePreviewPolicy) {
         discoverPeopleEnabled = settings.linkRoster.enabled;
@@ -12788,6 +12800,21 @@ export class LinkChatView {
     } catch {
       return false;
     }
+  }
+
+  async #uploadMatchesBackground(file: File, signal: AbortSignal, current: () => boolean): Promise<string> {
+    const settings = this.settings.getSection("linkChat").imageUploads;
+    const config = settings.enabled ? normalizeLitterboxUploadConfig(settings) : null;
+    if (!config) throw new Error("Enable shared image uploads in Chat settings first.");
+    const check = () => {
+      if (signal.aborted || !current()) throw new DOMException("Card editor closed", "AbortError");
+    };
+    check();
+    const prepared = await this.imageUploader.prepare(file);
+    check();
+    const url = await this.imageUploader.upload(prepared, config, signal);
+    check();
+    return url;
   }
 
   async #uploadRoomBackground(): Promise<void> {

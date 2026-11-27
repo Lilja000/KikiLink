@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as wardrobe from '../src/bc/matches-wardrobe';
 import type { SwipeCard, SwipeCardDraft } from '../src/cloud/matches-swipe';
-import { mountMatchesSwipeEditor } from '../src/modules/platform-shell/matches-swipe-editor';
+import { mountMatchesSwipeEditor, type MatchesSwipeEditorOptions } from '../src/modules/platform-shell/matches-swipe-editor';
 
 const mounted: Array<() => void> = [];
 function portrait(name: string) {
@@ -31,13 +31,13 @@ afterEach(() => {
 const saved: SwipeCard = { memberNumber: 19, name: 'Existing', available: false, imageVersion: 'saved', background: 'ParkNight', revision: 2,
   lookSource: 'photo', wardrobeName: null, wardrobeSlot: null, languages: [], tags: [], bio: '' };
 
-function editor(card: SwipeCard | null = null, loadImage = async (): Promise<Blob | null> => null) {
+function editor(card: SwipeCard | null = null, loadImage = async (): Promise<Blob | null> => null, options: Partial<MatchesSwipeEditorOptions> = {}) {
   vi.stubGlobal('Player', { Name: 'Kiki', MemberNumber: 19 });
   const host = document.createElement('div');
   document.body.append(host);
   const onSave = vi.fn(async (_draft: SwipeCardDraft) => {});
   const onRemove = vi.fn(async () => {});
-  mounted.push(mountMatchesSwipeEditor(host, { card, memberNumber: 19, loadImage, onSave, onRemove }));
+  mounted.push(mountMatchesSwipeEditor(host, { card, memberNumber: 19, loadImage, onSave, onRemove, ...options }));
   const save = () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
   const slots = () => [...host.querySelectorAll<HTMLButtonElement>('.pick')];
   return { host, save, slots, onSave, onRemove };
@@ -239,4 +239,107 @@ it('coalesces rapid taps behind one priority render and displays the final tappe
   pending.get(3)!(portrait('chosen'));
   await vi.waitFor(() => expect(f.host.querySelector<HTMLCanvasElement>('canvas.figure')?.dataset.look).toBe('chosen'));
   expect(f.slots()[3]!.getAttribute('aria-pressed')).toBe('true');
+});
+
+it('browses tagged native room backgrounds with search and pagination on a native-only Cloud', async () => {
+  vi.stubGlobal('BackgroundsList', Array.from({length: 15}, (_, i) => ({Name: 'Room' + i, Tag: [i % 2 ? 'Outside' : 'Inside']})));
+  const f = editor({...saved, imageVersion:null, background:'Room1'});
+  const search = f.host.querySelector<HTMLInputElement>('[aria-label="Find background"]')!;
+  const grid = f.host.querySelector('.kl-room-background-grid')!;
+  expect(grid.children).toHaveLength(12);
+  expect([...grid.querySelectorAll('img')].every(image => image.loading === 'lazy')).toBe(true);
+  const details = f.host.querySelector<HTMLDetailsElement>('details.matches-background-picker')!;
+  const summary = details.querySelector('summary')!;
+  expect(details.open).toBe(true);
+  expect(f.host.querySelector('[aria-label="Background image"]')).toBeNull();
+  search.value = 'Room14';
+  search.dispatchEvent(new Event('input'));
+  const target = grid.querySelector<HTMLButtonElement>('button')!;
+  expect(target.querySelector('img')?.getAttribute('src')).toBe('Backgrounds/Room14.jpg');
+  target.click();
+  expect(target.getAttribute('aria-pressed')).toBe('true');
+  summary.focus();
+  details.open = false; details.dispatchEvent(new Event('toggle'));
+  expect(summary.textContent).toBe('Background · Room14');
+  details.open = true; details.dispatchEvent(new Event('toggle'));
+  expect(summary.textContent).toBe('Background');
+  expect(document.activeElement).toBe(summary);
+  expect(search.value).toBe('Room14');
+  expect(grid.querySelector('button')).toBe(target);
+  expect(f.host.querySelector('img.bg')?.getAttribute('src')).toBe('Backgrounds/Room14.jpg');
+  f.save();
+  expect(f.onSave.mock.calls[0]?.[0].background).toBe('Room14');
+  expect(f.onSave.mock.calls[0]?.[0]).not.toHaveProperty('backgroundUrl');
+});
+
+it('previews a validated custom link through the media loader and clears it when the player chooses vanilla', async () => {
+  const release = vi.fn();
+  const loadBackground = vi.fn(async () => ({url:'blob:custom-room', release}));
+  const f = editor({...saved,imageVersion:null},undefined,{customBackgrounds:true,loadBackground});
+  const field = f.host.querySelector<HTMLInputElement>('[aria-label="Background image"]')!;
+  field.value = 'https://images.example.org/scene.webp?ref=1#fragment';
+  field.dispatchEvent(new Event('change'));
+  expect(loadBackground.mock.calls[0]).toEqual(['https://images.example.org/scene.webp?ref=1',expect.any(AbortSignal)]);
+  await vi.waitFor(() => expect(f.host.querySelector('img.bg')?.getAttribute('src')).toBe('blob:custom-room'));
+  f.host.querySelector('img.bg')!.dispatchEvent(new Event('load'));
+  await vi.waitFor(() => expect(f.host.querySelector('.where')?.textContent).toContain('Custom background'));
+  expect(release).toHaveBeenCalledOnce();
+  expect(f.host.querySelector('img.bg')?.getAttribute('referrerpolicy')).toBe('no-referrer');
+  f.save();
+  expect(f.onSave.mock.calls[0]?.[0]).toMatchObject({background:'ParkNight',backgroundUrl:'https://images.example.org/scene.webp?ref=1'});
+  await vi.waitFor(() => expect(f.host.querySelector('form')!.inert).toBe(false));
+  f.host.querySelector<HTMLButtonElement>('[data-background="CosyChalet"]')!.click();
+  expect(field.value).toBe('');
+  expect(f.host.querySelector('img.bg')?.getAttribute('src')).toBe('Backgrounds/CosyChalet.jpg');
+  f.save();
+  expect(f.onSave.mock.calls[1]?.[0]).toMatchObject({background:'CosyChalet',backgroundUrl:null});
+});
+
+it('rejects incompatible links, cancels stale gallery results, and submits only the uploaded background the player kept', async () => {
+  let resolveGallery!: (url:string)=>void;
+  const pickBackground = vi.fn((_signal:AbortSignal)=>new Promise<string>(resolve=>{resolveGallery=resolve;}));
+  const uploadBackground = vi.fn(async (_file:File,_signal:AbortSignal)=>'https://images.example.org/uploads/nature.jpg');
+  const f = editor({...saved,imageVersion:null},undefined,{customBackgrounds:true,pickBackground,uploadBackground});
+  const field = f.host.querySelector<HTMLInputElement>('[aria-label="Background image"]')!;
+  field.value = 'https://127.0.0.1/private.jpg';
+  f.save();
+  expect(f.onSave).not.toHaveBeenCalled();
+  expect(field.validationMessage).toContain('public HTTPS');
+  [...f.host.querySelectorAll('button')].find(b=>b.textContent === 'Choose from gallery')!.click();
+  const pending = pickBackground.mock.calls[0]![0];
+  f.host.querySelector<HTMLButtonElement>('[data-background="BeachSunset"]')!.click();
+  expect(pending.aborted).toBe(true);
+  resolveGallery('https://images.example.org/obsolete.jpg');
+  await Promise.resolve();
+  expect(field.value).toBe('');
+  const input = f.host.querySelector<HTMLInputElement>('input[aria-label="Upload background image"]')!;
+  const file = new File(['picture'], 'nature.jpg', {type:'image/jpeg'});
+  Object.defineProperty(input,'files',{value:[file]});
+  input.dispatchEvent(new Event('change'));
+  await vi.waitFor(() => expect(field.value).toBe('https://images.example.org/uploads/nature.jpg'));
+  expect(uploadBackground.mock.calls[0]).toEqual([file,expect.any(AbortSignal)]);
+  f.save();
+  expect(f.onSave.mock.calls[0]?.[0]).toMatchObject({background:'BeachSunset',backgroundUrl:field.value});
+});
+
+it('explains the fallback and retries a failed custom preview without uploading again', async () => {
+  const loadBackground = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({url:'blob:retry',release:vi.fn()});
+  const uploadBackground = vi.fn();
+  const f = editor({...saved,imageVersion:null,backgroundUrl:'https://images.example.org/stored.jpg'},undefined,
+    {customBackgrounds:true,loadBackground,uploadBackground});
+  expect(f.host.textContent).toContain('Uploads use the lifetime in Chat settings.');
+  await vi.waitFor(()=>expect(f.host.textContent).toContain('Saving keeps the link'));
+  const retry=[...f.host.querySelectorAll('button')].find(b=>b.textContent==='Retry preview')!;
+  expect(retry.hidden).toBe(false);
+  expect(f.host.querySelector('img.bg')?.getAttribute('src')).toBe('Backgrounds/ParkNight.jpg');
+  f.save();
+  expect(f.onSave).toHaveBeenCalledOnce();
+  expect(f.onSave.mock.calls[0]![0]).not.toHaveProperty('backgroundUrl'); // metadata-only save preserves the existing URL
+  await vi.waitFor(() => expect(f.host.querySelector('form')!.inert).toBe(false));
+  retry.click();
+  await vi.waitFor(()=>expect(f.host.querySelector('img.bg')?.getAttribute('src')).toBe('blob:retry'));
+  f.host.querySelector('img.bg')!.dispatchEvent(new Event('load'));
+  await vi.waitFor(()=>expect(f.host.querySelector('.where')?.textContent).toContain('Custom background'));
+  expect(retry.hidden).toBe(true);
+  expect(uploadBackground).not.toHaveBeenCalled();
 });

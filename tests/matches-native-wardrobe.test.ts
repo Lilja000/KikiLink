@@ -57,6 +57,67 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
+it('uses the active native compositor and fits a wide Wardrobe backing surface with both outfit edges intact', async () => {
+  const f = club();
+  const blit = vi.fn();
+  vi.mocked(HTMLCanvasElement.prototype.getContext).mockImplementation(() => ({
+    drawImage: blit,
+  } as unknown as CanvasRenderingContext2D));
+  const nativeSurface = canvas();
+  nativeSurface.width = 1000;
+  nativeSurface.height = 1850;
+  f.host.CanvasUpperOverflow = 700;
+  f.host.CharacterAppearanceBuildCanvas = vi.fn(c => {
+    expect(c.Canvas).toBeNull();
+    c.Canvas = nativeSurface;
+  });
+  const portrait = await renderWardrobeSlot(1, signal(), f.host);
+  expect(portrait).toBeInstanceOf(HTMLCanvasElement);
+  expect(f.draw).not.toHaveBeenCalled();
+  expect(f.host.DrawCharacterSegment).not.toHaveBeenCalled();
+  // A left train at x=20 and a right wing at x=930 both fit at .35x.
+  expect(blit).toHaveBeenCalledWith(nativeSurface, 0, 700, 1000, 1000, 0, 350, 350, 350);
+});
+
+it('keeps an ordinary outfit at full native height when an extended renderer adds empty horizontal gutters', async () => {
+  const f = club();
+  const blit = vi.fn();
+  const pixels = new Uint8ClampedArray(250 * 250 * 4);
+  for (let x = 100; x < 150; x++) pixels[(100 * 250 + x) * 4 + 3] = 255;
+  vi.mocked(HTMLCanvasElement.prototype.getContext).mockImplementation(() => ({
+    drawImage: blit, getImageData: () => ({data: pixels}),
+  } as unknown as CanvasRenderingContext2D));
+  const nativeSurface = canvas();
+  nativeSurface.width = 1000; nativeSurface.height = 1850;
+  f.host.CanvasUpperOverflow = 700;
+  f.host.CharacterAppearanceBuildCanvas = vi.fn(c => { c.Canvas = nativeSurface; });
+  const portrait = await renderWardrobeSlot(1, signal(), f.host);
+  expect(portrait).toBeInstanceOf(HTMLCanvasElement);
+  expect(blit).toHaveBeenLastCalledWith(nativeSurface, 250, 700, 500, 1000, 0, 0, 350, 700);
+});
+
+it('waits on the active WebGL texture cache before rebuilding and preserves the native origin on a 500-wide frame', async () => {
+  vi.useFakeTimers();
+  const f = club();
+  f.host.GLVersion = 'WebGL 2';
+  f.host.GLDrawCanvas = {GL:{isContextLost: () => false}};
+  let ready = false;
+  f.host.GLDrawImageCache = {get: () => ({isLoaded: () => ready})};
+  const nativeSurface = canvas();
+  nativeSurface.width = 500;
+  nativeSurface.height = 1850;
+  f.host.CharacterAppearanceBuildCanvas = vi.fn(c => { c.Canvas = nativeSurface; });
+  const pending = renderWardrobeSlot(1, signal(), f.host);
+  await vi.advanceTimersByTimeAsync(70);
+  expect(f.host.CharacterAppearanceBuildCanvas).not.toHaveBeenCalled();
+  ready = true;
+  await vi.advanceTimersByTimeAsync(70);
+  expect(await pending).toBeInstanceOf(HTMLCanvasElement);
+  expect(f.cache).not.toHaveBeenCalled();
+  expect(f.host.CharacterAppearanceBuildCanvas).toHaveBeenCalledOnce();
+  expect(f.host.DrawCharacterSegment).toHaveBeenCalledWith(expect.objectContaining({ Canvas: nativeSurface }),0,-0,500,1000);
+});
+
 it('paints warm R134 ImageBitmap layers directly, even with readback and export disabled', async () => {
   const f = club();
   const oldCache = f.gallery.canvasCache;
