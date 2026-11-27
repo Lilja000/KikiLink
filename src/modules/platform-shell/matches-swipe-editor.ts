@@ -23,6 +23,7 @@ export interface MatchesSwipeEditorOptions {
 
 const icon = (name: KikiLinkIconName) => kikiIcon(name, 'ico');
 const uploadTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const wardrobeRowSize = 5;
 
 async function preparePhoto(file: File, signal: AbortSignal): Promise<string> {
   if (!uploadTypes.has(file.type) || file.size > 12 * 1024 * 1024) throw new Error('Choose a PNG, JPEG or WebP image under 12 MB.');
@@ -97,10 +98,11 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   };
   const rendering = new Map<number, Promise<HTMLCanvasElement | null>>();
   const thumbnails = new Map<number, HTMLCanvasElement>();
+  const recentFrames = new Map<number, HTMLCanvasElement>();
   let nativeFrame: HTMLCanvasElement | null = null;
   let failedChoice: WardrobeSlot | undefined;
   let priorityRender: Promise<HTMLCanvasElement | null> | undefined;
-  const tileQueue = new Set<HTMLButtonElement>();
+  const tileQueue = new Map<HTMLButtonElement, boolean>();
   let tileWorkers = 0;
   let expanded = false;
   let artworkRequest = 0;
@@ -328,26 +330,37 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
       if (active() && backgroundOperation === pending) { backgroundOperation = undefined; controls(); }
     }
   }
-  // Coalesce an explicit choice with a thumbnail still being drawn. Settled
-  // presets keep only a small display canvas; the chosen full-size one is
-  // retained separately until the user saves or changes their selection.
-  function picture(slot: number): Promise<HTMLCanvasElement | null> {
+  // Keep one row of finished portraits so selecting a visible outfit uses
+  // the exact frame shown on its tile without asking the Club to draw it again.
+  function picture(slot: number, retryFailedAssets = false): Promise<HTMLCanvasElement | null> {
+    const cached = recentFrames.get(slot);
+    if (cached) {
+      recentFrames.delete(slot);
+      recentFrames.set(slot, cached);
+      if (!thumbnails.has(slot)) cacheTile(slot, cached);
+      return Promise.resolve(cached);
+    }
     const pending = rendering.get(slot);
     if (pending) return pending;
-    const job = renderWardrobeSlot(slot, signal).then(frame => {
-      if (frame && active()) cacheTile(slot, frame);
+    const job = renderWardrobeSlot(slot, signal, undefined, retryFailedAssets).then(frame => {
+      if (frame && active()) {
+        recentFrames.set(slot, frame);
+        if (recentFrames.size > wardrobeRowSize) recentFrames.delete(recentFrames.keys().next().value!);
+        cacheTile(slot, frame);
+      }
       return frame;
     }).catch(() => null).finally(() => rendering.delete(slot));
     rendering.set(slot, job);
     return job;
   }
-  function chosenPicture(slot: number): Promise<HTMLCanvasElement | null> {
+  function chosenPicture(slot: number, retryFailedAssets = false): Promise<HTMLCanvasElement | null> {
+    if (recentFrames.has(slot)) return picture(slot);
     const pending = rendering.get(slot);
     if (pending) return pending;
     const ticket = artworkRequest;
     const start = () => {
       if (!active() || ticket !== artworkRequest) return null;
-      const job = picture(slot);
+      const job = picture(slot, retryFailedAssets);
       priorityRender = job;
       void job.then(() => { if (priorityRender === job) priorityRender = undefined; });
       return job;
@@ -358,6 +371,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     if (!active() || saving) return;
     const ticket = ++artworkRequest;
     failedChoice = undefined;
+    refreshRetry();
     loadingLook = true;
     controls();
     setError('');
@@ -393,13 +407,14 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
       if (active() && ticket === artworkRequest) {
         loadingLook = false;
         controls();
+        refreshRetry();
         syncSelection();
       }
     }
   }
   function tileAt(slot: number) { return picks.querySelector<HTMLButtonElement>(`[data-slot="${slot}"]`); }
   function showSlots() {
-    const count = expanded ? slots.length : Math.min(5, slots.length);
+    const count = expanded ? slots.length : Math.min(wardrobeRowSize, slots.length);
     while (picks.children.length > count) {
       const button = picks.lastElementChild as HTMLButtonElement;
       observer?.unobserve(button);
@@ -409,7 +424,10 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     for (let i = picks.children.length; i < count; i++) {
       const slot = slots[i]!;
       const tile = element('button', { className: 'pick', type: 'button', ariaLabel: slot.name,
-        onClick: () => { void choose('wardrobe', () => chosenPicture(slot.slot), slot); } },
+        onClick: () => {
+          const retry = tile.dataset.preview === 'failed' || failedChoice?.slot === slot.slot;
+          void choose('wardrobe', () => chosenPicture(slot.slot, retry), slot);
+        } },
         element('span', { className: 'outfit-image' }));
       tile.dataset.slot = String(slot.slot);
       picks.append(tile);
@@ -421,7 +439,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
         tile.onfocus = () => { if (!tile.dataset.preview) renderTile(tile); };
       }
     }
-    more.hidden = slots.length <= 5;
+    more.hidden = slots.length <= wardrobeRowSize;
     more.title = expanded ? 'Show fewer outfits' : 'Show all ' + slots.length + ' outfits';
     more.setAttribute('aria-label', more.title);
     more.setAttribute('aria-expanded', String(expanded));
@@ -429,7 +447,8 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     syncSelection();
   }
   function refreshRetry() {
-    retryTiles.hidden = !picks.querySelector('[data-preview="failed"]');
+    retryTiles.hidden = !failedChoice && !picks.querySelector('[data-preview="failed"]');
+    current.hidden = !!slots.length && retryTiles.hidden;
   }
   function failedTile(button: HTMLButtonElement) {
     button.dataset.preview = 'failed';
@@ -459,10 +478,15 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     const thumb = element('canvas');
     thumb.width = Math.min(128, frame.width);
     thumb.height = Math.max(1, Math.round(frame.height * thumb.width / frame.width));
-    const brush = thumb.getContext('2d');
     const button = tileAt(slot);
-    if (!brush) { if (button) failedTile(button); return; }
-    brush.drawImage(frame, 0, 0, thumb.width, thumb.height);
+    try {
+      const brush = thumb.getContext('2d');
+      if (!brush) { if (button) failedTile(button); return; }
+      brush.drawImage(frame, 0, 0, thumb.width, thumb.height);
+    } catch {
+      if (button) failedTile(button);
+      return;
+    }
     thumb.setAttribute('aria-hidden', 'true');
     thumbnails.set(slot, thumb);
     if (button) paintTile(button, thumb);
@@ -471,10 +495,11 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   function renderTile(button: HTMLButtonElement) {
     if (button.dataset.preview === 'loading' || button.dataset.preview === 'ready') return;
     observer?.unobserve(button);
+    const retry = button.dataset.preview === 'failed';
     button.dataset.preview = 'loading';
     button.setAttribute('aria-busy', 'true');
     button.removeAttribute('aria-describedby');
-    tileQueue.add(button);
+    tileQueue.set(button, retry);
     if (tileWorkers < 2) void drawQueuedTiles();
   }
   // Each cold BC preview allocates several native full-resolution canvases.
@@ -483,13 +508,13 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   async function drawQueuedTiles() {
     tileWorkers++;
     try {
-      for (const button of tileQueue) {
+      for (const [button, retry] of tileQueue) {
         tileQueue.delete(button);
         if (!active()) break;
         if (!picks.contains(button)) continue;
         const slot = Number(button.dataset.slot);
         if (thumbnails.has(slot)) continue;
-        const frame = await picture(slot);
+        const frame = await picture(slot, retry);
         if (!frame && active() && picks.contains(button) && !thumbnails.has(slot)) failedTile(button);
       }
     } finally { tileWorkers--; }
@@ -502,9 +527,9 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   }
   retryTiles.onclick = () => {
     const wanted = failedChoice;
+    if (wanted) void choose('wardrobe', () => chosenPicture(wanted.slot, true), wanted);
     for (const button of picks.querySelectorAll<HTMLButtonElement>('[data-preview="failed"]')) renderTile(button);
     refreshRetry();
-    if (wanted) void choose('wardrobe', () => chosenPicture(wanted.slot), wanted);
   };
 
   updateBackgroundPreview();
@@ -517,7 +542,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
   more.onclick = event => {
     expanded = !expanded;
     showSlots();
-    if (expanded && !event.detail) picks.querySelectorAll('button')[5]?.focus({ preventScroll: true });
+    if (expanded && !event.detail) picks.querySelectorAll('button')[wardrobeRowSize]?.focus({ preventScroll: true });
   };
   shuffle.onclick = () => setNativeBackground(randomMatchesBackground(backgrounds, draft.background));
   current.onclick = () => { void choose('current', () => renderCurrentLook(memberNumber, signal)); };
@@ -622,6 +647,7 @@ export function mountMatchesSwipeEditor(host: HTMLElement, options: MatchesSwipe
     tileQueue.clear();
     rendering.clear();
     thumbnails.clear();
+    recentFrames.clear();
     nativeFrame = null;
     if (savedUrl) URL.revokeObjectURL(savedUrl);
     panel.remove();

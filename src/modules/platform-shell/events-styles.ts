@@ -265,6 +265,7 @@ export const EVENTS_STYLES = `
 .kl-ev-person > div > small { font-size: var(--kl-type-xs); line-height: 1.5; }
 .kl-ev-detail :is(.kl-ev-tag,.kl-ev-badge) { line-height: 1.4; }
 .kl-ev-avatar { width: 32px; height: 32px; font-size: 13px; line-height: normal; }
+.kl-ev-avatar > .kl-social-avatar-media:not([data-state="ready"]) { visibility:hidden; }
 .kl-ev-person > .kl-ev-badge { font-size: var(--kl-type-xxs); border-radius: 6px; }
 .kl-ev-person > .kl-ev-badge[data-tone=gold] { border-color: color-mix(in srgb,var(--kl-gold) 30%,transparent); background: color-mix(in srgb,var(--kl-gold) 5%,transparent); }
 .kl-ev-outline time { width: 48px; flex: none; font-size: var(--kl-type-xs); font-weight: 500; }

@@ -14,7 +14,7 @@ import type { MediaViewerItem } from "../modules/platform-shell/media-viewer";
 import type { KikiLinkSettings } from "../core/types";
 import type { KeyValueStorage } from "../core/settings";
 import type { GroupConversation } from "../modules/link-chat/group-chat-service";
-import { CloudClient, CloudError, mediaReportKey, type MediaReportScope } from "./client";
+import { CloudClient, CloudError, isTemporaryCloudReadError, mediaReportKey, type MediaReportScope } from "./client";
 import { CloudFeedView, type SocialFeatures } from "./feed-view";
 import { SocialUI } from "./social-ui";
 import type {ArchiveTarget} from "../modules/link-chat/conversation-archive";
@@ -1316,9 +1316,9 @@ export class CloudPanel {
           wrapper.dispatchEvent(new Event("cloud-image-error"));
           // Small avatars have no Show button. Recover from a transient failure
           // without replacing their wrapper or repeatedly retrying denied media.
-          const transient = !(error instanceof CloudError) || error.status === 0 || error.status >= 500;
+          const transient = !(error instanceof CloudError) || error.status === 0 || isTemporaryCloudReadError(error);
           if (passive && transient && retries < 2 && this.client.connected && this.#retainsImage(wrapper)) {
-            const delay = Math.max(retries++ === 0 ? 1000 : 5000, this.client.retryDelay + 50);
+            const delay = Math.max(retries++ === 0 ? 1000 : 5000, this.client.retryDelay + 50, error instanceof CloudError ? error.retryAfterMs : 0);
             const timer = setTimeout(() => {
               this.#imageRetries.delete(wrapper);
               if (!this.#destroyed && version === this.#imageVersion && this.#retainsImage(wrapper)) queue();

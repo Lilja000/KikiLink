@@ -31,6 +31,38 @@ const response = (data: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 describe("Cloud client account and migration boundaries", () => {
+  it("reuses session metadata for the user count and preserves it across missing or invalid replies", async () => {
+    let me: Record<string, unknown> = { memberNumber: 101 };
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      switch (new URL(String(url)).pathname) {
+        case "/v1/auth/challenges": return response({ challengeId: crypto.randomUUID(), proof: "a".repeat(43), exchange: "b".repeat(43), verifierMember: 909, expiresAt: Date.now() + 60000 });
+        case "/v1/auth/exchange": return response({ memberNumber: 101, token: "t".repeat(43), expiresAt: Date.now() + 3600000 });
+        case "/v1/me": return response(me);
+        default: throw new Error("Unexpected count request");
+      }
+    });
+    const { client } = setup(fetchImpl);
+    try {
+      await client.connect();
+      const changed = vi.fn();
+      client.subscribe(changed);
+      const read = () => client.request("GET", "/v1/me");
+      await read();
+      expect(client.addonUsers).toBeUndefined();
+      me.addonUsers = 1234;
+      await read();
+      await read();
+      expect(client.addonUsers).toBe(1234);
+      for (const invalid of [undefined, -1, 1.5, "500"]) {
+        me.addonUsers = invalid;
+        await read();
+      }
+      me = { memberNumber: 202, addonUsers: 14 };
+      await read();
+      expect(client.addonUsers).toBe(1234);
+      expect(changed.mock.calls).toEqual([["addon-users"]]);
+    } finally { client.destroy(); }
+  });
   it("remote revocation during proactive renewal invalidates pending private reads and never sends a new automatic proof", async () => {
     const key = await createDeviceKey();
     key.device = { id: crypto.randomUUID(), expiresAt: Date.now() + 86400000 };

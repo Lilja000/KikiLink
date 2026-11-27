@@ -1,4 +1,4 @@
-import { markAvatarPresence } from "../modules/link-chat/avatar-presence";
+import { markMemberAvatar } from "../modules/link-chat/avatar-presence";
 import { element } from './dom';
 import type { CloudClient } from './client';
 import type { CloudProfile } from './types';
@@ -134,7 +134,7 @@ export class MentionPicker {
       this.#status.textContent = results.length ? '' : 'No matching username'; this.#status.hidden = results.length > 0;
       for (const [index, person] of results.entries()) {
         const row = element('button', { type: 'button', role: 'option', tabIndex: -1, className: 'kl-mention-option' },
-          markAvatarPresence(element('span', { className: 'kl-mention-avatar', ariaHidden: 'true', text: Array.from(person.displayName || person.username).slice(0, 2).join('').toUpperCase() }), person.memberNumber),
+          markMemberAvatar(element('span', { className: 'kl-mention-avatar', ariaHidden: 'true', text: Array.from(person.displayName || person.username).slice(0, 2).join('').toUpperCase() }), person.memberNumber, person.displayName || person.username),
           element('span', { className: 'kl-mention-copy' }, element('strong', { text: person.displayName }), element('small', { text: `@${person.username}` })));
         row.id = `${this.#list.id}-${index}`; row.dataset.member = String(person.memberNumber);
         row.addEventListener('click', () => { void this.#choose(index); });

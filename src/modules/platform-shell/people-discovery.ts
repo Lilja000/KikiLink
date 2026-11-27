@@ -1,3 +1,4 @@
+import { markMemberAvatar } from "../link-chat/avatar-presence";
 import { pageAction } from './page-action';
 import type { CloudClient } from '../../cloud/client';
 import { element } from '../../cloud/dom';
@@ -93,7 +94,8 @@ export class PeopleDiscovery {
     for(const person of this.#items){
       const row=this.#button(person.displayName,()=>{this.close();this.options.profile(person.memberNumber,person.displayName);});
       row.classList.add('kl-people-discovery-person');row.dataset.member=String(person.memberNumber);
-      row.replaceChildren(element('strong',{text:person.displayName}),element('span',{text:[person.username?`@${person.username}`:'',`#${person.memberNumber}`].filter(Boolean).join(' · ')}));
+      const avatar=markMemberAvatar(element('span',{className:'kl-avatar kl-discovery-search-avatar',ariaHidden:'true',text:Array.from(person.displayName)[0]??'?'}),person.memberNumber,person.displayName);
+      row.replaceChildren(avatar,element('strong',{text:person.displayName}),element('span',{text:[person.username?`@${person.username}`:'',`#${person.memberNumber}`].filter(Boolean).join(' · ')}));
       row.disabled=this.#busy;this.#results.append(row);
     }
     const actions=element('div',{className:'kl-setting-tool-buttons'},this.#button('Refresh profiles',()=>void this.#load()));

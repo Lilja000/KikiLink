@@ -109,10 +109,27 @@ it('fills the thumbnail, chosen state and large preview after a cold failed slot
   retry.click();
   await vi.waitFor(() => expect(tile.dataset.preview).toBe('ready'));
   expect(capture).toHaveBeenCalledTimes(2);
+  expect(capture.mock.calls.map(call => call[3])).toEqual([false, true]);
   expect(tile.querySelector('canvas')?.dataset.look).toBe('ready');
   expect(f.host.querySelector<HTMLCanvasElement>('canvas.figure')?.dataset.look).toBe('ready');
   expect(retry.hidden).toBe(true);
   expect(f.slots()[0]!.getAttribute('aria-pressed')).toBe('true');
+});
+
+it('keeps a valid full portrait when thumbnail drawing fails and rebuilds only the missing thumbnail on retry', async () => {
+  vi.spyOn(wardrobe, 'readClubWardrobe').mockReturnValue([{slot: 2, name: 'Saved'}]);
+  const capture = vi.spyOn(wardrobe, 'renderWardrobeSlot').mockResolvedValue(portrait('real outfit'));
+  vi.mocked(HTMLCanvasElement.prototype.getContext).mockImplementationOnce(() => { throw new Error('No drawing surface'); });
+  const f = editor();
+  const tile = f.slots()[0]!;
+  const retry = f.host.querySelector<HTMLButtonElement>('.wardrobe-retry')!;
+  await vi.waitFor(() => expect(tile.dataset.preview).toBe('failed'));
+  expect(f.host.querySelector<HTMLCanvasElement>('canvas.figure')?.dataset.look).toBe('real outfit');
+  expect(retry.hidden).toBe(false);
+  retry.click();
+  await vi.waitFor(() => expect(tile.dataset.preview).toBe('ready'));
+  expect(capture).toHaveBeenCalledOnce();
+  expect(tile.querySelector('canvas')?.dataset.look).toBe('real outfit');
 });
 
 it('offers retry on a null saved-image read and ignores its late result after cancellation', async () => {
@@ -193,11 +210,11 @@ it('keeps the selected full-size native frame and all thumbnails visible across 
   const encode = vi.mocked(wardrobe.encodeMatchesImage).mockRejectedValueOnce(new DOMException('Blocked', 'SecurityError'));
   const f = editor();
   await vi.waitFor(() => expect(f.slots().every(tile => tile.dataset.preview === 'ready')).toBe(true));
+  const calls = render.mock.calls.length;
   f.slots()[1]!.click();
   await vi.waitFor(() => expect(f.slots()[1]!.getAttribute('aria-pressed')).toBe('true'));
   const frame = f.host.querySelector('canvas.figure')!;
   expect(f.slots()[1]!.querySelector('canvas')).not.toBe(frame);
-  const calls = render.mock.calls.length;
   f.save();
   await vi.waitFor(() => expect(f.host.querySelector('.form-error')?.textContent).toContain('could not be saved as an image'));
   expect(f.onSave).not.toHaveBeenCalled();
@@ -210,20 +227,29 @@ it('keeps the selected full-size native frame and all thumbnails visible across 
   expect(render).toHaveBeenCalledTimes(calls);
 });
 
-it('preserves the previous confirmed portrait and selection when another native outfit fails', async () => {
-  vi.spyOn(wardrobe, 'readClubWardrobe').mockReturnValue([{slot: 1, name: 'First'}, {slot: 3, name: 'Second'}]);
+it('preserves the confirmed portrait and offers a retry when a previously drawn tile must be rendered again', async () => {
+  vi.spyOn(wardrobe, 'readClubWardrobe').mockReturnValue(Array.from({length: 7}, (_, i) => ({slot: i * 2 + 1, name: 'Outfit ' + i})));
   const render = vi.spyOn(wardrobe, 'renderWardrobeSlot').mockImplementation(async slot => portrait('look-' + slot));
   const f = editor();
   await vi.waitFor(() => expect(f.slots()[0]!.getAttribute('aria-pressed')).toBe('true'));
   const original = f.host.querySelector('canvas.figure');
+  f.host.querySelector<HTMLButtonElement>('.wardrobe-toggle')!.click();
+  await vi.waitFor(() => expect(f.slots().every(tile => tile.dataset.preview === 'ready')).toBe(true));
   render.mockResolvedValueOnce(null);
   f.slots()[1]!.click();
   await vi.waitFor(() => expect(f.host.querySelector('.form-error')?.textContent).toContain('previous picture is still selected'));
   expect(f.host.querySelector('canvas.figure')).toBe(original);
-  expect(f.slots().map(tile => tile.getAttribute('aria-pressed'))).toEqual(['true', 'false']);
+  expect(f.slots().filter(tile => tile.getAttribute('aria-pressed') === 'true')).toEqual([f.slots()[0]]);
+  expect(f.slots()[1]!.dataset.preview).toBe('ready');
+  const retry = f.host.querySelector<HTMLButtonElement>('.wardrobe-retry')!;
+  expect(retry.hidden).toBe(false);
   f.save();
   await vi.waitFor(() => expect(f.onSave).toHaveBeenCalledOnce());
   expect(f.onSave.mock.calls[0]?.[0]).toMatchObject({wardrobeSlot: 1, image: 'look-1'});
+  await vi.waitFor(() => expect(f.host.querySelector('form')!.inert).toBe(false));
+  retry.click();
+  await vi.waitFor(() => expect(f.slots()[1]!.getAttribute('aria-pressed')).toBe('true'));
+  expect(retry.hidden).toBe(true);
 });
 
 it('coalesces rapid taps behind one priority render and displays the final tapped outfit', async () => {

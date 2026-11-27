@@ -68,7 +68,7 @@ it('uses the active native compositor and fits a wide Wardrobe backing surface w
   nativeSurface.height = 1850;
   f.host.CanvasUpperOverflow = 700;
   f.host.CharacterAppearanceBuildCanvas = vi.fn(c => {
-    expect(c.Canvas).toBeNull();
+    expect(c).toBe(vi.mocked(f.host.CharacterLoadSimple).mock.results[0]?.value);
     c.Canvas = nativeSurface;
   });
   const portrait = await renderWardrobeSlot(1, signal(), f.host);
@@ -219,4 +219,55 @@ it('uses a detached frame for the current player and discards a result on accoun
   const pending = renderCurrentLook(71, signal(), f.host);
   f.host.Player = character('other');
   expect(await pending).toBeNull();
+});
+
+it('waits for the actual WebGL cache entry after a clothing mod rewrites the layer URL', async () => {
+  vi.useFakeTimers();
+  const f = club();
+  f.host.GLVersion = 'webgl2';
+  f.host.GLDrawCanvas = {GL:{isContextLost: () => false}};
+  const url = 'https://clothes.example/outfit.png';
+  let loaded = false;
+  const image = {url, lastUsed: Date.now(), isLoaded: () => loaded, isFailing: () => false, unload: vi.fn()};
+  const get = vi.fn((key: string) => {
+    if (key !== url) throw Error('Unexpected unremapped texture lookup');
+    image.lastUsed = Date.now();
+    return image;
+  });
+  f.host.GLDrawImageCache = {cache: new Map([[url, image]]), get};
+  const build = vi.fn((c: Character) => { c.DrawnAssets = new Set([url]); get(url); c.Canvas = canvas(); });
+  f.host.CharacterAppearanceBuildCanvas = build;
+  const result = renderWardrobeSlot(1, signal(), f.host);
+  await vi.advanceTimersByTimeAsync(70);
+  expect(build).toHaveBeenCalledOnce();
+  loaded = true;
+  await vi.advanceTimersByTimeAsync(70);
+  expect(await result).toBeInstanceOf(HTMLCanvasElement);
+  expect(build).toHaveBeenCalledTimes(2);
+  expect(f.host.CommonDrawAppearanceBuild).not.toHaveBeenCalled();
+  expect(f.cache).not.toHaveBeenCalled();
+});
+
+it('keeps native remaining pixels with an unavailable layer and retries a fully failed outfit only on request', async () => {
+  const f = club();
+  const url = 'Assets/Hair/Detail.png';
+  const image = {url, lastUsed: Date.now(), isLoaded: () => false, isFailing: () => true, unload: vi.fn()};
+  const get = vi.fn(() => image);
+  f.host.DrawImageCache = {cache: new Map([[url, image]]), get};
+  f.host.CharacterAppearanceBuildCanvas = vi.fn((c: Character) => { c.DrawnAssets = new Set([url]); c.Canvas = canvas(); });
+  const sample = new Uint8ClampedArray([0, 0, 0, 255]);
+  vi.mocked(HTMLCanvasElement.prototype.getContext).mockImplementation(() => ({
+    drawImage: vi.fn(), getImageData: () => ({data: sample}),
+  } as unknown as CanvasRenderingContext2D));
+  expect(await renderWardrobeSlot(1, signal(), f.host)).toBeInstanceOf(HTMLCanvasElement);
+  sample[3] = 0;
+  expect(await renderWardrobeSlot(1, signal(), f.host)).toBeNull();
+  expect(get).not.toHaveBeenCalled();
+  get.mockImplementationOnce(() => {
+    image.isLoaded = () => true; image.isFailing = () => false;
+    return image;
+  });
+  expect(await renderWardrobeSlot(1, signal(), f.host, true)).toBeInstanceOf(HTMLCanvasElement);
+  expect(get).toHaveBeenCalledExactlyOnceWith(url);
+  expect(image.unload).toHaveBeenCalledOnce();
 });

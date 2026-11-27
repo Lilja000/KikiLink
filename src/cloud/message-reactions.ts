@@ -1,4 +1,4 @@
-import { markAvatarPresence } from "../modules/link-chat/avatar-presence";
+import { markMemberAvatar } from "../modules/link-chat/avatar-presence";
 import {GroupMutationIntent,type GroupMutationSource} from './group-mutation-intent';
 import {ChannelMutationIntent,type ChannelMutationSource} from './channel-mutation-intent';
 import { CloudError, type CloudClient } from "./client";
@@ -104,7 +104,7 @@ export class MessageReactions {
         if (!this.participants(id, host)?.some(row => row.memberNumber === person.memberNumber)) { dialog.close(); return; }
         dialog.close(); openProfile(person.memberNumber, person.displayName);
       });
-      list.append(element("div", { className: "kl-thread-reactor" }, markAvatarPresence(element("span", { className: "kl-avatar", text: [...person.displayName][0] ?? "?" }), person.memberNumber), name, element("span", { text: person.reactions.join(" ") })));
+      list.append(element("div", { className: "kl-thread-reactor" }, markMemberAvatar(element("span", { className: "kl-avatar", text: [...person.displayName][0] ?? "?" }), person.memberNumber, person.displayName), name, element("span", { text: person.reactions.join(" ") })));
     }
     if (!people.length) list.append(element("p", { text: "No visible reactions yet." }));
     const close = element("button", { type: "button", className: "kl-text-button", text: "Close" });

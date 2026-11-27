@@ -14,6 +14,9 @@ exception internals. Common statuses: 400 validation, 401 session, 403 permissio
 404 unavailable/hidden, 409 revision or membership conflict, 413/415 image size/type,
 429 throttle, 503 dependency/capacity. Auth-hidden resources use 404.
 
+The authenticated `GET /v1/me` response includes `addonUsers`, the number of verified
+accounts that are enabled, irrespective of presence. Cloud caches the total for five minutes.
+
 | Area | Routes |
 | --- | --- |
 | Health | `GET /health/live`, `GET /health/ready` |

@@ -5,6 +5,7 @@ import { CloudClient } from "../src/cloud/client";
 import { CloudDirect } from "../src/cloud/direct";
 import type { CloudProfile } from "../src/cloud/types";
 import { MemoryKeyValueStorage, SettingsStore } from "../src/core/settings";
+import { markMemberAvatar } from "../src/modules/link-chat/avatar-presence";
 import { ChatService } from "../src/modules/link-chat/chat-service";
 import { blossomImageForMember } from "../src/modules/link-chat/blossom-identity";
 import { LinkChatView } from "../src/modules/link-chat/view";
@@ -254,6 +255,37 @@ describe("Cloud portraits in Direct Chat", () => {
     expect(h.avatar().querySelector(".kl-social-avatar-media")).toBe(wrapper); expect(tries).toBe(failed + 1);
   });
 
+  it.each(["/v1/profiles/202", "/v1/media/avatar-202"])("retries a rate-limited visible portrait read at %s after Retry-After", async path => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const h = await setup({ response: async route => {
+      if (route === path && attempts++ === 0) return Response.json({ error: "rate_limited" }, {
+        status: 429, headers: { "Retry-After": "4" },
+      });
+      return undefined;
+    } });
+    await vi.waitFor(() => expect(attempts).toBe(1));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(1200);
+    await vi.waitFor(() => expect(h.avatar().dataset.avatarState).toBe("image"));
+    expect(attempts).toBe(2);
+  });
+
+  it("removes a painted portrait when another surface discovers a denial and restores it on an authorized read", async () => {
+    let denied = false;
+    const h = await setup({ response: async path => path === "/v1/profiles/202" && denied
+      ? Response.json({ error: "not_found" }, { status: 404 }) : undefined });
+    await vi.waitFor(() => expect(h.avatar().dataset.avatarState).toBe("image"));
+    denied = true;
+    await expect(h.client.profile(202, true)).rejects.toMatchObject({ status: 404 });
+    expect(h.avatar().querySelector(".kl-social-avatar-media")).toBeNull();
+    expect(h.avatar().dataset.avatarState).toBe("initials");
+    denied = false;
+    await h.client.profile(202, true);
+    await vi.waitFor(() => expect(h.avatar().dataset.avatarState).toBe("image"));
+  });
+
   it("retrieves a missing profile after reconnect and clears Cloud portraits on logout", async () => {
     let offline = true;
     const h = await setup({ response: async path => path === "/v1/profiles/202" && offline
@@ -340,4 +372,56 @@ it("Direct binds reactions only after a Cloud server identity exists and retains
   await f.view.onMessage(202, false, { ...message, cloudId: id, delivery: 'sent' });
   await vi.waitFor(() => expect(row.querySelector('[aria-label="Love: 1"]')).not.toBeNull());
   expect(f.root.querySelector('[data-message-id="local-pending"]')).toBe(row);
+});
+
+it("hydrates initials-only member chips once and preserves their scoped status and no-photo fallback", async () => {
+  const h = await setup();
+  const row = document.createElement("div");
+  const makeChip = (member: number, name: string) => {
+    const chip = document.createElement("span");
+    chip.textContent = name.charAt(0);
+    return markMemberAvatar(chip, member, name, null);
+  };
+  const a = makeChip(303, "First"), b = makeChip(303, "First"), missing = makeChip(404, "Missing");
+  h.profiles.set(404, profile(404, null));
+  row.append(a, b, missing);
+  h.root.querySelector(".kl-panel")!.append(row);
+  await vi.waitFor(() => {
+    expect(a.querySelector('.kl-social-avatar-media[data-state="ready"] img')).not.toBeNull();
+    expect(b.querySelector('.kl-social-avatar-media[data-state="ready"] img')).not.toBeNull();
+    expect(missing.querySelector('[data-avatar-state="initials"]')).not.toBeNull();
+  });
+  expect(a.dataset.avatarPresence).toBe("unknown");
+  expect(h.reads("/v1/profiles/303")).toBe(1);
+  expect(h.reads("/v1/media/avatar-303")).toBe(1);
+  expect(missing.firstChild?.textContent).toBe("M");
+  expect(missing.querySelector(".kl-social-avatar-media")).toBeNull();
+  const portrait = a.firstElementChild;
+  markMemberAvatar(a, 303, "First", null);
+  expect(a.firstElementChild).toBe(portrait);
+  h.client.rememberProfile(profile(303, null));
+  await vi.waitFor(() => expect(a.querySelector(".kl-social-avatar-media")).toBeNull());
+  expect(a.firstChild?.textContent).toBe("F");
+});
+
+
+it("rechecks access before reusing a detached directory portrait and restores the same row on unblock", async () => {
+  const h = await setup();
+  const panel = h.root.querySelector(".kl-panel")!;
+  const chip = document.createElement("span");
+  chip.textContent = "P";
+  markMemberAvatar(chip, 303, "Person 303", null);
+  panel.append(chip);
+  const photo = () => chip.querySelector('.kl-social-avatar-media[data-state="ready"] img');
+  await vi.waitFor(() => expect(photo()).not.toBeNull());
+  chip.remove();
+  h.client.rememberBlock(303, true);
+  const calls = h.reads("/v1/profiles/303");
+  panel.append(chip);
+  await vi.waitFor(() => expect(photo()).toBeNull());
+  expect(h.reads("/v1/profiles/303")).toBe(calls);
+  expect(chip.firstChild?.textContent).toBe("P");
+  h.client.rememberBlock(303, false);
+  await vi.waitFor(() => expect(photo()).not.toBeNull());
+  expect(h.reads("/v1/profiles/303")).toBe(calls + 1);
 });

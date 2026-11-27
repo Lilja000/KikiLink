@@ -76,6 +76,7 @@ export class CloudClient {
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
   #session: CloudSession | undefined;
+  #addonUsers: number | undefined;
   #sessionVersion=0;
   #pending: PendingIdentity | undefined;
   #closed = false;
@@ -155,6 +156,7 @@ export class CloudClient {
   }
   /** Public base URL only; authentication credentials stay inside this client. */
   get origin(): string { return this.#origin; }
+  get addonUsers(): number | undefined { return this.#addonUsers; }
   get verifying(): boolean {
     return !!this.#pending && this.#pending.expiresAt > this.#now();
   }
@@ -550,6 +552,14 @@ export class CloudClient {
       try { value = JSON.parse(new TextDecoder().decode(bytes)) as T; }
       catch { throw new CloudError("invalid_response"); }
     } else value = undefined as T;
+    if (authenticated && method === "GET" && path === "/v1/me" && value && typeof value === "object" &&
+      "memberNumber" in value && value.memberNumber === this.memberNumber && "addonUsers" in value) {
+      const count = value.addonUsers;
+      if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0 && count !== this.#addonUsers) {
+        this.#addonUsers = count;
+        this.#notify("addon-users");
+      }
+    }
     // Keep the last complete profile visible until the complete save response is ready.
     const boundProfile=path==='/v1/profiles/me'&&!!body&&typeof body==='object'&&'recoveryGeneration' in body;
     const boundBlock=path.startsWith('/v1/blocks/')&&!!body&&typeof body==='object'&&'recoveryGeneration' in body;
@@ -883,7 +893,7 @@ export class CloudClient {
       .catch((error) => {
         if (version === this.#profileVersion && this.#inflight.get(member) === promise) {
           if (error instanceof CloudError && (error.status === 403 || error.status === 404)) {
-            this.#cache.delete(member); this.#notify(`profile:${member}`);
+            this.#cache.delete(member); this.#notify(`profile:${member}`, "unavailable");
           } else if (cached) cached.refreshAfter = this.#now() + 30000;
         }
         throw error;

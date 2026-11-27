@@ -1,6 +1,6 @@
 import { PAGE_ACTION_STYLES } from '../platform-shell/page-action';
 import { onDialogBackdropClick } from "../../utils/dialog-backdrop";
-import { markAvatarPresence } from "./avatar-presence";
+import { markAvatarPresence, markMemberAvatar } from "./avatar-presence";
 import { openLocalMessageEditor } from "../platform-shell/local-message-editor";
 import { DirectPresentation } from "./direct-presentation";
 import { LocalProfileRestrictions } from "../../core/local-profile-restrictions";
@@ -831,7 +831,7 @@ export class LinkChatView {
       name: member => this.adapter.getMemberName(member) ?? "Member",
       openProfile: member => { void this.#openAddonProfile(member, `Member #${member}`); },
       openCommunity: id => { this.#showWorkspace('communities'); this.#communities?.open(id); },
-      image: id => this.#cloud?.messageImage(id) ?? element('span', { text: 'Image unavailable' }),
+      image: (id, own) => this.#cloud?.avatarImage(id, own),
       changed: () => { void this.#community?.refresh().catch(() => {}); },
     });
     if (this.#platformUi) this.#communities = new CommunitiesPage(client, {
@@ -1150,6 +1150,10 @@ export class LinkChatView {
     });
     if (this.#notifications && client.connected) void this.#cloud.inbox.refresh().catch(() => {});
     client.subscribe((kind, cause) => {
+      if (kind === "addon-users") {
+        if (this.#cloud?.client === client && client.addonUsers !== undefined) this.#platformShell?.setAddonUsers(client.addonUsers);
+        return;
+      }
       const resumedStream = kind === "profiles-cleared" && cause === "ready";
       this.#letterReader?.sync();
       if (this.#cloud?.client === client && (kind === "connection" || kind === "session")) this.#refreshTimedMutes?.();
@@ -1189,8 +1193,17 @@ export class LinkChatView {
       if (["session", "relationships", "media-invalidated"].includes(kind)) this.#invalidateDirectTarget();
       if (this.#mounted && (kind.startsWith("profile:") || ["profiles-cleared", "media-invalidated", "session", "ready"].includes(kind))) {
         const changed = kind.startsWith("profile:") ? Number(kind.slice(8)) : undefined;
-        if (kind === "session" || kind === "ready") { this.#cloudAvatarFetchAfter.clear(); this.#cloudAvatarDenied.clear(); }
-        this.#refreshCloudAvatars(changed, kind === "media-invalidated", kind === "ready" || kind === "session");
+        if (kind === "session" || kind === "ready" || kind === "profiles-cleared" && !resumedStream) {
+          this.#resetCloudAvatarReads();
+          this.#cloudAvatarDenied.clear();
+        }
+        if (changed !== undefined) {
+          if (cause === "unavailable") {
+            this.#cloudAvatarDenied.add(changed);
+            while (this.#cloudAvatarDenied.size > 200) this.#cloudAvatarDenied.delete(this.#cloudAvatarDenied.values().next().value!);
+          } else if (this.#cloudAvatarDenied.has(changed) && client.peekProfile(changed)) this.#cloudAvatarDenied.delete(changed);
+        }
+        this.#refreshCloudAvatars(changed, kind === "media-invalidated" || cause === "unavailable", kind === "ready" || kind === "session");
         if (!this.#panel.hidden && this.#workspaceView === "roster" && kind !== "media-invalidated" &&
             (this.#rosterPage.dataset.peopleView !== "players" || this.#rosterSearch.value.trim())) {
           // A shared handle or language can change which rows match the current search.
@@ -1243,6 +1256,10 @@ export class LinkChatView {
   readonly #cloudAvatarTargets = new Map<HTMLElement, { member: number; name: string; visible: boolean }>();
   readonly #cloudAvatarFetchAfter = new Map<number, number>();
   readonly #cloudAvatarDenied = new Set<number>();
+  readonly #cloudAvatarQueue = new Map<number, { target: HTMLElement; attempt: number }>();
+  readonly #cloudAvatarRetries = new Map<number, ReturnType<typeof setTimeout>>();
+  #cloudAvatarActive = 0;
+  #cloudAvatarEpoch = 0;
   #cloudAvatarObserver: IntersectionObserver | undefined;
   readonly #shadow = this.#host.attachShadow({ mode: "open" });
   #releaseKeyboardBoundary: (() => void) | undefined;
@@ -2078,8 +2095,10 @@ export class LinkChatView {
     this.#scheduleDetachedRemoteImageCleanup(records);
     for (const record of records) for (const node of record.addedNodes) {
       if (!(node instanceof HTMLElement) || !node.isConnected) continue;
-      if (node.hasAttribute("data-presence-peer")) this.#updateAvatarPresence(node);
-      for (const avatar of node.querySelectorAll<HTMLElement>("[data-presence-peer]")) this.#updateAvatarPresence(avatar);
+      if (node.matches("[data-presence-peer], [data-portrait-member]")) this.#mountMemberAvatar(node);
+      if (node.childElementCount) {
+        for (const avatar of node.querySelectorAll<HTMLElement>("[data-presence-peer], [data-portrait-member]")) this.#mountMemberAvatar(avatar);
+      }
     }
   });
   readonly #suppressProfileClickUntil = new WeakMap<HTMLElement, number>();
@@ -2636,7 +2655,7 @@ export class LinkChatView {
     if (this.#directSubmission) this.#directSubmission.cancelled = true;
     this.#failedDirectSends.clear();
     this.#cloudAvatarObserver?.disconnect(); this.#cloudAvatarObserver = undefined;
-    this.#cloudAvatarTargets.clear(); this.#cloudAvatarFetchAfter.clear(); this.#cloudAvatarDenied.clear();
+    this.#cloudAvatarTargets.clear(); this.#resetCloudAvatarReads(); this.#cloudAvatarDenied.clear();
     this.#releaseKeyboardBoundary?.();
     this.#releaseKeyboardBoundary = undefined;
     this.presence.setNativeFriendsVisible?.(false);
@@ -3533,6 +3552,8 @@ export class LinkChatView {
         }, openConnection: () => this.#openCloudSettings(),
         openProfile: anchor => this.#openOwnProfile(anchor),
       });
+      const userCount = this.#cloud?.client.addonUsers;
+      if (userCount !== undefined) this.#platformShell.setAddonUsers(userCount);
       if (this.#communityShortcuts) this.#platformShell.attachCommunities(this.#communityShortcuts.element);
       if (this.#workshop) this.#platformShell.attachWorkshop(this.#workshop.navigation);
       this.#platformShell.attachBadge("direct", this.#directCount);
@@ -15420,9 +15441,12 @@ export class LinkChatView {
     if (player.directoryOnly) {
       const connected = Boolean(this.#cloud?.client.connected && !this.#peopleRestricted(entry.memberNumber));
       const avatar = row.querySelector<HTMLElement>(".kl-avatar")!;
-      markAvatarPresence(avatar, entry.memberNumber, connected ? undefined : null);
-      if (connected) this.#updateAvatarPresence(avatar);
-      avatar.textContent = entry.displayName.slice(0, 1).toLocaleUpperCase();
+      const initial = entry.displayName.slice(0, 1).toLocaleUpperCase();
+      if (avatar.firstChild?.textContent !== initial || (!connected && avatar.childElementCount)) avatar.textContent = initial;
+      if (connected) {
+        markMemberAvatar(avatar, entry.memberNumber, entry.displayName);
+        this.#updateAvatarPresence(avatar);
+      } else markAvatarPresence(avatar, entry.memberNumber, null);
       const name = row.querySelector<HTMLButtonElement>(".kl-roster-entry-name")!;
       name.textContent = entry.displayName;
       name.disabled = !connected;
@@ -16462,6 +16486,15 @@ export class LinkChatView {
       if (updateAll && this.#workspaceView === "room" && this.#roomSubView === "lobbies" && !this.#panel.hidden) this.#renderLobbies();
       if (updateAll) void this.#renderHome();
     });
+  }
+
+  #mountMemberAvatar(avatar: HTMLElement): void {
+    if (avatar.dataset.portraitMember) {
+      const member = Number(avatar.dataset.portraitMember);
+      // A retained row may have missed a permission change while it was detached.
+      const reattached = !this.#cloudAvatarTargets.has(avatar) && avatar.dataset.cloudAvatar !== undefined;
+      this.#renderAvatar(avatar, avatar.dataset.portraitName ?? "", member, undefined, reattached);
+    } else this.#updateAvatarPresence(avatar);
   }
 
   #updateAvatarPresence(avatar: HTMLElement): void {
@@ -20960,6 +20993,7 @@ export class LinkChatView {
   }
 
   #renderAddonBadge(target: HTMLElement, installed: boolean, memberNumber: number): void {
+    if (target.dataset.portraitMember) return;
     const existing = target.querySelector(":scope > .kl-addon-badge");
     if (!installed) { existing?.remove(); return; }
     const source = blossomImageForMember(memberNumber);
@@ -21015,25 +21049,55 @@ export class LinkChatView {
       queueMicrotask(() => this.#loadCloudAvatarProfile(target));
   }
 
-  #loadCloudAvatarProfile(target: HTMLElement): void {
+  #resetCloudAvatarReads(): void {
+    this.#cloudAvatarEpoch++;
+    this.#cloudAvatarQueue.clear();
+    this.#cloudAvatarFetchAfter.clear();
+    for (const timer of this.#cloudAvatarRetries.values()) clearTimeout(timer);
+    this.#cloudAvatarRetries.clear();
+  }
+
+  #loadCloudAvatarProfile(target: HTMLElement, attempt = 0): void {
     const binding = this.#cloudAvatarTargets.get(target), client = this.#cloud?.client;
     if (!binding || !client?.connected || !target.isConnected || this.#panel.hidden || client.isProfileBlocked(binding.member)) return;
-    const member = binding.member, now = Date.now();
-    if (now < (this.#cloudAvatarFetchAfter.get(member) ?? 0)) return;
-    this.#cloudAvatarFetchAfter.delete(member); this.#cloudAvatarFetchAfter.set(member, now + 30000);
-    while (this.#cloudAvatarFetchAfter.size > 200) this.#cloudAvatarFetchAfter.delete(this.#cloudAvatarFetchAfter.keys().next().value!);
-    // CloudClient deduplicates requests and quietly refreshes its saved snapshot.
-    void client.profile(member).then(() => {
-      this.#cloudAvatarDenied.delete(member);
-      if (this.#mounted) this.#refreshCloudAvatars(member);
-    }).catch(error => {
-      if (!this.#mounted || !client.connected) return;
-      if (error instanceof CloudError && (error.status === 403 || error.status === 404)) {
-        this.#cloudAvatarDenied.add(member);
-        while (this.#cloudAvatarDenied.size > 200) this.#cloudAvatarDenied.delete(this.#cloudAvatarDenied.values().next().value!);
-        this.#refreshCloudAvatars(member, true);
-      }
-    });
+    const member = binding.member;
+    if (this.#cloudAvatarRetries.has(member) || Date.now() < (this.#cloudAvatarFetchAfter.get(member) ?? 0)) return;
+    this.#cloudAvatarQueue.set(member, { target, attempt });
+    this.#pumpCloudAvatarProfiles();
+  }
+
+  #visibleCloudAvatar(target: HTMLElement, member: number): boolean {
+    const binding = this.#cloudAvatarTargets.get(target);
+    return target.isConnected && binding?.member === member && (!this.#cloudAvatarObserver || binding.visible);
+  }
+
+  #pumpCloudAvatarProfiles(): void {
+    const client = this.#cloud?.client;
+    if (!this.#mounted || this.#panel.hidden || !client?.connected) { this.#cloudAvatarQueue.clear(); return; }
+    // Leave transport capacity for chat and media even when a whole directory enters view together.
+    while (this.#cloudAvatarActive < 2 && this.#cloudAvatarQueue.size) {
+      const [member, { target, attempt }] = this.#cloudAvatarQueue.entries().next().value!;
+      this.#cloudAvatarQueue.delete(member);
+      if (this.#isMemberBlocked(member)) continue;
+      if (!this.#visibleCloudAvatar(target, member) && ![...this.#cloudAvatarTargets.keys()].some(node => this.#visibleCloudAvatar(node, member))) continue;
+      const epoch = this.#cloudAvatarEpoch;
+      this.#cloudAvatarFetchAfter.delete(member); this.#cloudAvatarFetchAfter.set(member, Date.now() + 30000);
+      while (this.#cloudAvatarFetchAfter.size > 200) this.#cloudAvatarFetchAfter.delete(this.#cloudAvatarFetchAfter.keys().next().value!);
+      this.#cloudAvatarActive++;
+      void client.profile(member).then(() => {
+        if (this.#mounted && epoch === this.#cloudAvatarEpoch && client.connected) this.#refreshCloudAvatars(member);
+      }).catch(error => {
+        if (!this.#mounted || epoch !== this.#cloudAvatarEpoch || !client.connected || !isTemporaryCloudReadError(error) || attempt >= 2) return;
+        const delay = Math.max(attempt === 0 ? 1000 : 5000, client.retryDelay + 50, (error as CloudError).retryAfterMs);
+        this.#cloudAvatarRetries.set(member, setTimeout(() => {
+          this.#cloudAvatarRetries.delete(member);
+          this.#cloudAvatarFetchAfter.delete(member);
+          for (const node of this.#cloudAvatarTargets.keys()) {
+            if (this.#visibleCloudAvatar(node, member)) { this.#loadCloudAvatarProfile(node, attempt + 1); break; }
+          }
+        }, delay));
+      }).finally(() => { this.#cloudAvatarActive--; this.#pumpCloudAvatarProfiles(); });
+    }
   }
 
   #renderCloudAvatar(target: HTMLElement, name: string, member: number, native: PresenceSnapshot, own: boolean, force: boolean): boolean {
@@ -21041,8 +21105,9 @@ export class LinkChatView {
     if (!cloud) return false;
     this.#watchCloudAvatar(target, name, member);
     if (!cloud.client.connected) return false;
-    const denied = cloud.client.isProfileBlocked(member) || this.#cloudAvatarDenied.has(member);
     const profile = cloud.client.peekProfile(member);
+    const denied = this.#isMemberBlocked(member) || this.#cloudAvatarDenied.has(member) ||
+      Boolean(profile && !profile.isDefault && !own && !profile.visible);
     const policy = own ? "always" : this.settings.getSection("linkPresence").profileImagePreviews;
     const sameMember = target.dataset.avatarMemberNumber === String(member);
     if (!profile && !denied) {
@@ -21126,8 +21191,17 @@ export class LinkChatView {
     } catch {
       // Treat guarded native identity as remote for privacy purposes.
     }
-    target.dataset.avatarPresence = this.#cloud && this.#isMemberBlocked(memberNumber) ? "unknown" : snapshot.status;
+    if (!target.dataset.portraitMember)
+      target.dataset.avatarPresence = this.#cloud && this.#isMemberBlocked(memberNumber) ? "unknown" : snapshot.status;
     if (explicitUrl === undefined && this.#renderCloudAvatar(target, name, memberNumber, snapshot, ownMember, force)) return;
+    // Directory chips only paint a Cloud portrait authorized for this viewer.
+    // Hide native and cached art immediately when a scoped profile goes away.
+    if (target.dataset.portraitMember) {
+      target.replaceChildren();
+      delete target.dataset.cloudAvatar;
+      delete target.dataset.avatarState;
+      return;
+    }
     if (explicitUrl !== undefined) {
       this.#cloudAvatarTargets.delete(target); this.#cloudAvatarObserver?.unobserve(target);
     }

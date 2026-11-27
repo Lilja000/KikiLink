@@ -1,5 +1,5 @@
 import { sectionLink } from './section-link';
-import { markAvatarPresence } from "../link-chat/avatar-presence";
+import { markAvatarPresence, markMemberAvatar } from "../link-chat/avatar-presence";
 import { spaceAppearance, type SpaceColor, type SpaceIcon } from '../../../cloud/shared/space-appearance.mjs';
 import { bindClockText } from '../../core/time-format';
 import { element, focusedElement } from '../../utils/dom';
@@ -345,7 +345,7 @@ export class DiscoverPage {
     for (const match of matches.slice(0, 3)) {
       const reason = match.reason || 'A shared suggestion';
       const initials = Array.from(match.name.trim()).slice(0, 2).join('').toUpperCase();
-      const avatar = markAvatarPresence(element('span', { className: 'kl-match-avatar', text: initials }), match.memberNumber ?? 0, match.status ?? null);
+      const avatar = markMemberAvatar(element('span', { className: 'kl-match-avatar', text: initials }), match.memberNumber ?? 0, match.name, match.status ?? null);
       avatar.setAttribute('aria-hidden', 'true');
       const row = element('button', {
         type: 'button', className: 'kl-discover-match kl-discover-row', ariaLabel: `Why this match? ${match.name}`,
